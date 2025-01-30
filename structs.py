@@ -67,9 +67,9 @@ class MeterStatus:
 
 @dataclasses.dataclass
 class UnitStatus:
-    workload_status: StatusInfoContents
-    juju_status: StatusInfoContents
-    meter_status: MeterStatus
+    workload_status: StatusInfoContents | None
+    juju_status: StatusInfoContents | None
+    meter_status: MeterStatus | None
     leader: bool | None
     upgrading_from: str | None
     machine: str | None
@@ -101,7 +101,7 @@ class UnitStatus:
 @dataclasses.dataclass
 class AppStatus:
     charm: str
-    base: FormattedBase
+    base: FormattedBase | None
     charm_origin: str
     charm_name: str
     charm_rev: int
@@ -114,7 +114,7 @@ class AppStatus:
     address: str | None
     exposed: bool
     life: str | None
-    app_status: StatusInfoContents
+    app_status: StatusInfoContents | None
     relations: dict[str, list[AppStatusRelation]] | None
     subordinate_to: list[str] | None
     units: dict[str, UnitStatus] | None
@@ -211,7 +211,7 @@ class StorageInfo:
     life: str | None
     status: EntityStatus
     persistent: bool
-    attachments: StorageAttachments
+    attachments: StorageAttachments | None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> StorageInfo:
@@ -263,7 +263,7 @@ class FilesystemInfo:
     pool: str | None
     size: int
     life: str | None
-    status: EntityStatus
+    status: EntityStatus | None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> FilesystemInfo:
@@ -317,14 +317,14 @@ class VolumeAttachments:
 class VolumeInfo:
     provider_id: str | None
     storage: str | None
-    attachments: VolumeAttachments
+    attachments: VolumeAttachments | None
     pool: str | None
     hardware_id: str | None
     wwn: str | None
     size: int
     persistent: bool
     life: str | None
-    status: EntityStatus
+    status: EntityStatus | None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> VolumeInfo:
@@ -377,8 +377,8 @@ class ModelStatus:
     region: str | None
     version: str
     upgrade_available: str | None
-    model_status: StatusInfoContents
-    meter_status: MeterStatus
+    model_status: StatusInfoContents | None
+    meter_status: MeterStatus | None
     sla: str | None
 
     @classmethod
@@ -435,15 +435,15 @@ class LxdProfileContents:
 
 @dataclasses.dataclass
 class MachineStatus:
-    juju_status: StatusInfoContents
+    juju_status: StatusInfoContents | None
     hostname: str | None
     dns_name: str | None
     ip_addresses: list[str] | None
     instance_id: str | None
     display_name: str | None
-    machine_status: StatusInfoContents
-    modification_status: StatusInfoContents
-    base: FormattedBase
+    machine_status: StatusInfoContents | None
+    modification_status: StatusInfoContents | None
+    base: FormattedBase | None
     network_interfaces: dict[str, NetworkInterface] | None
     containers: dict[str, MachineStatus] | None
     constraints: str | None
@@ -492,7 +492,7 @@ class RemoteAppStatus:
     url: str
     endpoints: dict[str, RemoteEndpoint] | None
     life: str | None
-    app_status: StatusInfoContents
+    app_status: StatusInfoContents | None
     relations: dict[str, list[str]] | None
 
     @classmethod
@@ -532,8 +532,8 @@ class FormattedStatus:
     apps: dict[str, AppStatus]
     app_endpoints: dict[str, RemoteAppStatus] | None
     offers: dict[str, OfferStatus] | None
-    storage: CombinedStorage
-    controller: ControllerStatus
+    storage: CombinedStorage | None
+    controller: ControllerStatus | None
     branches: dict[str, BranchStatus] | None
 
     @classmethod
