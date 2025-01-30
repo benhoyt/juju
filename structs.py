@@ -18,12 +18,12 @@ class FormattedBase:
 
 @dataclasses.dataclass
 class StatusInfoContents:
-    current: str | None
-    message: str | None
-    reason: str | None
-    since: str | None
-    version: str | None
-    life: str | None
+    current: str | None = None
+    message: str | None = None
+    reason: str | None = None
+    since: str | None = None
+    version: str | None = None
+    life: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> StatusInfoContents:
@@ -39,9 +39,9 @@ class StatusInfoContents:
 
 @dataclasses.dataclass
 class AppStatusRelation:
-    related_app: str | None
-    interface: str | None
-    scope: str | None
+    related_app: str | None = None
+    interface: str | None = None
+    scope: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> AppStatusRelation:
@@ -54,8 +54,8 @@ class AppStatusRelation:
 
 @dataclasses.dataclass
 class MeterStatus:
-    color: str | None
-    message: str | None
+    color: str | None = None
+    message: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> MeterStatus:
@@ -67,18 +67,18 @@ class MeterStatus:
 
 @dataclasses.dataclass
 class UnitStatus:
-    workload_status: StatusInfoContents | None
-    juju_status: StatusInfoContents | None
-    meter_status: MeterStatus | None
-    leader: bool | None
-    upgrading_from: str | None
-    machine: str | None
-    open_ports: list[str] | None
-    public_address: str | None
-    address: str | None
-    provider_id: str | None
-    subordinates: dict[str, UnitStatus] | None
-    branch: str | None
+    workload_status: StatusInfoContents | None = None
+    juju_status: StatusInfoContents | None = None
+    meter_status: MeterStatus | None = None
+    leader: bool | None = None
+    upgrading_from: str | None = None
+    machine: str | None = None
+    open_ports: list[str] | None = None
+    public_address: str | None = None
+    address: str | None = None
+    provider_id: str | None = None
+    subordinates: dict[str, UnitStatus] | None = None
+    branch: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> UnitStatus:
@@ -101,25 +101,26 @@ class UnitStatus:
 @dataclasses.dataclass
 class AppStatus:
     charm: str
-    base: FormattedBase | None
     charm_origin: str
     charm_name: str
     charm_rev: int
-    charm_channel: str | None
-    charm_version: str | None
-    charm_profile: str | None
-    can_upgrade_to: str | None
-    scale: int | None
-    provider_id: str | None
-    address: str | None
     exposed: bool
-    life: str | None
-    app_status: StatusInfoContents | None
-    relations: dict[str, list[AppStatusRelation]] | None
-    subordinate_to: list[str] | None
-    units: dict[str, UnitStatus] | None
-    version: str | None
-    endpoint_bindings: dict[str, str] | None
+
+    base: FormattedBase | None = None
+    charm_channel: str | None = None
+    charm_version: str | None = None
+    charm_profile: str | None = None
+    can_upgrade_to: str | None = None
+    scale: int | None = None
+    provider_id: str | None = None
+    address: str | None = None
+    life: str | None = None
+    app_status: StatusInfoContents | None = None
+    relations: dict[str, list[AppStatusRelation]] | None = None
+    subordinate_to: list[str] | None = None
+    units: dict[str, UnitStatus] | None = None
+    version: str | None = None
+    endpoint_bindings: dict[str, str] | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> AppStatus:
@@ -149,10 +150,10 @@ class AppStatus:
 
 @dataclasses.dataclass
 class BranchStatus:
-    ref: str | None
-    created: str | None
-    created_by: str | None
-    active: bool | None
+    ref: str | None = None
+    created: str | None = None
+    created_by: str | None = None
+    active: bool | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> BranchStatus:
@@ -166,9 +167,9 @@ class BranchStatus:
 
 @dataclasses.dataclass
 class EntityStatus:
-    current: str | None
-    message: str | None
-    since: str | None
+    current: str | None = None
+    message: str | None = None
+    since: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EntityStatus:
@@ -181,9 +182,9 @@ class EntityStatus:
 
 @dataclasses.dataclass
 class UnitStorageAttachment:
-    machine: str | None
-    location: str | None
-    life: str | None
+    machine: str | None = None
+    location: str | None = None
+    life: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> UnitStorageAttachment:
@@ -208,10 +209,11 @@ class StorageAttachments:
 @dataclasses.dataclass
 class StorageInfo:
     kind: str
-    life: str | None
     status: EntityStatus
     persistent: bool
-    attachments: StorageAttachments | None
+
+    life: str | None = None
+    attachments: StorageAttachments | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> StorageInfo:
@@ -228,7 +230,8 @@ class StorageInfo:
 class FilesystemAttachment:
     mount_point: str
     read_only: bool
-    life: str | None
+
+    life: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> FilesystemAttachment:
@@ -241,9 +244,9 @@ class FilesystemAttachment:
 
 @dataclasses.dataclass
 class FilesystemAttachments:
-    machines: dict[str, FilesystemAttachment] | None
-    containers: dict[str, FilesystemAttachment] | None
-    units: dict[str, UnitStorageAttachment] | None
+    machines: dict[str, FilesystemAttachment] | None = None
+    containers: dict[str, FilesystemAttachment] | None = None
+    units: dict[str, UnitStorageAttachment] | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> FilesystemAttachments:
@@ -256,14 +259,15 @@ class FilesystemAttachments:
 
 @dataclasses.dataclass
 class FilesystemInfo:
-    provider_id: str | None
-    volume: str | None
-    storage: str | None
     Attachments: FilesystemAttachments
-    pool: str | None
     size: int
-    life: str | None
-    status: EntityStatus | None
+
+    provider_id: str | None = None
+    volume: str | None = None
+    storage: str | None = None
+    pool: str | None = None
+    life: str | None = None
+    status: EntityStatus | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> FilesystemInfo:
@@ -281,11 +285,12 @@ class FilesystemInfo:
 
 @dataclasses.dataclass
 class VolumeAttachment:
-    device: str | None
-    device_link: str | None
-    bus_address: str | None
     read_only: bool
-    life: str | None
+
+    device: str | None = None
+    device_link: str | None = None
+    bus_address: str | None = None
+    life: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> VolumeAttachment:
@@ -300,9 +305,9 @@ class VolumeAttachment:
 
 @dataclasses.dataclass
 class VolumeAttachments:
-    machines: dict[str, VolumeAttachment] | None
-    containers: dict[str, VolumeAttachment] | None
-    units: dict[str, UnitStorageAttachment] | None
+    machines: dict[str, VolumeAttachment] | None = None
+    containers: dict[str, VolumeAttachment] | None = None
+    units: dict[str, UnitStorageAttachment] | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> VolumeAttachments:
@@ -315,16 +320,17 @@ class VolumeAttachments:
 
 @dataclasses.dataclass
 class VolumeInfo:
-    provider_id: str | None
-    storage: str | None
-    attachments: VolumeAttachments | None
-    pool: str | None
-    hardware_id: str | None
-    wwn: str | None
     size: int
     persistent: bool
-    life: str | None
-    status: EntityStatus | None
+
+    provider_id: str | None = None
+    storage: str | None = None
+    attachments: VolumeAttachments | None = None
+    pool: str | None = None
+    hardware_id: str | None = None
+    wwn: str | None = None
+    life: str | None = None
+    status: EntityStatus | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> VolumeInfo:
@@ -344,9 +350,9 @@ class VolumeInfo:
 
 @dataclasses.dataclass
 class CombinedStorage:
-    storage: dict[str, StorageInfo] | None
-    filesystems: dict[str, FilesystemInfo] | None
-    volumes: dict[str, VolumeInfo] | None
+    storage: dict[str, StorageInfo] | None = None
+    filesystems: dict[str, FilesystemInfo] | None = None
+    volumes: dict[str, VolumeInfo] | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> CombinedStorage:
@@ -359,7 +365,7 @@ class CombinedStorage:
 
 @dataclasses.dataclass
 class ControllerStatus:
-    timestamp: str | None
+    timestamp: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ControllerStatus:
@@ -374,12 +380,13 @@ class ModelStatus:
     type: str
     controller: str
     cloud: str
-    region: str | None
     version: str
-    upgrade_available: str | None
-    model_status: StatusInfoContents | None
-    meter_status: MeterStatus | None
-    sla: str | None
+
+    region: str | None = None
+    upgrade_available: str | None = None
+    model_status: StatusInfoContents | None = None
+    meter_status: MeterStatus | None = None
+    sla: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ModelStatus:
@@ -401,10 +408,11 @@ class ModelStatus:
 class NetworkInterface:
     ip_addresses: list[str]
     mac_address: str
-    gateway: str | None
-    dns_nameservers: list[str] | None
-    space: str | None
     is_up: bool
+
+    gateway: str | None = None
+    dns_nameservers: list[str] | None = None
+    space: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> NetworkInterface:
@@ -435,22 +443,22 @@ class LxdProfileContents:
 
 @dataclasses.dataclass
 class MachineStatus:
-    juju_status: StatusInfoContents | None
-    hostname: str | None
-    dns_name: str | None
-    ip_addresses: list[str] | None
-    instance_id: str | None
-    display_name: str | None
-    machine_status: StatusInfoContents | None
-    modification_status: StatusInfoContents | None
-    base: FormattedBase | None
-    network_interfaces: dict[str, NetworkInterface] | None
-    containers: dict[str, MachineStatus] | None
-    constraints: str | None
-    hardware: str | None
-    controller_member_status: str | None
-    ha_primary: bool | None
-    lxd_profiles: dict[str, LxdProfileContents] | None
+    juju_status: StatusInfoContents | None = None
+    hostname: str | None = None
+    dns_name: str | None = None
+    ip_addresses: list[str] | None = None
+    instance_id: str | None = None
+    display_name: str | None = None
+    machine_status: StatusInfoContents | None = None
+    modification_status: StatusInfoContents | None = None
+    base: FormattedBase | None = None
+    network_interfaces: dict[str, NetworkInterface] | None = None
+    containers: dict[str, MachineStatus] | None = None
+    constraints: str | None = None
+    hardware: str | None = None
+    controller_member_status: str | None = None
+    ha_primary: bool | None = None
+    lxd_profiles: dict[str, LxdProfileContents] | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> MachineStatus:
@@ -490,10 +498,11 @@ class RemoteEndpoint:
 @dataclasses.dataclass
 class RemoteAppStatus:
     url: str
-    endpoints: dict[str, RemoteEndpoint] | None
-    life: str | None
-    app_status: StatusInfoContents | None
-    relations: dict[str, list[str]] | None
+
+    endpoints: dict[str, RemoteEndpoint] | None = None
+    life: str | None = None
+    app_status: StatusInfoContents | None = None
+    relations: dict[str, list[str]] | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> RemoteAppStatus:
@@ -509,10 +518,11 @@ class RemoteAppStatus:
 @dataclasses.dataclass
 class OfferStatus:
     app: str
-    charm: str | None
-    total_connected_count: int | None
-    active_connected_count: int | None
     endpoints: dict[str, RemoteEndpoint]
+
+    charm: str | None = None
+    total_connected_count: int | None = None
+    active_connected_count: int | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> OfferStatus:
@@ -530,11 +540,12 @@ class FormattedStatus:
     model: ModelStatus
     machines: dict[str, MachineStatus]
     apps: dict[str, AppStatus]
-    app_endpoints: dict[str, RemoteAppStatus] | None
-    offers: dict[str, OfferStatus] | None
-    storage: CombinedStorage | None
-    controller: ControllerStatus | None
-    branches: dict[str, BranchStatus] | None
+
+    app_endpoints: dict[str, RemoteAppStatus] | None = None
+    offers: dict[str, OfferStatus] | None = None
+    storage: CombinedStorage | None = None
+    controller: ControllerStatus | None = None
+    branches: dict[str, BranchStatus] | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> FormattedStatus:

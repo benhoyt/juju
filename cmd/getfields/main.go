@@ -28,6 +28,8 @@ func main() {
 		className = strings.ReplaceAll(className, "Application", "App")
 		fmt.Fprintf(&buf, "class %s:\n", className)
 		successors[className] = nil
+		var required []string
+		var optional []string
 		for _, field := range structs[name] {
 			pythonField := getPythonField(field.JSONField)
 			pythonType := ""
@@ -42,9 +44,23 @@ func main() {
 				}
 			}
 			if field.OmitEmpty {
-				pythonType += " | None"
+				pythonType += " | None = None"
 			}
-			fmt.Fprintf(&buf, "    %s: %s\n", pythonField, pythonType)
+			line := fmt.Sprintf("    %s: %s\n", pythonField, pythonType)
+			if field.OmitEmpty {
+				optional = append(optional, line)
+			} else {
+				required = append(required, line)
+			}
+		}
+		for _, line := range required {
+			fmt.Fprint(&buf, line)
+		}
+		if len(required) > 0 && len(optional) > 0 {
+			fmt.Fprintln(&buf)
+		}
+		for _, line := range optional {
+			fmt.Fprint(&buf, line)
 		}
 
 		fmt.Fprintf(&buf, "\n    @classmethod\n")
