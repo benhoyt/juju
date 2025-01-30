@@ -89,7 +89,7 @@ class UnitStatus:
             leader=d.get('leader'),
             upgrading_from=d.get('upgrading-from'),
             machine=d.get('machine'),
-            open_ports=[x for x in d['open-ports']] if 'open-ports' in d else None,
+            open_ports=d.get('open-ports'),
             public_address=d.get('public-address'),
             address=d.get('address'),
             provider_id=d.get('provider-id'),
@@ -140,10 +140,10 @@ class AppStatus:
             life=d.get('life'),
             app_status=StatusInfoContents.from_dict(d['application-status']) if 'application-status' in d else None,
             relations={k: [AppStatusRelation.from_dict(x) for x in v] for k, v in d['relations'].items()} if 'relations' in d else None,
-            subordinate_to=[x for x in d['subordinate-to']] if 'subordinate-to' in d else None,
+            subordinate_to=d.get('subordinate-to'),
             units={k: UnitStatus.from_dict(v) for k, v in d['units'].items()} if 'units' in d else None,
             version=d.get('version'),
-            endpoint_bindings={k: v for k, v in d['endpoint-bindings'].items()} if 'endpoint-bindings' in d else None,
+            endpoint_bindings=d.get('endpoint-bindings'),
         )
 
 
@@ -409,10 +409,10 @@ class NetworkInterface:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> NetworkInterface:
         return cls(
-            ip_addresses=[x for x in d['ip-addresses']],
+            ip_addresses=d['ip-addresses'],
             mac_address=d['mac-address'],
             gateway=d.get('gateway'),
-            dns_nameservers=[x for x in d['dns-nameservers']] if 'dns-nameservers' in d else None,
+            dns_nameservers=d.get('dns-nameservers'),
             space=d.get('space'),
             is_up=d['is-up'],
         )
@@ -427,9 +427,9 @@ class LxdProfileContents:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> LxdProfileContents:
         return cls(
-            config={k: v for k, v in d['config'].items()},
+            config=d['config'],
             description=d['description'],
-            devices={k: {k: v for k, v in v.items()} for k, v in d['devices'].items()},
+            devices=d['devices'],
         )
 
 
@@ -458,7 +458,7 @@ class MachineStatus:
             juju_status=StatusInfoContents.from_dict(d['juju-status']) if 'juju-status' in d else None,
             hostname=d.get('hostname'),
             dns_name=d.get('dns-name'),
-            ip_addresses=[x for x in d['ip-addresses']] if 'ip-addresses' in d else None,
+            ip_addresses=d.get('ip-addresses'),
             instance_id=d.get('instance-id'),
             display_name=d.get('display-name'),
             machine_status=StatusInfoContents.from_dict(d['machine-status']) if 'machine-status' in d else None,
@@ -502,7 +502,7 @@ class RemoteAppStatus:
             endpoints={k: RemoteEndpoint.from_dict(v) for k, v in d['endpoints'].items()} if 'endpoints' in d else None,
             life=d.get('life'),
             app_status=StatusInfoContents.from_dict(d['application-status']) if 'application-status' in d else None,
-            relations={k: [x for x in v] for k, v in d['relations'].items()} if 'relations' in d else None,
+            relations=d.get('relations'),
         )
 
 
