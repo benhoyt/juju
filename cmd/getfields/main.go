@@ -40,9 +40,9 @@ func main() {
 				if base != "" {
 					successors[className] = append(successors[className], base)
 				}
-				if field.OmitEmpty {
-					pythonType += " | None"
-				}
+			}
+			if field.OmitEmpty {
+				pythonType += " | None"
 			}
 			fmt.Fprintf(&buf, "    %s: %s\n", pythonField, pythonType)
 		}
