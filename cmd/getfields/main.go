@@ -142,10 +142,18 @@ func doType(pythonType string, value string) string {
 	switch {
 	case strings.HasPrefix(pythonType, "list["):
 		t := pythonType[5 : len(pythonType)-1]
-		return fmt.Sprintf("[%s for x in %s]", doType(t, "x"), value)
+		inner := doType(t, "x")
+		if inner == "x" {
+			return value
+		}
+		return fmt.Sprintf("[%s for x in %s]", inner, value)
 	case strings.HasPrefix(pythonType, "dict[str, "):
 		t := pythonType[10 : len(pythonType)-1]
-		return fmt.Sprintf("{k: %s for k, v in %s.items()}", doType(t, "v"), value)
+		inner := doType(t, "v")
+		if inner == "v" {
+			return value
+		}
+		return fmt.Sprintf("{k: %s for k, v in %s.items()}", inner, value)
 	case pythonType == "str" || pythonType == "int" || pythonType == "bool":
 		return value
 	default:
