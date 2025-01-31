@@ -27,6 +27,8 @@ class StatusInfoContents:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> StatusInfoContents:
+        if 'status-error' in d:
+            raise Exception(d['status-error'])
         return cls(
             current=d.get('current'),
             message=d.get('message'),
@@ -82,6 +84,8 @@ class UnitStatus:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> UnitStatus:
+        if 'status-error' in d:
+            raise Exception(d['status-error'])
         return cls(
             workload_status=StatusInfoContents.from_dict(d['workload-status']) if 'workload-status' in d else None,
             juju_status=StatusInfoContents.from_dict(d['juju-status']) if 'juju-status' in d else None,
@@ -124,6 +128,8 @@ class AppStatus:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> AppStatus:
+        if 'status-error' in d:
+            raise Exception(d['status-error'])
         return cls(
             charm=d['charm'],
             base=FormattedBase.from_dict(d['base']) if 'base' in d else None,
@@ -462,6 +468,8 @@ class MachineStatus:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> MachineStatus:
+        if 'status-error' in d:
+            raise Exception(d['status-error'])
         return cls(
             juju_status=StatusInfoContents.from_dict(d['juju-status']) if 'juju-status' in d else None,
             hostname=d.get('hostname'),
@@ -506,6 +514,8 @@ class RemoteAppStatus:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> RemoteAppStatus:
+        if 'status-error' in d:
+            raise Exception(d['status-error'])
         return cls(
             url=d['url'],
             endpoints={k: RemoteEndpoint.from_dict(v) for k, v in d['endpoints'].items()} if 'endpoints' in d else {},
@@ -526,6 +536,8 @@ class OfferStatus:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> OfferStatus:
+        if 'status-error' in d:
+            raise Exception(d['status-error'])
         return cls(
             app=d['application'],
             charm=d.get('charm'),

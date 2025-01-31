@@ -15,7 +15,8 @@ import (
 
 // TODO: consider making default for "str | None" just '' -- look over them first
 // TODO: ad-hoc for struct fields
-// TODO: handle Err field ("error-status") by raising
+// TODO: what exception to raise for status-error?
+//       see message in Matrix: juju-dev: https://matrix.to/#/!wJiiHsLipVywuWOyNi:ubuntu.com/$NMDdkF7koi7MrCQ6lLCKLduhk8IX3sNZlV2bGP6kuNc?via=ubuntu.com&via=matrix.org
 
 func main() {
 	structs := status.GetFields()
@@ -35,6 +36,9 @@ func main() {
 		var required []string
 		var optional []string
 		for _, field := range structs[name] {
+			if field.JSONField == "" {
+				continue
+			}
 			pythonField := getPythonField(field.JSONField)
 			pythonType := ""
 			if _, ok := structs[field.Type]; ok {
@@ -78,8 +82,28 @@ func main() {
 
 		fmt.Fprintf(&buf, "\n    @classmethod\n")
 		fmt.Fprintf(&buf, "    def from_dict(cls, d: dict[str, Any]) -> %s:\n", className)
+
+		hasErr := false
+		for _, field := range structs[name] {
+			if field.JSONField == "" && field.Name == "Err" && field.Type == "error" {
+				hasErr = true
+			}
+		}
+		// UnitStatus is a special case, has Err as .WorkloadStatusInfo.Err
+		if hasErr || className == "UnitStatus" {
+			fmt.Fprintln(&buf, "        if 'status-error' in d:")
+			fmt.Fprintln(&buf, "            raise Exception(d['status-error'])")
+		}
+
 		fmt.Fprintln(&buf, "        return cls(")
 		for _, field := range structs[name] {
+			if field.JSONField == "" {
+				if field.Name == "Err" && field.Type == "error" {
+					continue
+				}
+				fmt.Fprintf(os.Stderr, "skipped field: %s.%s %s\n", name, field.Name, field.Type)
+				continue
+			}
 			pythonField := getPythonField(field.JSONField)
 			pythonType, _ := getPythonType(structs, field.Type)
 			dictGetter := getDictGetter(pythonType, field.JSONField, field.OmitEmpty)
