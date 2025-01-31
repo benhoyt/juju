@@ -15,7 +15,6 @@ import (
 
 // TODO: consider making default for "str | None" just '' -- look over them first
 // TODO: ad-hoc for struct fields
-// TODO: make dataclasses frozen
 // TODO: handle Err field ("error-status") by raising
 
 func main() {
@@ -28,7 +27,7 @@ func main() {
 	for _, name := range structNames {
 		var buf bytes.Buffer
 
-		fmt.Fprintln(&buf, "\n\n@dataclasses.dataclass")
+		fmt.Fprintln(&buf, "\n\n@dataclasses.dataclass(frozen=True)")
 		className := strings.Title(name)
 		className = strings.ReplaceAll(className, "Application", "App")
 		fmt.Fprintf(&buf, "class %s:\n", className)
