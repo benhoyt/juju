@@ -18,52 +18,52 @@ class FormattedBase:
 
 @dataclasses.dataclass(frozen=True)
 class StatusInfoContents:
-    current: str | None = None
-    message: str | None = None
-    reason: str | None = None
-    since: str | None = None
-    version: str | None = None
-    life: str | None = None
+    current: str = ''
+    message: str = ''
+    reason: str = ''
+    since: str = ''
+    version: str = ''
+    life: str = ''
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> StatusInfoContents:
         if 'status-error' in d:
             raise Exception(d['status-error'])
         return cls(
-            current=d.get('current'),
-            message=d.get('message'),
-            reason=d.get('reason'),
-            since=d.get('since'),
-            version=d.get('version'),
-            life=d.get('life'),
+            current=d.get('current') or '',
+            message=d.get('message') or '',
+            reason=d.get('reason') or '',
+            since=d.get('since') or '',
+            version=d.get('version') or '',
+            life=d.get('life') or '',
         )
 
 
 @dataclasses.dataclass(frozen=True)
 class AppStatusRelation:
-    related_app: str | None = None
-    interface: str | None = None
-    scope: str | None = None
+    related_app: str = ''
+    interface: str = ''
+    scope: str = ''
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> AppStatusRelation:
         return cls(
-            related_app=d.get('related-application'),
-            interface=d.get('interface'),
-            scope=d.get('scope'),
+            related_app=d.get('related-application') or '',
+            interface=d.get('interface') or '',
+            scope=d.get('scope') or '',
         )
 
 
 @dataclasses.dataclass(frozen=True)
 class MeterStatus:
-    color: str | None = None
-    message: str | None = None
+    color: str = ''
+    message: str = ''
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> MeterStatus:
         return cls(
-            color=d.get('color'),
-            message=d.get('message'),
+            color=d.get('color') or '',
+            message=d.get('message') or '',
         )
 
 
@@ -73,14 +73,14 @@ class UnitStatus:
     juju_status: StatusInfoContents | None = None
     meter_status: MeterStatus | None = None
     leader: bool = False
-    upgrading_from: str | None = None
-    machine: str | None = None
+    upgrading_from: str = ''
+    machine: str = ''
     open_ports: list[str] = dataclasses.field(default_factory=list)
-    public_address: str | None = None
-    address: str | None = None
-    provider_id: str | None = None
+    public_address: str = ''
+    address: str = ''
+    provider_id: str = ''
     subordinates: dict[str, UnitStatus] = dataclasses.field(default_factory=dict)
-    branch: str | None = None
+    branch: str = ''
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> UnitStatus:
@@ -91,14 +91,14 @@ class UnitStatus:
             juju_status=StatusInfoContents.from_dict(d['juju-status']) if 'juju-status' in d else None,
             meter_status=MeterStatus.from_dict(d['meter-status']) if 'meter-status' in d else None,
             leader=d.get('leader') or False,
-            upgrading_from=d.get('upgrading-from'),
-            machine=d.get('machine'),
+            upgrading_from=d.get('upgrading-from') or '',
+            machine=d.get('machine') or '',
             open_ports=d.get('open-ports') or [],
-            public_address=d.get('public-address'),
-            address=d.get('address'),
-            provider_id=d.get('provider-id'),
+            public_address=d.get('public-address') or '',
+            address=d.get('address') or '',
+            provider_id=d.get('provider-id') or '',
             subordinates={k: UnitStatus.from_dict(v) for k, v in d['subordinates'].items()} if 'subordinates' in d else {},
-            branch=d.get('branch'),
+            branch=d.get('branch') or '',
         )
 
 
@@ -111,19 +111,19 @@ class AppStatus:
     exposed: bool
 
     base: FormattedBase | None = None
-    charm_channel: str | None = None
-    charm_version: str | None = None
-    charm_profile: str | None = None
-    can_upgrade_to: str | None = None
-    scale: int | None = None
-    provider_id: str | None = None
-    address: str | None = None
-    life: str | None = None
+    charm_channel: str = ''
+    charm_version: str = ''
+    charm_profile: str = ''
+    can_upgrade_to: str = ''
+    scale: int = 0
+    provider_id: str = ''
+    address: str = ''
+    life: str = ''
     app_status: StatusInfoContents | None = None
     relations: dict[str, list[AppStatusRelation]] = dataclasses.field(default_factory=dict)
     subordinate_to: list[str] = dataclasses.field(default_factory=list)
     units: dict[str, UnitStatus] = dataclasses.field(default_factory=dict)
-    version: str | None = None
+    version: str = ''
     endpoint_bindings: dict[str, str] = dataclasses.field(default_factory=dict)
 
     @classmethod
@@ -136,68 +136,68 @@ class AppStatus:
             charm_origin=d['charm-origin'],
             charm_name=d['charm-name'],
             charm_rev=d['charm-rev'],
-            charm_channel=d.get('charm-channel'),
-            charm_version=d.get('charm-version'),
-            charm_profile=d.get('charm-profile'),
-            can_upgrade_to=d.get('can-upgrade-to'),
-            scale=d.get('scale'),
-            provider_id=d.get('provider-id'),
-            address=d.get('address'),
+            charm_channel=d.get('charm-channel') or '',
+            charm_version=d.get('charm-version') or '',
+            charm_profile=d.get('charm-profile') or '',
+            can_upgrade_to=d.get('can-upgrade-to') or '',
+            scale=d.get('scale') or 0,
+            provider_id=d.get('provider-id') or '',
+            address=d.get('address') or '',
             exposed=d['exposed'],
-            life=d.get('life'),
+            life=d.get('life') or '',
             app_status=StatusInfoContents.from_dict(d['application-status']) if 'application-status' in d else None,
             relations={k: [AppStatusRelation.from_dict(x) for x in v] for k, v in d['relations'].items()} if 'relations' in d else {},
             subordinate_to=d.get('subordinate-to') or [],
             units={k: UnitStatus.from_dict(v) for k, v in d['units'].items()} if 'units' in d else {},
-            version=d.get('version'),
+            version=d.get('version') or '',
             endpoint_bindings=d.get('endpoint-bindings') or {},
         )
 
 
 @dataclasses.dataclass(frozen=True)
 class BranchStatus:
-    ref: str | None = None
-    created: str | None = None
-    created_by: str | None = None
+    ref: str = ''
+    created: str = ''
+    created_by: str = ''
     active: bool = False
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> BranchStatus:
         return cls(
-            ref=d.get('ref'),
-            created=d.get('created'),
-            created_by=d.get('created-by'),
+            ref=d.get('ref') or '',
+            created=d.get('created') or '',
+            created_by=d.get('created-by') or '',
             active=d.get('active') or False,
         )
 
 
 @dataclasses.dataclass(frozen=True)
 class EntityStatus:
-    current: str | None = None
-    message: str | None = None
-    since: str | None = None
+    current: str = ''
+    message: str = ''
+    since: str = ''
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EntityStatus:
         return cls(
-            current=d.get('current'),
-            message=d.get('message'),
-            since=d.get('since'),
+            current=d.get('current') or '',
+            message=d.get('message') or '',
+            since=d.get('since') or '',
         )
 
 
 @dataclasses.dataclass(frozen=True)
 class UnitStorageAttachment:
-    machine: str | None = None
-    location: str | None = None
-    life: str | None = None
+    machine: str = ''
+    location: str = ''
+    life: str = ''
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> UnitStorageAttachment:
         return cls(
-            machine=d.get('machine'),
-            location=d.get('location'),
-            life=d.get('life'),
+            machine=d.get('machine') or '',
+            location=d.get('location') or '',
+            life=d.get('life') or '',
         )
 
 
@@ -218,14 +218,14 @@ class StorageInfo:
     status: EntityStatus
     persistent: bool
 
-    life: str | None = None
+    life: str = ''
     attachments: StorageAttachments | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> StorageInfo:
         return cls(
             kind=d['kind'],
-            life=d.get('life'),
+            life=d.get('life') or '',
             status=EntityStatus.from_dict(d['status']),
             persistent=d['persistent'],
             attachments=StorageAttachments.from_dict(d['attachments']) if 'attachments' in d else None,
@@ -237,14 +237,14 @@ class FilesystemAttachment:
     mount_point: str
     read_only: bool
 
-    life: str | None = None
+    life: str = ''
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> FilesystemAttachment:
         return cls(
             mount_point=d['mount-point'],
             read_only=d['read-only'],
-            life=d.get('life'),
+            life=d.get('life') or '',
         )
 
 
@@ -268,23 +268,23 @@ class FilesystemInfo:
     Attachments: FilesystemAttachments
     size: int
 
-    provider_id: str | None = None
-    volume: str | None = None
-    storage: str | None = None
-    pool: str | None = None
-    life: str | None = None
+    provider_id: str = ''
+    volume: str = ''
+    storage: str = ''
+    pool: str = ''
+    life: str = ''
     status: EntityStatus | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> FilesystemInfo:
         return cls(
-            provider_id=d.get('provider-id'),
-            volume=d.get('volume'),
-            storage=d.get('storage'),
+            provider_id=d.get('provider-id') or '',
+            volume=d.get('volume') or '',
+            storage=d.get('storage') or '',
             Attachments=FilesystemAttachments.from_dict(d['Attachments']),
-            pool=d.get('pool'),
+            pool=d.get('pool') or '',
             size=d['size'],
-            life=d.get('life'),
+            life=d.get('life') or '',
             status=EntityStatus.from_dict(d['status']) if 'status' in d else None,
         )
 
@@ -293,19 +293,19 @@ class FilesystemInfo:
 class VolumeAttachment:
     read_only: bool
 
-    device: str | None = None
-    device_link: str | None = None
-    bus_address: str | None = None
-    life: str | None = None
+    device: str = ''
+    device_link: str = ''
+    bus_address: str = ''
+    life: str = ''
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> VolumeAttachment:
         return cls(
-            device=d.get('device'),
-            device_link=d.get('device-link'),
-            bus_address=d.get('bus-address'),
+            device=d.get('device') or '',
+            device_link=d.get('device-link') or '',
+            bus_address=d.get('bus-address') or '',
             read_only=d['read-only'],
-            life=d.get('life'),
+            life=d.get('life') or '',
         )
 
 
@@ -329,27 +329,27 @@ class VolumeInfo:
     size: int
     persistent: bool
 
-    provider_id: str | None = None
-    storage: str | None = None
+    provider_id: str = ''
+    storage: str = ''
     attachments: VolumeAttachments | None = None
-    pool: str | None = None
-    hardware_id: str | None = None
-    wwn: str | None = None
-    life: str | None = None
+    pool: str = ''
+    hardware_id: str = ''
+    wwn: str = ''
+    life: str = ''
     status: EntityStatus | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> VolumeInfo:
         return cls(
-            provider_id=d.get('provider-id'),
-            storage=d.get('storage'),
+            provider_id=d.get('provider-id') or '',
+            storage=d.get('storage') or '',
             attachments=VolumeAttachments.from_dict(d['attachments']) if 'attachments' in d else None,
-            pool=d.get('pool'),
-            hardware_id=d.get('hardware-id'),
-            wwn=d.get('wwn'),
+            pool=d.get('pool') or '',
+            hardware_id=d.get('hardware-id') or '',
+            wwn=d.get('wwn') or '',
             size=d['size'],
             persistent=d['persistent'],
-            life=d.get('life'),
+            life=d.get('life') or '',
             status=EntityStatus.from_dict(d['status']) if 'status' in d else None,
         )
 
@@ -371,12 +371,12 @@ class CombinedStorage:
 
 @dataclasses.dataclass(frozen=True)
 class ControllerStatus:
-    timestamp: str | None = None
+    timestamp: str = ''
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ControllerStatus:
         return cls(
-            timestamp=d.get('timestamp'),
+            timestamp=d.get('timestamp') or '',
         )
 
 
@@ -388,11 +388,11 @@ class ModelStatus:
     cloud: str
     version: str
 
-    region: str | None = None
-    upgrade_available: str | None = None
+    region: str = ''
+    upgrade_available: str = ''
     model_status: StatusInfoContents | None = None
     meter_status: MeterStatus | None = None
-    sla: str | None = None
+    sla: str = ''
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ModelStatus:
@@ -401,12 +401,12 @@ class ModelStatus:
             type=d['type'],
             controller=d['controller'],
             cloud=d['cloud'],
-            region=d.get('region'),
+            region=d.get('region') or '',
             version=d['version'],
-            upgrade_available=d.get('upgrade-available'),
+            upgrade_available=d.get('upgrade-available') or '',
             model_status=StatusInfoContents.from_dict(d['model-status']) if 'model-status' in d else None,
             meter_status=MeterStatus.from_dict(d['meter-status']) if 'meter-status' in d else None,
-            sla=d.get('sla'),
+            sla=d.get('sla') or '',
         )
 
 
@@ -416,18 +416,18 @@ class NetworkInterface:
     mac_address: str
     is_up: bool
 
-    gateway: str | None = None
+    gateway: str = ''
     dns_nameservers: list[str] = dataclasses.field(default_factory=list)
-    space: str | None = None
+    space: str = ''
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> NetworkInterface:
         return cls(
             ip_addresses=d['ip-addresses'],
             mac_address=d['mac-address'],
-            gateway=d.get('gateway'),
+            gateway=d.get('gateway') or '',
             dns_nameservers=d.get('dns-nameservers') or [],
-            space=d.get('space'),
+            space=d.get('space') or '',
             is_up=d['is-up'],
         )
 
@@ -450,19 +450,19 @@ class LxdProfileContents:
 @dataclasses.dataclass(frozen=True)
 class MachineStatus:
     juju_status: StatusInfoContents | None = None
-    hostname: str | None = None
-    dns_name: str | None = None
+    hostname: str = ''
+    dns_name: str = ''
     ip_addresses: list[str] = dataclasses.field(default_factory=list)
-    instance_id: str | None = None
-    display_name: str | None = None
+    instance_id: str = ''
+    display_name: str = ''
     machine_status: StatusInfoContents | None = None
     modification_status: StatusInfoContents | None = None
     base: FormattedBase | None = None
     network_interfaces: dict[str, NetworkInterface] = dataclasses.field(default_factory=dict)
     containers: dict[str, MachineStatus] = dataclasses.field(default_factory=dict)
-    constraints: str | None = None
-    hardware: str | None = None
-    controller_member_status: str | None = None
+    constraints: str = ''
+    hardware: str = ''
+    controller_member_status: str = ''
     ha_primary: bool = False
     lxd_profiles: dict[str, LxdProfileContents] = dataclasses.field(default_factory=dict)
 
@@ -472,19 +472,19 @@ class MachineStatus:
             raise Exception(d['status-error'])
         return cls(
             juju_status=StatusInfoContents.from_dict(d['juju-status']) if 'juju-status' in d else None,
-            hostname=d.get('hostname'),
-            dns_name=d.get('dns-name'),
+            hostname=d.get('hostname') or '',
+            dns_name=d.get('dns-name') or '',
             ip_addresses=d.get('ip-addresses') or [],
-            instance_id=d.get('instance-id'),
-            display_name=d.get('display-name'),
+            instance_id=d.get('instance-id') or '',
+            display_name=d.get('display-name') or '',
             machine_status=StatusInfoContents.from_dict(d['machine-status']) if 'machine-status' in d else None,
             modification_status=StatusInfoContents.from_dict(d['modification-status']) if 'modification-status' in d else None,
             base=FormattedBase.from_dict(d['base']) if 'base' in d else None,
             network_interfaces={k: NetworkInterface.from_dict(v) for k, v in d['network-interfaces'].items()} if 'network-interfaces' in d else {},
             containers={k: MachineStatus.from_dict(v) for k, v in d['containers'].items()} if 'containers' in d else {},
-            constraints=d.get('constraints'),
-            hardware=d.get('hardware'),
-            controller_member_status=d.get('controller-member-status'),
+            constraints=d.get('constraints') or '',
+            hardware=d.get('hardware') or '',
+            controller_member_status=d.get('controller-member-status') or '',
             ha_primary=d.get('ha-primary') or False,
             lxd_profiles={k: LxdProfileContents.from_dict(v) for k, v in d['lxd-profiles'].items()} if 'lxd-profiles' in d else {},
         )
@@ -508,7 +508,7 @@ class RemoteAppStatus:
     url: str
 
     endpoints: dict[str, RemoteEndpoint] = dataclasses.field(default_factory=dict)
-    life: str | None = None
+    life: str = ''
     app_status: StatusInfoContents | None = None
     relations: dict[str, list[str]] = dataclasses.field(default_factory=dict)
 
@@ -519,7 +519,7 @@ class RemoteAppStatus:
         return cls(
             url=d['url'],
             endpoints={k: RemoteEndpoint.from_dict(v) for k, v in d['endpoints'].items()} if 'endpoints' in d else {},
-            life=d.get('life'),
+            life=d.get('life') or '',
             app_status=StatusInfoContents.from_dict(d['application-status']) if 'application-status' in d else None,
             relations=d.get('relations') or {},
         )
@@ -530,9 +530,9 @@ class OfferStatus:
     app: str
     endpoints: dict[str, RemoteEndpoint]
 
-    charm: str | None = None
-    total_connected_count: int | None = None
-    active_connected_count: int | None = None
+    charm: str = ''
+    total_connected_count: int = 0
+    active_connected_count: int = 0
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> OfferStatus:
@@ -540,9 +540,9 @@ class OfferStatus:
             raise Exception(d['status-error'])
         return cls(
             app=d['application'],
-            charm=d.get('charm'),
-            total_connected_count=d.get('total-connected-count'),
-            active_connected_count=d.get('active-connected-count'),
+            charm=d.get('charm') or '',
+            total_connected_count=d.get('total-connected-count') or 0,
+            active_connected_count=d.get('active-connected-count') or 0,
             endpoints={k: RemoteEndpoint.from_dict(v) for k, v in d['endpoints'].items()},
         )
 
