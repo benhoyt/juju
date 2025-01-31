@@ -70,7 +70,7 @@ class UnitStatus:
     workload_status: StatusInfoContents | None = None
     juju_status: StatusInfoContents | None = None
     meter_status: MeterStatus | None = None
-    leader: bool | None = None
+    leader: bool = False
     upgrading_from: str | None = None
     machine: str | None = None
     open_ports: list[str] = dataclasses.field(default_factory=list)
@@ -86,7 +86,7 @@ class UnitStatus:
             workload_status=StatusInfoContents.from_dict(d['workload-status']) if 'workload-status' in d else None,
             juju_status=StatusInfoContents.from_dict(d['juju-status']) if 'juju-status' in d else None,
             meter_status=MeterStatus.from_dict(d['meter-status']) if 'meter-status' in d else None,
-            leader=d.get('leader'),
+            leader=d.get('leader') or False,
             upgrading_from=d.get('upgrading-from'),
             machine=d.get('machine'),
             open_ports=d.get('open-ports') or [],
@@ -153,7 +153,7 @@ class BranchStatus:
     ref: str | None = None
     created: str | None = None
     created_by: str | None = None
-    active: bool | None = None
+    active: bool = False
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> BranchStatus:
@@ -161,7 +161,7 @@ class BranchStatus:
             ref=d.get('ref'),
             created=d.get('created'),
             created_by=d.get('created-by'),
-            active=d.get('active'),
+            active=d.get('active') or False,
         )
 
 
@@ -457,7 +457,7 @@ class MachineStatus:
     constraints: str | None = None
     hardware: str | None = None
     controller_member_status: str | None = None
-    ha_primary: bool | None = None
+    ha_primary: bool = False
     lxd_profiles: dict[str, LxdProfileContents] = dataclasses.field(default_factory=dict)
 
     @classmethod
@@ -477,7 +477,7 @@ class MachineStatus:
             constraints=d.get('constraints'),
             hardware=d.get('hardware'),
             controller_member_status=d.get('controller-member-status'),
-            ha_primary=d.get('ha-primary'),
+            ha_primary=d.get('ha-primary') or False,
             lxd_profiles={k: LxdProfileContents.from_dict(v) for k, v in d['lxd-profiles'].items()} if 'lxd-profiles' in d else {},
         )
 

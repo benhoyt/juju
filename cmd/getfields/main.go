@@ -13,7 +13,6 @@ import (
 	"github.com/juju/juju/cmd/juju/status"
 )
 
-// TODO: get rid of "bool | None" types
 // TODO: consider making default for "str | None" just '' -- look over them first
 // TODO: ad-hoc for struct fields
 // TODO: make dataclasses frozen
@@ -55,6 +54,8 @@ func main() {
 					pythonType += " = dataclasses.field(default_factory=list)"
 				case strings.HasPrefix(pythonType, "dict[str, "):
 					pythonType += " = dataclasses.field(default_factory=dict)"
+				case pythonType == "bool":
+					pythonType += " = False"
 				default:
 					pythonType += " | None = None"
 				}
@@ -166,6 +167,8 @@ func getDictGetter(pythonType string, jsonField string, omitEmpty bool) string {
 				return fmt.Sprintf("d.get('%s') or []", jsonField)
 			case strings.HasPrefix(pythonType, "dict[str, "):
 				return fmt.Sprintf("d.get('%s') or {}", jsonField)
+			case pythonType == "bool":
+				return fmt.Sprintf("d.get('%s') or False", jsonField)
 			default:
 				return fmt.Sprintf("d.get('%s')", jsonField)
 			}
@@ -175,6 +178,8 @@ func getDictGetter(pythonType string, jsonField string, omitEmpty bool) string {
 			s += fmt.Sprintf(" if '%s' in d else []", jsonField)
 		case strings.HasPrefix(pythonType, "dict[str, "):
 			s += fmt.Sprintf(" if '%s' in d else {}", jsonField)
+		case pythonType == "bool":
+			s += fmt.Sprintf(" if '%s' in d else False", jsonField)
 		default:
 			s += fmt.Sprintf(" if '%s' in d else None", jsonField)
 		}
