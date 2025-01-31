@@ -13,6 +13,12 @@ import (
 	"github.com/juju/juju/cmd/juju/status"
 )
 
+// TODO: get rid of "bool | None" types
+// TODO: consider making default for "str | None" just '' -- look over them first
+// TODO: ad-hoc for struct fields
+// TODO: make dataclasses frozen
+// TODO: handle Err field ("error-status") by raising
+
 func main() {
 	structs := status.GetFields()
 
@@ -44,7 +50,14 @@ func main() {
 				}
 			}
 			if field.OmitEmpty {
-				pythonType += " | None = None"
+				switch {
+				case strings.HasPrefix(pythonType, "list["):
+					pythonType += " = dataclasses.field(default_factory=list)"
+				case strings.HasPrefix(pythonType, "dict[str, "):
+					pythonType += " = dataclasses.field(default_factory=dict)"
+				default:
+					pythonType += " | None = None"
+				}
 			}
 			line := fmt.Sprintf("    %s: %s\n", pythonField, pythonType)
 			if field.OmitEmpty {
@@ -145,11 +158,26 @@ func getDictGetter(pythonType string, jsonField string, omitEmpty bool) string {
 	orig := s
 	s = doType(pythonType, s)
 	if omitEmpty {
+		// TODO: [] and {} for list and dict
 		if s == orig {
 			// shortcut for simple value lookup
-			return fmt.Sprintf("d.get('%s')", jsonField)
+			switch {
+			case strings.HasPrefix(pythonType, "list["):
+				return fmt.Sprintf("d.get('%s') or []", jsonField)
+			case strings.HasPrefix(pythonType, "dict[str, "):
+				return fmt.Sprintf("d.get('%s') or {}", jsonField)
+			default:
+				return fmt.Sprintf("d.get('%s')", jsonField)
+			}
 		}
-		s += fmt.Sprintf(" if '%s' in d else None", jsonField)
+		switch {
+		case strings.HasPrefix(pythonType, "list["):
+			s += fmt.Sprintf(" if '%s' in d else []", jsonField)
+		case strings.HasPrefix(pythonType, "dict[str, "):
+			s += fmt.Sprintf(" if '%s' in d else {}", jsonField)
+		default:
+			s += fmt.Sprintf(" if '%s' in d else None", jsonField)
+		}
 	}
 	return s
 }

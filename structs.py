@@ -73,11 +73,11 @@ class UnitStatus:
     leader: bool | None = None
     upgrading_from: str | None = None
     machine: str | None = None
-    open_ports: list[str] | None = None
+    open_ports: list[str] = dataclasses.field(default_factory=list)
     public_address: str | None = None
     address: str | None = None
     provider_id: str | None = None
-    subordinates: dict[str, UnitStatus] | None = None
+    subordinates: dict[str, UnitStatus] = dataclasses.field(default_factory=dict)
     branch: str | None = None
 
     @classmethod
@@ -89,11 +89,11 @@ class UnitStatus:
             leader=d.get('leader'),
             upgrading_from=d.get('upgrading-from'),
             machine=d.get('machine'),
-            open_ports=d.get('open-ports'),
+            open_ports=d.get('open-ports') or [],
             public_address=d.get('public-address'),
             address=d.get('address'),
             provider_id=d.get('provider-id'),
-            subordinates={k: UnitStatus.from_dict(v) for k, v in d['subordinates'].items()} if 'subordinates' in d else None,
+            subordinates={k: UnitStatus.from_dict(v) for k, v in d['subordinates'].items()} if 'subordinates' in d else {},
             branch=d.get('branch'),
         )
 
@@ -116,11 +116,11 @@ class AppStatus:
     address: str | None = None
     life: str | None = None
     app_status: StatusInfoContents | None = None
-    relations: dict[str, list[AppStatusRelation]] | None = None
-    subordinate_to: list[str] | None = None
-    units: dict[str, UnitStatus] | None = None
+    relations: dict[str, list[AppStatusRelation]] = dataclasses.field(default_factory=dict)
+    subordinate_to: list[str] = dataclasses.field(default_factory=list)
+    units: dict[str, UnitStatus] = dataclasses.field(default_factory=dict)
     version: str | None = None
-    endpoint_bindings: dict[str, str] | None = None
+    endpoint_bindings: dict[str, str] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> AppStatus:
@@ -140,11 +140,11 @@ class AppStatus:
             exposed=d['exposed'],
             life=d.get('life'),
             app_status=StatusInfoContents.from_dict(d['application-status']) if 'application-status' in d else None,
-            relations={k: [AppStatusRelation.from_dict(x) for x in v] for k, v in d['relations'].items()} if 'relations' in d else None,
-            subordinate_to=d.get('subordinate-to'),
-            units={k: UnitStatus.from_dict(v) for k, v in d['units'].items()} if 'units' in d else None,
+            relations={k: [AppStatusRelation.from_dict(x) for x in v] for k, v in d['relations'].items()} if 'relations' in d else {},
+            subordinate_to=d.get('subordinate-to') or [],
+            units={k: UnitStatus.from_dict(v) for k, v in d['units'].items()} if 'units' in d else {},
             version=d.get('version'),
-            endpoint_bindings=d.get('endpoint-bindings'),
+            endpoint_bindings=d.get('endpoint-bindings') or {},
         )
 
 
@@ -244,16 +244,16 @@ class FilesystemAttachment:
 
 @dataclasses.dataclass
 class FilesystemAttachments:
-    machines: dict[str, FilesystemAttachment] | None = None
-    containers: dict[str, FilesystemAttachment] | None = None
-    units: dict[str, UnitStorageAttachment] | None = None
+    machines: dict[str, FilesystemAttachment] = dataclasses.field(default_factory=dict)
+    containers: dict[str, FilesystemAttachment] = dataclasses.field(default_factory=dict)
+    units: dict[str, UnitStorageAttachment] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> FilesystemAttachments:
         return cls(
-            machines={k: FilesystemAttachment.from_dict(v) for k, v in d['machines'].items()} if 'machines' in d else None,
-            containers={k: FilesystemAttachment.from_dict(v) for k, v in d['containers'].items()} if 'containers' in d else None,
-            units={k: UnitStorageAttachment.from_dict(v) for k, v in d['units'].items()} if 'units' in d else None,
+            machines={k: FilesystemAttachment.from_dict(v) for k, v in d['machines'].items()} if 'machines' in d else {},
+            containers={k: FilesystemAttachment.from_dict(v) for k, v in d['containers'].items()} if 'containers' in d else {},
+            units={k: UnitStorageAttachment.from_dict(v) for k, v in d['units'].items()} if 'units' in d else {},
         )
 
 
@@ -305,16 +305,16 @@ class VolumeAttachment:
 
 @dataclasses.dataclass
 class VolumeAttachments:
-    machines: dict[str, VolumeAttachment] | None = None
-    containers: dict[str, VolumeAttachment] | None = None
-    units: dict[str, UnitStorageAttachment] | None = None
+    machines: dict[str, VolumeAttachment] = dataclasses.field(default_factory=dict)
+    containers: dict[str, VolumeAttachment] = dataclasses.field(default_factory=dict)
+    units: dict[str, UnitStorageAttachment] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> VolumeAttachments:
         return cls(
-            machines={k: VolumeAttachment.from_dict(v) for k, v in d['machines'].items()} if 'machines' in d else None,
-            containers={k: VolumeAttachment.from_dict(v) for k, v in d['containers'].items()} if 'containers' in d else None,
-            units={k: UnitStorageAttachment.from_dict(v) for k, v in d['units'].items()} if 'units' in d else None,
+            machines={k: VolumeAttachment.from_dict(v) for k, v in d['machines'].items()} if 'machines' in d else {},
+            containers={k: VolumeAttachment.from_dict(v) for k, v in d['containers'].items()} if 'containers' in d else {},
+            units={k: UnitStorageAttachment.from_dict(v) for k, v in d['units'].items()} if 'units' in d else {},
         )
 
 
@@ -350,16 +350,16 @@ class VolumeInfo:
 
 @dataclasses.dataclass
 class CombinedStorage:
-    storage: dict[str, StorageInfo] | None = None
-    filesystems: dict[str, FilesystemInfo] | None = None
-    volumes: dict[str, VolumeInfo] | None = None
+    storage: dict[str, StorageInfo] = dataclasses.field(default_factory=dict)
+    filesystems: dict[str, FilesystemInfo] = dataclasses.field(default_factory=dict)
+    volumes: dict[str, VolumeInfo] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> CombinedStorage:
         return cls(
-            storage={k: StorageInfo.from_dict(v) for k, v in d['storage'].items()} if 'storage' in d else None,
-            filesystems={k: FilesystemInfo.from_dict(v) for k, v in d['filesystems'].items()} if 'filesystems' in d else None,
-            volumes={k: VolumeInfo.from_dict(v) for k, v in d['volumes'].items()} if 'volumes' in d else None,
+            storage={k: StorageInfo.from_dict(v) for k, v in d['storage'].items()} if 'storage' in d else {},
+            filesystems={k: FilesystemInfo.from_dict(v) for k, v in d['filesystems'].items()} if 'filesystems' in d else {},
+            volumes={k: VolumeInfo.from_dict(v) for k, v in d['volumes'].items()} if 'volumes' in d else {},
         )
 
 
@@ -411,7 +411,7 @@ class NetworkInterface:
     is_up: bool
 
     gateway: str | None = None
-    dns_nameservers: list[str] | None = None
+    dns_nameservers: list[str] = dataclasses.field(default_factory=list)
     space: str | None = None
 
     @classmethod
@@ -420,7 +420,7 @@ class NetworkInterface:
             ip_addresses=d['ip-addresses'],
             mac_address=d['mac-address'],
             gateway=d.get('gateway'),
-            dns_nameservers=d.get('dns-nameservers'),
+            dns_nameservers=d.get('dns-nameservers') or [],
             space=d.get('space'),
             is_up=d['is-up'],
         )
@@ -446,19 +446,19 @@ class MachineStatus:
     juju_status: StatusInfoContents | None = None
     hostname: str | None = None
     dns_name: str | None = None
-    ip_addresses: list[str] | None = None
+    ip_addresses: list[str] = dataclasses.field(default_factory=list)
     instance_id: str | None = None
     display_name: str | None = None
     machine_status: StatusInfoContents | None = None
     modification_status: StatusInfoContents | None = None
     base: FormattedBase | None = None
-    network_interfaces: dict[str, NetworkInterface] | None = None
-    containers: dict[str, MachineStatus] | None = None
+    network_interfaces: dict[str, NetworkInterface] = dataclasses.field(default_factory=dict)
+    containers: dict[str, MachineStatus] = dataclasses.field(default_factory=dict)
     constraints: str | None = None
     hardware: str | None = None
     controller_member_status: str | None = None
     ha_primary: bool | None = None
-    lxd_profiles: dict[str, LxdProfileContents] | None = None
+    lxd_profiles: dict[str, LxdProfileContents] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> MachineStatus:
@@ -466,19 +466,19 @@ class MachineStatus:
             juju_status=StatusInfoContents.from_dict(d['juju-status']) if 'juju-status' in d else None,
             hostname=d.get('hostname'),
             dns_name=d.get('dns-name'),
-            ip_addresses=d.get('ip-addresses'),
+            ip_addresses=d.get('ip-addresses') or [],
             instance_id=d.get('instance-id'),
             display_name=d.get('display-name'),
             machine_status=StatusInfoContents.from_dict(d['machine-status']) if 'machine-status' in d else None,
             modification_status=StatusInfoContents.from_dict(d['modification-status']) if 'modification-status' in d else None,
             base=FormattedBase.from_dict(d['base']) if 'base' in d else None,
-            network_interfaces={k: NetworkInterface.from_dict(v) for k, v in d['network-interfaces'].items()} if 'network-interfaces' in d else None,
-            containers={k: MachineStatus.from_dict(v) for k, v in d['containers'].items()} if 'containers' in d else None,
+            network_interfaces={k: NetworkInterface.from_dict(v) for k, v in d['network-interfaces'].items()} if 'network-interfaces' in d else {},
+            containers={k: MachineStatus.from_dict(v) for k, v in d['containers'].items()} if 'containers' in d else {},
             constraints=d.get('constraints'),
             hardware=d.get('hardware'),
             controller_member_status=d.get('controller-member-status'),
             ha_primary=d.get('ha-primary'),
-            lxd_profiles={k: LxdProfileContents.from_dict(v) for k, v in d['lxd-profiles'].items()} if 'lxd-profiles' in d else None,
+            lxd_profiles={k: LxdProfileContents.from_dict(v) for k, v in d['lxd-profiles'].items()} if 'lxd-profiles' in d else {},
         )
 
 
@@ -499,19 +499,19 @@ class RemoteEndpoint:
 class RemoteAppStatus:
     url: str
 
-    endpoints: dict[str, RemoteEndpoint] | None = None
+    endpoints: dict[str, RemoteEndpoint] = dataclasses.field(default_factory=dict)
     life: str | None = None
     app_status: StatusInfoContents | None = None
-    relations: dict[str, list[str]] | None = None
+    relations: dict[str, list[str]] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> RemoteAppStatus:
         return cls(
             url=d['url'],
-            endpoints={k: RemoteEndpoint.from_dict(v) for k, v in d['endpoints'].items()} if 'endpoints' in d else None,
+            endpoints={k: RemoteEndpoint.from_dict(v) for k, v in d['endpoints'].items()} if 'endpoints' in d else {},
             life=d.get('life'),
             app_status=StatusInfoContents.from_dict(d['application-status']) if 'application-status' in d else None,
-            relations=d.get('relations'),
+            relations=d.get('relations') or {},
         )
 
 
@@ -541,11 +541,11 @@ class FormattedStatus:
     machines: dict[str, MachineStatus]
     apps: dict[str, AppStatus]
 
-    app_endpoints: dict[str, RemoteAppStatus] | None = None
-    offers: dict[str, OfferStatus] | None = None
+    app_endpoints: dict[str, RemoteAppStatus] = dataclasses.field(default_factory=dict)
+    offers: dict[str, OfferStatus] = dataclasses.field(default_factory=dict)
     storage: CombinedStorage | None = None
     controller: ControllerStatus | None = None
-    branches: dict[str, BranchStatus] | None = None
+    branches: dict[str, BranchStatus] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> FormattedStatus:
@@ -553,9 +553,9 @@ class FormattedStatus:
             model=ModelStatus.from_dict(d['model']),
             machines={k: MachineStatus.from_dict(v) for k, v in d['machines'].items()},
             apps={k: AppStatus.from_dict(v) for k, v in d['applications'].items()},
-            app_endpoints={k: RemoteAppStatus.from_dict(v) for k, v in d['application-endpoints'].items()} if 'application-endpoints' in d else None,
-            offers={k: OfferStatus.from_dict(v) for k, v in d['offers'].items()} if 'offers' in d else None,
+            app_endpoints={k: RemoteAppStatus.from_dict(v) for k, v in d['application-endpoints'].items()} if 'application-endpoints' in d else {},
+            offers={k: OfferStatus.from_dict(v) for k, v in d['offers'].items()} if 'offers' in d else {},
             storage=CombinedStorage.from_dict(d['storage']) if 'storage' in d else None,
             controller=ControllerStatus.from_dict(d['controller']) if 'controller' in d else None,
-            branches={k: BranchStatus.from_dict(v) for k, v in d['branches'].items()} if 'branches' in d else None,
+            branches={k: BranchStatus.from_dict(v) for k, v in d['branches'].items()} if 'branches' in d else {},
         )
