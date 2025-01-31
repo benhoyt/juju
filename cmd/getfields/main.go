@@ -13,7 +13,9 @@ import (
 	"github.com/juju/juju/cmd/juju/status"
 )
 
-// TODO: ad-hoc for struct fields
+// TODO: look closely at remaining "| None = None" fields
+// TODO: class StorageAttachments:
+//    units: dict[str, UnitStorageAttachment] # <-- should this and non-omitempty lists have defaults?
 // TODO: what exception to raise for status-error?
 //       see message in Matrix: juju-dev: https://matrix.to/#/!wJiiHsLipVywuWOyNi:ubuntu.com/$NMDdkF7koi7MrCQ6lLCKLduhk8IX3sNZlV2bGP6kuNc?via=ubuntu.com&via=matrix.org
 
@@ -24,6 +26,25 @@ func main() {
 	successors := make(map[string][]string)
 
 	structNames := slices.Sorted(maps.Keys(structs))
+
+	requireArgsStructs := make(map[string]bool)
+	for _, name := range structNames {
+		requireArgs := false
+		for _, field := range structs[name] {
+			if field.JSONField == "" {
+				continue
+			}
+			if !field.OmitEmpty {
+				requireArgs = true
+			}
+		}
+		className := strings.Title(name)
+		className = strings.ReplaceAll(className, "Application", "App")
+		if requireArgs {
+			requireArgsStructs[className] = requireArgs
+		}
+	}
+
 	for _, name := range structNames {
 		var buf bytes.Buffer
 
@@ -63,7 +84,11 @@ func main() {
 				case pythonType == "int":
 					pythonType += " = 0"
 				default:
-					pythonType += " | None = None"
+					if requireArgsStructs[pythonType] {
+						pythonType += " | None = None"
+					} else {
+						pythonType += fmt.Sprintf(" = dataclasses.field(default_factory=%s)", pythonType)
+					}
 				}
 			}
 			line := fmt.Sprintf("    %s: %s\n", pythonField, pythonType)
@@ -109,7 +134,7 @@ func main() {
 			}
 			pythonField := getPythonField(field.JSONField)
 			pythonType, _ := getPythonType(structs, field.Type)
-			dictGetter := getDictGetter(pythonType, field.JSONField, field.OmitEmpty)
+			dictGetter := getDictGetter(pythonType, field.JSONField, field.OmitEmpty, requireArgsStructs[pythonType])
 			fmt.Fprintf(&buf, "            %s=%s,\n", pythonField, dictGetter)
 		}
 		fmt.Fprintln(&buf, "        )")
@@ -180,7 +205,7 @@ func getPythonType(structs map[string][]status.FieldInfo, goType string) (string
 	}
 }
 
-func getDictGetter(pythonType string, jsonField string, omitEmpty bool) string {
+func getDictGetter(pythonType string, jsonField string, omitEmpty bool, requireArgs bool) string {
 	s := fmt.Sprintf("d['%s']", jsonField)
 	orig := s
 	s = doType(pythonType, s)
@@ -199,6 +224,9 @@ func getDictGetter(pythonType string, jsonField string, omitEmpty bool) string {
 			case pythonType == "int":
 				return fmt.Sprintf("d.get('%s') or 0", jsonField)
 			default:
+				if !requireArgs {
+					return fmt.Sprintf("d.get('%s') or %s()", jsonField, pythonType)
+				}
 				return fmt.Sprintf("d.get('%s')", jsonField)
 			}
 		}
@@ -214,7 +242,11 @@ func getDictGetter(pythonType string, jsonField string, omitEmpty bool) string {
 		case pythonType == "int":
 			s += fmt.Sprintf(" if '%s' in d else 0", jsonField)
 		default:
-			s += fmt.Sprintf(" if '%s' in d else None", jsonField)
+			if !requireArgs {
+				s += fmt.Sprintf(" if '%s' in d else %s()", jsonField, pythonType)
+			} else {
+				s += fmt.Sprintf(" if '%s' in d else None", jsonField)
+			}
 		}
 	}
 	return s
