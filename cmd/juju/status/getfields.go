@@ -42,18 +42,22 @@ func getFields(t reflect.Type, m map[string][]FieldInfo, typeName string, level 
 			jsonTag = field.Name
 		}
 		tagFields := strings.Split(jsonTag, ",")
-		if tagFields[0] == "-" {
-			continue
+		jsonField := tagFields[0]
+		if jsonField == "-" {
+			jsonField = ""
 		}
 		fieldType := field.Type.String()
 		niceName := getNiceName(fieldType)
 		result = append(result, FieldInfo{
 			Name:      field.Name,
 			Type:      niceName,
-			JSONField: tagFields[0],
+			JSONField: jsonField,
 			Pointer:   fieldType[0] == '*',
 			OmitEmpty: slices.Contains(tagFields[1:], "omitempty"),
 		})
+		if jsonField == "" {
+			continue
+		}
 		switch field.Type.Kind() {
 		case reflect.Struct:
 			getFields(field.Type, m, niceName, level+1)
