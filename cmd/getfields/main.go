@@ -13,7 +13,6 @@ import (
 	"github.com/juju/juju/cmd/juju/status"
 )
 
-// TODO: consider making default for "str | None" just '' -- look over them first
 // TODO: ad-hoc for struct fields
 // TODO: what exception to raise for status-error?
 //       see message in Matrix: juju-dev: https://matrix.to/#/!wJiiHsLipVywuWOyNi:ubuntu.com/$NMDdkF7koi7MrCQ6lLCKLduhk8IX3sNZlV2bGP6kuNc?via=ubuntu.com&via=matrix.org
@@ -59,6 +58,10 @@ func main() {
 					pythonType += " = dataclasses.field(default_factory=dict)"
 				case pythonType == "bool":
 					pythonType += " = False"
+				case pythonType == "str":
+					pythonType += " = ''"
+				case pythonType == "int":
+					pythonType += " = 0"
 				default:
 					pythonType += " | None = None"
 				}
@@ -182,7 +185,6 @@ func getDictGetter(pythonType string, jsonField string, omitEmpty bool) string {
 	orig := s
 	s = doType(pythonType, s)
 	if omitEmpty {
-		// TODO: [] and {} for list and dict
 		if s == orig {
 			// shortcut for simple value lookup
 			switch {
@@ -192,6 +194,10 @@ func getDictGetter(pythonType string, jsonField string, omitEmpty bool) string {
 				return fmt.Sprintf("d.get('%s') or {}", jsonField)
 			case pythonType == "bool":
 				return fmt.Sprintf("d.get('%s') or False", jsonField)
+			case pythonType == "str":
+				return fmt.Sprintf("d.get('%s') or ''", jsonField)
+			case pythonType == "int":
+				return fmt.Sprintf("d.get('%s') or 0", jsonField)
 			default:
 				return fmt.Sprintf("d.get('%s')", jsonField)
 			}
@@ -203,6 +209,10 @@ func getDictGetter(pythonType string, jsonField string, omitEmpty bool) string {
 			s += fmt.Sprintf(" if '%s' in d else {}", jsonField)
 		case pythonType == "bool":
 			s += fmt.Sprintf(" if '%s' in d else False", jsonField)
+		case pythonType == "str":
+			s += fmt.Sprintf(" if '%s' in d else ''", jsonField)
+		case pythonType == "int":
+			s += fmt.Sprintf(" if '%s' in d else 0", jsonField)
 		default:
 			s += fmt.Sprintf(" if '%s' in d else None", jsonField)
 		}
