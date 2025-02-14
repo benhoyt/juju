@@ -13,7 +13,7 @@ import (
 	"github.com/juju/juju/cmd/juju/status"
 )
 
-// TODO: what exception to raise for status-error?
+// TODO: improve ruff formatting with line-length=99
 
 func main() {
 	structs := status.GetFields()
@@ -116,7 +116,7 @@ func main() {
 		// UnitStatus is a special case, has Err as .WorkloadStatusInfo.Err
 		if hasErr || className == "UnitStatus" {
 			fmt.Fprintln(&buf, "        if 'status-error' in d:")
-			fmt.Fprintln(&buf, "            raise Exception(d['status-error'])")
+			fmt.Fprintln(&buf, "            raise StatusError(d['status-error'])")
 		}
 
 		fmt.Fprintln(&buf, "        return cls(")
@@ -146,9 +146,16 @@ func main() {
 		}
 		order = append(order, names[0])
 	}
-	fmt.Println("from __future__ import annotations")
-	fmt.Println("import dataclasses")
-	fmt.Println("from typing import Any")
+	fmt.Print(`"""Dataclasses used to hold parsed output from "juju status --format=json"."""
+
+from __future__ import annotations
+import dataclasses
+from typing import Any
+
+
+class StatusError(Exception):
+    """Raised when "juju status" returns a status-error for certain types."""
+`)
 	for _, name := range order {
 		fmt.Print(classes[name])
 	}
