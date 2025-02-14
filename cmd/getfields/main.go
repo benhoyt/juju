@@ -13,6 +13,7 @@ import (
 	"github.com/juju/juju/cmd/juju/status"
 )
 
+// TODO: compare with Juju 4.x/main branch
 // TODO: look closely at remaining "| None = None" fields
 // TODO: class StorageAttachments:
 //    units: dict[str, UnitStorageAttachment] # <-- should this and non-omitempty lists have defaults?
