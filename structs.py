@@ -3,7 +3,7 @@ import dataclasses
 from typing import Any
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class FormattedBase:
     name: str
     channel: str
@@ -16,7 +16,7 @@ class FormattedBase:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class StatusInfoContents:
     current: str = ''
     message: str = ''
@@ -39,7 +39,7 @@ class StatusInfoContents:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class AppStatusRelation:
     related_app: str = ''
     interface: str = ''
@@ -54,7 +54,7 @@ class AppStatusRelation:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class UnitStatus:
     workload_status: StatusInfoContents = dataclasses.field(default_factory=StatusInfoContents)
     juju_status: StatusInfoContents = dataclasses.field(default_factory=StatusInfoContents)
@@ -85,7 +85,7 @@ class UnitStatus:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class AppStatus:
     charm: str
     charm_origin: str
@@ -137,7 +137,7 @@ class AppStatus:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class EntityStatus:
     current: str = ''
     message: str = ''
@@ -152,7 +152,7 @@ class EntityStatus:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class UnitStorageAttachment:
     machine: str = ''
     location: str = ''
@@ -167,7 +167,7 @@ class UnitStorageAttachment:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class StorageAttachments:
     units: dict[str, UnitStorageAttachment]
 
@@ -178,7 +178,7 @@ class StorageAttachments:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class StorageInfo:
     kind: str
     status: EntityStatus
@@ -198,7 +198,7 @@ class StorageInfo:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class FilesystemAttachment:
     mount_point: str
     read_only: bool
@@ -214,7 +214,7 @@ class FilesystemAttachment:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class FilesystemAttachments:
     machines: dict[str, FilesystemAttachment] = dataclasses.field(default_factory=dict)
     containers: dict[str, FilesystemAttachment] = dataclasses.field(default_factory=dict)
@@ -229,7 +229,7 @@ class FilesystemAttachments:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class FilesystemInfo:
     Attachments: FilesystemAttachments
     size: int
@@ -255,7 +255,7 @@ class FilesystemInfo:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class VolumeAttachment:
     read_only: bool
 
@@ -275,7 +275,7 @@ class VolumeAttachment:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class VolumeAttachments:
     machines: dict[str, VolumeAttachment] = dataclasses.field(default_factory=dict)
     containers: dict[str, VolumeAttachment] = dataclasses.field(default_factory=dict)
@@ -290,7 +290,7 @@ class VolumeAttachments:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class VolumeInfo:
     size: int
     persistent: bool
@@ -320,7 +320,7 @@ class VolumeInfo:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class CombinedStorage:
     storage: dict[str, StorageInfo] = dataclasses.field(default_factory=dict)
     filesystems: dict[str, FilesystemInfo] = dataclasses.field(default_factory=dict)
@@ -335,7 +335,7 @@ class CombinedStorage:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class ControllerStatus:
     timestamp: str = ''
 
@@ -346,7 +346,7 @@ class ControllerStatus:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class ModelStatus:
     name: str
     type: str
@@ -372,7 +372,7 @@ class ModelStatus:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class NetworkInterface:
     ip_addresses: list[str]
     mac_address: str
@@ -394,7 +394,7 @@ class NetworkInterface:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class LxdProfileContents:
     config: dict[str, str]
     description: str
@@ -409,7 +409,7 @@ class LxdProfileContents:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class MachineStatus:
     juju_status: StatusInfoContents = dataclasses.field(default_factory=StatusInfoContents)
     hostname: str = ''
@@ -452,7 +452,7 @@ class MachineStatus:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class RemoteEndpoint:
     interface: str
     role: str
@@ -465,7 +465,7 @@ class RemoteEndpoint:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class RemoteAppStatus:
     url: str
 
@@ -487,7 +487,7 @@ class RemoteAppStatus:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class OfferStatus:
     app: str
     endpoints: dict[str, RemoteEndpoint]
@@ -509,7 +509,7 @@ class OfferStatus:
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class FormattedStatus:
     model: ModelStatus
     machines: dict[str, MachineStatus]

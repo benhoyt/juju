@@ -13,12 +13,8 @@ import (
 	"github.com/juju/juju/cmd/juju/status"
 )
 
-// TODO: compare with Juju 4.x/main branch
 // TODO: look closely at remaining "| None = None" fields
-// TODO: class StorageAttachments:
-//    units: dict[str, UnitStorageAttachment] # <-- should this and non-omitempty lists have defaults?
 // TODO: what exception to raise for status-error?
-//       see message in Matrix: juju-dev: https://matrix.to/#/!wJiiHsLipVywuWOyNi:ubuntu.com/$NMDdkF7koi7MrCQ6lLCKLduhk8IX3sNZlV2bGP6kuNc?via=ubuntu.com&via=matrix.org
 
 func main() {
 	structs := status.GetFields()
@@ -49,7 +45,7 @@ func main() {
 	for _, name := range structNames {
 		var buf bytes.Buffer
 
-		fmt.Fprintln(&buf, "\n\n@dataclasses.dataclass(frozen=True)")
+		fmt.Fprintln(&buf, "\n\n@dataclasses.dataclass(frozen=True, kw_only=True)")
 		className := strings.Title(name)
 		className = strings.ReplaceAll(className, "Application", "App")
 		fmt.Fprintf(&buf, "class %s:\n", className)
