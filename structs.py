@@ -55,23 +55,9 @@ class AppStatusRelation:
 
 
 @dataclasses.dataclass(frozen=True)
-class MeterStatus:
-    color: str = ''
-    message: str = ''
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> MeterStatus:
-        return cls(
-            color=d.get('color') or '',
-            message=d.get('message') or '',
-        )
-
-
-@dataclasses.dataclass(frozen=True)
 class UnitStatus:
     workload_status: StatusInfoContents = dataclasses.field(default_factory=StatusInfoContents)
     juju_status: StatusInfoContents = dataclasses.field(default_factory=StatusInfoContents)
-    meter_status: MeterStatus = dataclasses.field(default_factory=MeterStatus)
     leader: bool = False
     upgrading_from: str = ''
     machine: str = ''
@@ -80,7 +66,6 @@ class UnitStatus:
     address: str = ''
     provider_id: str = ''
     subordinates: dict[str, UnitStatus] = dataclasses.field(default_factory=dict)
-    branch: str = ''
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> UnitStatus:
@@ -89,7 +74,6 @@ class UnitStatus:
         return cls(
             workload_status=StatusInfoContents.from_dict(d['workload-status']) if 'workload-status' in d else StatusInfoContents(),
             juju_status=StatusInfoContents.from_dict(d['juju-status']) if 'juju-status' in d else StatusInfoContents(),
-            meter_status=MeterStatus.from_dict(d['meter-status']) if 'meter-status' in d else MeterStatus(),
             leader=d.get('leader') or False,
             upgrading_from=d.get('upgrading-from') or '',
             machine=d.get('machine') or '',
@@ -98,7 +82,6 @@ class UnitStatus:
             address=d.get('address') or '',
             provider_id=d.get('provider-id') or '',
             subordinates={k: UnitStatus.from_dict(v) for k, v in d['subordinates'].items()} if 'subordinates' in d else {},
-            branch=d.get('branch') or '',
         )
 
 
@@ -151,23 +134,6 @@ class AppStatus:
             units={k: UnitStatus.from_dict(v) for k, v in d['units'].items()} if 'units' in d else {},
             version=d.get('version') or '',
             endpoint_bindings=d.get('endpoint-bindings') or {},
-        )
-
-
-@dataclasses.dataclass(frozen=True)
-class BranchStatus:
-    ref: str = ''
-    created: str = ''
-    created_by: str = ''
-    active: bool = False
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> BranchStatus:
-        return cls(
-            ref=d.get('ref') or '',
-            created=d.get('created') or '',
-            created_by=d.get('created-by') or '',
-            active=d.get('active') or False,
         )
 
 
@@ -391,8 +357,6 @@ class ModelStatus:
     region: str = ''
     upgrade_available: str = ''
     model_status: StatusInfoContents = dataclasses.field(default_factory=StatusInfoContents)
-    meter_status: MeterStatus = dataclasses.field(default_factory=MeterStatus)
-    sla: str = ''
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ModelStatus:
@@ -405,8 +369,6 @@ class ModelStatus:
             version=d['version'],
             upgrade_available=d.get('upgrade-available') or '',
             model_status=StatusInfoContents.from_dict(d['model-status']) if 'model-status' in d else StatusInfoContents(),
-            meter_status=MeterStatus.from_dict(d['meter-status']) if 'meter-status' in d else MeterStatus(),
-            sla=d.get('sla') or '',
         )
 
 
@@ -557,7 +519,6 @@ class FormattedStatus:
     offers: dict[str, OfferStatus] = dataclasses.field(default_factory=dict)
     storage: CombinedStorage = dataclasses.field(default_factory=CombinedStorage)
     controller: ControllerStatus = dataclasses.field(default_factory=ControllerStatus)
-    branches: dict[str, BranchStatus] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> FormattedStatus:
@@ -569,5 +530,4 @@ class FormattedStatus:
             offers={k: OfferStatus.from_dict(v) for k, v in d['offers'].items()} if 'offers' in d else {},
             storage=CombinedStorage.from_dict(d['storage']) if 'storage' in d else CombinedStorage(),
             controller=ControllerStatus.from_dict(d['controller']) if 'controller' in d else ControllerStatus(),
-            branches={k: BranchStatus.from_dict(v) for k, v in d['branches'].items()} if 'branches' in d else {},
         )
