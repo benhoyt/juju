@@ -13,7 +13,6 @@ import (
 	"github.com/juju/juju/cmd/juju/status"
 )
 
-// TODO: look closely at remaining "| None = None" fields
 // TODO: what exception to raise for status-error?
 
 func main() {
