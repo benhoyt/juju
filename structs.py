@@ -417,32 +417,17 @@ class ControllerStatus:
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class ModelStatus:
-    name: str
-    type: str
-    controller: str
-    cloud: str
-    version: str
-
-    region: str = ''
-    upgrade_available: str = ''
-    model_status: StatusInfoContents = dataclasses.field(default_factory=StatusInfoContents)
+class LxdProfileContents:
+    config: dict[str, str]
+    description: str
+    devices: dict[str, dict[str, str]]
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> ModelStatus:
+    def from_dict(cls, d: dict[str, Any]) -> LxdProfileContents:
         return cls(
-            name=d['name'],
-            type=d['type'],
-            controller=d['controller'],
-            cloud=d['cloud'],
-            region=d.get('region') or '',
-            version=d['version'],
-            upgrade_available=d.get('upgrade-available') or '',
-            model_status=(
-                StatusInfoContents.from_dict(d['model-status'])
-                if 'model-status' in d
-                else StatusInfoContents()
-            ),
+            config=d['config'],
+            description=d['description'],
+            devices=d['devices'],
         )
 
 
@@ -465,21 +450,6 @@ class NetworkInterface:
             dns_nameservers=d.get('dns-nameservers') or [],
             space=d.get('space') or '',
             is_up=d['is-up'],
-        )
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class LxdProfileContents:
-    config: dict[str, str]
-    description: str
-    devices: dict[str, dict[str, str]]
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> LxdProfileContents:
-        return cls(
-            config=d['config'],
-            description=d['description'],
-            devices=d['devices'],
         )
 
 
@@ -551,6 +521,36 @@ class MachineStatus:
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
+class ModelStatus:
+    name: str
+    type: str
+    controller: str
+    cloud: str
+    version: str
+
+    region: str = ''
+    upgrade_available: str = ''
+    model_status: StatusInfoContents = dataclasses.field(default_factory=StatusInfoContents)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ModelStatus:
+        return cls(
+            name=d['name'],
+            type=d['type'],
+            controller=d['controller'],
+            cloud=d['cloud'],
+            region=d.get('region') or '',
+            version=d['version'],
+            upgrade_available=d.get('upgrade-available') or '',
+            model_status=(
+                StatusInfoContents.from_dict(d['model-status'])
+                if 'model-status' in d
+                else StatusInfoContents()
+            ),
+        )
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class RemoteEndpoint:
     interface: str
     role: str
@@ -560,6 +560,28 @@ class RemoteEndpoint:
         return cls(
             interface=d['interface'],
             role=d['role'],
+        )
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class OfferStatus:
+    app: str
+    endpoints: dict[str, RemoteEndpoint]
+
+    charm: str = ''
+    total_connected_count: int = 0
+    active_connected_count: int = 0
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> OfferStatus:
+        if 'status-error' in d:
+            raise StatusError(d['status-error'])
+        return cls(
+            app=d['application'],
+            charm=d.get('charm') or '',
+            total_connected_count=d.get('total-connected-count') or 0,
+            active_connected_count=d.get('active-connected-count') or 0,
+            endpoints={k: RemoteEndpoint.from_dict(v) for k, v in d['endpoints'].items()},
         )
 
 
@@ -594,29 +616,7 @@ class RemoteAppStatus:
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class OfferStatus:
-    app: str
-    endpoints: dict[str, RemoteEndpoint]
-
-    charm: str = ''
-    total_connected_count: int = 0
-    active_connected_count: int = 0
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> OfferStatus:
-        if 'status-error' in d:
-            raise StatusError(d['status-error'])
-        return cls(
-            app=d['application'],
-            charm=d.get('charm') or '',
-            total_connected_count=d.get('total-connected-count') or 0,
-            active_connected_count=d.get('active-connected-count') or 0,
-            endpoints={k: RemoteEndpoint.from_dict(v) for k, v in d['endpoints'].items()},
-        )
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class FormattedStatus:
+class Status:
     model: ModelStatus
     machines: dict[str, MachineStatus]
     apps: dict[str, AppStatus]
@@ -627,7 +627,7 @@ class FormattedStatus:
     controller: ControllerStatus = dataclasses.field(default_factory=ControllerStatus)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> FormattedStatus:
+    def from_dict(cls, d: dict[str, Any]) -> Status:
         return cls(
             model=ModelStatus.from_dict(d['model']),
             machines={k: MachineStatus.from_dict(v) for k, v in d['machines'].items()},

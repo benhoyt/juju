@@ -34,8 +34,7 @@ func main() {
 				requireArgs = true
 			}
 		}
-		className := strings.Title(name)
-		className = strings.ReplaceAll(className, "Application", "App")
+		className := getClassName(name)
 		if requireArgs {
 			requireArgsStructs[className] = requireArgs
 		}
@@ -45,8 +44,7 @@ func main() {
 		var buf bytes.Buffer
 
 		fmt.Fprintln(&buf, "\n\n@dataclasses.dataclass(frozen=True, kw_only=True)")
-		className := strings.Title(name)
-		className = strings.ReplaceAll(className, "Application", "App")
+		className := getClassName(name)
 		fmt.Fprintf(&buf, "class %s:\n", className)
 		successors[className] = nil
 		var required []string
@@ -183,6 +181,15 @@ class StatusError(Exception):
 	}
 }
 
+func getClassName(goType string) string {
+	className := strings.Title(goType)
+	className = strings.ReplaceAll(className, "Application", "App")
+	if className == "FormattedStatus" {
+		className = "Status"
+	}
+	return className
+}
+
 func getPythonField(s string) string {
 	s = strings.ReplaceAll(s, "-", "_")
 	s = strings.ReplaceAll(s, "application", "app")
@@ -207,8 +214,7 @@ func getPythonType(structs map[string][]status.FieldInfo, goType string) (string
 		if _, ok := structs[goType]; !ok {
 			fmt.Fprintf(os.Stderr, "# unhandled Go type: %s\n", goType)
 		}
-		pythonType := strings.Title(goType)
-		pythonType = strings.ReplaceAll(pythonType, "Application", "App")
+		pythonType := getClassName(goType)
 		return pythonType, pythonType
 	}
 }
