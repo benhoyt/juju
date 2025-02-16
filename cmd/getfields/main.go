@@ -152,6 +152,7 @@ func main() {
 	fmt.Print(`"""Dataclasses used to hold parsed output from "juju status --format=json"."""
 
 from __future__ import annotations
+
 import dataclasses
 from typing import Any
 
