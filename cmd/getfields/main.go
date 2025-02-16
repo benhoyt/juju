@@ -15,6 +15,62 @@ import (
 
 const maxLineLength = 99
 
+var additionalMethods = map[string]string{
+	"AppStatus": `
+    @property
+    def is_active(self) -> bool:
+        """Report whether the application status for this app is "active"."""
+        return self.app_status.current == 'active'
+
+    @property
+    def is_blocked(self) -> bool:
+        """Report whether the application status for this app is "blocked"."""
+        return self.app_status.current == 'blocked'
+
+    @property
+    def is_error(self) -> bool:
+        """Report whether the application status for this app is "error"."""
+        return self.app_status.current == 'error'
+
+    @property
+    def is_maintenance(self) -> bool:
+        """Report whether the application status for this app is "maintenance"."""
+        return self.app_status.current == 'maintenance'
+
+    @property
+    def is_waiting(self) -> bool:
+        """Report whether the application status for this app is "waiting"."""
+        return self.app_status.current == 'waiting'
+`,
+	"UnitStatus": `
+
+    @property
+    def is_active(self) -> bool:
+        """Report whether the workload status for this unit status is "active"."""
+        return self.workload_status.current == 'active'
+
+    @property
+    def is_blocked(self) -> bool:
+        """Report whether the workload status for this unit status is "blocked"."""
+        return self.workload_status.current == 'blocked'
+
+    @property
+    def is_error(self) -> bool:
+        """Report whether the workload status for this unit status is "error"."""
+        return self.workload_status.current == 'error'
+
+    @property
+    def is_maintenance(self) -> bool:
+        """Report whether the workload status for this unit status is "maintenance"."""
+        return self.workload_status.current == 'maintenance'
+
+    @property
+    def is_waiting(self) -> bool:
+        """Report whether the workload status for this unit status is "waiting"."""
+        return self.workload_status.current == 'waiting'
+`,
+}
+
 func main() {
 	structs := status.GetFields()
 
@@ -137,6 +193,10 @@ func main() {
 			fmt.Fprintln(&buf, line)
 		}
 		fmt.Fprintln(&buf, "        )")
+
+		if methods, ok := additionalMethods[className]; ok {
+			fmt.Fprint(&buf, methods)
+		}
 
 		classes[className] = buf.String()
 		buf.Reset()
