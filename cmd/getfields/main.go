@@ -13,7 +13,7 @@ import (
 	"github.com/juju/juju/cmd/juju/status"
 )
 
-// TODO: improve ruff formatting with line-length=99
+const maxLineLength = 99
 
 func main() {
 	structs := status.GetFields()
@@ -131,7 +131,12 @@ func main() {
 			pythonField := getPythonField(field.JSONField)
 			pythonType, _ := getPythonType(structs, field.Type)
 			dictGetter := getDictGetter(pythonType, field.JSONField, field.OmitEmpty, requireArgsStructs[pythonType])
-			fmt.Fprintf(&buf, "            %s=%s,\n", pythonField, dictGetter)
+			line := fmt.Sprintf("            %s=%s,", pythonField, dictGetter)
+			if len(line) > maxLineLength {
+				// So that Ruff formats these lines nicely
+				line = fmt.Sprintf("            %s=(%s),", pythonField, dictGetter)
+			}
+			fmt.Fprintln(&buf, line)
 		}
 		fmt.Fprintln(&buf, "        )")
 

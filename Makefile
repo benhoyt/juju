@@ -798,3 +798,8 @@ docs-%:
 ## docs-run: Build and serve the documentation
 ## docs-clean: Clean the docs build artifacts
 	cd docs && $(MAKE) -f Makefile.sp sp-$* ALLFILES='*.md **/*.md'
+
+.PHONY: getfields
+getfields:
+	go run ./cmd/getfields/ >structs.py
+	uvx ruff@0.9.6 format --line-length=99 --config "format.quote-style = 'single'" structs.py

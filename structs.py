@@ -78,8 +78,16 @@ class UnitStatus:
         if 'status-error' in d:
             raise StatusError(d['status-error'])
         return cls(
-            workload_status=StatusInfoContents.from_dict(d['workload-status']) if 'workload-status' in d else StatusInfoContents(),
-            juju_status=StatusInfoContents.from_dict(d['juju-status']) if 'juju-status' in d else StatusInfoContents(),
+            workload_status=(
+                StatusInfoContents.from_dict(d['workload-status'])
+                if 'workload-status' in d
+                else StatusInfoContents()
+            ),
+            juju_status=(
+                StatusInfoContents.from_dict(d['juju-status'])
+                if 'juju-status' in d
+                else StatusInfoContents()
+            ),
             leader=d.get('leader') or False,
             upgrading_from=d.get('upgrading-from') or '',
             machine=d.get('machine') or '',
@@ -87,7 +95,11 @@ class UnitStatus:
             public_address=d.get('public-address') or '',
             address=d.get('address') or '',
             provider_id=d.get('provider-id') or '',
-            subordinates={k: UnitStatus.from_dict(v) for k, v in d['subordinates'].items()} if 'subordinates' in d else {},
+            subordinates=(
+                {k: UnitStatus.from_dict(v) for k, v in d['subordinates'].items()}
+                if 'subordinates' in d
+                else {}
+            ),
         )
 
 
@@ -134,10 +146,20 @@ class AppStatus:
             address=d.get('address') or '',
             exposed=d['exposed'],
             life=d.get('life') or '',
-            app_status=StatusInfoContents.from_dict(d['application-status']) if 'application-status' in d else StatusInfoContents(),
-            relations={k: [AppStatusRelation.from_dict(x) for x in v] for k, v in d['relations'].items()} if 'relations' in d else {},
+            app_status=(
+                StatusInfoContents.from_dict(d['application-status'])
+                if 'application-status' in d
+                else StatusInfoContents()
+            ),
+            relations=(
+                {k: [AppStatusRelation.from_dict(x) for x in v] for k, v in d['relations'].items()}
+                if 'relations' in d
+                else {}
+            ),
             subordinate_to=d.get('subordinate-to') or [],
-            units={k: UnitStatus.from_dict(v) for k, v in d['units'].items()} if 'units' in d else {},
+            units=(
+                {k: UnitStatus.from_dict(v) for k, v in d['units'].items()} if 'units' in d else {}
+            ),
             version=d.get('version') or '',
             endpoint_bindings=d.get('endpoint-bindings') or {},
         )
@@ -200,7 +222,9 @@ class StorageInfo:
             life=d.get('life') or '',
             status=EntityStatus.from_dict(d['status']),
             persistent=d['persistent'],
-            attachments=StorageAttachments.from_dict(d['attachments']) if 'attachments' in d else None,
+            attachments=(
+                StorageAttachments.from_dict(d['attachments']) if 'attachments' in d else None
+            ),
         )
 
 
@@ -229,9 +253,21 @@ class FilesystemAttachments:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> FilesystemAttachments:
         return cls(
-            machines={k: FilesystemAttachment.from_dict(v) for k, v in d['machines'].items()} if 'machines' in d else {},
-            containers={k: FilesystemAttachment.from_dict(v) for k, v in d['containers'].items()} if 'containers' in d else {},
-            units={k: UnitStorageAttachment.from_dict(v) for k, v in d['units'].items()} if 'units' in d else {},
+            machines=(
+                {k: FilesystemAttachment.from_dict(v) for k, v in d['machines'].items()}
+                if 'machines' in d
+                else {}
+            ),
+            containers=(
+                {k: FilesystemAttachment.from_dict(v) for k, v in d['containers'].items()}
+                if 'containers' in d
+                else {}
+            ),
+            units=(
+                {k: UnitStorageAttachment.from_dict(v) for k, v in d['units'].items()}
+                if 'units' in d
+                else {}
+            ),
         )
 
 
@@ -290,9 +326,21 @@ class VolumeAttachments:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> VolumeAttachments:
         return cls(
-            machines={k: VolumeAttachment.from_dict(v) for k, v in d['machines'].items()} if 'machines' in d else {},
-            containers={k: VolumeAttachment.from_dict(v) for k, v in d['containers'].items()} if 'containers' in d else {},
-            units={k: UnitStorageAttachment.from_dict(v) for k, v in d['units'].items()} if 'units' in d else {},
+            machines=(
+                {k: VolumeAttachment.from_dict(v) for k, v in d['machines'].items()}
+                if 'machines' in d
+                else {}
+            ),
+            containers=(
+                {k: VolumeAttachment.from_dict(v) for k, v in d['containers'].items()}
+                if 'containers' in d
+                else {}
+            ),
+            units=(
+                {k: UnitStorageAttachment.from_dict(v) for k, v in d['units'].items()}
+                if 'units' in d
+                else {}
+            ),
         )
 
 
@@ -315,7 +363,11 @@ class VolumeInfo:
         return cls(
             provider_id=d.get('provider-id') or '',
             storage=d.get('storage') or '',
-            attachments=VolumeAttachments.from_dict(d['attachments']) if 'attachments' in d else VolumeAttachments(),
+            attachments=(
+                VolumeAttachments.from_dict(d['attachments'])
+                if 'attachments' in d
+                else VolumeAttachments()
+            ),
             pool=d.get('pool') or '',
             hardware_id=d.get('hardware-id') or '',
             wwn=d.get('wwn') or '',
@@ -335,9 +387,21 @@ class CombinedStorage:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> CombinedStorage:
         return cls(
-            storage={k: StorageInfo.from_dict(v) for k, v in d['storage'].items()} if 'storage' in d else {},
-            filesystems={k: FilesystemInfo.from_dict(v) for k, v in d['filesystems'].items()} if 'filesystems' in d else {},
-            volumes={k: VolumeInfo.from_dict(v) for k, v in d['volumes'].items()} if 'volumes' in d else {},
+            storage=(
+                {k: StorageInfo.from_dict(v) for k, v in d['storage'].items()}
+                if 'storage' in d
+                else {}
+            ),
+            filesystems=(
+                {k: FilesystemInfo.from_dict(v) for k, v in d['filesystems'].items()}
+                if 'filesystems' in d
+                else {}
+            ),
+            volumes=(
+                {k: VolumeInfo.from_dict(v) for k, v in d['volumes'].items()}
+                if 'volumes' in d
+                else {}
+            ),
         )
 
 
@@ -374,7 +438,11 @@ class ModelStatus:
             region=d.get('region') or '',
             version=d['version'],
             upgrade_available=d.get('upgrade-available') or '',
-            model_status=StatusInfoContents.from_dict(d['model-status']) if 'model-status' in d else StatusInfoContents(),
+            model_status=(
+                StatusInfoContents.from_dict(d['model-status'])
+                if 'model-status' in d
+                else StatusInfoContents()
+            ),
         )
 
 
@@ -439,22 +507,46 @@ class MachineStatus:
         if 'status-error' in d:
             raise StatusError(d['status-error'])
         return cls(
-            juju_status=StatusInfoContents.from_dict(d['juju-status']) if 'juju-status' in d else StatusInfoContents(),
+            juju_status=(
+                StatusInfoContents.from_dict(d['juju-status'])
+                if 'juju-status' in d
+                else StatusInfoContents()
+            ),
             hostname=d.get('hostname') or '',
             dns_name=d.get('dns-name') or '',
             ip_addresses=d.get('ip-addresses') or [],
             instance_id=d.get('instance-id') or '',
             display_name=d.get('display-name') or '',
-            machine_status=StatusInfoContents.from_dict(d['machine-status']) if 'machine-status' in d else StatusInfoContents(),
-            modification_status=StatusInfoContents.from_dict(d['modification-status']) if 'modification-status' in d else StatusInfoContents(),
+            machine_status=(
+                StatusInfoContents.from_dict(d['machine-status'])
+                if 'machine-status' in d
+                else StatusInfoContents()
+            ),
+            modification_status=(
+                StatusInfoContents.from_dict(d['modification-status'])
+                if 'modification-status' in d
+                else StatusInfoContents()
+            ),
             base=FormattedBase.from_dict(d['base']) if 'base' in d else None,
-            network_interfaces={k: NetworkInterface.from_dict(v) for k, v in d['network-interfaces'].items()} if 'network-interfaces' in d else {},
-            containers={k: MachineStatus.from_dict(v) for k, v in d['containers'].items()} if 'containers' in d else {},
+            network_interfaces=(
+                {k: NetworkInterface.from_dict(v) for k, v in d['network-interfaces'].items()}
+                if 'network-interfaces' in d
+                else {}
+            ),
+            containers=(
+                {k: MachineStatus.from_dict(v) for k, v in d['containers'].items()}
+                if 'containers' in d
+                else {}
+            ),
             constraints=d.get('constraints') or '',
             hardware=d.get('hardware') or '',
             controller_member_status=d.get('controller-member-status') or '',
             ha_primary=d.get('ha-primary') or False,
-            lxd_profiles={k: LxdProfileContents.from_dict(v) for k, v in d['lxd-profiles'].items()} if 'lxd-profiles' in d else {},
+            lxd_profiles=(
+                {k: LxdProfileContents.from_dict(v) for k, v in d['lxd-profiles'].items()}
+                if 'lxd-profiles' in d
+                else {}
+            ),
         )
 
 
@@ -486,9 +578,17 @@ class RemoteAppStatus:
             raise StatusError(d['status-error'])
         return cls(
             url=d['url'],
-            endpoints={k: RemoteEndpoint.from_dict(v) for k, v in d['endpoints'].items()} if 'endpoints' in d else {},
+            endpoints=(
+                {k: RemoteEndpoint.from_dict(v) for k, v in d['endpoints'].items()}
+                if 'endpoints' in d
+                else {}
+            ),
             life=d.get('life') or '',
-            app_status=StatusInfoContents.from_dict(d['application-status']) if 'application-status' in d else StatusInfoContents(),
+            app_status=(
+                StatusInfoContents.from_dict(d['application-status'])
+                if 'application-status' in d
+                else StatusInfoContents()
+            ),
             relations=d.get('relations') or {},
         )
 
@@ -532,8 +632,22 @@ class FormattedStatus:
             model=ModelStatus.from_dict(d['model']),
             machines={k: MachineStatus.from_dict(v) for k, v in d['machines'].items()},
             apps={k: AppStatus.from_dict(v) for k, v in d['applications'].items()},
-            app_endpoints={k: RemoteAppStatus.from_dict(v) for k, v in d['application-endpoints'].items()} if 'application-endpoints' in d else {},
-            offers={k: OfferStatus.from_dict(v) for k, v in d['offers'].items()} if 'offers' in d else {},
-            storage=CombinedStorage.from_dict(d['storage']) if 'storage' in d else CombinedStorage(),
-            controller=ControllerStatus.from_dict(d['controller']) if 'controller' in d else ControllerStatus(),
+            app_endpoints=(
+                {k: RemoteAppStatus.from_dict(v) for k, v in d['application-endpoints'].items()}
+                if 'application-endpoints' in d
+                else {}
+            ),
+            offers=(
+                {k: OfferStatus.from_dict(v) for k, v in d['offers'].items()}
+                if 'offers' in d
+                else {}
+            ),
+            storage=(
+                CombinedStorage.from_dict(d['storage']) if 'storage' in d else CombinedStorage()
+            ),
+            controller=(
+                ControllerStatus.from_dict(d['controller'])
+                if 'controller' in d
+                else ControllerStatus()
+            ),
         )
