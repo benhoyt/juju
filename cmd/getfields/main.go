@@ -13,8 +13,6 @@ import (
 	"github.com/juju/juju/cmd/juju/status"
 )
 
-// TODO: field Attachments needs lowercase
-
 const maxLineLength = 99
 
 var additionalMethods = map[string]string{
