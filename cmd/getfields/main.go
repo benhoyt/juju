@@ -270,6 +270,7 @@ func getClassName(goType string) string {
 func getPythonField(s string) string {
 	s = strings.ReplaceAll(s, "-", "_")
 	s = strings.ReplaceAll(s, "application", "app")
+	s = strings.ToLower(s)
 	return s
 }
 

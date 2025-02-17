@@ -324,7 +324,7 @@ class FilesystemAttachments:
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class FilesystemInfo:
-    Attachments: FilesystemAttachments
+    attachments: FilesystemAttachments
     size: int
 
     provider_id: str = ''
@@ -337,7 +337,7 @@ class FilesystemInfo:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> FilesystemInfo:
         return cls(
-            Attachments=FilesystemAttachments.from_dict(d['Attachments']),
+            attachments=FilesystemAttachments.from_dict(d['Attachments']),
             size=d['size'],
             provider_id=d.get('provider-id') or '',
             volume=d.get('volume') or '',
