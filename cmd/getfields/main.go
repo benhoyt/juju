@@ -13,6 +13,8 @@ import (
 	"github.com/juju/juju/cmd/juju/status"
 )
 
+// TODO: field Attachments needs lowercase
+
 const maxLineLength = 99
 
 var additionalMethods = map[string]string{
@@ -174,6 +176,8 @@ func main() {
 		}
 
 		fmt.Fprintln(&buf, "        return cls(")
+		optional = optional[:0]
+		required = required[:0]
 		for _, field := range structs[name] {
 			if field.JSONField == "" {
 				if field.Name == "Err" && field.Type == "error" {
@@ -190,8 +194,20 @@ func main() {
 				// So that Ruff formats these lines nicely
 				line = fmt.Sprintf("            %s=(%s),", pythonField, dictGetter)
 			}
-			fmt.Fprintln(&buf, line)
+			if field.OmitEmpty {
+				optional = append(optional, line+"\n")
+			} else {
+				required = append(required, line+"\n")
+			}
 		}
+
+		for _, line := range required {
+			fmt.Fprint(&buf, line)
+		}
+		for _, line := range optional {
+			fmt.Fprint(&buf, line)
+		}
+
 		fmt.Fprintln(&buf, "        )")
 
 		if methods, ok := additionalMethods[className]; ok {
