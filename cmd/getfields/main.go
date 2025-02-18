@@ -15,6 +15,10 @@ import (
 
 const maxLineLength = 99
 
+var classDocstrings = map[string]string{
+	"Status": `Parsed version of the status object returned by "juju status --format=json".`,
+}
+
 var additionalMethods = map[string]string{
 	"AppStatus": `
     @property
@@ -104,6 +108,9 @@ func main() {
 		className := getClassName(name)
 		allNames = append(allNames, className)
 		fmt.Fprintf(&buf, "class %s:\n", className)
+		if docstring, ok := classDocstrings[className]; ok {
+			fmt.Fprintf(&buf, `    """%s"""`+"\n", docstring)
+		}
 		successors[className] = nil
 		var required []string
 		var optional []string
