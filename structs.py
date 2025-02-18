@@ -324,12 +324,12 @@ class FilesystemAttachments:
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class FilesystemInfo:
-    attachments: FilesystemAttachments
     size: int
 
     provider_id: str = ''
     volume: str = ''
     storage: str = ''
+    attachments: FilesystemAttachments = dataclasses.field(default_factory=FilesystemAttachments)
     pool: str = ''
     life: str = ''
     status: EntityStatus = dataclasses.field(default_factory=EntityStatus)
@@ -337,11 +337,15 @@ class FilesystemInfo:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> FilesystemInfo:
         return cls(
-            attachments=FilesystemAttachments.from_dict(d['Attachments']),
             size=d['size'],
             provider_id=d.get('provider-id') or '',
             volume=d.get('volume') or '',
             storage=d.get('storage') or '',
+            attachments=(
+                FilesystemAttachments.from_dict(d['attachments'])
+                if 'attachments' in d
+                else FilesystemAttachments()
+            ),
             pool=d.get('pool') or '',
             life=d.get('life') or '',
             status=EntityStatus.from_dict(d['status']) if 'status' in d else EntityStatus(),
