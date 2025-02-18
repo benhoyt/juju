@@ -159,7 +159,7 @@ func main() {
 		}
 
 		fmt.Fprintf(&buf, "\n    @classmethod\n")
-		fmt.Fprintf(&buf, "    def from_dict(cls, d: dict[str, Any]) -> %s:\n", className)
+		fmt.Fprintf(&buf, "    def _from_dict(cls, d: dict[str, Any]) -> %s:\n", className)
 
 		hasErr := false
 		for _, field := range structs[name] {
@@ -361,6 +361,6 @@ func doType(pythonType string, value string) string {
 	case pythonType == "str" || pythonType == "int" || pythonType == "bool":
 		return value
 	default:
-		return fmt.Sprintf("%s.from_dict(%s)", pythonType, value)
+		return fmt.Sprintf("%s._from_dict(%s)", pythonType, value)
 	}
 }
