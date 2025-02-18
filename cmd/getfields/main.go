@@ -96,11 +96,13 @@ func main() {
 		}
 	}
 
+	var allNames []string
 	for _, name := range structNames {
 		var buf bytes.Buffer
 
 		fmt.Fprintln(&buf, "\n\n@dataclasses.dataclass(frozen=True, kw_only=True)")
 		className := getClassName(name)
+		allNames = append(allNames, className)
 		fmt.Fprintf(&buf, "class %s:\n", className)
 		successors[className] = nil
 		var required []string
@@ -223,12 +225,24 @@ func main() {
 		}
 		order = append(order, names[0])
 	}
+
+	allNames = append(allNames, "StatusError")
+	slices.Sort(allNames)
+
 	fmt.Print(`"""Dataclasses used to hold parsed output from "juju status --format=json"."""
 
 from __future__ import annotations
 
 import dataclasses
 from typing import Any
+
+__all__ = [
+`)
+	for _, name := range allNames {
+		fmt.Printf("    \"%s\",\n", name)
+	}
+	fmt.Print(`
+]
 
 
 class StatusError(Exception):
