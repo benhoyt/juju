@@ -31,7 +31,7 @@ The <source> and <destination> arguments may either be a path to a local file
 or a remote location. Here is a fuller syntax diagram:
 
     # <source>                 <destination>
-    [[<user>@]<target>:]<path> [<user>@]<target>:[<path>]
+    [[<user>@]<target>:]<path> [[<user>@]<target>:]<path>
 
 <user> is a user account that exists on the remote host. Juju defaults to the 
 "ubuntu" user when this is omitted.
