@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/juju/juju/cmd/juju/status"
+	"github.com/juju/juju/cmd/juju/model"
 )
 
 // TODO: compare with Juju 4.x/main branch
@@ -21,7 +21,7 @@ import (
 //       see message in Matrix: juju-dev: https://matrix.to/#/!wJiiHsLipVywuWOyNi:ubuntu.com/$NMDdkF7koi7MrCQ6lLCKLduhk8IX3sNZlV2bGP6kuNc?via=ubuntu.com&via=matrix.org
 
 func main() {
-	structs := status.GetFields()
+	structs := model.GetFields()
 
 	classes := make(map[string]string)
 	successors := make(map[string][]string)
@@ -182,7 +182,7 @@ func getPythonField(s string) string {
 	return s
 }
 
-func getPythonType(structs map[string][]status.FieldInfo, goType string) (string, string) {
+func getPythonType(structs map[string][]model.FieldInfo, goType string) (string, string) {
 	switch {
 	case strings.HasPrefix(goType, "[]"):
 		inner, base := getPythonType(structs, goType[2:])
