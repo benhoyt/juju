@@ -112,7 +112,6 @@ class ModelInfo:
     controller_uuid: str
     controller_name: str
     is_controller: bool
-    owner: str
     cloud: str
     life: str
 
@@ -122,8 +121,6 @@ class ModelInfo:
     users: dict[str, ModelUserInfo] = dataclasses.field(default_factory=dict)
     machines: dict[str, ModelMachineInfo] = dataclasses.field(default_factory=dict)
     secret_backends: dict[str, SecretBackendInfo] = dataclasses.field(default_factory=dict)
-    sla: str = ''
-    sla_owner: str = ''
     agent_version: str = ''
     credential: ModelCredential | None = None
     supported_features: list[SupportedFeature] = dataclasses.field(default_factory=list)
@@ -138,7 +135,6 @@ class ModelInfo:
             controller_uuid=d['controller-uuid'],
             controller_name=d['controller-name'],
             is_controller=d['is-controller'],
-            owner=d['owner'],
             cloud=d['cloud'],
             region=d.get('region') or '',
             type=d.get('type') or '',
@@ -147,8 +143,6 @@ class ModelInfo:
             users={k: ModelUserInfo.from_dict(v) for k, v in d['users'].items()} if 'users' in d else {},
             machines={k: ModelMachineInfo.from_dict(v) for k, v in d['machines'].items()} if 'machines' in d else {},
             secret_backends={k: SecretBackendInfo.from_dict(v) for k, v in d['secret-backends'].items()} if 'secret-backends' in d else {},
-            sla=d.get('sla') or '',
-            sla_owner=d.get('sla-owner') or '',
             agent_version=d.get('agent-version') or '',
             credential=ModelCredential.from_dict(d['credential']) if 'credential' in d else None,
             supported_features=[SupportedFeature.from_dict(x) for x in d['supported-features']] if 'supported-features' in d else [],
