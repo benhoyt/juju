@@ -1,0 +1,141 @@
+{
+  "RelationData": [
+    {
+      "name": "RelationId",
+      "type": "int",
+      "json_field": "relation-id",
+      "pointer": false,
+      "omit_empty": false
+    },
+    {
+      "name": "Endpoint",
+      "type": "string",
+      "json_field": "endpoint",
+      "pointer": false,
+      "omit_empty": false
+    },
+    {
+      "name": "CrossModel",
+      "type": "bool",
+      "json_field": "cross-model",
+      "pointer": false,
+      "omit_empty": true
+    },
+    {
+      "name": "RelatedEndpoint",
+      "type": "string",
+      "json_field": "related-endpoint",
+      "pointer": false,
+      "omit_empty": false
+    },
+    {
+      "name": "ApplicationRelationData",
+      "type": "map[string]interface {}",
+      "json_field": "application-data",
+      "pointer": false,
+      "omit_empty": false
+    },
+    {
+      "name": "MyData",
+      "type": "UnitRelationData",
+      "json_field": "local-unit",
+      "pointer": false,
+      "omit_empty": true
+    },
+    {
+      "name": "Data",
+      "type": "map[string]UnitRelationData",
+      "json_field": "related-units",
+      "pointer": false,
+      "omit_empty": true
+    }
+  ],
+  "UnitInfo": [
+    {
+      "name": "WorkloadVersion",
+      "type": "string",
+      "json_field": "workload-version",
+      "pointer": false,
+      "omit_empty": true
+    },
+    {
+      "name": "Machine",
+      "type": "string",
+      "json_field": "machine",
+      "pointer": false,
+      "omit_empty": true
+    },
+    {
+      "name": "OpenedPorts",
+      "type": "[]string",
+      "json_field": "opened-ports",
+      "pointer": false,
+      "omit_empty": false
+    },
+    {
+      "name": "PublicAddress",
+      "type": "string",
+      "json_field": "public-address",
+      "pointer": false,
+      "omit_empty": true
+    },
+    {
+      "name": "Charm",
+      "type": "string",
+      "json_field": "charm",
+      "pointer": false,
+      "omit_empty": false
+    },
+    {
+      "name": "Leader",
+      "type": "bool",
+      "json_field": "leader",
+      "pointer": false,
+      "omit_empty": false
+    },
+    {
+      "name": "Life",
+      "type": "string",
+      "json_field": "life",
+      "pointer": false,
+      "omit_empty": true
+    },
+    {
+      "name": "RelationData",
+      "type": "[]RelationData",
+      "json_field": "relation-info",
+      "pointer": false,
+      "omit_empty": true
+    },
+    {
+      "name": "ProviderId",
+      "type": "string",
+      "json_field": "provider-id",
+      "pointer": false,
+      "omit_empty": true
+    },
+    {
+      "name": "Address",
+      "type": "string",
+      "json_field": "address",
+      "pointer": false,
+      "omit_empty": true
+    }
+  ],
+  "UnitRelationData": [
+    {
+      "name": "InScope",
+      "type": "bool",
+      "json_field": "in-scope",
+      "pointer": false,
+      "omit_empty": false
+    },
+    {
+      "name": "UnitData",
+      "type": "map[string]interface {}",
+      "json_field": "data",
+      "pointer": false,
+      "omit_empty": false
+    }
+  ]
+}

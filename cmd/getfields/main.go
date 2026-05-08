@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/juju/juju/cmd/juju/model"
+	"github.com/juju/juju/cmd/juju/application"
 )
 
 // TODO: compare with Juju 4.x/main branch
@@ -21,7 +21,7 @@ import (
 //       see message in Matrix: juju-dev: https://matrix.to/#/!wJiiHsLipVywuWOyNi:ubuntu.com/$NMDdkF7koi7MrCQ6lLCKLduhk8IX3sNZlV2bGP6kuNc?via=ubuntu.com&via=matrix.org
 
 func main() {
-	structs := model.GetFields()
+	structs := application.GetFields()
 
 	classes := make(map[string]string)
 	successors := make(map[string][]string)
@@ -110,7 +110,7 @@ func main() {
 		}
 
 		fmt.Fprintf(&buf, "\n    @classmethod\n")
-		fmt.Fprintf(&buf, "    def from_dict(cls, d: dict[str, Any]) -> %s:\n", className)
+		fmt.Fprintf(&buf, "    def _from_dict(cls, d: dict[str, Any]) -> %s:\n", className)
 
 		hasErr := false
 		for _, field := range structs[name] {
@@ -182,7 +182,7 @@ func getPythonField(s string) string {
 	return s
 }
 
-func getPythonType(structs map[string][]model.FieldInfo, goType string) (string, string) {
+func getPythonType(structs map[string][]application.FieldInfo, goType string) (string, string) {
 	switch {
 	case strings.HasPrefix(goType, "[]"):
 		inner, base := getPythonType(structs, goType[2:])
@@ -196,6 +196,8 @@ func getPythonType(structs map[string][]model.FieldInfo, goType string) (string,
 		return "bool", ""
 	case goType == "int" || goType == "uint64":
 		return "int", ""
+	case goType == "interface {}":
+		return "Any", ""
 	default:
 		if _, ok := structs[goType]; !ok {
 			fmt.Fprintf(os.Stderr, "# unhandled Go type: %s\n", goType)
@@ -262,6 +264,8 @@ func doType(pythonType string, value string) string {
 			return value
 		}
 		return fmt.Sprintf("[%s for x in %s]", inner, value)
+	case pythonType == "dict[str, Any]":
+		return value
 	case strings.HasPrefix(pythonType, "dict[str, "):
 		t := pythonType[10 : len(pythonType)-1]
 		inner := doType(t, "v")
@@ -272,6 +276,6 @@ func doType(pythonType string, value string) string {
 	case pythonType == "str" || pythonType == "int" || pythonType == "bool":
 		return value
 	default:
-		return fmt.Sprintf("%s.from_dict(%s)", pythonType, value)
+		return fmt.Sprintf("%s._from_dict(%s)", pythonType, value)
 	}
 }
