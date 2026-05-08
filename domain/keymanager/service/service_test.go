@@ -12,7 +12,6 @@ import (
 
 	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	coressh "github.com/juju/juju/core/ssh"
 	"github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
@@ -77,7 +76,7 @@ func (s *serviceSuite) SetUpTest(c *tc.C) {
 	uri, err := url.Parse("gh:tlm")
 	c.Check(err, tc.ErrorIsNil)
 	s.subjectURI = uri
-	s.modelUUID = modeltesting.GenModelUUID(c)
+	s.modelUUID = tc.Must0(c, model.NewUUID)
 }
 
 // TestAddKeysForInvalidUser is asserting that if we pass in an invalid user id
@@ -121,7 +120,7 @@ func (s *serviceSuite) TestAddKeysForNonExistentUser(c *tc.C) {
 func (s *serviceSuite) TestAddKeysForNonExistentModel(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	badModelId := modeltesting.GenModelUUID(c)
+	badModelId := tc.Must0(c, model.NewUUID)
 
 	keyInfo, err := ssh.ParsePublicKey(testingPublicKeys[0])
 	c.Assert(err, tc.ErrorIsNil)
@@ -435,6 +434,32 @@ func (s *serviceSuite) TestDeleteKeysForUserCombination(c *tc.C) {
 			existingUserPublicKeys[1],
 		)
 	c.Check(err, tc.ErrorIsNil)
+}
+
+func (s *serviceSuite) TestDeleteKeysForModel(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	s.state.EXPECT().DeletePublicKeysForModel(
+		gomock.Any(),
+		s.modelUUID,
+	).Return(nil)
+
+	err := NewService(s.modelUUID, s.state).
+		DeleteKeysForModel(c.Context())
+	c.Check(err, tc.ErrorIsNil)
+}
+
+func (s *serviceSuite) TestDeleteKeysForModelNotFound(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	s.state.EXPECT().DeletePublicKeysForModel(
+		gomock.Any(),
+		s.modelUUID,
+	).Return(modelerrors.NotFound)
+
+	err := NewService(s.modelUUID, s.state).
+		DeleteKeysForModel(c.Context())
+	c.Check(err, tc.ErrorIs, modelerrors.NotFound)
 }
 
 // TestImportKeyForUnknownSource is asserting that if we try and import keys for

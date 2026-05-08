@@ -23,9 +23,13 @@ func (f fileResourceStore) Get(
 	storageKey string,
 ) (io.ReadCloser, int64, error) {
 	if storageKey == "" {
-		return nil, 0, errors.Errorf("storage key empty")
+		return nil, -1, errors.Errorf("storage key empty")
 	}
-	return f.objectStore.Get(ctx, storageKey)
+	reader, digest, err := f.objectStore.Get(ctx, storageKey)
+	if err != nil {
+		return nil, -1, errors.Capture(err)
+	}
+	return reader, digest.Size, nil
 }
 
 // Put the given resource in the object store using the storage key as the
@@ -45,9 +49,6 @@ func (f fileResourceStore) Put(
 	}
 	if r == nil {
 		return store.ID{}, 0, store.Fingerprint{}, errors.Errorf("validating resource: reader is nil")
-	}
-	if size == 0 {
-		return store.ID{}, 0, store.Fingerprint{}, errors.Errorf("validating resource size: size is 0")
 	}
 	if err := fingerprint.Validate(); err != nil {
 		return store.ID{}, 0, store.Fingerprint{}, errors.Errorf("validating resource fingerprint: %w", err)

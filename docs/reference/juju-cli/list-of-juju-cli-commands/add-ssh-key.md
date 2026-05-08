@@ -34,9 +34,6 @@ to the command:
 
 
 ## Details
-
 Juju maintains a per-model cache of public SSH keys which it copies to
-each unit (including units already deployed). By default this includes the
-key of the user who created the model (assuming it is stored in the
-default location `~/.ssh/`. Additional keys may be added with this command,
-quoting the entire public key as an argument.
+each unit (including units already deployed). All keys must be added to a model
+explicitly with this command, quoting the entire public key as an argument.

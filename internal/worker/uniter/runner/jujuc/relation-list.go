@@ -10,7 +10,7 @@ import (
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/cmd/cmd"
 )
 
 // RelationListCommand implements the relation-list command.
@@ -38,27 +38,27 @@ func NewRelationListCommand(ctx Context) (cmd.Command, error) {
 
 func (c *RelationListCommand) Info() *cmd.Info {
 	doc := `
--r must be specified when not in a relation hook
+` + "`-r`" + ` must be specified when not in a relation hook
 
-relation-list outputs a list of all the related units for a relation identifier.
-If not running in a relation hook context, -r needs to be specified with a
-relation identifier similar to the relation-get and relation-set commands.
+` + "`relation-list`" + ` outputs a list of all the related units for a relation identifier.
+If not running in a relation hook context, ` + "`-r`" + ` needs to be specified with a
+relation identifier similar to the ` + "`relation-get`" + ` and ` + "`relation-set`" + ` commands.
 `
 	if _, err := c.ctx.HookRelation(); err == nil {
 		doc = ""
 	}
 	return jujucmd.Info(&cmd.Info{
 		Name:    "relation-list",
-		Purpose: "List relation units.",
+		Purpose: "Lists relation units.",
 		Doc:     doc,
 	})
 }
 
 func (c *RelationListCommand) SetFlags(f *gnuflag.FlagSet) {
 	c.out.AddFlags(f, "smart", cmd.DefaultFormatters.Formatters())
-	f.Var(c.relationIdProxy, "r", "Specify a relation by id")
+	f.Var(c.relationIdProxy, "r", "Specifies a relation by ID.")
 	f.Var(c.relationIdProxy, "relation", "")
-	f.BoolVar(&c.ListRemoteApplication, "app", false, "List remote application instead of participating units")
+	f.BoolVar(&c.ListRemoteApplication, "app", false, "Lists remote application instead of participating units.")
 }
 
 func (c *RelationListCommand) Init(args []string) (err error) {

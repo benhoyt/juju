@@ -11,12 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/juju/clock"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 	"golang.org/x/crypto/nacl/secretbox"
 
 	coreerrors "github.com/juju/juju/core/errors"
-	modeltesting "github.com/juju/juju/core/model/testing"
+	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/user"
 	coreusertesting "github.com/juju/juju/core/user/testing"
@@ -41,7 +42,7 @@ func (s *userServiceSuite) setupMocks(c *tc.C) *gomock.Controller {
 }
 
 func (s *userServiceSuite) service() *Service {
-	return NewService(s.state)
+	return NewService(s.state, clock.WallClock)
 }
 
 // TestAddUserNameNotValid is testing that if we try and add a user with a
@@ -540,7 +541,7 @@ func FuzzGetUser(f *testing.F) {
 			nil,
 		).AnyTimes()
 
-		usr, err := NewService(state).GetUserByName(t.Context(), name)
+		usr, err := NewService(state, clock.WallClock).GetUserByName(t.Context(), name)
 		if err != nil {
 			t.Errorf("unexpected error %v when fuzzing GetUser with %q",
 				err, username,
@@ -556,7 +557,7 @@ func FuzzGetUser(f *testing.F) {
 // TestUpdateLastModelLogin tests the happy path for UpdateLastModelLogin.
 func (s *userServiceSuite) TestUpdateLastModelLogin(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	s.state.EXPECT().UpdateLastModelLogin(gomock.Any(), coreusertesting.GenNewName(c, "name"), modelUUID, gomock.Any())
 
 	err := s.service().UpdateLastModelLogin(c.Context(), coreusertesting.GenNewName(c, "name"), modelUUID)
@@ -566,7 +567,7 @@ func (s *userServiceSuite) TestUpdateLastModelLogin(c *tc.C) {
 // TestUpdateLastModelLogin tests a bad username for UpdateLastModelLogin.
 func (s *userServiceSuite) TestUpdateLastModelLoginBadUsername(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	err := s.service().UpdateLastModelLogin(c.Context(), user.Name{}, modelUUID)
 	c.Assert(err, tc.ErrorIs, usererrors.UserNameNotValid)
 }
@@ -574,7 +575,7 @@ func (s *userServiceSuite) TestUpdateLastModelLoginBadUsername(c *tc.C) {
 // TestSetLastModelLogin tests the happy path for SetLastModelLogin.
 func (s *userServiceSuite) TestSetLastModelLogin(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	lastLogin := time.Now()
 	s.state.EXPECT().UpdateLastModelLogin(gomock.Any(), coreusertesting.GenNewName(c, "name"), modelUUID, lastLogin)
 
@@ -585,7 +586,7 @@ func (s *userServiceSuite) TestSetLastModelLogin(c *tc.C) {
 // TestSetLastModelLogin tests a bad username for SetLastModelLogin.
 func (s *userServiceSuite) TestSetLastModelLoginBadUsername(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	err := s.service().SetLastModelLogin(c.Context(), user.Name{}, modelUUID, time.Time{})
 	c.Assert(err, tc.ErrorIs, usererrors.UserNameNotValid)
 }
@@ -593,7 +594,7 @@ func (s *userServiceSuite) TestSetLastModelLoginBadUsername(c *tc.C) {
 // TestLastModelLogin tests the happy path for LastModelLogin.
 func (s *userServiceSuite) TestLastModelLogin(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	t := time.Now()
 	s.state.EXPECT().LastModelLogin(gomock.Any(), coreusertesting.GenNewName(c, "name"), modelUUID).Return(t, nil)
 
@@ -664,4 +665,29 @@ func (s stringerNotEmpty) Matches(arg any) bool {
 
 func (s stringerNotEmpty) String() string {
 	return "matches if the input fmt.Stringer produces a non-empty string."
+}
+
+func (s *userServiceSuite) TestEnsureExternalUser(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+	userName := tc.Must1(c, user.NewName, "testme@external")
+	s.state.EXPECT().EnsureExternalUser(gomock.Any(), userName).Return(nil)
+
+	err := s.service().EnsureExternalUser(c.Context(), userName)
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *userServiceSuite) TestEnsureExternalUserEmptySubject(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	err := s.service().EnsureExternalUser(c.Context(), user.Name{})
+	c.Assert(err, tc.ErrorIs, usererrors.UserNameNotValid)
+}
+
+func (s *userServiceSuite) TestEnsureExternalUserLocalUser(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	localUserName := tc.Must1(c, user.NewName, "localonly")
+
+	err := s.service().EnsureExternalUser(c.Context(), localUserName)
+	c.Assert(err, tc.ErrorIs, coreerrors.NotValid)
 }

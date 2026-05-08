@@ -19,8 +19,8 @@ import (
 	"github.com/juju/juju/api/client/modelmanager"
 	"github.com/juju/juju/api/client/modelupgrader"
 	"github.com/juju/juju/api/jujuclient"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/core/model"
-	"github.com/juju/juju/internal/cmd"
 	internallogger "github.com/juju/juju/internal/logger"
 	"github.com/juju/juju/juju/osenv"
 )
@@ -389,46 +389,35 @@ func (c *ModelCommandBase) modelFromStore(controllerName, modelIdentifier string
 // NewAPIRoot returns a new connection to the API server for the environment
 // directed to the model specified on the command line.
 func (c *ModelCommandBase) NewAPIRoot(ctx context.Context) (api.Connection, error) {
-	return c.NewAPIRootWithAddressOverride(ctx, nil)
-}
-
-// NewAPIRootWithAddressOverride returns a new connection to the API server for the environment
-// directed to the model specified on the command line, using any address overrides.
-func (c *ModelCommandBase) NewAPIRootWithAddressOverride(ctx context.Context, addresses []string) (api.Connection, error) {
-	// We need to call ModelDetails() here and not just ModelName() to force
-	// a refresh of the internal model details if those are not yet stored locally.
-	modelName, _, err := c.ModelDetails(ctx)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	conn, err := c.newAPIRoot(ctx, modelName, nil, addresses)
-	return conn, errors.Trace(err)
+	return c.NewAPIRootWithDialOpts(ctx, nil)
 }
 
 // NewAPIRootWithDialOpts returns a new connection to the API server for the
 // environment directed to the model specified on the command line (and with
 // the given dial options if non-nil).
-func (c *ModelCommandBase) NewAPIRootWithDialOpts(ctx context.Context, dialOpts *api.DialOpts) (api.Connection, error) {
-	// We need to call ModelDetails() here and not just ModelName() to force
-	// a refresh of the internal model details if those are not yet stored locally.
+func (c *ModelCommandBase) NewAPIRootWithDialOpts(ctx context.Context, dialOpts *api.DialOpts, overrideAddresses ...string) (api.Connection, error) {
+	// We need to call ModelDetails() here and not just ModelName() to force a
+	// refresh of the internal model details if those are not yet stored
+	// locally.
 	modelName, _, err := c.ModelDetails(ctx)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	conn, err := c.newAPIRoot(ctx, modelName, dialOpts, nil)
+	conn, err := c.newAPIRoot(ctx, modelName, dialOpts, overrideAddresses)
 	return conn, errors.Trace(err)
 }
 
-// NewControllerAPIRoot returns a new connection to the API server for the environment
-// directed to the controller specified on the command line.
-// This is for the use of model-centered commands that still want
-// to talk to controller-only APIs.
+// NewControllerAPIRoot returns a new connection to the API server for the
+// environment directed to the controller specified on the command line. This is
+// for the use of model-centered commands that still want to talk to
+// controller-only APIs.
 func (c *ModelCommandBase) NewControllerAPIRoot(ctx context.Context) (api.Connection, error) {
 	return c.newAPIRoot(ctx, "", nil, nil)
 }
 
-// newAPIRoot is the internal implementation of NewAPIRoot and NewControllerAPIRoot;
-// if modelName is empty, it makes a controller-only connection.
+// newAPIRoot is the internal implementation of NewAPIRoot and
+// NewControllerAPIRoot; if modelName is empty, it makes a controller-only
+// connection.
 func (c *ModelCommandBase) newAPIRoot(ctx context.Context, modelName string, dialOpts *api.DialOpts, addressOverride []string) (api.Connection, error) {
 	controllerName, err := c.ControllerName()
 	if err != nil {

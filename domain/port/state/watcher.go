@@ -11,7 +11,6 @@ import (
 	"github.com/juju/collections/transform"
 
 	coreapplication "github.com/juju/juju/core/application"
-	coremachine "github.com/juju/juju/core/machine"
 	"github.com/juju/juju/core/unit"
 	"github.com/juju/juju/internal/errors"
 )
@@ -21,52 +20,20 @@ func (*State) NamespaceForWatchOpenedPort() string {
 	return "port_range"
 }
 
-// InitialWatchMachineOpenedPortsStatement returns the name of the table
+// InitialWatchOpenedPortsStatement returns the name of the table
 // that should be watched and the query to load the
-// initial event for the WatchMachineOpenedPorts watcher
-func (*State) InitialWatchMachineOpenedPortsStatement() (string, string) {
-	// It looks strange that we don't return the same namespace than the table
-	// returned in the initial statement, but it is actually ok.
-	// We want an event stream with machine names, but call site will compute
-	// machine names from port_range event. It is why this looks weird.
-	return "port_range", "SELECT name FROM machine"
+// initial event for the WatchOpenedPorts watcher
+func (*State) InitialWatchOpenedPortsStatement() (string, string) {
+	// We only care about units that have an associate machine.
+	return "port_range", `
+SELECT u.uuid FROM unit AS u
+JOIN machine AS m ON u.net_node_uuid = m.net_node_uuid
+ORDER BY u.uuid
+`
 }
 
-// GetMachineNamesForUnits returns a slice of machine names that host the
-// provided units.
-func (st *State) GetMachineNamesForUnits(ctx context.Context, units []unit.UUID) ([]coremachine.Name, error) {
-	db, err := st.DB(ctx)
-	if err != nil {
-		return nil, errors.Capture(err)
-	}
-
-	unitUUIDs := unitUUIDs(units)
-
-	query, err := st.Prepare(`
-SELECT DISTINCT machine.name AS &machineName.name
-FROM machine
-JOIN unit ON machine.net_node_uuid = unit.net_node_uuid
-WHERE unit.uuid IN ($unitUUIDs[:])
-`, machineName{}, unitUUIDs)
-	if err != nil {
-		return nil, errors.Errorf("failed to prepare machine for unit query: %w", err)
-	}
-
-	machineNames := []machineName{}
-	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		err := tx.Query(ctx, query, unitUUIDs).GetAll(&machineNames)
-		if errors.Is(err, sqlair.ErrNoRows) {
-			return nil
-		}
-		return errors.Capture(err)
-	})
-	if err != nil {
-		return nil, errors.Errorf("failed to get machines for units: %w", err)
-	}
-
-	return transform.Slice(machineNames, func(m machineName) coremachine.Name { return m.Name }), nil
-}
-
+// FilterUnitUUIDsForApplication returns the subset of provided endpoint
+// uuids that are associated with the provided application.
 func (st *State) FilterUnitUUIDsForApplication(ctx context.Context, units []unit.UUID, app coreapplication.UUID) (set.Strings, error) {
 	db, err := st.DB(ctx)
 	if err != nil {

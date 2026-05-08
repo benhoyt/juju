@@ -37,11 +37,7 @@ func NewState(factory database.TxnRunnerFactory, modelUUID model.UUID, clock clo
 	}
 }
 
-func ptr[T any](v T) *T {
-	return &v
-}
-
-func (st *State) checkApplicationAlive(ctx context.Context, tx *sqlair.TX, appUUID string) error {
+func (st *State) checkApplicationNotDead(ctx context.Context, tx *sqlair.TX, appUUID string) error {
 	stmt, err := st.Prepare(`
 SELECT &lifeID.*
 FROM   application
@@ -58,8 +54,8 @@ WHERE  uuid = $uuid.uuid
 		return errors.Capture(err)
 	}
 
-	if life.Life != int(domainlife.Alive) {
-		return applicationerrors.ApplicationNotAlive
+	if life.Life == int(domainlife.Dead) {
+		return applicationerrors.ApplicationIsDead
 	}
 	return nil
 }

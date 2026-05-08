@@ -119,3 +119,41 @@ func (c *MockLoginProviderLoginCall) DoAndReturn(f func(context.Context, base.AP
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
+
+// String mocks base method.
+func (m *MockLoginProvider) String() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "String")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// String indicates an expected call of String.
+func (mr *MockLoginProviderMockRecorder) String() *MockLoginProviderStringCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "String", reflect.TypeOf((*MockLoginProvider)(nil).String))
+	return &MockLoginProviderStringCall{Call: call}
+}
+
+// MockLoginProviderStringCall wrap *gomock.Call
+type MockLoginProviderStringCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockLoginProviderStringCall) Return(arg0 string) *MockLoginProviderStringCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockLoginProviderStringCall) Do(f func() string) *MockLoginProviderStringCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockLoginProviderStringCall) DoAndReturn(f func() string) *MockLoginProviderStringCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}

@@ -8,7 +8,7 @@ import (
 
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
@@ -329,7 +329,7 @@ type unitStateMatcher struct {
 	expected map[int]string
 }
 
-func (m unitStateMatcher) Matches(x interface{}) bool {
+func (m unitStateMatcher) Matches(x any) bool {
 	obtained, ok := x.(params.SetUnitStateArg)
 	if !ok {
 		return false

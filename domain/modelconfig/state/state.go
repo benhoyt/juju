@@ -129,7 +129,7 @@ func (st *State) ModelConfig(ctx context.Context) (map[string]string, error) {
 		return config, errors.Capture(err)
 	}
 
-	stmt, err := st.Prepare(`SELECT &dbKeyValue.* FROM model_config`, dbKeyValue{})
+	stmt, err := st.Prepare(`SELECT &dbKeyValue.* FROM v_model_config`, dbKeyValue{})
 	if err != nil {
 		return config, errors.Capture(err)
 	}
@@ -307,10 +307,10 @@ WHERE key = excluded.key
 	})
 }
 
-// NamespaceForWatchModelConfig returns the namespace identifier used for
+// NamespacesForWatchModelConfig returns the namespace identifiers used for
 // watching model configuration changes.
-func (*State) NamespaceForWatchModelConfig() string {
-	return "model_config"
+func (*State) NamespacesForWatchModelConfig() []string {
+	return []string{"agent_version", "model_config"}
 }
 
 // SpaceExists checks if the space identified by the given space name exists.

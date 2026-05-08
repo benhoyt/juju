@@ -5,10 +5,10 @@ package schema
 
 import (
 	"embed"
-	"fmt"
-	"sort"
 
 	"github.com/juju/juju/core/database/schema"
+	"github.com/juju/juju/core/semversion"
+	coreversion "github.com/juju/juju/core/version"
 	"github.com/juju/juju/domain/schema/controller/triggers"
 )
 
@@ -16,7 +16,7 @@ import (
 //go:generate go run ./../../generate/triggergen -db=controller -destination=./controller/triggers/controller-triggers.gen.go -package=triggers -tables=controller_config,controller_node,external_controller,controller_api_address
 //go:generate go run ./../../generate/triggergen -db=controller -destination=./controller/triggers/migration-triggers.gen.go -package=triggers -tables=model_migration_status,model_migration_minion_sync
 //go:generate go run ./../../generate/triggergen -db=controller -destination=./controller/triggers/upgrade-triggers.gen.go -package=triggers -tables=upgrade_info,upgrade_info_controller_node
-//go:generate go run ./../../generate/triggergen -db=controller -destination=./controller/triggers/objectstore-triggers.gen.go -package=triggers -tables=object_store_metadata_path,object_store_drain_info
+//go:generate go run ./../../generate/triggergen -db=controller -destination=./controller/triggers/objectstore-triggers.gen.go -package=triggers -tables=object_store_metadata_path,object_store_drain_info,object_store_backend
 //go:generate go run ./../../generate/triggergen -db=controller -destination=./controller/triggers/secret-triggers.gen.go -package=triggers -tables=secret_backend_rotation,model_secret_backend
 //go:generate go run ./../../generate/triggergen -db=controller -destination=./controller/triggers/model-triggers.gen.go -package=triggers -tables=model
 //go:generate go run ./../../generate/triggergen -db=controller -destination=./controller/triggers/model-authorized-keys-triggers.gen.go -package=triggers -tables=model_authorized_keys
@@ -45,37 +45,37 @@ const (
 	tableModelMetadata
 	tableModelAuthorizedKeys
 	tableUserAuthentication
+	tableObjectStoreBackend
 )
+
+// controllerPostPatchFilesByVersion is used to categorise the post patch files
+// to particular versions of Juju. To include a new post patch file, it must be
+// added to the list for the version in which it is first applied.
+//
+// Also, post-patch files are only applicable for differences in patch versions
+// within the same major.minor version. So all entries should be of the same
+// major.minor version as the current version. The full version is only included
+// for clarity of reading
+var controllerPostPatchFilesByVersion = []struct {
+	version semversion.Number
+	files   []string
+}{}
 
 // ControllerDDL is used to create the controller database schema at bootstrap.
 func ControllerDDL() *schema.Schema {
-	entries, err := controllerSchemaDir.ReadDir("controller/sql")
+	return ControllerDDLForVersion(coreversion.Current)
+}
+
+// ControllerDDLForVersion returns the controller database schema for the
+// specified version. The version must match the current major.minor version
+func ControllerDDLForVersion(version semversion.Number) *schema.Schema {
+	if version.Major != coreversion.Current.Major || version.Minor != coreversion.Current.Minor {
+		panic("Cannot return the controller DDL for a different major.minor version")
+	}
+
+	patches, err := readPatches(controllerSchemaDir, "controller/sql")
 	if err != nil {
 		panic(err)
-	}
-
-	var names []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		names = append(names, entry.Name())
-	}
-
-	sort.Slice(names, func(i, j int) bool {
-		return names[i] < names[j]
-	})
-
-	patches := make([]func() schema.Patch, len(names))
-	for i, name := range names {
-		data, err := controllerSchemaDir.ReadFile(fmt.Sprintf("controller/sql/%s", name))
-		if err != nil {
-			panic(err)
-		}
-
-		patches[i] = func() schema.Patch {
-			return schema.MakePatch(string(data))
-		}
 	}
 
 	// Changestream triggers.
@@ -99,6 +99,7 @@ func ControllerDDL() *schema.Schema {
 		triggers.ChangeLogTriggersForModel("uuid", tableModelMetadata),
 		triggers.ChangeLogTriggersForModelAuthorizedKeys("model_uuid", tableModelAuthorizedKeys),
 		triggers.ChangeLogTriggersForUserAuthentication("user_uuid", tableUserAuthentication),
+		triggers.ChangeLogTriggersForObjectStoreBackend("uuid", tableObjectStoreBackend),
 	)
 
 	// Generic triggers.
@@ -107,12 +108,27 @@ func ControllerDDL() *schema.Schema {
 		// they are created by the controller during bootstrap time.
 		// 0 is 'controller', 1 is 'kubernetes'.
 		triggersForImmutableTable("secret_backend",
-			"OLD.backend_type_id IN (0, 1)",
-			"secret backends with type controller or kubernetes are immutable"),
+			"OLD.origin_id = 0 OR OLD.backend_type_id IN (0, 1)",
+			"built-in secret backends or secret backends with type controller or kubernetes are immutable"),
 	)
+
+	var postPatchFiles []string
+	for _, postPatch := range controllerPostPatchFilesByVersion {
+		if postPatch.version.Compare(version) <= 0 {
+			postPatchFiles = append(postPatchFiles, postPatch.files...)
+		}
+	}
+	postPatches, err := readPostPatches(controllerSchemaDir, "controller/sql", postPatchFiles)
+	if err != nil {
+		panic(err)
+	}
 
 	ctrlSchema := schema.New()
 	for _, fn := range patches {
+		ctrlSchema.Add(fn())
+	}
+
+	for _, fn := range postPatches {
 		ctrlSchema.Add(fn())
 	}
 

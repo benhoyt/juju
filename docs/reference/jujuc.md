@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "jujuc reference: binary providing hook commands for charms to interact with the Juju environment during hook execution."
+---
+
 (jujuc)=
 # `jujuc`
 

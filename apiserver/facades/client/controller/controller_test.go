@@ -5,24 +5,25 @@ package controller_test
 
 import (
 	"context"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
 	stdtesting "testing"
 
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
+	"github.com/juju/juju/apiserver/common"
 	"github.com/juju/juju/apiserver/facade/facadetest"
 	"github.com/juju/juju/apiserver/facades/client/controller"
 	"github.com/juju/juju/apiserver/facades/client/controller/mocks"
 	apiservertesting "github.com/juju/juju/apiserver/testing"
 	"github.com/juju/juju/core/leadership"
 	"github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
@@ -65,6 +66,7 @@ func (s *controllerSuite) TestStub(c *tc.C) {
 - Watch model summaries by non admin.
 - Watch all model summaries by admin.
 - Identity provider with and without URL in config.
+- Test InitiateMigration with dry run.
 `)
 }
 
@@ -90,9 +92,7 @@ func (s *controllerSuite) SetUpTest(c *tc.C) {
 	}
 	// Initial config needs to be set before the StateSuite SetUpTest.
 	controllerCfg := testing.FakeControllerConfig()
-	for key, value := range s.controllerConfigAttrs {
-		controllerCfg[key] = value
-	}
+	maps.Copy(controllerCfg, s.controllerConfigAttrs)
 
 	s.ControllerConfig = controllerCfg
 	s.DomainServicesSuite.SetUpTest(c)
@@ -109,12 +109,13 @@ func (s *controllerSuite) SetUpTest(c *tc.C) {
 	s.leadershipReader = noopLeadershipReader{}
 	s.context = facadetest.MultiModelContext{
 		ModelContext: facadetest.ModelContext{
-			Auth_:             s.authorizer,
-			DomainServices_:   s.ControllerDomainServices(c),
-			Logger_:           loggertesting.WrapCheckLog(c),
-			LeadershipReader_: s.leadershipReader,
-			ControllerUUID_:   modeltesting.GenModelUUID(c).String(),
-			ModelUUID_:        modeltesting.GenModelUUID(c),
+			Auth_:                s.authorizer,
+			DomainServices_:      s.ControllerDomainServices(c),
+			Logger_:              loggertesting.WrapCheckLog(c),
+			LeadershipReader_:    s.leadershipReader,
+			ControllerUUID_:      tc.Must0(c, model.NewUUID).String(),
+			ControllerModelUUID_: s.ControllerModelUUID,
+			ModelUUID_:           s.DefaultModelUUID,
 		},
 		DomainServicesForModelFunc_: func(modelUUID model.UUID) internalservices.DomainServices {
 			return s.ModelDomainServices(c, modelUUID)
@@ -248,11 +249,8 @@ func (s *controllerSuite) controllerAPI(c *tc.C) *controller.ControllerAPI {
 		machineServiceGetter,
 		removalServiceGetter,
 		domainServices.Proxy(),
-		func(c context.Context, modelUUID model.UUID) (controller.ModelExporter, error) {
-			return ctx.ModelExporter(c, modelUUID)
-		},
 		ctx.ObjectStore(),
-		ctx.ControllerModelUUID(),
+		s.ControllerModelUUID,
 		ctx.ControllerUUID(),
 	)
 	c.Assert(err, tc.ErrorIsNil)
@@ -277,17 +275,17 @@ func (s *controllerSuite) TestNewAPIRefusesNonClient(c *tc.C) {
 func (s *controllerSuite) TestHostedModelConfigs_OnlyHostedModelsReturned(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	s.mockModelService.EXPECT().ListAllModels(gomock.Any()).Return(
+	s.mockModelService.EXPECT().GetAllModels(gomock.Any()).Return(
 		[]model.Model{
 			{
 				Name:      "first",
 				Qualifier: "prod",
-				UUID:      modeltesting.GenModelUUID(c),
+				UUID:      tc.Must0(c, model.NewUUID),
 			},
 			{
 				Name:      "second",
 				Qualifier: "staging",
-				UUID:      modeltesting.GenModelUUID(c),
+				UUID:      tc.Must0(c, model.NewUUID),
 			},
 		}, nil,
 	)
@@ -311,6 +309,82 @@ func (s *controllerSuite) TestHostedModelConfigs_OnlyHostedModelsReturned(c *tc.
 	c.Assert(two.Qualifier, tc.Equals, "staging")
 }
 
+func (s *controllerSuite) TestCloudSpec(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	modelTag := names.NewModelTag(s.ControllerModelUUID.String())
+	result, err := s.controller.CloudSpec(c.Context(), params.Entities{
+		Entities: []params.Entity{{Tag: modelTag.String()}},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result.Results, tc.HasLen, 1)
+	c.Assert(result.Results[0].Error, tc.IsNil)
+
+	modelProvider := s.ModelDomainServices(c, s.ControllerModelUUID).ModelProvider()
+	expected, err := modelProvider.GetCloudSpec(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result.Results[0].Result, tc.DeepEquals, common.CloudSpecToParams(expected))
+}
+
+func (s *controllerSuite) TestCloudSpecInvalidTag(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	result, err := s.controller.CloudSpec(c.Context(), params.Entities{
+		Entities: []params.Entity{{Tag: names.NewMachineTag("0").String()}},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result.Results, tc.HasLen, 1)
+	c.Check(result.Results[0].Result, tc.IsNil)
+	c.Check(result.Results[0].Error, tc.ErrorMatches, `"machine-0" is not a valid model tag`)
+}
+
+func (s *controllerSuite) TestCloudSpecUnauthorisedModel(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	otherModelTag := names.NewModelTag(tc.Must(c, model.NewUUID).String())
+	result, err := s.controller.CloudSpec(c.Context(), params.Entities{
+		Entities: []params.Entity{{Tag: otherModelTag.String()}},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result.Results, tc.HasLen, 1)
+	c.Assert(result.Results[0].Error, tc.ErrorMatches, "permission denied")
+}
+
+func (s *controllerSuite) TestCloudSpecNoCredentialsAllowed(c *tc.C) {
+	s.authorizer = apiservertesting.FakeAuthorizer{
+		Tag: names.NewUserTag("read-" + names.NewModelTag(s.ControllerModelUUID.String()).String()),
+	}
+	s.context.Auth_ = s.authorizer
+	defer s.setupMocks(c).Finish()
+
+	modelTag := names.NewModelTag(s.ControllerModelUUID.String())
+	result, err := s.controller.CloudSpec(c.Context(), params.Entities{
+		Entities: []params.Entity{{Tag: modelTag.String()}},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result.Results, tc.HasLen, 1)
+	c.Assert(result.Results[0].Error, tc.IsNil)
+
+	modelProvider := s.ModelDomainServices(c, s.ControllerModelUUID).ModelProvider()
+	expected, err := modelProvider.GetCloudSpec(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+	expected.Credential = nil
+	c.Assert(result.Results[0].Result, tc.DeepEquals, common.CloudSpecToParams(expected))
+}
+
+func (s *controllerSuite) TestCloudSpecServiceError(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	unknownModelTag := names.NewModelTag(tc.Must(c, model.NewUUID).String())
+	result, err := s.controller.CloudSpec(c.Context(), params.Entities{
+		Entities: []params.Entity{{Tag: unknownModelTag.String()}},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result.Results, tc.HasLen, 1)
+	c.Check(result.Results[0].Result, tc.IsNil)
+	c.Check(result.Results[0].Error, tc.NotNil)
+}
+
 func (s *controllerSuite) TestListBlockedModels(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	otherDomainServices := s.DefaultModelDomainServices(c)
@@ -327,7 +401,7 @@ func (s *controllerSuite) TestListBlockedModels(c *tc.C) {
 			ModelType: model.IAAS,
 		},
 	}
-	s.mockModelService.EXPECT().ListAllModels(gomock.Any()).Return(
+	s.mockModelService.EXPECT().GetAllModels(gomock.Any()).Return(
 		models, nil,
 	)
 
@@ -350,7 +424,7 @@ func (s *controllerSuite) TestListBlockedModels(c *tc.C) {
 
 func (s *controllerSuite) TestListBlockedModelsNoBlocks(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	s.mockModelService.EXPECT().ListAllModels(gomock.Any()).Return(
+	s.mockModelService.EXPECT().GetAllModels(gomock.Any()).Return(
 		nil, nil,
 	)
 	list, err := s.controller.ListBlockedModels(c.Context())
@@ -410,7 +484,7 @@ func (s *controllerSuite) TestRemoveBlocks(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(otherBlocks, tc.HasLen, 2)
 
-	s.mockModelService.EXPECT().ListModelUUIDs(gomock.Any()).Return(
+	s.mockModelService.EXPECT().GetModelUUIDs(gomock.Any()).Return(
 		[]model.UUID{
 			s.DefaultModelUUID,
 		}, nil,
@@ -432,7 +506,7 @@ func (s *controllerSuite) TestRemoveBlocksNotAll(c *tc.C) {
 func (s *controllerSuite) TestInitiateMigrationInvalidMacaroons(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, model.NewUUID)
 	args := params.InitiateMigrationArgs{
 		Specs: []params.MigrationSpec{
 			{
@@ -533,7 +607,16 @@ func (s *controllerSuite) TestGrantControllerInvalidUserTag(c *tc.C) {
 
 func (s *controllerSuite) TestModelStatus(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	modelTag := names.NewModelTag(s.context.ControllerModelUUID().String()).String()
+
+	s.mockModelService.EXPECT().Model(gomock.Any(), s.ControllerModelUUID).Return(
+		model.Model{
+			UUID:      s.ControllerModelUUID,
+			Name:      "controller",
+			Qualifier: "prod",
+		}, nil,
+	).Times(3)
+
+	modelTag := names.NewModelTag(s.ControllerModelUUID.String()).String()
 	// Check that we don't err out immediately if a model errs.
 	results, err := s.controller.ModelStatus(c.Context(), params.Entities{Entities: []params.Entity{{
 		Tag: "bad-tag",
@@ -543,6 +626,8 @@ func (s *controllerSuite) TestModelStatus(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results.Results, tc.HasLen, 2)
 	c.Assert(results.Results[0].Error, tc.ErrorMatches, `"bad-tag" is not a valid tag`)
+	c.Assert(results.Results[1].Error, tc.IsNil)
+	c.Assert(results.Results[1].ModelTag, tc.Equals, modelTag)
 
 	// Check that we don't err out if a model errs even if some firsts in collection pass.
 	results, err = s.controller.ModelStatus(c.Context(), params.Entities{Entities: []params.Entity{{
@@ -553,6 +638,8 @@ func (s *controllerSuite) TestModelStatus(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results.Results, tc.HasLen, 2)
 	c.Assert(results.Results[1].Error, tc.ErrorMatches, `"bad-tag" is not a valid tag`)
+	c.Assert(results.Results[0].Error, tc.IsNil)
+	c.Assert(results.Results[0].ModelTag, tc.Equals, modelTag)
 
 	// Check that we return successfully if no errors.
 	results, err = s.controller.ModelStatus(c.Context(), params.Entities{Entities: []params.Entity{{
@@ -560,6 +647,8 @@ func (s *controllerSuite) TestModelStatus(c *tc.C) {
 	}}})
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results.Results, tc.HasLen, 1)
+	c.Assert(results.Results[0].Error, tc.IsNil)
+	c.Assert(results.Results[0].ModelTag, tc.Equals, modelTag)
 }
 
 func (s *controllerSuite) TestConfigSet(c *tc.C) {
@@ -572,7 +661,7 @@ func (s *controllerSuite) TestConfigSet(c *tc.C) {
 	c.Assert(config.AuditingEnabled(), tc.Equals, false)
 	c.Assert(config.SSHServerPort(), tc.Equals, 17022)
 
-	err = s.controller.ConfigSet(c.Context(), params.ControllerConfigSet{Config: map[string]interface{}{
+	err = s.controller.ConfigSet(c.Context(), params.ControllerConfigSet{Config: map[string]any{
 		"auditing-enabled": true,
 	}})
 	c.Assert(err, tc.ErrorIsNil)
@@ -597,7 +686,7 @@ func (s *controllerSuite) TestConfigSetRequiresSuperUser(c *tc.C) {
 		})
 	c.Assert(err, tc.ErrorIsNil)
 
-	err = endpoint.ConfigSet(c.Context(), params.ControllerConfigSet{Config: map[string]interface{}{
+	err = endpoint.ConfigSet(c.Context(), params.ControllerConfigSet{Config: map[string]any{
 		"something": 23,
 	}})
 
@@ -613,36 +702,36 @@ func (s *controllerSuite) TestConfigSetCAASImageRepo(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(config.CAASImageRepo(), tc.Equals, "")
 
-	err = s.controller.ConfigSet(c.Context(), params.ControllerConfigSet{Config: map[string]interface{}{
+	err = s.controller.ConfigSet(c.Context(), params.ControllerConfigSet{Config: map[string]any{
 		"caas-image-repo": "juju-repo.local",
 	}})
 	c.Assert(err, tc.ErrorMatches, `cannot change caas-image-repo as it is not currently set`)
 
 	err = controllerConfigService.UpdateControllerConfig(
 		c.Context(),
-		map[string]interface{}{
+		map[string]any{
 			"caas-image-repo": "jujusolutions",
 		}, nil)
 	c.Assert(err, tc.ErrorIsNil)
 
-	err = s.controller.ConfigSet(c.Context(), params.ControllerConfigSet{Config: map[string]interface{}{
+	err = s.controller.ConfigSet(c.Context(), params.ControllerConfigSet{Config: map[string]any{
 		"caas-image-repo": "juju-repo.local",
 	}})
 	c.Assert(err, tc.ErrorMatches, `cannot change caas-image-repo: repository read-only, only authentication can be updated`)
 
-	err = s.controller.ConfigSet(c.Context(), params.ControllerConfigSet{Config: map[string]interface{}{
+	err = s.controller.ConfigSet(c.Context(), params.ControllerConfigSet{Config: map[string]any{
 		"caas-image-repo": `{"repository":"jujusolutions","username":"foo","password":"bar"}`,
 	}})
 	c.Assert(err, tc.ErrorMatches, `cannot change caas-image-repo: unable to add authentication details`)
 
 	err = controllerConfigService.UpdateControllerConfig(
 		c.Context(),
-		map[string]interface{}{
+		map[string]any{
 			"caas-image-repo": `{"repository":"jujusolutions","username":"bar","password":"foo"}`,
 		}, nil)
 	c.Assert(err, tc.ErrorIsNil)
 
-	err = s.controller.ConfigSet(c.Context(), params.ControllerConfigSet{Config: map[string]interface{}{
+	err = s.controller.ConfigSet(c.Context(), params.ControllerConfigSet{Config: map[string]any{
 		"caas-image-repo": `{"repository":"jujusolutions","username":"foo","password":"bar"}`,
 	}})
 	c.Assert(err, tc.ErrorIsNil)
@@ -699,8 +788,8 @@ func (s *accessSuite) SetUpTest(c *tc.C) {
 		AdminTag: owner,
 	}
 
-	s.controllerUUID = modeltesting.GenModelUUID(c).String()
-	s.controllerModelUUID = modeltesting.GenModelUUID(c)
+	s.controllerUUID = tc.Must0(c, model.NewUUID).String()
+	s.controllerModelUUID = tc.Must0(c, model.NewUUID)
 }
 
 func (s *accessSuite) setupMocks(c *tc.C) *gomock.Controller {
@@ -720,7 +809,6 @@ func (s *accessSuite) controllerAPI(c *tc.C) *controller.ControllerAPI {
 		nil,
 		s.accessService,
 		s.modelService,
-		nil,
 		nil,
 		nil,
 		nil,
@@ -834,7 +922,7 @@ func (s *accessSuite) TestAllModels(c *tc.C) {
 			ModelType: model.IAAS,
 		},
 	}
-	s.modelService.EXPECT().ListAllModels(gomock.Any()).Return(
+	s.modelService.EXPECT().GetAllModels(gomock.Any()).Return(
 		models, nil,
 	)
 

@@ -16,7 +16,7 @@ import (
 	"text/template"
 
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/names/v6"
 	"github.com/juju/proxy"
 	"github.com/juju/utils/v4"
@@ -103,12 +103,6 @@ rm -rf /var/lib/juju/raft/*
 
 echo "removing /var/run/juju/*"
 rm -rf /var/run/juju/*
-
-has_juju_db_snap=$(snap info juju-db | grep installed:)
-if [ ! -z "$has_juju_db_snap" ]; then
-  echo "removing juju-db snap and any persisted database data"
-  snap remove --purge juju-db
-fi
 `
 	// We look to see if the proxy line is there already as
 	// the unmanaged provider may have had it already.
@@ -211,7 +205,7 @@ func (w *userdataConfig) Configure() error {
 // between image bringup and start of agent installation.
 func (w *userdataConfig) ConfigureBasic() error {
 	// Keep preruncmd at the beginning of any runcmd's that juju adds
-	if preruncmds, ok := w.icfg.CloudInitUserData["preruncmd"].([]interface{}); ok {
+	if preruncmds, ok := w.icfg.CloudInitUserData["preruncmd"].([]any); ok {
 		for i := len(preruncmds) - 1; i >= 0; i -= 1 {
 			cmd, err := runCmdToString(preruncmds[i])
 			if err != nil {
@@ -270,7 +264,7 @@ func (w *userdataConfig) ConfigureJuju() error {
 
 	// To keep postruncmd at the end of any runcmd's that juju adds,
 	// this block must stay at the top.
-	if postruncmds, ok := w.icfg.CloudInitUserData["postruncmd"].([]interface{}); ok {
+	if postruncmds, ok := w.icfg.CloudInitUserData["postruncmd"].([]any); ok {
 
 		// revert the `set -xe` shell flag which was set after preruncmd
 		// LP: #1978454
@@ -393,9 +387,6 @@ func (w *userdataConfig) ConfigureJuju() error {
 	}
 
 	if w.icfg.Bootstrap != nil {
-		if err = w.addLocalSnapUpload(); err != nil {
-			return errors.Trace(err)
-		}
 		if err = w.addLocalControllerCharmsUpload(); err != nil {
 			return errors.Trace(err)
 		}
@@ -405,7 +396,7 @@ func (w *userdataConfig) ConfigureJuju() error {
 	}
 
 	// Append cloudinit-userdata packages to the end of the juju created ones.
-	if packagesToAdd, ok := w.icfg.CloudInitUserData["packages"].([]interface{}); ok {
+	if packagesToAdd, ok := w.icfg.CloudInitUserData["packages"].([]any); ok {
 		for _, v := range packagesToAdd {
 			if pack, ok := v.(string); ok {
 				w.conf.AddPackage(pack)
@@ -515,37 +506,6 @@ func (w *userdataConfig) configureBootstrap() error {
 	return nil
 }
 
-func (w *userdataConfig) addLocalSnapUpload() error {
-	if w.icfg.Bootstrap == nil {
-		return nil
-	}
-
-	snapPath := w.icfg.Bootstrap.JujuDbSnapPath
-	assertionsPath := w.icfg.Bootstrap.JujuDbSnapAssertionsPath
-
-	if snapPath == "" {
-		return nil
-	}
-
-	logger.Infof(context.TODO(), "preparing to upload juju-db snap from %v", snapPath)
-	snapData, err := stdos.ReadFile(snapPath)
-	if err != nil {
-		return errors.Trace(err)
-	}
-	_, snapName := path.Split(snapPath)
-	w.conf.AddRunBinaryFile(path.Join(w.icfg.SnapDir(), snapName), snapData, 0644)
-
-	logger.Infof(context.TODO(), "preparing to upload juju-db assertions from %v", assertionsPath)
-	snapAssertionsData, err := stdos.ReadFile(assertionsPath)
-	if err != nil {
-		return errors.Trace(err)
-	}
-	_, snapAssertionsName := path.Split(assertionsPath)
-	w.conf.AddRunBinaryFile(path.Join(w.icfg.SnapDir(), snapAssertionsName), snapAssertionsData, 0644)
-
-	return nil
-}
-
 func (w *userdataConfig) addLocalControllerCharmsUpload() error {
 	if w.icfg.Bootstrap == nil {
 		return nil
@@ -642,7 +602,7 @@ func toolsDownloadCommand(curlCommand string, urls []string) string {
 		).Parse(toolsDownloadTemplate),
 	)
 	var buf bytes.Buffer
-	err := parsedTemplate.Execute(&buf, map[string]interface{}{
+	err := parsedTemplate.Execute(&buf, map[string]any{
 		"ToolsDownloadCommand":  curlCommand,
 		"ToolsDownloadWaitTime": toolsDownloadWaitTime,
 		"URLs":                  urls,

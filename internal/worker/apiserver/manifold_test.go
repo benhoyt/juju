@@ -5,6 +5,7 @@ package apiserver_test
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"testing"
 	"time"
@@ -13,11 +14,12 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
-	dt "github.com/juju/worker/v4/dependency/testing"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
+	dt "github.com/juju/worker/v5/dependency/testing"
+	"github.com/juju/worker/v5/workertest"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/agent"
 	coreapiserver "github.com/juju/juju/apiserver"
@@ -31,6 +33,7 @@ import (
 	corelogger "github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/objectstore"
+	accessservice "github.com/juju/juju/domain/access/service"
 	"github.com/juju/juju/internal/jwtparser"
 	"github.com/juju/juju/internal/services"
 	"github.com/juju/juju/internal/testhelpers"
@@ -63,7 +66,6 @@ type ManifoldSuite struct {
 	charmhubHTTPClient      *http.Client
 	macaroonHTTPClient      *http.Client
 	dbGetter                stubWatchableDBGetter
-	dbDeleter               stubDBDeleter
 	domainServicesGetter    *stubDomainServicesGetter
 	controllerConfigService *MockControllerConfigService
 	modelService            *MockModelService
@@ -72,6 +74,8 @@ type ManifoldSuite struct {
 	watcherRegistryGetter   *stubWatcherRegistryGetter
 	jwtParser               *jwtparser.Parser
 	flightRecorder          flightrecorder.FlightRecorder
+	providerFactory         *MockProviderFactory
+	provider                *MockProvider
 
 	stub testhelpers.Stub
 }
@@ -82,6 +86,10 @@ func TestManifoldSuite(t *testing.T) {
 
 func (s *ManifoldSuite) SetUpTest(c *tc.C) {
 	s.IsolationSuite.SetUpTest(c)
+}
+
+func (s *ManifoldSuite) setupMocks(c *tc.C) *gomock.Controller {
+	ctrl := gomock.NewController(c)
 
 	s.agent = &mockAgent{}
 	s.authenticator = &mockAuthenticator{}
@@ -100,9 +108,10 @@ func (s *ManifoldSuite) SetUpTest(c *tc.C) {
 	s.jwtParser = &jwtparser.Parser{}
 	s.stub.ResetCalls()
 	s.domainServicesGetter = &stubDomainServicesGetter{}
-	s.dbDeleter = stubDBDeleter{}
 	s.watcherRegistryGetter = &stubWatcherRegistryGetter{}
 	s.flightRecorder = flightrecorder.NoopRecorder{}
+	s.providerFactory = NewMockProviderFactory(ctrl)
+	s.provider = NewMockProvider(ctrl)
 
 	s.getter = s.newGetter(nil)
 	s.manifold = apiserver.Manifold(apiserver.ManifoldConfig{
@@ -119,10 +128,10 @@ func (s *ManifoldSuite) SetUpTest(c *tc.C) {
 		TraceName:                         "trace",
 		ObjectStoreName:                   "object-store",
 		ChangeStreamName:                  "change-stream",
-		DBAccessorName:                    "db-accessor",
 		JWTParserName:                     "jwt-parser",
 		WatcherRegistryName:               "watcher-registry",
 		FlightRecorderName:                "flight-recorder",
+		ProviderTrackerName:               "provider-tracker",
 		PrometheusRegisterer:              &s.prometheusRegisterer,
 		RegisterIntrospectionHTTPHandlers: func(func(string, http.Handler)) {},
 		GetControllerConfigService: func(getter dependency.Getter, name string) (apiserver.ControllerConfigService, error) {
@@ -134,10 +143,30 @@ func (s *ManifoldSuite) SetUpTest(c *tc.C) {
 		NewWorker:           s.newWorker,
 		NewMetricsCollector: s.newMetricsCollector,
 	})
+
+	c.Cleanup(func() {
+		s.agent = nil
+		s.authenticator = nil
+		s.mux = nil
+		s.upgradeGate = stubGateWaiter{}
+		s.auditConfig = stubAuditConfig{}
+		s.leaseManager = nil
+		s.logSink = nil
+		s.charmhubHTTPClient = nil
+		s.macaroonHTTPClient = nil
+		s.httpClientGetter = nil
+		s.jwtParser = nil
+		s.domainServicesGetter = nil
+		s.watcherRegistryGetter = nil
+		s.flightRecorder = flightrecorder.NoopRecorder{}
+		s.getter = nil
+		s.manifold = dependency.Manifold{}
+	})
+	return ctrl
 }
 
-func (s *ManifoldSuite) newGetter(overlay map[string]interface{}) dependency.Getter {
-	resources := map[string]interface{}{
+func (s *ManifoldSuite) newGetter(overlay map[string]any) dependency.Getter {
+	resources := map[string]any{
 		"agent":               s.agent,
 		"authenticator":       s.authenticator,
 		"clock":               s.clock,
@@ -148,17 +177,15 @@ func (s *ManifoldSuite) newGetter(overlay map[string]interface{}) dependency.Get
 		"log-sink":            s.logSink,
 		"http-client":         s.httpClientGetter,
 		"change-stream":       s.dbGetter,
-		"db-accessor":         s.dbDeleter,
 		"domain-services":     s.domainServicesGetter,
 		"trace":               s.tracerGetter,
 		"object-store":        s.objectStoreGetter,
 		"jwt-parser":          s.jwtParser,
 		"watcher-registry":    s.watcherRegistryGetter,
 		"flight-recorder":     s.flightRecorder,
+		"provider-tracker":    s.providerFactory,
 	}
-	for k, v := range overlay {
-		resources[k] = v
-	}
+	maps.Copy(resources, overlay)
 	return dt.StubGetter(resources)
 }
 
@@ -188,16 +215,18 @@ var expectedInputs = []string{
 	"agent", "authenticator", "clock", "mux",
 	"upgrade", "auditconfig-updater", "lease-manager",
 	"http-client", "change-stream",
-	"domain-services", "trace", "object-store", "log-sink", "db-accessor",
+	"domain-services", "trace", "object-store", "log-sink",
 	"jwt-parser", "watcher-registry",
-	"flight-recorder",
+	"flight-recorder", "provider-tracker",
 }
 
 func (s *ManifoldSuite) TestInputs(c *tc.C) {
+	defer s.setupMocks(c).Finish()
 	c.Assert(s.manifold.Inputs, tc.SameContents, expectedInputs)
 }
 
 func (s *ManifoldSuite) TestStart(c *tc.C) {
+	defer s.setupMocks(c).Finish()
 	w := s.startWorkerClean(c)
 	workertest.CleanKill(c, w)
 
@@ -237,7 +266,6 @@ func (s *ManifoldSuite) TestStart(c *tc.C) {
 		LogSink:                    s.logSink,
 		CharmhubHTTPClient:         s.charmhubHTTPClient,
 		DBGetter:                   s.dbGetter,
-		DBDeleter:                  s.dbDeleter,
 		DomainServicesGetter:       s.domainServicesGetter,
 		ControllerConfigService:    s.controllerConfigService,
 		TracerGetter:               s.tracerGetter,
@@ -246,10 +274,12 @@ func (s *ManifoldSuite) TestStart(c *tc.C) {
 		JWTParser:                  s.jwtParser,
 		WatcherRegistryGetter:      s.watcherRegistryGetter,
 		FlightRecorder:             s.flightRecorder,
+		EphemeralProviderFactory:   s.providerFactory,
 	})
 }
 
 func (s *ManifoldSuite) TestStopWorkerClosesState(c *tc.C) {
+	defer s.setupMocks(c).Finish()
 	w := s.startWorkerClean(c)
 	defer workertest.CleanKill(c, w)
 
@@ -257,6 +287,7 @@ func (s *ManifoldSuite) TestStopWorkerClosesState(c *tc.C) {
 }
 
 func (s *ManifoldSuite) startWorkerClean(c *tc.C) worker.Worker {
+	defer s.setupMocks(c).Finish()
 	w, err := s.manifold.Start(c.Context(), s.getter)
 	c.Assert(err, tc.ErrorIsNil)
 	workertest.CheckAlive(c, w)
@@ -264,6 +295,7 @@ func (s *ManifoldSuite) startWorkerClean(c *tc.C) worker.Worker {
 }
 
 func (s *ManifoldSuite) TestAddsAndRemovesMuxClients(c *tc.C) {
+	defer s.setupMocks(c).Finish()
 	waitFinished := make(chan struct{})
 	w := s.startWorkerClean(c)
 	go func() {
@@ -377,18 +409,20 @@ func (s stubWatchableDBGetter) GetWatchableDB(ctx context.Context, namespace str
 	return nil, nil
 }
 
-type stubDBDeleter struct{}
-
-func (s stubDBDeleter) DeleteDB(namespace string) error {
-	return nil
-}
-
 type stubDomainServicesGetter struct {
 	services.DomainServicesGetter
 }
 
 func (s *stubDomainServicesGetter) ServicesForModel(context.Context, model.UUID) (services.DomainServices, error) {
-	return nil, nil
+	return &stubDomainServices{}, nil
+}
+
+type stubDomainServices struct {
+	services.DomainServices
+}
+
+func (s *stubDomainServices) Access() *accessservice.Service {
+	return nil
 }
 
 type stubTracerGetter struct {

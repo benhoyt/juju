@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Simplestreams metadata reference: image UUIDs, agent binaries, and metadata format for Juju bootstrap on public and private clouds."
+---
+
 (metadata)=
 # Simplestreams metadata
 

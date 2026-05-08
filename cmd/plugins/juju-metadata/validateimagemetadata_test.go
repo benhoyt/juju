@@ -12,7 +12,10 @@ import (
 
 	"github.com/juju/juju/api/jujuclient"
 	"github.com/juju/juju/api/jujuclient/jujuclienttesting"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/modelcmd"
+	"github.com/juju/juju/controller"
 	corebase "github.com/juju/juju/core/base"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/environs/config"
@@ -20,8 +23,6 @@ import (
 	"github.com/juju/juju/environs/imagemetadata"
 	"github.com/juju/juju/environs/simplestreams"
 	sstestings "github.com/juju/juju/environs/simplestreams/testing"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	coretesting "github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/internal/uuid"
 )
@@ -101,7 +102,7 @@ func (s *ValidateImageMetadataSuite) makeLocalMetadata(c *tc.C, id, region strin
 
 func cacheTestEnvConfig(c *tc.C, store *jujuclient.MemStore) {
 	ec2UUID := uuid.MustNewUUID().String()
-	ec2Config, err := config.New(config.UseDefaults, map[string]interface{}{
+	ec2Config, err := config.New(config.UseDefaults, map[string]any{
 		"name":            "ec2",
 		"type":            "ec2",
 		"default-base":    "ubuntu@22.04",
@@ -135,8 +136,13 @@ func cacheTestEnvConfig(c *tc.C, store *jujuclient.MemStore) {
 		User: "admin",
 	}
 
+	// The controller config used for bootstrap config
+	// does not have the controller uuid or ca cart.
+	controllerCfg := coretesting.FakeControllerConfig()
+	delete(controllerCfg, controller.ControllerUUIDKey)
+	delete(controllerCfg, controller.CACertKey)
 	store.BootstrapConfig["ec2-controller"] = jujuclient.BootstrapConfig{
-		ControllerConfig:    coretesting.FakeControllerConfig(),
+		ControllerConfig:    controllerCfg,
 		ControllerModelUUID: ec2UUID,
 		Config:              ec2Config.AllAttrs(),
 		Cloud:               "ec2",

@@ -15,7 +15,7 @@ import (
 	commoncharm "github.com/juju/juju/api/common/charm"
 	corebase "github.com/juju/juju/core/base"
 	corecharm "github.com/juju/juju/core/charm"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 )
 
 type refresherFactorySuite struct{}
@@ -639,6 +639,6 @@ func refresherConfigWithOrigin(curl *charm.URL, ref string, platform corecharm.P
 type fakeLogger struct {
 }
 
-func (fakeLogger) Infof(_ string, _ ...interface{})    {}
-func (fakeLogger) Warningf(_ string, _ ...interface{}) {}
-func (fakeLogger) Verbosef(_ string, _ ...interface{}) {}
+func (fakeLogger) Infof(_ string, _ ...any)    {}
+func (fakeLogger) Warningf(_ string, _ ...any) {}
+func (fakeLogger) Verbosef(_ string, _ ...any) {}

@@ -14,9 +14,9 @@ import (
 
 	actionapi "github.com/juju/juju/api/client/action"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/watcher"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -181,7 +181,7 @@ func (c *showTaskCommand) Run(ctx *cmd.Context) error {
 	if c.out.Name() != "plain" {
 		return c.out.Write(ctx, formatted)
 	}
-	info := make(map[string]interface{})
+	info := make(map[string]any)
 	info[c.requestedId] = formatted
 	return c.out.Write(ctx, info)
 }

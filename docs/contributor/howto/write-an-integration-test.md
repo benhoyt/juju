@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Create integration tests for Juju using bash test suites, including bootstrapping, test execution, and teardown procedures."
+---
+
 (write-an-integration-test)=
 # Write an integration test
 > See also: {ref}`integration-testing`

@@ -16,7 +16,7 @@ import (
 	accessservice "github.com/juju/juju/domain/access/service"
 	accessstate "github.com/juju/juju/domain/access/state"
 	agentbinaryservice "github.com/juju/juju/domain/agentbinary/service"
-	agentbinarystate "github.com/juju/juju/domain/agentbinary/state"
+	agentbinarystate "github.com/juju/juju/domain/agentbinary/state/controller"
 	autocertcacheservice "github.com/juju/juju/domain/autocert/service"
 	autocertcachestate "github.com/juju/juju/domain/autocert/state"
 	changestreamservice "github.com/juju/juju/domain/changestream/service"
@@ -43,6 +43,8 @@ import (
 	modeldefaultsstate "github.com/juju/juju/domain/modeldefaults/state"
 	secretbackendservice "github.com/juju/juju/domain/secretbackend/service"
 	secretbackendstate "github.com/juju/juju/domain/secretbackend/state"
+	tracingservice "github.com/juju/juju/domain/tracing/service"
+	tracingstate "github.com/juju/juju/domain/tracing/state"
 	upgradeservice "github.com/juju/juju/domain/upgrade/service"
 	upgradestate "github.com/juju/juju/domain/upgrade/state"
 	"github.com/juju/juju/internal/errors"
@@ -174,9 +176,8 @@ func (s *ControllerServices) Flag() *flagservice.Service {
 
 // Access returns the access service, this includes users and permissions.
 func (s *ControllerServices) Access() *accessservice.Service {
-	return accessservice.NewService(
-		accessstate.NewState(changestream.NewTxnRunnerFactory(s.controllerDB), s.logger.Child("access")),
-	)
+	return accessservice.NewService(accessstate.NewState(changestream.NewTxnRunnerFactory(s.controllerDB),
+		s.clock, s.logger.Child("access")), s.clock)
 }
 
 func (s *ControllerServices) SecretBackend() *secretbackendservice.WatchableService {
@@ -214,6 +215,16 @@ func (s *ControllerServices) ControllerChangeStream() *changestreamservice.Servi
 			changestream.NewTxnRunnerFactory(s.controllerDB),
 			s.clock,
 			s.logger.Child("changestream"),
+		),
+	)
+}
+
+// Tracing returns the tracing service which provides access to tracing
+// configuration for charms.
+func (s *ControllerServices) Tracing() *tracingservice.Service {
+	return tracingservice.NewService(
+		tracingstate.NewState(
+			changestream.NewTxnRunnerFactory(s.controllerDB),
 		),
 	)
 }

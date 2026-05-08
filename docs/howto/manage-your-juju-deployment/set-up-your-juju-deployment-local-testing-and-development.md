@@ -1,14 +1,19 @@
+---
+myst:
+  html_meta:
+    description: "Set up a local Juju environment for testing and development with Multipass, MicroK8s, and charm development tools."
+---
 
 (set-things-up)=
 # Set up your deployment - local testing and development
 
-```{important}
-The logic is always the same: set up an isolated environment; get Juju, a cloud, and charms; start deploying. However, for certain steps there is an automatic path that greatly facilitates things -- we strongly recommend you take it.
+```{note}
+You can set things up
 
+- automatically, i.e., in a Juju-ready Ubuntu VM launched with Multipass and the Multipass `charm-dev` cloud init, or
+- manually -- with or without Multipass.
 
-If you however wish to follow the manual path and to skip the blueprint or the entire Multipass VM: For best results try to stay very close to [the definition of the `charm-dev` blueprint](https://github.com/canonical/multipass-blueprints/blob/ae90147b811a79eaf4508f4776390141e0195fe7/v1/charm-dev.yaml#L134).
-
-Depending on your use case you may also wish to install further Juju clients or charm development tools; we include those steps too, though feel free to skip them if they don't apply.
+For local testing and development we strongly recommend the automatic path. However, if that is not possible or desired, and you end up using the manual path, we recommend you stick close to the setup in the automatic path: https://raw.githubusercontent.com/canonical/multipass/refs/heads/main/data/cloud-init-yaml/cloud-init-charm-dev.yaml
 ```
 
 1. Create an isolated environment, as below:
@@ -29,19 +34,24 @@ Use Multipass to create an isolated environment:
 ``````{tabs}
 `````{group-tab} automatically
 
-Launch a VM called `my-juju-vm` using the `charm-dev` blueprint:
+Use the Multipass `charm-dev` cloud init to launch a Juju-ready VM called `my-juju-vm`:
 
 ```{note}
 This step may take a few minutes to complete (e.g., 10 mins).
 
 This is because the command downloads, installs, (updates,) and configures a number of packages, and the speed will be affected by network bandwidth (not just your own, but also that of the package sources).
 
-However, once it’s done, you’ll have everything you’ll need – all in a nice isolated environment that you can clean up easily. (See more: [GitHub > multipass-blueprints > charm-dev.yaml](https://github.com/canonical/multipass-blueprints/blob/ae90147b811a79eaf4508f4776390141e0195fe7/v1/charm-dev.yaml#L134).)
-
+However, once it’s done, you’ll have everything you’ll need – all in a nice isolated environment that you can clean up easily.
 ```
 
 ```text
-$ multipass launch --cpus 4 --memory 8G --disk 50G --name my-juju-vm charm-dev
+$ multipass launch 24.04 \
+  --name my-juju-vm \
+  --cpus 4 \
+  --memory 8G \
+  --disk 50G \
+  --timeout 1800 \
+  --cloud-init https://raw.githubusercontent.com/canonical/multipass/refs/heads/main/data/cloud-init-yaml/cloud-init-charm-dev.yaml
 
 ```
 
@@ -59,7 +69,7 @@ Open a shell into the VM:
 
 ```text
 $ multipass shell my-juju-vm
-Welcome to Ubuntu 22.04.4 LTS (GNU/Linux 5.15.0-100-generic x86_64)
+Welcome to Ubuntu 24.04.3 LTS (GNU/Linux 6.8.0-90-generic x86_64)
 # ...
 # Type any further commands after the VM shell prompt:
 ubuntu@my-juju-vm:~$
@@ -83,7 +93,7 @@ If the VM launch fails, run `multipass delete --purge my-juju-vm` to clean up, t
 ``````{tabs}
 `````{group-tab} automatically
 
-Thanks to the `charm-dev` blueprint, you should already have everything you need:
+Thanks to the `charm-dev` cloud init, you should already have everything you need:
 
 ```text
 # Verify that you have juju:

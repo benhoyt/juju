@@ -123,7 +123,7 @@ func (s *SecretService) GetConsumedRevision(ctx context.Context, uri *secrets.UR
 // secrets from the specified backend for which the specified consumers
 // have been granted the specified access.
 func (s *SecretService) ListGrantedSecretsForBackend(
-	ctx context.Context, backendID string, role secrets.SecretRole, consumers ...SecretAccessor,
+	ctx context.Context, backendID string, role secrets.SecretRole, consumers ...domainsecret.SecretAccessor,
 ) ([]*secrets.SecretRevisionRef, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
@@ -134,16 +134,36 @@ func (s *SecretService) ListGrantedSecretsForBackend(
 			SubjectID: consumer.ID,
 		}
 		switch consumer.Kind {
-		case UnitAccessor:
+		case domainsecret.UnitAccessor:
 			accessor.SubjectTypeID = domainsecret.SubjectUnit
-		case ApplicationAccessor:
+		case domainsecret.ApplicationAccessor:
 			accessor.SubjectTypeID = domainsecret.SubjectApplication
-		case ModelAccessor:
+		case domainsecret.ModelAccessor:
 			accessor.SubjectTypeID = domainsecret.SubjectModel
 		default:
 			return nil, errors.Errorf("consumer kind %q %w", consumer.Kind, coreerrors.NotValid)
 		}
 		accessors[i] = accessor
 	}
-	return s.secretState.ListGrantedSecretsForBackend(ctx, backendID, accessors, role)
+
+	// Expand the requested role to include all roles that satisfy it.
+	roles := expandRolesToMatch(role)
+
+	return s.secretState.ListGrantedSecretsForBackend(ctx, backendID, accessors, roles)
+}
+
+// expandRolesToMatch returns a slice of roles that satisfy the requested role.
+// RoleManage implies RoleView.
+func expandRolesToMatch(role secrets.SecretRole) []domainsecret.Role {
+	switch role {
+	case secrets.RoleView:
+		// Manage implies view, so include both.
+		return []domainsecret.Role{domainsecret.RoleView, domainsecret.RoleManage}
+	case secrets.RoleManage:
+		return []domainsecret.Role{domainsecret.RoleManage}
+	case secrets.RoleNone:
+		return nil
+	default:
+		return nil
+	}
 }

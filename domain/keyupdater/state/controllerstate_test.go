@@ -9,11 +9,11 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/juju/clock"
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/controller"
 	"github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
 	userstate "github.com/juju/juju/domain/access/state"
@@ -116,7 +116,7 @@ func (s *controllerStateSuite) TestControllerConfigKeys(c *tc.C) {
 // keys on a model that doesn't exist we get back a [modelerrors.NotFound] error.
 func (s *controllerStateSuite) TestGetUserAuthorizedKeysForModelNotFound(c *tc.C) {
 	st := NewControllerState(s.TxnRunnerFactory())
-	_, err := st.GetUserAuthorizedKeysForModel(c.Context(), modeltesting.GenModelUUID(c))
+	_, err := st.GetUserAuthorizedKeysForModel(c.Context(), tc.Must0(c, model.NewUUID))
 	c.Check(err, tc.ErrorIs, modelerrors.NotFound)
 }
 
@@ -131,7 +131,7 @@ func (s *controllerStateSuite) TestGetUserAuthorizedKeysForModel(c *tc.C) {
 	c.Check(err, tc.ErrorIsNil)
 
 	secondUserId := usertesting.GenUserUUID(c)
-	userSt := userstate.NewUserState(s.TxnRunnerFactory())
+	userSt := userstate.NewUserState(s.TxnRunnerFactory(), clock.WallClock)
 	err = userSt.AddUser(
 		c.Context(),
 		secondUserId,

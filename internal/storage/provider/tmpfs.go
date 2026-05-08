@@ -220,6 +220,10 @@ func (s *tmpfsFilesystemSource) attachFilesystem(
 	if err != nil {
 		return nil, err
 	}
+	options := fmt.Sprintf("size=%dm", info.Size)
+	if arg.ReadOnly {
+		options += ",ro"
+	}
 	if err := ensureDir(s.dirFuncs, path); err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -233,10 +237,6 @@ func (s *tmpfsFilesystemSource) attachFilesystem(
 		if err := ensureEmptyDir(s.dirFuncs, path); err != nil {
 			return nil, err
 		}
-		options := fmt.Sprintf("size=%dm", info.Size)
-		if arg.ReadOnly {
-			options += ",ro"
-		}
 		if _, err := s.run(
 			ctx,
 			"mount", "-t", "tmpfs", arg.Filesystem.String(), path, "-o", options,
@@ -244,6 +244,11 @@ func (s *tmpfsFilesystemSource) attachFilesystem(
 			os.Remove(path)
 			return nil, errors.Annotate(err, "cannot mount tmpfs")
 		}
+	}
+	etcDir := s.dirFuncs.etcDir()
+	options += ",nofail"
+	if err := ensureFstabEntry(etcDir, arg.Filesystem.String(), path, "tmpfs", options); err != nil {
+		return nil, errors.Annotate(err, "updating /etc/fstab failed")
 	}
 
 	return &storage.FilesystemAttachment{

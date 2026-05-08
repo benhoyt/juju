@@ -62,7 +62,7 @@ jobs:
       - name: Update microk8s operator image
         if: matrix.cloud == 'microk8s'
         run: |
-          # TODO: use temporary Docker account (set OCI_REGISTRY_USERNAME env var)
+          # TODO: use temporary Docker account (set PUSH_OCI_REGISTRY env var)
           sg snap_microk8s 'make microk8s-operator-update'
 
       - name: Smoke test (LXD)
@@ -73,9 +73,6 @@ jobs:
           export MODEL_ARCH=$(go env GOARCH)
           export BOOTSTRAP_ADDITIONAL_ARGS="--model-default enable-os-upgrade=false"
 
-          # Skip destroy to keep the environment up.
-          export SKIP_DESTROY=true
-
           ./main.sh -v -s 'test_build' smoke
 
       - name: Smoke test (MicroK8s)
@@ -85,9 +82,6 @@ jobs:
           cd tests
           export MODEL_ARCH=$(go env GOARCH)
 
-          # Skip destroy to keep the environment up.
-          export SKIP_DESTROY=true
-
           sg snap_microk8s './main.sh -c microk8s -v smoke_k8s'
 
   deploy:
@@ -95,8 +89,6 @@ jobs:
     runs-on: [self-hosted, linux, x64, aws, quad-xlarge]
     timeout-minutes: 60
     if: github.event.pull_request.draft == false
-    strategy:
-      fail-fast: false
     steps:
 
       - name: Checkout
@@ -128,10 +120,7 @@ jobs:
         run: |
           cd tests
           export MODEL_ARCH=$(go env GOARCH)
-          export BOOTSTRAP_ADDITIONAL_ARGS="--model-default enable-os-upgrade=false"
-
-          # Skip destroy to keep the environment up.
-          export SKIP_DESTROY=true
+          export BOOTSTRAP_ADDITIONAL_ARGS="--model-default enable-os-upgrade=false --model-default logging-config='<root>=INFO;juju.worker.asynccharmdownloader=TRACE'"
 
           # Skip these tests for now, as they rely on cmrs
           ./main.sh -v -s 'test_cmr_bundles_export_overlay' deploy

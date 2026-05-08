@@ -6,19 +6,22 @@ package bakery
 import (
 	"context"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
 
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/bakery"
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/bakery/checkers"
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/httpbakery"
 	"github.com/juju/clock"
+	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"gopkg.in/macaroon.v2"
 
+	apimacaroon "github.com/juju/juju/api/macaroon"
 	"github.com/juju/juju/apiserver/bakeryutil"
 	"github.com/juju/juju/core/logger"
 	internalerrors "github.com/juju/juju/internal/errors"
-	internalmacaroon "github.com/juju/juju/internal/macaroon"
 )
 
 // HTTPClient is implemented by HTTP client packages to make an HTTP request.
@@ -46,12 +49,16 @@ func NewJAASOfferBakery(
 	clock clock.Clock,
 	logger logger.Logger,
 ) (*JAASOfferBakery, error) {
-	store := internalmacaroon.NewRootKeyStore(backingStore, offerPermissionExpiryTime, clock)
-
-	externalKeyLocator := newExternalPublicKeyLocator(endpoint, httpClient, logger)
+	store := apimacaroon.NewRootKeyStore(backingStore, apimacaroon.DefaultPolicy, clock)
+	cleanedEndpoint, err := cleanDischargeURL(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	externalKeyLocator := newExternalPublicKeyLocator(cleanedEndpoint, httpClient, logger)
 	bakery := &bakeryutil.StorageBakery{
 		Bakery: bakery.New(bakery.BakeryParams{
 			Location:      location,
+			Key:           keyPair,
 			Locator:       externalKeyLocator,
 			RootKeyStore:  store,
 			Checker:       checker,
@@ -62,10 +69,31 @@ func NewJAASOfferBakery(
 	return &JAASOfferBakery{
 		baseBakery: baseBakery{checker: bakery.Checker},
 		oven:       bakery,
-		endpoint:   endpoint,
+		endpoint:   cleanedEndpoint,
 		clock:      clock,
 		logger:     logger,
 	}, nil
+}
+
+// cleanDischargeURL expects an address to JIMM's login-token-refresh-url,
+// and attempts to remove the .well-known/jwks.json path segments,
+// whilst preserving any pre-existing prefixes.
+//
+// For example:
+//   - jimm.com/.well-known/jwks.json -> jimm.com/macaroons
+//   - jimm.com/myprefix/.well-known/jwks.json -> jimm.com/myprefix/macaroons
+func cleanDischargeURL(addr string) (string, error) {
+	refreshURL, err := url.Parse(addr)
+	if err != nil {
+		return "", errors.Trace(err)
+	}
+	cleanedPath, ok := strings.CutSuffix(refreshURL.Path, "/.well-known/jwks.json")
+	if !ok {
+		return "", errors.Trace(errors.New("failed to cut .well-known"))
+	}
+	refreshURL.Path = path.Join(cleanedPath, "macaroons")
+
+	return refreshURL.String(), nil
 }
 
 // GetConsumeOfferCaveats returns the caveats for consuming an offer.
@@ -92,7 +120,7 @@ func (o *JAASOfferBakery) GetRemoteRelationCaveats(offerUUID, sourceModelUUID, u
 
 // InferDeclaredFromMacaroon returns the declared attributes from the macaroon.
 func (o *JAASOfferBakery) InferDeclaredFromMacaroon(mac macaroon.Slice, requiredValues map[string]string) DeclaredValues {
-	declared := checkers.InferDeclared(internalmacaroon.MacaroonNamespace, mac)
+	declared := checkers.InferDeclared(apimacaroon.MacaroonNamespace, mac)
 
 	o.logger.Debugf(context.TODO(), "check macaroons with declared attrs: %v", declared)
 
@@ -142,8 +170,6 @@ func (o *JAASOfferBakery) CreateDischargeMacaroon(
 	declaredValues DeclaredValues,
 	op bakery.Op, version bakery.Version,
 ) (*bakery.Macaroon, error) {
-	// TODO (stickupkid): If these are required values we should check that
-	// they're not empty.
 	requiredOffer := requiredValues[offerUUIDKey]
 	conditionParts := []string{
 		"is-consumer",

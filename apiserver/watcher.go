@@ -6,6 +6,7 @@ package apiserver
 import (
 	"context"
 
+	"github.com/juju/collections/set"
 	"github.com/juju/collections/transform"
 	"github.com/juju/errors"
 
@@ -14,9 +15,12 @@ import (
 	"github.com/juju/juju/apiserver/facade"
 	"github.com/juju/juju/apiserver/facades/controller/crossmodelrelations"
 	"github.com/juju/juju/apiserver/internal"
+	"github.com/juju/juju/core/application"
+	corerelation "github.com/juju/juju/core/relation"
 	coresecrets "github.com/juju/juju/core/secrets"
 	"github.com/juju/juju/core/unit"
 	corewatcher "github.com/juju/juju/core/watcher"
+	"github.com/juju/juju/domain/relation"
 	internalerrors "github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/internal/worker/watcherregistry"
 	"github.com/juju/juju/rpc/params"
@@ -55,8 +59,8 @@ func isAgentOrUser(auth facade.Authorizer) bool {
 
 func newNotifyWatcher(_ context.Context, context facade.ModelContext) (facade.Facade, error) {
 	auth := context.Auth()
-	// TODO(wallyworld) - enhance this watcher to support
-	// anonymous api calls with macaroons.
+	// TODO(wallyworld) - enhance this watcher to support anonymous api calls
+	// with macaroons.
 	if auth.GetAuthTag() != nil && !isAgentOrUser(auth) {
 		return nil, apiservererrors.ErrPerm
 	}
@@ -101,8 +105,8 @@ type srvStringsWatcher struct {
 
 func newStringsWatcher(_ context.Context, context facade.ModelContext) (facade.Facade, error) {
 	auth := context.Auth()
-	// TODO(wallyworld) - enhance this watcher to support
-	// anonymous api calls with macaroons.
+	// TODO(wallyworld) - enhance this watcher to support anonymous api calls
+	// with macaroons.
 	if auth.GetAuthTag() != nil && !isAgentOrUser(auth) {
 		return nil, apiservererrors.ErrPerm
 	}
@@ -120,9 +124,9 @@ func newStringsWatcher(_ context.Context, context facade.ModelContext) (facade.F
 	}, nil
 }
 
-// Next returns when a change has occurred to an entity of the
-// collection being watched since the most recent call to Next
-// or the Watch call that created the srvStringsWatcher.
+// Next returns when a change has occurred to an entity of the collection being
+// watched since the most recent call to Next or the Watch call that created the
+// srvStringsWatcher.
 func (w *srvStringsWatcher) Next(ctx context.Context) (params.StringsWatchResult, error) {
 	changes, err := internal.FirstResult[[]string](ctx, w.watcher)
 	if err != nil {
@@ -133,9 +137,9 @@ func (w *srvStringsWatcher) Next(ctx context.Context) (params.StringsWatchResult
 	}, nil
 }
 
-// srvRelationUnitsWatcher defines the API wrapping a RelationUnitsWatcher.
-// It notifies about units entering and leaving the scope of a RelationUnit,
-// and changes to the settings of those units known to have entered.
+// srvRelationUnitsWatcher defines the API wrapping a RelationUnitsWatcher. It
+// notifies about units entering and leaving the scope of a RelationUnit, and
+// changes to the settings of those units known to have entered.
 type srvRelationUnitsWatcher struct {
 	watcherCommon
 	watcher common.RelationUnitsWatcher
@@ -143,8 +147,8 @@ type srvRelationUnitsWatcher struct {
 
 func newRelationUnitsWatcher(_ context.Context, context facade.ModelContext) (facade.Facade, error) {
 	auth := context.Auth()
-	// TODO(wallyworld) - enhance this watcher to support
-	// anonymous api calls with macaroons.
+	// TODO(wallyworld) - enhance this watcher to support anonymous api calls
+	// with macaroons.
 	if auth.GetAuthTag() != nil && !isAgent(auth) {
 		return nil, apiservererrors.ErrPerm
 	}
@@ -162,11 +166,11 @@ func newRelationUnitsWatcher(_ context.Context, context facade.ModelContext) (fa
 	}, nil
 }
 
-// Next returns when a change has occurred to an entity of the
-// collection being watched since the most recent call to Next
-// or the Watch call that created the srvRelationUnitsWatcher.
+// Next returns when a change has occurred to an entity of the collection being
+// watched since the most recent call to Next or the Watch call that created the
+// srvRelationUnitsWatcher.
 func (w *srvRelationUnitsWatcher) Next(ctx context.Context) (params.RelationUnitsWatchResult, error) {
-	changes, err := internal.FirstResult[params.RelationUnitsChange](ctx, w.watcher)
+	changes, err := internal.FirstResult(ctx, w.watcher)
 	if err != nil {
 		return params.RelationUnitsWatchResult{}, errors.Trace(err)
 	}
@@ -175,18 +179,23 @@ func (w *srvRelationUnitsWatcher) Next(ctx context.Context) (params.RelationUnit
 	}, nil
 }
 
-// srvRemoteRelationWatcher defines the API wrapping a
-// RelationUnitsWatcher but serving the events it emits as
-// fully-expanded params.RemoteRelationChangeEvents so they can be
-// used across model/controller boundaries.
+// srvRemoteRelationWatcher defines the API wrapping a RelationUnitsWatcher but
+// serving the events it emits as fully-expanded
+// params.RemoteRelationChangeEvents so they can be used across model/controller
+// boundaries.
 type srvRemoteRelationWatcher struct {
-	watcher         crossmodelrelations.RelationChangesWatcher
+	watcherCommon
+	watcher         corewatcher.NotifyWatcher
 	relationService RelationService
+
+	relationUUID    corerelation.UUID
+	applicationUUID application.UUID
+	data            relation.ConsumerRelationUnitsChange
 }
 
-func newRemoteRelationWatcher(_ context.Context, context facade.ModelContext) (facade.Facade, error) {
-	// TODO(wallyworld) - enhance this watcher to support
-	// anonymous api calls with macaroons.
+func newRemoteRelationWatcher(ctx context.Context, context facade.ModelContext) (facade.Facade, error) {
+	// TODO(wallyworld) - enhance this watcher to support anonymous api calls
+	// with macaroons.
 	auth := context.Auth()
 	if auth.GetAuthTag() != nil && !isAgent(auth) {
 		return nil, apiservererrors.ErrPerm
@@ -201,93 +210,170 @@ func newRemoteRelationWatcher(_ context.Context, context facade.ModelContext) (f
 	}
 	watcher, ok := w.(crossmodelrelations.RelationChangesWatcher)
 	if !ok {
-		return nil, errors.Errorf("watcher id: %s is not a crossmodelrelations.RelationChangesWatcher", id)
+		return nil, internalerrors.Errorf("watcher id: %s is not a crossmodelrelations.RelationChangesWatcher", id)
 	}
 
-	domainServices := context.DomainServices()
+	relationUUID := watcher.RelationUUID()
+	applicationUUID := watcher.ApplicationUUID()
+	relationService := context.DomainServices().Relation()
+
+	initialData, err := relationService.GetConsumerRelationUnitsChange(ctx, relationUUID, applicationUUID)
+	if err != nil {
+		return nil, internalerrors.Errorf("fetching initial consumer side of relation %v: %w", relationUUID, err)
+	}
 
 	return &srvRemoteRelationWatcher{
+		watcherCommon:   newWatcherCommon(context),
 		watcher:         watcher,
-		relationService: domainServices.Relation(),
+		relationService: relationService,
+		relationUUID:    relationUUID,
+		applicationUUID: applicationUUID,
+		data:            initialData,
 	}, nil
 }
 
 func (w *srvRemoteRelationWatcher) Next(ctx context.Context) (params.RemoteRelationWatchResult, error) {
-	select {
-	case <-ctx.Done():
-		return params.RemoteRelationWatchResult{}, ctx.Err()
-	case change, ok := <-w.watcher.Changes():
-		if !ok {
-			return params.RemoteRelationWatchResult{}, apiservererrors.ErrStoppedWatcher
-		}
+	for {
+		select {
+		case <-ctx.Done():
+			return params.RemoteRelationWatchResult{}, ctx.Err()
+		case _, ok := <-w.watcher.Changes():
+			if !ok {
+				return params.RemoteRelationWatchResult{}, apiservererrors.ErrStoppedWatcher
+			}
 
-		var departed []int
-		for _, unitName := range change.Departed {
-			num := unit.Name(unitName).Number()
-			departed = append(departed, num)
-		}
-
-		relationUUID := w.watcher.RelationToken()
-		applicationUUID := w.watcher.ApplicationToken()
-
-		inScopeUnitNames, err := w.relationService.GetInScopeUnits(ctx, applicationUUID, relationUUID)
-		if err != nil {
-			return params.RemoteRelationWatchResult{
-				Error: apiservererrors.ServerError(err),
-			}, nil
-		}
-
-		changedUnitNames := transform.MapToSlice(change.Changed,
-			func(k string, _ params.UnitSettings) []unit.Name { return []unit.Name{unit.Name(k)} })
-
-		changedUnitSettings, err := w.relationService.GetUnitSettingsForUnits(ctx, changedUnitNames)
-		if err != nil {
-			return params.RemoteRelationWatchResult{
-				Error: apiservererrors.ServerError(err),
-			}, nil
-		}
-		changedUnitSettingsParams := transform.MapToSlice(changedUnitSettings,
-			func(k unit.Name, v map[string]interface{}) []params.RemoteRelationUnitChange {
-				return []params.RemoteRelationUnitChange{{
-					UnitId:   k.Number(),
-					Settings: v,
-				}}
-			})
-
-		var appSettings map[string]interface{}
-		if len(change.AppChanged) > 0 {
-			var err error
-			appSettings, err = w.relationService.GetSettingsForApplication(ctx, applicationUUID)
+			newData, err := w.relationService.GetConsumerRelationUnitsChange(ctx, w.relationUUID, w.applicationUUID)
 			if err != nil {
 				return params.RemoteRelationWatchResult{
 					Error: apiservererrors.ServerError(err),
 				}, nil
 			}
-		}
 
-		return params.RemoteRelationWatchResult{
-			Changes: params.RemoteRelationChangeEvent{
-				RelationToken:           relationUUID.String(),
-				ApplicationOrOfferToken: applicationUUID.String(),
-				DepartedUnits:           departed,
-				InScopeUnits:            transform.Slice(inScopeUnitNames, func(n unit.Name) int { return n.Number() }),
-				UnitCount:               len(inScopeUnitNames),
-				ApplicationSettings:     appSettings,
-				ChangedUnits:            changedUnitSettingsParams,
-			},
-		}, nil
+			change, sendEvent := w.convert(newData)
+			if !sendEvent {
+				continue
+			}
+
+			var departed []int
+			for _, unitName := range change.Departed {
+				num := unit.Name(unitName).Number()
+				departed = append(departed, num)
+			}
+
+			inScopeUnitNames, err := w.relationService.GetInScopeUnits(ctx, w.applicationUUID, w.relationUUID)
+			if err != nil {
+				return params.RemoteRelationWatchResult{
+					Error: apiservererrors.ServerError(err),
+				}, nil
+			}
+
+			changedUnitNames := transform.MapToSlice(change.Changed,
+				func(k string, _ params.UnitSettings) []unit.Name { return []unit.Name{unit.Name(k)} })
+
+			changedUnitSettings, err := w.relationService.GetUnitSettingsForUnits(ctx, w.relationUUID, changedUnitNames)
+			if err != nil {
+				return params.RemoteRelationWatchResult{
+					Error: apiservererrors.ServerError(err),
+				}, nil
+			}
+			changedUnitSettingsParams := transform.Slice(changedUnitSettings,
+				func(in relation.UnitSettings) params.RemoteRelationUnitChange {
+					return params.RemoteRelationUnitChange{
+						UnitId:   in.UnitID,
+						Settings: transform.Map(in.Settings, func(k string, v string) (string, any) { return k, v }),
+					}
+				})
+
+			var appSettings map[string]string
+			if len(change.AppChanged) > 0 {
+				var err error
+				appSettings, err = w.relationService.GetRelationApplicationSettings(ctx, w.relationUUID, w.applicationUUID)
+				if err != nil {
+					return params.RemoteRelationWatchResult{
+						Error: apiservererrors.ServerError(err),
+					}, nil
+				}
+			}
+
+			return params.RemoteRelationWatchResult{
+				Changes: params.RemoteRelationChangeEvent{
+					RelationToken:           w.relationUUID.String(),
+					ApplicationOrOfferToken: w.applicationUUID.String(),
+					DepartedUnits:           departed,
+					InScopeUnits:            transform.Slice(inScopeUnitNames, func(n unit.Name) int { return n.Number() }),
+					UnitCount:               len(inScopeUnitNames),
+					ApplicationSettings:     transform.Map(appSettings, func(k string, v string) (string, any) { return k, v }),
+					ChangedUnits:            changedUnitSettingsParams,
+				},
+			}, nil
+		}
 	}
+}
+
+func (w *srvRemoteRelationWatcher) convert(newData relation.ConsumerRelationUnitsChange) (params.RelationUnitsChange, bool) {
+	changes := w.dataChanges(newData)
+	if changes.Empty() {
+		return params.RelationUnitsChange{}, false
+	}
+
+	// If there are changes, keep the latest version for next time.
+	w.data = newData
+
+	unitsChanged := transform.Map(changes.UnitsSettingsVersions, func(key string, val int64) (string, params.UnitSettings) {
+		return key, params.UnitSettings{Version: val}
+	})
+
+	return params.RelationUnitsChange{
+		Changed:    unitsChanged,
+		AppChanged: changes.AppSettingsVersion,
+		Departed:   changes.DepartedUnits,
+	}, true
+}
+
+// dataChanges returns the changed data since the last time this watcher
+// was triggered.
+func (w *srvRemoteRelationWatcher) dataChanges(event relation.ConsumerRelationUnitsChange) relation.ConsumerRelationUnitsChange {
+	changedEvent := relation.ConsumerRelationUnitsChange{}
+
+	departed := set.NewStrings(event.DepartedUnits...).Difference(set.NewStrings(w.data.DepartedUnits...))
+	if !departed.IsEmpty() {
+		changedEvent.DepartedUnits = departed.SortedValues()
+	}
+
+	appChanges := w.mapDifference(w.data.AppSettingsVersion, event.AppSettingsVersion)
+	if len(appChanges) > 0 {
+		changedEvent.AppSettingsVersion = appChanges
+	}
+
+	unitChanges := w.mapDifference(w.data.UnitsSettingsVersions, event.UnitsSettingsVersions)
+	if len(unitChanges) > 0 {
+		changedEvent.UnitsSettingsVersions = unitChanges
+	}
+
+	return changedEvent
+}
+
+func (w *srvRemoteRelationWatcher) mapDifference(oldMap, newMap map[string]int64) map[string]int64 {
+	difference := make(map[string]int64, 0)
+	for k, newV := range newMap {
+		oldV, ok := oldMap[k]
+		if !ok || oldV != newV {
+			difference[k] = newV
+		}
+	}
+	return difference
 }
 
 // srvRelationStatusWatcher defines the API wrapping a RelationStatusWatcher.
 type srvRelationStatusWatcher struct {
+	watcherCommon
 	watcher         crossmodelrelations.RelationStatusWatcher
 	relationService RelationService
 }
 
-func newRelationStatusWatcher(_ context.Context, ctx facade.ModelContext) (facade.Facade, error) {
-	id := ctx.ID()
-	auth := ctx.Auth()
+func newRelationStatusWatcher(ctx context.Context, context facade.ModelContext) (facade.Facade, error) {
+	id := context.ID()
+	auth := context.Auth()
 
 	// TODO(wallyworld Oct 2017) - enhance this watcher to support
 	// anonymous api calls with macaroons. (All watchers in the file, see 3.6)
@@ -295,7 +381,7 @@ func newRelationStatusWatcher(_ context.Context, ctx facade.ModelContext) (facad
 		return nil, apiservererrors.ErrPerm
 	}
 
-	watcherRegistry := ctx.WatcherRegistry()
+	watcherRegistry := context.WatcherRegistry()
 	w, err := watcherRegistry.Get(id)
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -307,7 +393,8 @@ func newRelationStatusWatcher(_ context.Context, ctx facade.ModelContext) (facad
 	}
 
 	return &srvRelationStatusWatcher{
-		relationService: ctx.DomainServices().Relation(),
+		watcherCommon:   newWatcherCommon(context),
+		relationService: context.DomainServices().Relation(),
 		watcher:         watcher,
 	}, nil
 }
@@ -323,6 +410,7 @@ func (w *srvRelationStatusWatcher) Next(ctx context.Context) (params.RelationLif
 		if !ok {
 			return params.RelationLifeSuspendedStatusWatchResult{}, apiservererrors.ErrStoppedWatcher
 		}
+
 		// TODO (hml) only send the change if not migrating
 		// If we are migrating, we do not want to inform remote watchers that
 		// the relation is dead before they have had a chance to be redirected
@@ -351,6 +439,7 @@ func (w *srvRelationStatusWatcher) Next(ctx context.Context) (params.RelationLif
 // srvOfferStatusWatcher defines the API wrapping a
 // crossmodelrelations.OfferStatusWatcher.
 type srvOfferStatusWatcher struct {
+	watcherCommon
 	watcher       crossmodelrelations.OfferWatcher
 	statusService StatusService
 }
@@ -371,6 +460,7 @@ func newOfferStatusWatcher(_ context.Context, context facade.ModelContext) (faca
 	domainServices := context.DomainServices()
 
 	return &srvOfferStatusWatcher{
+		watcherCommon: newWatcherCommon(context),
 		watcher:       watcher,
 		statusService: domainServices.Status(),
 	}, nil
@@ -493,7 +583,7 @@ func NewModelSummaryWatcher(context facade.ModelContext) (*SrvModelSummaryWatche
 		//
 		// This is useful because the AllWatcher is reused for
 		// both the WatchAll (requires model access rights) and
-		// the WatchAllModels (requring controller superuser
+		// the WatchAllModels (requiring controller superuser
 		// rights) API calls.
 		return nil, apiservererrors.ErrPerm
 	}

@@ -6,11 +6,12 @@ package objectstoreservices
 import (
 	"testing"
 
+	"github.com/juju/clock"
 	"github.com/juju/errors"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	dt "github.com/juju/worker/v4/dependency/testing"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	dt "github.com/juju/worker/v5/dependency/testing"
+	"github.com/juju/worker/v5/workertest"
 
 	"github.com/juju/juju/core/changestream"
 	"github.com/juju/juju/core/logger"
@@ -31,6 +32,10 @@ func (s *manifoldSuite) TestValidateConfig(c *tc.C) {
 
 	cfg := s.getConfig()
 	c.Check(cfg.Validate(), tc.ErrorIsNil)
+
+	cfg = s.getConfig()
+	cfg.Clock = nil
+	c.Check(cfg.Validate(), tc.ErrorIs, errors.NotValid)
 
 	cfg = s.getConfig()
 	cfg.Logger = nil
@@ -62,6 +67,7 @@ func (s *manifoldSuite) TestStart(c *tc.C) {
 
 	manifold := Manifold(ManifoldConfig{
 		ChangeStreamName:             "changestream",
+		Clock:                        clock.WallClock,
 		Logger:                       s.logger,
 		NewWorker:                    NewWorker,
 		NewObjectStoreServices:       NewObjectStoreServices,
@@ -79,6 +85,7 @@ func (s *manifoldSuite) TestOutputObjectStoreServicesGetter(c *tc.C) {
 
 	w, err := NewWorker(Config{
 		DBGetter:                     s.dbGetter,
+		Clock:                        clock.WallClock,
 		Logger:                       s.logger,
 		NewObjectStoreServices:       NewObjectStoreServices,
 		NewObjectStoreServicesGetter: NewObjectStoreServicesGetter,
@@ -98,6 +105,7 @@ func (s *manifoldSuite) TestOutputInvalid(c *tc.C) {
 
 	w, err := NewWorker(Config{
 		DBGetter:                     s.dbGetter,
+		Clock:                        clock.WallClock,
 		Logger:                       s.logger,
 		NewObjectStoreServices:       NewObjectStoreServices,
 		NewObjectStoreServicesGetter: NewObjectStoreServicesGetter,
@@ -115,14 +123,15 @@ func (s *manifoldSuite) TestOutputInvalid(c *tc.C) {
 func (s *manifoldSuite) getConfig() ManifoldConfig {
 	return ManifoldConfig{
 		ChangeStreamName: "changestream",
+		Clock:            clock.WallClock,
 		Logger:           s.logger,
 		NewWorker: func(Config) (worker.Worker, error) {
 			return nil, nil
 		},
-		NewObjectStoreServices: func(model.UUID, changestream.WatchableDBGetter, logger.Logger) services.ObjectStoreServices {
+		NewObjectStoreServices: func(model.UUID, changestream.WatchableDBGetter, clock.Clock, logger.Logger) services.ObjectStoreServices {
 			return nil
 		},
-		NewObjectStoreServicesGetter: func(ObjectStoreServicesFn, changestream.WatchableDBGetter, logger.Logger) services.ObjectStoreServicesGetter {
+		NewObjectStoreServicesGetter: func(ObjectStoreServicesFn, changestream.WatchableDBGetter, clock.Clock, logger.Logger) services.ObjectStoreServicesGetter {
 			return nil
 		},
 	}

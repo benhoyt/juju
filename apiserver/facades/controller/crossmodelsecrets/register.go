@@ -17,10 +17,10 @@ import (
 func Register(registry facade.FacadeRegistry) {
 	registry.MustRegisterForMultiModel("CrossModelSecrets", 1, func(stdCtx context.Context, ctx facade.MultiModelContext) (facade.Facade, error) {
 		return makeStateCrossModelSecretsAPIV1(stdCtx, ctx)
-	}, reflect.TypeOf((*CrossModelSecretsAPIV1)(nil)))
+	}, reflect.TypeFor[*CrossModelSecretsAPIV1]())
 	registry.MustRegisterForMultiModel("CrossModelSecrets", 2, func(stdCtx context.Context, ctx facade.MultiModelContext) (facade.Facade, error) {
 		return makeStateCrossModelSecretsAPI(stdCtx, ctx)
-	}, reflect.TypeOf((*CrossModelSecretsAPI)(nil)))
+	}, reflect.TypeFor[*CrossModelSecretsAPI]())
 }
 
 // makeStateCrossModelSecretsAPIV1 creates a new server-side CrossModelSecrets V1 API facade.
@@ -42,13 +42,6 @@ func makeStateCrossModelSecretsAPI(stdCtx context.Context, ctx facade.MultiModel
 		}
 		return domainServices.Secret(), nil
 	}
-	applicationServiceGetter := func(c context.Context, modelUUID model.UUID) (ApplicationService, error) {
-		domainServices, err := ctx.DomainServicesForModel(stdCtx, modelUUID)
-		if err != nil {
-			return nil, errors.Capture(err)
-		}
-		return domainServices.Application(), nil
-	}
 	crossModelRelationServiceGetter := func(c context.Context, modelUUID model.UUID) (CrossModelRelationService, error) {
 		domainServices, err := ctx.DomainServicesForModel(stdCtx, modelUUID)
 		if err != nil {
@@ -63,7 +56,6 @@ func makeStateCrossModelSecretsAPI(stdCtx context.Context, ctx facade.MultiModel
 		ctx.CrossModelAuthContext(),
 		ctx.DomainServices().SecretBackend(),
 		secretsServiceGetter,
-		applicationServiceGetter,
 		crossModelRelationServiceGetter,
 		ctx.Logger().Child("crossmodelsecrets"),
 	)

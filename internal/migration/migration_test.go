@@ -25,81 +25,13 @@ import (
 	"github.com/juju/juju/core/semversion"
 	corestorage "github.com/juju/juju/core/storage"
 	domaincharm "github.com/juju/juju/domain/application/charm"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/migration"
 	"github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/internal/testhelpers"
 	"github.com/juju/juju/internal/tools"
 )
-
-type ExportSuite struct {
-	storageRegistryGetter *MockModelStorageRegistryGetter
-	operationsExporter    *MockOperationExporter
-	coordinator           *MockCoordinator
-	model                 *MockModel
-}
-
-func TestExportSuite(t *testing.T) {
-	tc.Run(t, &ExportSuite{})
-}
-
-func (s *ExportSuite) setupMocks(c *tc.C) *gomock.Controller {
-	ctrl := gomock.NewController(c)
-
-	s.storageRegistryGetter = NewMockModelStorageRegistryGetter(ctrl)
-	s.operationsExporter = NewMockOperationExporter(ctrl)
-	s.coordinator = NewMockCoordinator(ctrl)
-	s.model = NewMockModel(ctrl)
-
-	return ctrl
-}
-
-func (s *ExportSuite) TestExportValidates(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	scope := modelmigration.NewScope(nil, nil, nil)
-
-	// The order of the expectations is important here. We expect that the
-	// validation is the last thing that happens.
-	gomock.InOrder(
-		s.operationsExporter.EXPECT().ExportOperations(s.storageRegistryGetter),
-		s.coordinator.EXPECT().Perform(gomock.Any(), scope, s.model).Return(nil),
-		s.model.EXPECT().Validate().Return(nil),
-	)
-
-	exporter := migration.NewModelExporter(
-		s.operationsExporter,
-		scope,
-		s.storageRegistryGetter,
-		s.coordinator,
-		nil, nil,
-	)
-
-	_, err := exporter.Export(c.Context(), s.model)
-	c.Assert(err, tc.ErrorIsNil)
-}
-
-func (s *ExportSuite) TestExportValidationFails(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	scope := modelmigration.NewScope(nil, nil, nil)
-
-	s.operationsExporter.EXPECT().ExportOperations(s.storageRegistryGetter)
-	s.model.EXPECT().Validate().Return(errors.New("boom"))
-	s.coordinator.EXPECT().Perform(gomock.Any(), scope, s.model).Return(nil)
-
-	exporter := migration.NewModelExporter(
-		s.operationsExporter,
-		scope,
-		s.storageRegistryGetter,
-		s.coordinator,
-		nil, nil,
-	)
-
-	_, err := exporter.Export(c.Context(), s.model)
-	c.Assert(err, tc.ErrorMatches, "boom")
-}
 
 type ImportSuite struct {
 	testhelpers.IsolationSuite
@@ -122,13 +54,15 @@ func (s *ImportSuite) setupMocks(c *tc.C) *gomock.Controller {
 
 func (s *ImportSuite) TestBadBytes(c *tc.C) {
 	bytes := []byte("not a model")
-	scope := func(model.UUID) modelmigration.Scope { return modelmigration.NewScope(nil, nil, nil) }
+	scope := func(model.UUID) modelmigration.Scope {
+		return modelmigration.NewScope(nil, nil, nil, nil, tc.Must0(c, model.NewUUID))
+	}
 	importer := migration.NewModelImporter(
-		scope, nil, nil,
+		scope, nil,
 		corestorage.ConstModelStorageRegistry(func() storage.ProviderRegistry {
 			return nil
 		}),
-		nil,
+		"controller-uuid",
 		loggertesting.WrapCheckLog(c),
 		clock.WallClock,
 	)

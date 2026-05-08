@@ -12,12 +12,14 @@ import (
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/core/instance"
+	coremachine "github.com/juju/juju/core/machine"
 	applicationservice "github.com/juju/juju/domain/application/service"
 	"github.com/juju/juju/domain/deployment"
 	"github.com/juju/juju/domain/life"
 	domainmachine "github.com/juju/juju/domain/machine"
 	machineerrors "github.com/juju/juju/domain/machine/errors"
 	removalerrors "github.com/juju/juju/domain/removal/errors"
+	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 )
 
@@ -38,11 +40,11 @@ func (s *machineSuite) TestMachineExists(c *tc.C) {
 
 	exists, err := st.MachineExists(c.Context(), machineUUID.String())
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(exists, tc.Equals, true)
+	c.Check(exists, tc.IsTrue)
 
 	exists, err = st.MachineExists(c.Context(), "not-today-henry")
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(exists, tc.Equals, false)
+	c.Check(exists, tc.IsFalse)
 }
 
 func (s *machineSuite) TestGetMachineLifeSuccess(c *tc.C) {
@@ -288,8 +290,15 @@ VALUES ('filesystem-uuid', 'filesystem-id', 0, 1)`
 			return err
 		}
 
+		mfs := `
+INSERT INTO machine_filesystem(machine_uuid, filesystem_uuid)
+VALUES (?, 'filesystem-uuid')`
+		if _, err := tx.ExecContext(ctx, mfs, machineUUID.String()); err != nil {
+			return err
+		}
+
 		fsa := `
-iNSERT INTO storage_filesystem_attachment(uuid, storage_filesystem_uuid, net_node_uuid, life_id, provision_scope_id)
+INSERT INTO storage_filesystem_attachment(uuid, storage_filesystem_uuid, net_node_uuid, life_id, provision_scope_id)
 VALUES ('filesystem-attachment-uuid', 'filesystem-uuid', ?, 0, 1)`
 		if _, err := tx.ExecContext(ctx, fsa, netNodeUUID); err != nil {
 			return err
@@ -319,7 +328,8 @@ VALUES ('instance-uuid', 'filesystem-uuid')`
 	s.checkStorageAttachmentLife(c, "storage-attachment-uuid", life.Dying)
 	s.checkStorageInstanceLife(c, "instance-uuid", life.Dying)
 	s.checkFileSystemLife(c, "filesystem-uuid", life.Dying)
-	s.checkFileSystemAttachmentLife(c, "filesystem-attachment-uuid", life.Dying)
+	// Filesystem attachment life stays alive until the storage attachment is dead.
+	s.checkFileSystemAttachmentLife(c, "filesystem-attachment-uuid", life.Alive)
 
 	c.Check(cascaded.StorageAttachmentUUIDs, tc.DeepEquals, []string{"storage-attachment-uuid"})
 	c.Check(cascaded.StorageInstanceUUIDs, tc.DeepEquals, []string{"instance-uuid"})
@@ -383,6 +393,13 @@ VALUES ('volume-uuid', 'volume-id', 0, 1)`
 			return err
 		}
 
+		mv := `
+INSERT INTO machine_volume(machine_uuid, volume_uuid)
+VALUES (?, 'volume-uuid')`
+		if _, err := tx.ExecContext(ctx, mv, machineUUID.String()); err != nil {
+			return err
+		}
+
 		vola := `
 iNSERT INTO storage_volume_attachment(uuid, storage_volume_uuid, net_node_uuid, life_id, provision_scope_id)
 VALUES ('volume-attachment-uuid', 'volume-uuid', ?, 0, 1)`
@@ -422,8 +439,10 @@ VALUES ('instance-uuid', 'volume-uuid')`
 	s.checkStorageAttachmentLife(c, "storage-attachment-uuid", life.Dying)
 	s.checkStorageInstanceLife(c, "instance-uuid", life.Dying)
 	s.checkVolumeLife(c, "volume-uuid", life.Dying)
-	s.checkVolumeAttachmentLife(c, "volume-attachment-uuid", life.Dying)
-	s.checkVolumeAttachmentPlanLife(c, "volume-attachment-plan-uuid", life.Dying)
+	// Volume attachment and volume attachment plan stay alive until the storage
+	// attachment is dead.
+	s.checkVolumeAttachmentLife(c, "volume-attachment-uuid", life.Alive)
+	s.checkVolumeAttachmentPlanLife(c, "volume-attachment-plan-uuid", life.Alive)
 
 	c.Check(cascaded.StorageAttachmentUUIDs, tc.DeepEquals, []string{"storage-attachment-uuid"})
 	c.Check(cascaded.StorageInstanceUUIDs, tc.DeepEquals, []string{"instance-uuid"})
@@ -435,6 +454,280 @@ VALUES ('instance-uuid', 'volume-uuid')`
 }
 
 func (s *machineSuite) TestEnsureMachineNotAliveCascadeVolumeBackedFileSystem(c *tc.C) {
+	svc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, svc, "some-app", applicationservice.AddIAASUnitArg{})
+	machineUUID := s.getMachineUUIDFromApp(c, appUUID)
+
+	// Create a storage pool and a storage instance attached to the app's unit.
+	// Link the storage instance to a simulated volume-backed file-system on
+	// the machine.
+	// The volume is model scoped, but the file-system and attachment are
+	// machine scoped.
+	// All attachments will be dying, but the volume (model-scoped) and the
+	// file-system (volume-backed) will not.
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		row := tx.QueryRowContext(
+			ctx, "SELECT uuid, net_node_uuid FROM unit WHERE application_uuid = ?", appUUID.String())
+		if row.Err() != nil {
+			return row.Err()
+		}
+
+		var (
+			unitUUID    string
+			netNodeUUID string
+		)
+		if err := row.Scan(&unitUUID, &netNodeUUID); err != nil {
+			return err
+		}
+
+		if _, err := tx.ExecContext(
+			ctx, "INSERT INTO storage_pool (uuid, name, type) VALUES ('pool-uuid', 'pool', 'whatever')",
+		); err != nil {
+			return err
+		}
+
+		inst := `
+INSERT INTO storage_instance (
+    uuid, storage_id, storage_pool_uuid, storage_kind_id, requested_size_mib, charm_name, storage_name, life_id
+)
+VALUES ('instance-uuid', 'does-not-matter', 'pool-uuid', 1, 100, 'charm-name', 'storage-name', 0)`
+		if _, err := tx.ExecContext(ctx, inst); err != nil {
+			return err
+		}
+
+		attach := `
+INSERT INTO storage_attachment (uuid, storage_instance_uuid, unit_uuid, life_id)
+VALUES ('storage-attachment-uuid', 'instance-uuid', ?, 0)`
+		if _, err := tx.ExecContext(ctx, attach, unitUUID); err != nil {
+			return err
+		}
+
+		fs := `
+INSERT INTO storage_filesystem(uuid, filesystem_id, life_id, provision_scope_id)
+VALUES ('filesystem-uuid', 'filesystem-id', 0, 1)`
+		if _, err := tx.ExecContext(ctx, fs); err != nil {
+			return err
+		}
+
+		mfs := `
+INSERT INTO machine_filesystem(machine_uuid, filesystem_uuid)
+VALUES (?, 'filesystem-uuid')`
+		if _, err := tx.ExecContext(ctx, mfs, machineUUID.String()); err != nil {
+			return err
+		}
+
+		fsa := `
+iNSERT INTO storage_filesystem_attachment(uuid, storage_filesystem_uuid, net_node_uuid, life_id, provision_scope_id)
+VALUES ('filesystem-attachment-uuid', 'filesystem-uuid', ?, 0, 1)`
+		if _, err := tx.ExecContext(ctx, fsa, netNodeUUID); err != nil {
+			return err
+		}
+
+		fsi := `
+INSERT INTO storage_instance_filesystem (storage_instance_uuid, storage_filesystem_uuid)
+VALUES ('instance-uuid', 'filesystem-uuid')`
+		if _, err := tx.ExecContext(ctx, fsi); err != nil {
+			return err
+		}
+
+		vol := `
+INSERT INTO storage_volume(uuid, volume_id, life_id, provision_scope_id)
+VALUES ('volume-uuid', 'volume-id', 0, 0)`
+		if _, err := tx.ExecContext(ctx, vol); err != nil {
+			return err
+		}
+
+		mv := `
+INSERT INTO machine_volume(machine_uuid, volume_uuid)
+VALUES (?, 'volume-uuid')`
+		if _, err := tx.ExecContext(ctx, mv, machineUUID.String()); err != nil {
+			return err
+		}
+
+		vola := `
+iNSERT INTO storage_volume_attachment(uuid, storage_volume_uuid, net_node_uuid, life_id, provision_scope_id)
+VALUES ('volume-attachment-uuid', 'volume-uuid', ?, 0, 0)`
+		if _, err := tx.ExecContext(ctx, vola, netNodeUUID); err != nil {
+			return err
+		}
+
+		voli := `
+INSERT INTO storage_instance_volume (storage_instance_uuid, storage_volume_uuid)
+VALUES ('instance-uuid', 'volume-uuid')`
+		if _, err := tx.ExecContext(ctx, voli); err != nil {
+			return err
+		}
+
+		return nil
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	cascaded, err := st.EnsureMachineNotAliveCascade(c.Context(), machineUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(len(cascaded.UnitUUIDs), tc.Equals, 1)
+	c.Check(len(cascaded.MachineUUIDs), tc.Equals, 0)
+
+	s.checkUnitLife(c, cascaded.UnitUUIDs[0], life.Dying)
+	s.checkMachineLife(c, machineUUID.String(), life.Dying)
+	s.checkInstanceLife(c, machineUUID.String(), life.Dying)
+	s.checkInstanceLife(c, machineUUID.String(), life.Dying)
+	s.checkStorageAttachmentLife(c, "storage-attachment-uuid", life.Dying)
+	s.checkStorageInstanceLife(c, "instance-uuid", life.Dying)
+	// Filesystem attachment and volume attachment stay alive until the storage
+	// attachment is dead.
+	s.checkFileSystemAttachmentLife(c, "filesystem-attachment-uuid", life.Alive)
+	s.checkVolumeAttachmentLife(c, "volume-attachment-uuid", life.Alive)
+	s.checkFileSystemLife(c, "filesystem-uuid", life.Dying)
+	s.checkVolumeLife(c, "volume-uuid", life.Dying)
+
+	c.Check(cascaded.StorageAttachmentUUIDs, tc.DeepEquals, []string{"storage-attachment-uuid"})
+	c.Check(cascaded.StorageInstanceUUIDs, tc.DeepEquals, []string{"instance-uuid"})
+	c.Check(cascaded.FileSystemAttachmentUUIDs, tc.DeepEquals, []string{"filesystem-attachment-uuid"})
+	c.Check(cascaded.VolumeAttachmentUUIDs, tc.DeepEquals, []string{"volume-attachment-uuid"})
+	c.Check(cascaded.FileSystemUUIDs, tc.DeepEquals, []string{"filesystem-uuid"})
+	c.Check(cascaded.VolumeUUIDs, tc.DeepEquals, []string{"volume-uuid"})
+	c.Check(cascaded.VolumeAttachmentPlanUUIDs, tc.HasLen, 0)
+}
+
+// TestEnsureMachineNotAliveCascadeVolumeBackedFileSystemInvalidMachineOwnership
+// ensures that a machine owned filesystem that is backed by a non-machine owned
+// volume is never has its storage instsance set to Dying. This checks that a
+// mistake in the machine-volume ownership does not lead to obliterating a
+// storage instance that does not belong to the machine being removed.
+func (s *machineSuite) TestEnsureMachineNotAliveCascadeVolumeBackedFileSystemInvalidMachineOwnership(c *tc.C) {
+	svc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, svc, "some-app", applicationservice.AddIAASUnitArg{})
+	machineUUID := s.getMachineUUIDFromApp(c, appUUID)
+
+	// Create a storage pool and a storage instance attached to the app's unit.
+	// Link the storage instance to a simulated volume-backed file-system on
+	// the machine.
+	// The volume is model scoped, but the file-system and attachment are
+	// machine scoped.
+	// All attachments will be dying, but the volume (model-scoped) and the
+	// file-system (volume-backed) will not.
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		row := tx.QueryRowContext(
+			ctx, "SELECT uuid, net_node_uuid FROM unit WHERE application_uuid = ?", appUUID.String())
+		if row.Err() != nil {
+			return row.Err()
+		}
+
+		var (
+			unitUUID    string
+			netNodeUUID string
+		)
+		if err := row.Scan(&unitUUID, &netNodeUUID); err != nil {
+			return err
+		}
+
+		if _, err := tx.ExecContext(
+			ctx, "INSERT INTO storage_pool (uuid, name, type) VALUES ('pool-uuid', 'pool', 'whatever')",
+		); err != nil {
+			return err
+		}
+
+		inst := `
+INSERT INTO storage_instance (
+    uuid, storage_id, storage_pool_uuid, storage_kind_id, requested_size_mib, charm_name, storage_name, life_id
+)
+VALUES ('instance-uuid', 'does-not-matter', 'pool-uuid', 1, 100, 'charm-name', 'storage-name', 0)`
+		if _, err := tx.ExecContext(ctx, inst); err != nil {
+			return err
+		}
+
+		attach := `
+INSERT INTO storage_attachment (uuid, storage_instance_uuid, unit_uuid, life_id)
+VALUES ('storage-attachment-uuid', 'instance-uuid', ?, 0)`
+		if _, err := tx.ExecContext(ctx, attach, unitUUID); err != nil {
+			return err
+		}
+
+		fs := `
+INSERT INTO storage_filesystem(uuid, filesystem_id, life_id, provision_scope_id)
+VALUES ('filesystem-uuid', 'filesystem-id', 0, 1)`
+		if _, err := tx.ExecContext(ctx, fs); err != nil {
+			return err
+		}
+
+		mfs := `
+INSERT INTO machine_filesystem(machine_uuid, filesystem_uuid)
+VALUES (?, 'filesystem-uuid')`
+		if _, err := tx.ExecContext(ctx, mfs, machineUUID.String()); err != nil {
+			return err
+		}
+
+		fsa := `
+iNSERT INTO storage_filesystem_attachment(uuid, storage_filesystem_uuid, net_node_uuid, life_id, provision_scope_id)
+VALUES ('filesystem-attachment-uuid', 'filesystem-uuid', ?, 0, 1)`
+		if _, err := tx.ExecContext(ctx, fsa, netNodeUUID); err != nil {
+			return err
+		}
+
+		fsi := `
+INSERT INTO storage_instance_filesystem (storage_instance_uuid, storage_filesystem_uuid)
+VALUES ('instance-uuid', 'filesystem-uuid')`
+		if _, err := tx.ExecContext(ctx, fsi); err != nil {
+			return err
+		}
+
+		vol := `
+INSERT INTO storage_volume(uuid, volume_id, life_id, provision_scope_id)
+VALUES ('volume-uuid', 'volume-id', 0, 0)`
+		if _, err := tx.ExecContext(ctx, vol); err != nil {
+			return err
+		}
+
+		// N.B. no machine volume is created.
+
+		vola := `
+iNSERT INTO storage_volume_attachment(uuid, storage_volume_uuid, net_node_uuid, life_id, provision_scope_id)
+VALUES ('volume-attachment-uuid', 'volume-uuid', ?, 0, 0)`
+		if _, err := tx.ExecContext(ctx, vola, netNodeUUID); err != nil {
+			return err
+		}
+
+		voli := `
+INSERT INTO storage_instance_volume (storage_instance_uuid, storage_volume_uuid)
+VALUES ('instance-uuid', 'volume-uuid')`
+		if _, err := tx.ExecContext(ctx, voli); err != nil {
+			return err
+		}
+
+		return nil
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	cascaded, err := st.EnsureMachineNotAliveCascade(c.Context(), machineUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(len(cascaded.UnitUUIDs), tc.Equals, 1)
+	c.Check(len(cascaded.MachineUUIDs), tc.Equals, 0)
+
+	s.checkUnitLife(c, cascaded.UnitUUIDs[0], life.Dying)
+	s.checkMachineLife(c, machineUUID.String(), life.Dying)
+	s.checkInstanceLife(c, machineUUID.String(), life.Dying)
+	s.checkInstanceLife(c, machineUUID.String(), life.Dying)
+	s.checkStorageAttachmentLife(c, "storage-attachment-uuid", life.Dying)
+	s.checkStorageInstanceLife(c, "instance-uuid", life.Alive)
+	s.checkFileSystemAttachmentLife(c, "filesystem-attachment-uuid", life.Alive)
+	s.checkVolumeAttachmentLife(c, "volume-attachment-uuid", life.Alive)
+	s.checkFileSystemLife(c, "filesystem-uuid", life.Alive)
+	s.checkVolumeLife(c, "volume-uuid", life.Alive)
+
+	c.Check(cascaded.StorageAttachmentUUIDs, tc.DeepEquals, []string{"storage-attachment-uuid"})
+	c.Check(cascaded.StorageInstanceUUIDs, tc.HasLen, 0)
+	c.Check(cascaded.FileSystemAttachmentUUIDs, tc.DeepEquals, []string{"filesystem-attachment-uuid"})
+	c.Check(cascaded.VolumeAttachmentUUIDs, tc.DeepEquals, []string{"volume-attachment-uuid"})
+	c.Check(cascaded.FileSystemUUIDs, tc.HasLen, 0)
+	c.Check(cascaded.VolumeUUIDs, tc.HasLen, 0)
+	c.Check(cascaded.VolumeAttachmentPlanUUIDs, tc.HasLen, 0)
+}
+
+func (s *machineSuite) TestEnsureMachineNotAliveCascadeVolumeBackedFileSystemModelOwned(c *tc.C) {
 	svc := s.setupApplicationService(c)
 	appUUID := s.createIAASApplication(c, svc, "some-app", applicationservice.AddIAASUnitArg{})
 	machineUUID := s.getMachineUUIDFromApp(c, appUUID)
@@ -541,15 +834,16 @@ VALUES ('instance-uuid', 'volume-uuid')`
 	s.checkInstanceLife(c, machineUUID.String(), life.Dying)
 	s.checkInstanceLife(c, machineUUID.String(), life.Dying)
 	s.checkStorageAttachmentLife(c, "storage-attachment-uuid", life.Dying)
-	s.checkStorageInstanceLife(c, "instance-uuid", life.Dying)
-	s.checkFileSystemAttachmentLife(c, "filesystem-attachment-uuid", life.Dying)
-	s.checkVolumeAttachmentLife(c, "volume-attachment-uuid", life.Dying)
-	// Volume-backed FS means the volume and FS remain alive.
+	s.checkStorageInstanceLife(c, "instance-uuid", life.Alive)
+	s.checkFileSystemAttachmentLife(c, "filesystem-attachment-uuid", life.Alive)
+	s.checkVolumeAttachmentLife(c, "volume-attachment-uuid", life.Alive)
 	s.checkFileSystemLife(c, "filesystem-uuid", life.Alive)
 	s.checkVolumeLife(c, "volume-uuid", life.Alive)
 
 	c.Check(cascaded.StorageAttachmentUUIDs, tc.DeepEquals, []string{"storage-attachment-uuid"})
-	c.Check(cascaded.StorageInstanceUUIDs, tc.DeepEquals, []string{"instance-uuid"})
+	c.Check(cascaded.StorageInstanceUUIDs, tc.HasLen, 0)
+	// Event though the attachments are not Dying, they cascade removal jobs
+	// scheduling.
 	c.Check(cascaded.FileSystemAttachmentUUIDs, tc.DeepEquals, []string{"filesystem-attachment-uuid"})
 	c.Check(cascaded.VolumeAttachmentUUIDs, tc.DeepEquals, []string{"volume-attachment-uuid"})
 	c.Check(cascaded.FileSystemUUIDs, tc.HasLen, 0)
@@ -592,6 +886,27 @@ func (s *machineSuite) TestEnsureMachineNotAliveCascadeCoHostedUnits(c *tc.C) {
 	// The last machine had life "alive" and should now be "dying".
 	s.checkMachineLife(c, parentMachineUUID.String(), life.Dying)
 	s.checkInstanceLife(c, parentMachineUUID.String(), life.Dying)
+}
+
+func (s *machineSuite) TestEnsureMachineNotAliveCascadeRetryReturnsDyingArtifacts(c *tc.C) {
+	svc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, svc, "some-app", applicationservice.AddIAASUnitArg{})
+	machineUUID := s.getMachineUUIDFromApp(c, appUUID)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	firstCascaded, err := st.EnsureMachineNotAliveCascade(c.Context(), machineUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(firstCascaded.UnitUUIDs, tc.HasLen, 1)
+	c.Check(firstCascaded.MachineUUIDs, tc.HasLen, 0)
+
+	secondCascaded, err := st.EnsureMachineNotAliveCascade(c.Context(), machineUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(secondCascaded, tc.DeepEquals, firstCascaded)
+
+	s.checkUnitLife(c, firstCascaded.UnitUUIDs[0], life.Dying)
+	s.checkMachineLife(c, machineUUID.String(), life.Dying)
+	s.checkInstanceLife(c, machineUUID.String(), life.Dying)
 }
 
 func (s *machineSuite) TestEnsureMachineNotAliveCascadeChildMachines(c *tc.C) {
@@ -696,7 +1011,8 @@ func (s *machineSuite) TestEnsureMachineNotAliveCascadeWithoutForceFailsForMachi
 
 	machineUUID, err := svc.GetMachineUUID(c.Context(), machineRes.MachineName)
 	c.Assert(err, tc.ErrorIsNil)
-	containerUUID, err := svc.GetMachineUUID(c.Context(), containerRes.MachineName)
+	c.Assert(containerRes.ChildMachineName, tc.NotNil)
+	containerUUID, err := svc.GetMachineUUID(c.Context(), *containerRes.ChildMachineName)
 	c.Assert(err, tc.ErrorIsNil)
 
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
@@ -708,6 +1024,108 @@ func (s *machineSuite) TestEnsureMachineNotAliveCascadeWithoutForceFailsForMachi
 	s.checkInstanceLife(c, machineUUID.String(), life.Alive)
 	s.checkMachineLife(c, containerUUID.String(), life.Alive)
 	s.checkInstanceLife(c, containerUUID.String(), life.Alive)
+}
+
+// TestEnsureMachineNotAliveCascadeWithForceParentDead covers a retry window
+// where the parent machine is already Dead while an alive child container
+// still exists and must be cascaded.
+func (s *machineSuite) TestEnsureMachineNotAliveCascadeWithForceParentDead(c *tc.C) {
+	svc := s.setupMachineService(c)
+	machineRes, err := svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
+		Platform: deployment.Platform{
+			OSType:  deployment.Ubuntu,
+			Channel: "24.04",
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	containerRes, err := svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
+		Platform: deployment.Platform{
+			OSType:  deployment.Ubuntu,
+			Channel: "24.04",
+		},
+		Directive: deployment.Placement{
+			Type:      deployment.PlacementTypeContainer,
+			Container: deployment.ContainerTypeLXD,
+			Directive: machineRes.MachineName.String(),
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	machineUUID, err := svc.GetMachineUUID(c.Context(), machineRes.MachineName)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(containerRes.ChildMachineName, tc.NotNil)
+	containerUUID, err := svc.GetMachineUUID(c.Context(), *containerRes.ChildMachineName)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Simulate a retry window where the parent already reached Dead but the
+	// container machine is still Alive and not removed yet.
+	s.advanceMachineLife(c, machineUUID, life.Dead)
+	s.advanceInstanceLife(c, machineUUID, life.Dead)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	cascaded, err := st.EnsureMachineNotAliveCascade(c.Context(), machineUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(cascaded.UnitUUIDs, tc.HasLen, 0)
+	c.Check(cascaded.MachineUUIDs, tc.DeepEquals, []string{containerUUID.String()})
+
+	// Parent remains Dead and the alive child container is cascaded to Dying.
+	s.checkMachineLife(c, machineUUID.String(), life.Dead)
+	s.checkInstanceLife(c, machineUUID.String(), life.Dead)
+	s.checkMachineLife(c, containerUUID.String(), life.Dying)
+	s.checkInstanceLife(c, containerUUID.String(), life.Dying)
+}
+
+// TestEnsureMachineNotAliveCascadeWithForceParentDyingSkipsDeadChild covers a
+// retry where the parent is still Dying but the child container already
+// reached Dead and must not be cascaded again.
+func (s *machineSuite) TestEnsureMachineNotAliveCascadeWithForceParentDyingSkipsDeadChild(c *tc.C) {
+	svc := s.setupMachineService(c)
+	machineRes, err := svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
+		Platform: deployment.Platform{
+			OSType:  deployment.Ubuntu,
+			Channel: "24.04",
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	containerRes, err := svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
+		Platform: deployment.Platform{
+			OSType:  deployment.Ubuntu,
+			Channel: "24.04",
+		},
+		Directive: deployment.Placement{
+			Type:      deployment.PlacementTypeContainer,
+			Container: deployment.ContainerTypeLXD,
+			Directive: machineRes.MachineName.String(),
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	machineUUID, err := svc.GetMachineUUID(c.Context(), machineRes.MachineName)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(containerRes.ChildMachineName, tc.NotNil)
+	containerUUID, err := svc.GetMachineUUID(c.Context(), *containerRes.ChildMachineName)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Simulate a retry where the parent is Dying and the child already reached
+	// Dead but has not been deleted yet.
+	s.advanceMachineLife(c, machineUUID, life.Dying)
+	s.advanceInstanceLife(c, machineUUID, life.Dying)
+	s.advanceMachineLife(c, containerUUID, life.Dead)
+	s.advanceInstanceLife(c, containerUUID, life.Dead)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	cascaded, err := st.EnsureMachineNotAliveCascade(c.Context(), machineUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(cascaded.UnitUUIDs, tc.HasLen, 0)
+	c.Check(cascaded.MachineUUIDs, tc.HasLen, 0)
+
+	// Parent remains Dying and the already dead child remains unchanged.
+	s.checkMachineLife(c, machineUUID.String(), life.Dying)
+	s.checkInstanceLife(c, machineUUID.String(), life.Dying)
+	s.checkMachineLife(c, containerUUID.String(), life.Dead)
+	s.checkInstanceLife(c, containerUUID.String(), life.Dead)
 }
 
 func (s *machineSuite) TestEnsureMachineNotAliveCascadeWithoutForceFailsForMachineHostingUnits(c *tc.C) {
@@ -754,7 +1172,7 @@ func (s *machineSuite) TestMachineRemovalNormalSuccess(c *tc.C) {
 
 	c.Check(removalTypeID, tc.Equals, 3)
 	c.Check(rUUID, tc.Equals, machineUUID.String())
-	c.Check(force, tc.Equals, false)
+	c.Check(force, tc.IsFalse)
 	c.Check(scheduledFor, tc.Equals, when)
 }
 
@@ -787,7 +1205,7 @@ where  r.uuid = ?`, "removal-uuid",
 
 	c.Check(removalType, tc.Equals, "machine")
 	c.Check(rUUID, tc.Equals, "some-machine-uuid")
-	c.Check(force, tc.Equals, true)
+	c.Check(force, tc.IsTrue)
 	c.Check(scheduledFor, tc.Equals, when)
 }
 
@@ -893,6 +1311,62 @@ func (s *machineSuite) TestMarkMachineAsDeadMachineHasUnitsWithDeadUnits(c *tc.C
 	s.checkMachineLife(c, machineUUID.String(), life.Dead)
 }
 
+func (s *machineSuite) TestMarkMachineAsDeadMachineHasStorageAttachedFilesystem(c *tc.C) {
+	machineUUID := s.addMachine(c, "0")
+	s.createAttachedFilesystem(c, machineUUID)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	s.advanceMachineLife(c, coremachine.UUID(machineUUID), life.Dying)
+
+	err := st.MarkMachineAsDead(c.Context(), machineUUID)
+	c.Check(err, tc.ErrorIs, removalerrors.MachineHasStorage)
+
+	s.checkMachineLife(c, machineUUID, life.Dying)
+}
+
+func (s *machineSuite) TestMarkMachineAsDeadMachineHasStorageAttachedVolume(c *tc.C) {
+	machineUUID := s.addMachine(c, "0")
+	s.createAttachedVolume(c, machineUUID)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	s.advanceMachineLife(c, coremachine.UUID(machineUUID), life.Dying)
+
+	err := st.MarkMachineAsDead(c.Context(), machineUUID)
+	c.Check(err, tc.ErrorIs, removalerrors.MachineHasStorage)
+
+	s.checkMachineLife(c, machineUUID, life.Dying)
+}
+
+func (s *machineSuite) TestMarkMachineAsDeadMachineHasStorageMachineFilesystem(c *tc.C) {
+	machineUUID := s.addMachine(c, "0")
+	s.createMachineFilesystem(c, machineUUID)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	s.advanceMachineLife(c, coremachine.UUID(machineUUID), life.Dying)
+
+	err := st.MarkMachineAsDead(c.Context(), machineUUID)
+	c.Check(err, tc.ErrorIs, removalerrors.MachineHasStorage)
+
+	s.checkMachineLife(c, machineUUID, life.Dying)
+}
+
+func (s *machineSuite) TestMarkMachineAsDeadMachineHasStorageMachineVolume(c *tc.C) {
+	machineUUID := s.addMachine(c, "0")
+	s.createMachineVolume(c, machineUUID)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	s.advanceMachineLife(c, coremachine.UUID(machineUUID), life.Dying)
+
+	err := st.MarkMachineAsDead(c.Context(), machineUUID)
+	c.Check(err, tc.ErrorIs, removalerrors.MachineHasStorage)
+
+	s.checkMachineLife(c, machineUUID, life.Dying)
+}
+
 func (s *machineSuite) TestMarkInstanceAsDead(c *tc.C) {
 	svc := s.setupMachineService(c)
 	machineRes, err := svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
@@ -995,13 +1469,127 @@ func (s *machineSuite) TestDeleteMachine(c *tc.C) {
 	s.advanceMachineLife(c, machineUUID, life.Dead)
 	s.advanceInstanceLife(c, machineUUID, life.Dead)
 
-	err = st.DeleteMachine(c.Context(), machineUUID.String())
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), false)
 	c.Assert(err, tc.ErrorIsNil)
 
 	// The machine should be gone.
 	exists, err := st.MachineExists(c.Context(), machineUUID.String())
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(exists, tc.Equals, false)
+	c.Check(exists, tc.IsFalse)
+
+	// And its net node should also be deleted.
+	var count int
+	err = s.DB().QueryRow("SELECT count(*) FROM net_node WHERE uuid = ?", netNodeUUID).Scan(&count)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(count, tc.Equals, 0)
+}
+
+func (s *machineSuite) TestDeleteMachineWithForce(c *tc.C) {
+	svc := s.setupMachineService(c)
+	machineRes, err := svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
+		Platform: deployment.Platform{
+			OSType:  deployment.Ubuntu,
+			Channel: "24.04",
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	machineUUID, err := svc.GetMachineUUID(c.Context(), machineRes.MachineName)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Grab the net node UUID before deletion so we can verify it's removed.
+	var netNodeUUID string
+	err = s.DB().QueryRow("SELECT net_node_uuid FROM machine WHERE uuid = ?", machineUUID.String()).Scan(&netNodeUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(netNodeUUID, tc.Not(tc.Equals), "")
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	s.advanceMachineLife(c, machineUUID, life.Dead)
+	s.advanceInstanceLife(c, machineUUID, life.Dead)
+
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// The machine should be gone.
+	exists, err := st.MachineExists(c.Context(), machineUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.IsFalse)
+
+	// And its net node should also be deleted.
+	var count int
+	err = s.DB().QueryRow("SELECT count(*) FROM net_node WHERE uuid = ?", netNodeUUID).Scan(&count)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(count, tc.Equals, 0)
+}
+
+func (s *machineSuite) TestDeleteMachineWithForceNotDyingInstance(c *tc.C) {
+	svc := s.setupMachineService(c)
+	machineRes, err := svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
+		Platform: deployment.Platform{
+			OSType:  deployment.Ubuntu,
+			Channel: "24.04",
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	machineUUID, err := svc.GetMachineUUID(c.Context(), machineRes.MachineName)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Grab the net node UUID before deletion so we can verify it's removed.
+	var netNodeUUID string
+	err = s.DB().QueryRow("SELECT net_node_uuid FROM machine WHERE uuid = ?", machineUUID.String()).Scan(&netNodeUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(netNodeUUID, tc.Not(tc.Equals), "")
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	s.advanceMachineLife(c, machineUUID, life.Dead)
+	s.advanceInstanceLife(c, machineUUID, life.Dying)
+
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// The machine should be gone.
+	exists, err := st.MachineExists(c.Context(), machineUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.IsFalse)
+
+	// And its net node should also be deleted.
+	var count int
+	err = s.DB().QueryRow("SELECT count(*) FROM net_node WHERE uuid = ?", netNodeUUID).Scan(&count)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(count, tc.Equals, 0)
+}
+
+func (s *machineSuite) TestDeleteMachineWithForceNotDyingMachine(c *tc.C) {
+	svc := s.setupMachineService(c)
+	machineRes, err := svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
+		Platform: deployment.Platform{
+			OSType:  deployment.Ubuntu,
+			Channel: "24.04",
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	machineUUID, err := svc.GetMachineUUID(c.Context(), machineRes.MachineName)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Grab the net node UUID before deletion so we can verify it's removed.
+	var netNodeUUID string
+	err = s.DB().QueryRow("SELECT net_node_uuid FROM machine WHERE uuid = ?", machineUUID.String()).Scan(&netNodeUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(netNodeUUID, tc.Not(tc.Equals), "")
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	s.advanceMachineLife(c, machineUUID, life.Dying)
+	s.advanceInstanceLife(c, machineUUID, life.Dead)
+
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// The machine should be gone.
+	exists, err := st.MachineExists(c.Context(), machineUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.IsFalse)
 
 	// And its net node should also be deleted.
 	var count int
@@ -1013,7 +1601,7 @@ func (s *machineSuite) TestDeleteMachine(c *tc.C) {
 func (s *machineSuite) TestDeleteMachineNotFound(c *tc.C) {
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
-	err := st.DeleteMachine(c.Context(), "0")
+	err := st.DeleteMachine(c.Context(), "0", false)
 	c.Assert(err, tc.ErrorIs, machineerrors.MachineNotFound)
 }
 
@@ -1034,13 +1622,51 @@ func (s *machineSuite) TestDeleteMachineDying(c *tc.C) {
 	s.advanceMachineLife(c, machineUUID, life.Dying)
 	s.advanceInstanceLife(c, machineUUID, life.Dead)
 
-	err = st.DeleteMachine(c.Context(), machineUUID.String())
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), false)
 	c.Check(err, tc.ErrorIs, removalerrors.RemovalJobIncomplete)
 
 	// The machine should not be gone.
 	exists, err := st.MachineExists(c.Context(), machineUUID.String())
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(exists, tc.Equals, true)
+	c.Check(exists, tc.IsTrue)
+}
+
+func (s *machineSuite) TestDeleteMachineDyingWithForce(c *tc.C) {
+	svc := s.setupMachineService(c)
+	machineRes, err := svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
+		Platform: deployment.Platform{
+			OSType:  deployment.Ubuntu,
+			Channel: "24.04",
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	machineUUID, err := svc.GetMachineUUID(c.Context(), machineRes.MachineName)
+	c.Assert(err, tc.ErrorIsNil)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	s.advanceMachineLife(c, machineUUID, life.Dying)
+	s.advanceInstanceLife(c, machineUUID, life.Dead)
+
+	// Grab the net node UUID before deletion so we can verify it's removed.
+	var netNodeUUID string
+	err = s.DB().QueryRow("SELECT net_node_uuid FROM machine WHERE uuid = ?", machineUUID.String()).Scan(&netNodeUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(netNodeUUID, tc.Not(tc.Equals), "")
+
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// The machine should be gone.
+	exists, err := st.MachineExists(c.Context(), machineUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.IsFalse)
+
+	// And its net node should also be deleted.
+	var count int
+	err = s.DB().QueryRow("SELECT count(*) FROM net_node WHERE uuid = ?", netNodeUUID).Scan(&count)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(count, tc.Equals, 0)
 }
 
 func (s *machineSuite) TestDeleteMachineInstanceDying(c *tc.C) {
@@ -1060,13 +1686,51 @@ func (s *machineSuite) TestDeleteMachineInstanceDying(c *tc.C) {
 	s.advanceMachineLife(c, machineUUID, life.Dead)
 	s.advanceInstanceLife(c, machineUUID, life.Dying)
 
-	err = st.DeleteMachine(c.Context(), machineUUID.String())
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), false)
 	c.Check(err, tc.ErrorIs, removalerrors.RemovalJobIncomplete)
 
 	// The machine should not be gone.
 	exists, err := st.MachineExists(c.Context(), machineUUID.String())
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(exists, tc.Equals, true)
+	c.Check(exists, tc.IsTrue)
+}
+
+func (s *machineSuite) TestDeleteMachineInstanceDyingWithForce(c *tc.C) {
+	svc := s.setupMachineService(c)
+	machineRes, err := svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
+		Platform: deployment.Platform{
+			OSType:  deployment.Ubuntu,
+			Channel: "24.04",
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	machineUUID, err := svc.GetMachineUUID(c.Context(), machineRes.MachineName)
+	c.Assert(err, tc.ErrorIsNil)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	s.advanceMachineLife(c, machineUUID, life.Dead)
+	s.advanceInstanceLife(c, machineUUID, life.Dying)
+
+	// Grab the net node UUID before deletion so we can verify it's removed.
+	var netNodeUUID string
+	err = s.DB().QueryRow("SELECT net_node_uuid FROM machine WHERE uuid = ?", machineUUID.String()).Scan(&netNodeUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(netNodeUUID, tc.Not(tc.Equals), "")
+
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// The machine should be gone.
+	exists, err := st.MachineExists(c.Context(), machineUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.IsFalse)
+
+	// And its net node should also be deleted.
+	var count int
+	err = s.DB().QueryRow("SELECT count(*) FROM net_node WHERE uuid = ?", netNodeUUID).Scan(&count)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(count, tc.Equals, 0)
 }
 
 func (s *machineSuite) TestDeleteMachineWithContainers(c *tc.C) {
@@ -1103,14 +1767,14 @@ func (s *machineSuite) TestDeleteMachineWithContainers(c *tc.C) {
 	s.advanceMachineLife(c, containerUUID, life.Dead)
 	s.advanceInstanceLife(c, containerUUID, life.Dead)
 
-	err = st.DeleteMachine(c.Context(), machineUUID.String())
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), false)
 	c.Check(err, tc.ErrorIs, removalerrors.MachineHasContainers)
 	c.Check(err, tc.ErrorIs, removalerrors.RemovalJobIncomplete)
 
 	// The machine should not be gone.
 	exists, err := st.MachineExists(c.Context(), machineUUID.String())
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(exists, tc.Equals, true)
+	c.Check(exists, tc.IsTrue)
 }
 
 func (s *machineSuite) TestDeleteMachineWithUnits(c *tc.C) {
@@ -1123,14 +1787,14 @@ func (s *machineSuite) TestDeleteMachineWithUnits(c *tc.C) {
 	s.advanceMachineLife(c, machineUUID, life.Dead)
 	s.advanceInstanceLife(c, machineUUID, life.Dead)
 
-	err := st.DeleteMachine(c.Context(), machineUUID.String())
+	err := st.DeleteMachine(c.Context(), machineUUID.String(), false)
 	c.Check(err, tc.ErrorIs, removalerrors.MachineHasUnits)
 	c.Check(err, tc.ErrorIs, removalerrors.RemovalJobIncomplete)
 
 	// The machine should not be gone.
 	exists, err := st.MachineExists(c.Context(), machineUUID.String())
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(exists, tc.Equals, true)
+	c.Check(exists, tc.IsTrue)
 }
 
 func (s *machineSuite) TestDeleteMachineWithOperation(c *tc.C) {
@@ -1154,13 +1818,13 @@ func (s *machineSuite) TestDeleteMachineWithOperation(c *tc.C) {
 	s.advanceMachineLife(c, machineUUID, life.Dead)
 	s.advanceInstanceLife(c, machineUUID, life.Dead)
 
-	err = st.DeleteMachine(c.Context(), machineUUID.String())
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), false)
 	c.Assert(err, tc.ErrorIsNil)
 
 	// The machine should be gone.
 	exists, err := st.MachineExists(c.Context(), machineUUID.String())
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(exists, tc.Equals, false)
+	c.Check(exists, tc.IsFalse)
 
 	// The operation should be gone, since it is only linked to the associated unit.
 	c.Check(s.getRowCount(c, "operation"), tc.Equals, 1)
@@ -1187,13 +1851,13 @@ func (s *machineSuite) TestDeleteMachineWithOperationSpannedToSeveralMachine(c *
 	s.advanceMachineLife(c, machineUUID, life.Dead)
 	s.advanceInstanceLife(c, machineUUID, life.Dead)
 
-	err = st.DeleteMachine(c.Context(), machineUUID.String())
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), false)
 	c.Assert(err, tc.ErrorIsNil)
 
 	// The machine should be gone.
 	exists, err := st.MachineExists(c.Context(), machineUUID.String())
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(exists, tc.Equals, false)
+	c.Check(exists, tc.IsFalse)
 
 	// The operation should not be gone, since it is linked to another machine.
 	c.Check(s.getRowCount(c, "operation"), tc.Equals, 1)
@@ -1233,13 +1897,13 @@ func (s *machineSuite) TestDeleteContainer(c *tc.C) {
 	s.advanceMachineLife(c, containerUUID, life.Dead)
 	s.advanceInstanceLife(c, containerUUID, life.Dead)
 
-	err = st.DeleteMachine(c.Context(), containerUUID.String())
+	err = st.DeleteMachine(c.Context(), containerUUID.String(), false)
 	c.Assert(err, tc.ErrorIsNil)
 
 	// The container should be gone.
 	exists, err := st.MachineExists(c.Context(), containerUUID.String())
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(exists, tc.Equals, false)
+	c.Check(exists, tc.IsFalse)
 }
 
 func (s *machineSuite) TestDeleteMachineWithLinkLayerDevice(c *tc.C) {
@@ -1268,13 +1932,13 @@ func (s *machineSuite) TestDeleteMachineWithLinkLayerDevice(c *tc.C) {
 	s.advanceMachineLife(c, machineUUID, life.Dead)
 	s.advanceInstanceLife(c, machineUUID, life.Dead)
 
-	err = st.DeleteMachine(c.Context(), machineUUID.String())
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), false)
 	c.Assert(err, tc.ErrorIsNil)
 
 	// The machine should be gone.
 	exists, err := st.MachineExists(c.Context(), machineUUID.String())
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(exists, tc.Equals, false)
+	c.Check(exists, tc.IsFalse)
 
 	// And the IP and link layer device should also be deleted.
 	var count int
@@ -1289,4 +1953,270 @@ func (s *machineSuite) TestDeleteMachineWithLinkLayerDevice(c *tc.C) {
 	err = s.DB().QueryRow("SELECT count(*) FROM link_layer_device WHERE uuid = ?", lldChildUUID).Scan(&count)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(count, tc.Equals, 0)
+}
+
+func (s *machineSuite) TestDeleteMachineWithNetNodeAddresses(c *tc.C) {
+	svc := s.setupMachineService(c)
+	machineRes, err := svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
+		Platform: deployment.Platform{
+			OSType:  deployment.Ubuntu,
+			Channel: "24.04",
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	machineUUID, err := svc.GetMachineUUID(c.Context(), machineRes.MachineName)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Get the net_node_uuid for this machine.
+	var netNodeUUID string
+	err = s.DB().QueryRow("SELECT net_node_uuid FROM machine WHERE uuid = ?", machineUUID.String()).Scan(&netNodeUUID)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Add fqdn and hostname addresses to the net node.
+	// These should be deleted when the machine is deleted.
+	fqdnUUID := "test-fqdn-uuid"
+	hostnameUUID := "test-hostname-uuid"
+
+	_, err = s.DB().ExecContext(c.Context(),
+		"INSERT INTO fqdn_address (uuid, address, scope_id) VALUES (?, ?, ?)",
+		fqdnUUID, "test.example.com", 1,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = s.DB().ExecContext(c.Context(),
+		"INSERT INTO net_node_fqdn_address (net_node_uuid, address_uuid) VALUES (?, ?)",
+		netNodeUUID, fqdnUUID,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = s.DB().ExecContext(c.Context(),
+		"INSERT INTO hostname_address (uuid, hostname, scope_id) VALUES (?, ?, ?)",
+		hostnameUUID, "testhost", 0,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = s.DB().ExecContext(c.Context(),
+		"INSERT INTO net_node_hostname_address (net_node_uuid, address_uuid) VALUES (?, ?)",
+		netNodeUUID, hostnameUUID,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	s.advanceMachineLife(c, machineUUID, life.Dead)
+	s.advanceInstanceLife(c, machineUUID, life.Dead)
+
+	// This previously failed with "FOREIGN KEY constraint failed" because
+	// net_node_fqdn_address and net_node_hostname_address were not cleaned up.
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), false)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// The machine should be gone.
+	exists, err := st.MachineExists(c.Context(), machineUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.IsFalse)
+
+	// Verify the net node addresses are cleaned up.
+	var count int
+	err = s.DB().QueryRow("SELECT COUNT(*) FROM net_node_fqdn_address WHERE net_node_uuid = ?", netNodeUUID).Scan(&count)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(count, tc.Equals, 0)
+
+	err = s.DB().QueryRow("SELECT COUNT(*) FROM net_node_hostname_address WHERE net_node_uuid = ?", netNodeUUID).Scan(&count)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(count, tc.Equals, 0)
+
+	// Verify the net node itself is cleaned up.
+	err = s.DB().QueryRow("SELECT COUNT(*) FROM net_node WHERE uuid = ?", netNodeUUID).Scan(&count)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(count, tc.Equals, 0)
+}
+
+// TestDeleteMachineWaitsForDeadUnitRemoval verifies that DeleteMachine returns
+// RemovalJobIncomplete when a dead-but-not-yet-deleted unit still references
+// the machine's net_node. This is the CMR consumer removal scenario where the
+// machine removal job races ahead of the unit removal job.
+func (s *machineSuite) TestDeleteMachineWaitsForDeadUnitRemoval(c *tc.C) {
+	// Create an IAAS application with one unit; this implicitly creates a machine.
+	svc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, svc, "some-app", applicationservice.AddIAASUnitArg{})
+
+	unitUUIDs := s.getAllUnitUUIDs(c, appUUID)
+	c.Assert(len(unitUUIDs), tc.Equals, 1)
+	unitUUID := unitUUIDs[0]
+	machineUUID := s.getUnitMachineUUID(c, unitUUID)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	// Advance unit, machine, and instance to Dead.
+	_, err := s.DB().Exec("UPDATE unit SET life_id = 2 WHERE uuid = ?", unitUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	s.advanceMachineLife(c, machineUUID, life.Dead)
+	s.advanceInstanceLife(c, machineUUID, life.Dead)
+
+	// The unit row is dead but still in the DB – DeleteMachine must defer.
+	// This is the bug from the CMR consumer removal scenario where the machine
+	// removal job runs before the unit removal job has finished.
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), false)
+	c.Assert(err, tc.NotNil)
+	c.Check(errors.Is(err, removalerrors.RemovalJobIncomplete), tc.IsTrue,
+		tc.Commentf("expected RemovalJobIncomplete while dead unit still exists, got: %v", err))
+
+	// Simulate the unit removal job completing by running the unit deletion
+	// (which cleans up all FK references before removing the unit row).
+	err = st.DeleteUnit(c.Context(), unitUUID.String(), false)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Now the machine can be fully deleted.
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), false)
+	c.Assert(err, tc.ErrorIsNil)
+
+	exists, err := st.MachineExists(c.Context(), machineUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.IsFalse)
+}
+
+func (s *machineSuite) TestDeleteMachineWithForceWaitsForDeadUnitRemoval(c *tc.C) {
+	// Same scenario as TestDeleteMachineWaitsForDeadUnitRemoval but with
+	// force=true. Even forced machine removal must wait for units to be
+	// fully deleted, because the unit row holds a FK reference to net_node.
+	svc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, svc, "some-app", applicationservice.AddIAASUnitArg{})
+
+	unitUUIDs := s.getAllUnitUUIDs(c, appUUID)
+	c.Assert(len(unitUUIDs), tc.Equals, 1)
+	unitUUID := unitUUIDs[0]
+	machineUUID := s.getUnitMachineUUID(c, unitUUID)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	// Advance unit, machine, and instance to Dead.
+	_, err := s.DB().Exec("UPDATE unit SET life_id = 2 WHERE uuid = ?", unitUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	s.advanceMachineLife(c, machineUUID, life.Dead)
+	s.advanceInstanceLife(c, machineUUID, life.Dead)
+
+	// Even with force, the unit row is dead but still in the DB –
+	// DeleteMachine must defer.
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), true)
+	c.Assert(err, tc.NotNil)
+	c.Check(errors.Is(err, removalerrors.RemovalJobIncomplete), tc.IsTrue,
+		tc.Commentf("expected RemovalJobIncomplete while dead unit still exists (force=true), got: %v", err))
+
+	// Simulate the unit removal job completing.
+	err = st.DeleteUnit(c.Context(), unitUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Now the machine can be fully deleted.
+	err = st.DeleteMachine(c.Context(), machineUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+
+	exists, err := st.MachineExists(c.Context(), machineUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.IsFalse)
+}
+
+func (s *machineSuite) createMachineFilesystem(
+	c *tc.C, machineUUID string,
+) string {
+	fsUUID := "some-fs-uuid"
+	txn := func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO storage_filesystem (uuid, filesystem_id, life_id, provision_scope_id) VALUES (?, ?, ?, ?)
+		`, fsUUID, "0", 0, 0)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO machine_filesystem (machine_uuid, filesystem_uuid) VALUES (?, ?)
+		`, machineUUID, fsUUID)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	err := s.ModelTxnRunner().StdTxn(c.Context(), txn)
+	c.Assert(err, tc.ErrorIsNil)
+	return fsUUID
+}
+
+func (s *machineSuite) createMachineVolume(
+	c *tc.C, machineUUID string,
+) string {
+	volUUID := "some-vol-uuid"
+	txn := func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO storage_volume (uuid, volume_id, life_id, provision_scope_id) VALUES (?, ?, ?, ?)
+		`, volUUID, "0", 0, 0)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO machine_volume (machine_uuid, volume_uuid) VALUES (?, ?)
+		`, machineUUID, volUUID)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	err := s.ModelTxnRunner().StdTxn(c.Context(), txn)
+	c.Assert(err, tc.ErrorIsNil)
+	return volUUID
+}
+
+func (s *machineSuite) createAttachedVolume(
+	c *tc.C, machineUUID string,
+) string {
+	volUUID := "some-other-vol-uuid"
+	vaUUID := "some-other-vol-attachment-uuid"
+	txn := func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO storage_volume (uuid, volume_id, life_id, provision_scope_id)
+VALUES (?, ?, ?, ?)
+		`, volUUID, "1", 0, 0)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO storage_volume_attachment (uuid, storage_volume_uuid, life_id,
+                                       provision_scope_id, net_node_uuid)
+VALUES (?, ?, ?, ?, (SELECT net_node_uuid FROM machine WHERE uuid = ?))
+		`, vaUUID, volUUID, 0, 0, machineUUID)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	err := s.ModelTxnRunner().StdTxn(c.Context(), txn)
+	c.Assert(err, tc.ErrorIsNil)
+	return volUUID
+}
+
+func (s *machineSuite) createAttachedFilesystem(
+	c *tc.C, machineUUID string,
+) string {
+	fsUUID := "some-other-fs-uuid"
+	faUUID := "some-other-fs-attachment-uuid"
+	txn := func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO storage_filesystem (uuid, filesystem_id, life_id, provision_scope_id)
+VALUES (?, ?, ?, ?)
+		`, fsUUID, "1", 0, 0)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO storage_filesystem_attachment (uuid, storage_filesystem_uuid,
+                                          life_id, provision_scope_id,
+                                          net_node_uuid)
+VALUES (?, ?, ?, ?, (SELECT net_node_uuid FROM machine WHERE uuid = ?))
+		`, faUUID, fsUUID, 0, 0, machineUUID)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	err := s.ModelTxnRunner().StdTxn(c.Context(), txn)
+	c.Assert(err, tc.ErrorIsNil)
+	return fsUUID
 }

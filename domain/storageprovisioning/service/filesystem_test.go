@@ -20,9 +20,10 @@ import (
 	domainlife "github.com/juju/juju/domain/life"
 	machineerrors "github.com/juju/juju/domain/machine/errors"
 	domainnetwork "github.com/juju/juju/domain/network"
+	domainstorage "github.com/juju/juju/domain/storage"
 	"github.com/juju/juju/domain/storageprovisioning"
 	storageprovisioningerrors "github.com/juju/juju/domain/storageprovisioning/errors"
-	domaintesting "github.com/juju/juju/domain/storageprovisioning/testing"
+	"github.com/juju/juju/domain/storageprovisioning/internal"
 	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 )
@@ -60,7 +61,7 @@ func (s *filesystemSuite) TestGetFilesystemForID(c *tc.C) {
 		ProviderID:   "fs-1234",
 		SizeMiB:      100,
 	}
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 	s.state.EXPECT().GetFilesystemUUIDForID(c.Context(), "1234").Return(fsUUID, nil)
 	s.state.EXPECT().GetFilesystem(c.Context(), fsUUID).Return(fs, nil)
 
@@ -83,7 +84,7 @@ func (s *filesystemSuite) TestGetFilesystemForIDNotFound(c *tc.C) {
 func (s *filesystemSuite) TestGetFilesystemForIDNotFound2(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 	s.state.EXPECT().GetFilesystemUUIDForID(c.Context(), "1234").Return(fsUUID, nil)
 	s.state.EXPECT().GetFilesystem(c.Context(), fsUUID).Return(
 		storageprovisioning.Filesystem{}, storageprovisioningerrors.FilesystemNotFound,
@@ -99,8 +100,8 @@ func (s *filesystemSuite) TestGetFilesystemAttachmentForUnit(c *tc.C) {
 	unitUUID := unittesting.GenUnitUUID(c)
 	netNodeUUID, err := domainnetwork.NewNetNodeUUID()
 	c.Assert(err, tc.ErrorIsNil)
-	fsUUID := domaintesting.GenFilesystemUUID(c)
-	fsaUUID := domaintesting.GenFilesystemAttachmentUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
+	fsaUUID := tc.Must(c, domainstorage.NewFilesystemAttachmentUUID)
 	c.Assert(err, tc.ErrorIsNil)
 
 	attachment := storageprovisioning.FilesystemAttachment{
@@ -148,7 +149,7 @@ func (s *filesystemSuite) TestGetFilesystemAttachmentForUnitAttachmentNotFound(c
 	unitUUID := unittesting.GenUnitUUID(c)
 	netNodeUUID, err := domainnetwork.NewNetNodeUUID()
 	c.Assert(err, tc.ErrorIsNil)
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 	s.state.EXPECT().GetUnitNetNodeUUID(c.Context(), unitUUID).Return(netNodeUUID, nil).AnyTimes()
 	s.state.EXPECT().GetFilesystemUUIDForID(gomock.Any(), "1234").Return(fsUUID, nil).AnyTimes()
 	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
@@ -161,7 +162,7 @@ func (s *filesystemSuite) TestGetFilesystemAttachmentForUnitAttachmentNotFound(c
 	c.Check(err, tc.ErrorIs, storageprovisioningerrors.FilesystemAttachmentNotFound)
 
 	// Possible not found scenario 2:
-	fsaUUID := domaintesting.GenFilesystemAttachmentUUID(c)
+	fsaUUID := tc.Must(c, domainstorage.NewFilesystemAttachmentUUID)
 	s.state.EXPECT().GetFilesystemAttachmentUUIDForFilesystemNetNode(gomock.Any(), fsUUID, netNodeUUID).Return(
 		fsaUUID, nil,
 	)
@@ -197,8 +198,8 @@ func (s *filesystemSuite) TestGetFilesystemAttachmentForMachine(c *tc.C) {
 		MountPoint:   "/mnt/fs-1234",
 		ReadOnly:     true,
 	}
-	fsUUID := domaintesting.GenFilesystemUUID(c)
-	fsaUUID := domaintesting.GenFilesystemAttachmentUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
+	fsaUUID := tc.Must(c, domainstorage.NewFilesystemAttachmentUUID)
 	s.state.EXPECT().GetMachineNetNodeUUID(c.Context(), machineUUID).Return(netNodeUUID, nil)
 	s.state.EXPECT().GetFilesystemUUIDForID(c.Context(), "1234").Return(fsUUID, nil)
 	s.state.EXPECT().GetFilesystemAttachmentUUIDForFilesystemNetNode(gomock.Any(), fsUUID, netNodeUUID).Return(fsaUUID, nil)
@@ -222,7 +223,7 @@ func (s *filesystemSuite) TestGetFilesystemAttachmentForMachineNotValid(c *tc.C)
 
 func (s *filesystemSuite) TestGetFilesystemAttachmentForMachineMachineNotFound(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 	machineUUID := machinetesting.GenUUID(c)
 	s.state.EXPECT().GetFilesystemUUIDForID(c.Context(), "1234").Return(fsUUID, nil).AnyTimes()
 	s.state.EXPECT().GetMachineNetNodeUUID(c.Context(), machineUUID).Return("", machineerrors.MachineNotFound)
@@ -237,7 +238,7 @@ func (s *filesystemSuite) TestGetFilesystemAttachmentForMachineAttachmentNotFoun
 	machineUUID := machinetesting.GenUUID(c)
 	netNodeUUID, err := domainnetwork.NewNetNodeUUID()
 	c.Assert(err, tc.ErrorIsNil)
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 	s.state.EXPECT().GetMachineNetNodeUUID(c.Context(), machineUUID).Return(netNodeUUID, nil).AnyTimes()
 	s.state.EXPECT().GetFilesystemUUIDForID(c.Context(), "1234").Return(fsUUID, nil).AnyTimes()
 	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
@@ -250,7 +251,7 @@ func (s *filesystemSuite) TestGetFilesystemAttachmentForMachineAttachmentNotFoun
 	c.Check(err, tc.ErrorIs, storageprovisioningerrors.FilesystemAttachmentNotFound)
 
 	// scenario 2:
-	fsaUUID := domaintesting.GenFilesystemAttachmentUUID(c)
+	fsaUUID := tc.Must(c, domainstorage.NewFilesystemAttachmentUUID)
 	s.state.EXPECT().GetFilesystemAttachmentUUIDForFilesystemNetNode(gomock.Any(), fsUUID, netNodeUUID).Return(
 		fsaUUID, nil,
 	)
@@ -287,13 +288,17 @@ func (s *filesystemSuite) TestWatchModelProvisionedFilesystems(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	s.state.EXPECT().InitialWatchStatementModelProvisionedFilesystems().Return(
-		"test_namespace", namespaceQueryReturningError(c.T),
+		"test_namespace", "test_namespace_2", namespaceQueryReturningError(c.T),
 	)
 	matcher := eventSourceFilterMatcher{
 		ChangeMask: changestream.All,
 		Namespace:  "test_namespace",
 	}
-	s.watcherFactory.EXPECT().NewNamespaceWatcher(gomock.Any(), gomock.Any(), gomock.Any(), matcher)
+	matcher2 := eventSourceFilterMatcher{
+		ChangeMask: changestream.All,
+		Namespace:  "test_namespace_2",
+	}
+	s.watcherFactory.EXPECT().NewNamespaceWatcher(gomock.Any(), gomock.Any(), gomock.Any(), matcher, matcher2)
 
 	_, err := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c)).
 		WatchModelProvisionedFilesystems(c.Context())
@@ -371,13 +376,17 @@ func (s *filesystemSuite) TestWatchModelProvisionedFilesystemAttachments(c *tc.C
 	defer s.setupMocks(c).Finish()
 
 	s.state.EXPECT().InitialWatchStatementModelProvisionedFilesystemAttachments().Return(
-		"test_namespace", namespaceQueryReturningError(c.T),
+		"test_namespace", "test_namespace_2", namespaceQueryReturningError(c.T),
 	)
 	matcher := eventSourceFilterMatcher{
 		ChangeMask: changestream.All,
 		Namespace:  "test_namespace",
 	}
-	s.watcherFactory.EXPECT().NewNamespaceWatcher(gomock.Any(), gomock.Any(), gomock.Any(), matcher)
+	matcher2 := eventSourceFilterMatcher{
+		ChangeMask: changestream.All,
+		Namespace:  "test_namespace_2",
+	}
+	s.watcherFactory.EXPECT().NewNamespaceWatcher(gomock.Any(), gomock.Any(), gomock.Any(), matcher, matcher2)
 
 	_, err := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c)).
 		WatchModelProvisionedFilesystemAttachments(c.Context())
@@ -450,25 +459,353 @@ func (s *filesystemSuite) TestWatchMachineProvisionedFilesystemAttachmentsNotFou
 func (s *filesystemSuite) TestGetFilesystemsTemplateForApplication(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	appID := tc.Must(c, coreapplication.NewUUID)
-	expectedResult := []storageprovisioning.FilesystemTemplate{{
-		StorageName:  "a",
-		Count:        1,
-		MaxCount:     10,
-		SizeMiB:      1234,
-		ProviderType: "foo",
-		ReadOnly:     true,
-		Location:     "bar",
+	appUUID := tc.Must(c, coreapplication.NewUUID)
+	stateTemplates := []internal.FilesystemTemplate{{
+		StorageName:       "config",
+		Count:             2,
+		MaxCount:          10,
+		SizeMiB:           1234,
+		ProviderType:      "foo",
+		ReadOnly:          true,
+		CharmLocationHint: "/bar",
 		Attributes: map[string]string{
 			"laz": "baz",
 		},
 	}}
-	s.state.EXPECT().GetFilesystemTemplatesForApplication(gomock.Any(), appID).
-		Return(expectedResult, nil)
+	s.state.EXPECT().GetFilesystemTemplatesForApplication(gomock.Any(), appUUID).
+		Return(stateTemplates, nil)
+	s.state.EXPECT().GetContainerMountsForApplication(gomock.Any(), appUUID).
+		Return(map[string][]internal.ContainerMount{
+			"config": {{
+				ContainerKey: "web-server",
+				StorageName:  "config",
+				MountPoint:   "/data/config",
+			}},
+		}, nil)
+	s.state.EXPECT().GetProvisionedFilesystemAttachmentsForApplication(gomock.Any(), appUUID)
 
 	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
-	result, err := svc.GetFilesystemTemplatesForApplication(c.Context(), appID)
+	result, err := svc.GetFilesystemTemplatesForApplication(c.Context(), appUUID)
 	c.Assert(err, tc.ErrorIsNil)
+
+	expectedResult := []storageprovisioning.FilesystemTemplate{{
+		Attachments: []storageprovisioning.FilesystemAttachmentTemplateWithProvisioned{
+			{
+				FilesystemAttachmentTemplate: storageprovisioning.FilesystemAttachmentTemplate{
+					MountPoint:   "/bar/0",
+					ReadOnly:     true,
+					ContainerKey: "charm",
+				},
+			},
+			{
+				FilesystemAttachmentTemplate: storageprovisioning.FilesystemAttachmentTemplate{
+					MountPoint:   "/bar/1",
+					ReadOnly:     true,
+					ContainerKey: "charm",
+				},
+			},
+			{
+				FilesystemAttachmentTemplate: storageprovisioning.FilesystemAttachmentTemplate{
+					MountPoint:   "/data/config",
+					ReadOnly:     true,
+					ContainerKey: "web-server",
+				},
+			},
+		},
+		StorageName:  "config",
+		Count:        2,
+		SizeMiB:      1234,
+		ProviderType: "foo",
+		Attributes: map[string]string{
+			"laz": "baz",
+		},
+	}}
+	c.Check(result, tc.DeepEquals, expectedResult)
+}
+
+// TestGetFilesystemsTemplateForApplicationWithProvisionedAttachments tests when
+// there are provisioned attachments for the template, it is also returned alongside it.
+func (s *filesystemSuite) TestGetFilesystemsTemplateForApplicationWithProvisionedAttachments(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	appUUID := tc.Must(c, coreapplication.NewUUID)
+	stateTemplates := []internal.FilesystemTemplate{{
+		StorageName:       "config",
+		Count:             2,
+		MaxCount:          10,
+		SizeMiB:           1234,
+		ProviderType:      "foo",
+		ReadOnly:          true,
+		CharmLocationHint: "/bar",
+		Attributes: map[string]string{
+			"laz": "baz",
+		},
+	}}
+	s.state.EXPECT().GetFilesystemTemplatesForApplication(gomock.Any(), appUUID).
+		Return(stateTemplates, nil)
+	s.state.EXPECT().GetContainerMountsForApplication(gomock.Any(), appUUID).
+		Return(map[string][]internal.ContainerMount{
+			"config": {{
+				ContainerKey: "web-server",
+				StorageName:  "config",
+				MountPoint:   "/data/config",
+			}},
+		}, nil)
+	s.state.EXPECT().GetProvisionedFilesystemAttachmentsForApplication(gomock.Any(), appUUID).
+		Return(map[string][]storageprovisioning.ProvisionedFilesystemAttachment{
+			"config": {
+				storageprovisioning.ProvisionedFilesystemAttachment{
+					AttachmentUUID: "1-1-1-1",
+					StorageName:    "config",
+					ProviderID:     "app-config-uniqid-app-0",
+				},
+				storageprovisioning.ProvisionedFilesystemAttachment{
+					AttachmentUUID: "2-2-2-2",
+					StorageName:    "config",
+					ProviderID:     "app-config-uniqid-app-1",
+				},
+				storageprovisioning.ProvisionedFilesystemAttachment{
+					AttachmentUUID: "3-3-3-3",
+					StorageName:    "config",
+					ProviderID:     "app-config-uniqid-app-2",
+				},
+			},
+		}, nil)
+
+	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
+	result, err := svc.GetFilesystemTemplatesForApplication(c.Context(), appUUID)
+	c.Assert(err, tc.ErrorIsNil)
+
+	provisionedAttachments := []storageprovisioning.ProvisionedFilesystemAttachment{
+		{
+			AttachmentUUID: "1-1-1-1",
+			StorageName:    "config",
+			ProviderID:     "app-config-uniqid-app-0",
+		},
+		{
+			AttachmentUUID: "2-2-2-2",
+			StorageName:    "config",
+			ProviderID:     "app-config-uniqid-app-1",
+		},
+		{
+			AttachmentUUID: "3-3-3-3",
+			StorageName:    "config",
+			ProviderID:     "app-config-uniqid-app-2",
+		},
+	}
+
+	expectedResult := []storageprovisioning.FilesystemTemplate{{
+		Attachments: []storageprovisioning.FilesystemAttachmentTemplateWithProvisioned{
+			{
+				FilesystemAttachmentTemplate: storageprovisioning.FilesystemAttachmentTemplate{
+					MountPoint:   "/bar/0",
+					ReadOnly:     true,
+					ContainerKey: "charm",
+				},
+				ProvisionedAttachments: provisionedAttachments,
+			},
+			{
+				FilesystemAttachmentTemplate: storageprovisioning.FilesystemAttachmentTemplate{
+					MountPoint:   "/bar/1",
+					ReadOnly:     true,
+					ContainerKey: "charm",
+				},
+				ProvisionedAttachments: provisionedAttachments,
+			},
+			{
+				FilesystemAttachmentTemplate: storageprovisioning.FilesystemAttachmentTemplate{
+					MountPoint:   "/data/config",
+					ReadOnly:     true,
+					ContainerKey: "web-server",
+				},
+				ProvisionedAttachments: provisionedAttachments,
+			},
+		},
+		StorageName:  "config",
+		Count:        2,
+		SizeMiB:      1234,
+		ProviderType: "foo",
+		Attributes: map[string]string{
+			"laz": "baz",
+		},
+	}}
+	c.Check(result, tc.DeepEquals, expectedResult)
+}
+
+// TestGetFilesystemsTemplateForApplication tests the caller gets filesystem
+// templates back.
+func (s *filesystemSuite) TestGetFilesystemsTemplateForApplicationSingleton(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	appUUID := tc.Must(c, coreapplication.NewUUID)
+	stateTemplates := []internal.FilesystemTemplate{{
+		StorageName:       "config",
+		Count:             1,
+		MaxCount:          1,
+		SizeMiB:           1234,
+		ProviderType:      "foo",
+		ReadOnly:          true,
+		CharmLocationHint: "/bar",
+		Attributes: map[string]string{
+			"laz": "baz",
+		},
+	}}
+	s.state.EXPECT().GetFilesystemTemplatesForApplication(gomock.Any(), appUUID).
+		Return(stateTemplates, nil)
+	s.state.EXPECT().GetContainerMountsForApplication(gomock.Any(), appUUID).
+		Return(map[string][]internal.ContainerMount{
+			"config": {{
+				ContainerKey: "web-server",
+				StorageName:  "config",
+				MountPoint:   "/data/config",
+			}},
+		}, nil)
+	s.state.EXPECT().GetProvisionedFilesystemAttachmentsForApplication(gomock.Any(), appUUID)
+
+	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
+	result, err := svc.GetFilesystemTemplatesForApplication(c.Context(), appUUID)
+	c.Assert(err, tc.ErrorIsNil)
+
+	expectedResult := []storageprovisioning.FilesystemTemplate{{
+		Attachments: []storageprovisioning.FilesystemAttachmentTemplateWithProvisioned{
+			{
+				FilesystemAttachmentTemplate: storageprovisioning.FilesystemAttachmentTemplate{
+					MountPoint:   "/bar",
+					ReadOnly:     true,
+					ContainerKey: "charm",
+				},
+			},
+			{
+				FilesystemAttachmentTemplate: storageprovisioning.FilesystemAttachmentTemplate{
+					MountPoint:   "/data/config",
+					ReadOnly:     true,
+					ContainerKey: "web-server",
+				},
+			},
+		},
+		StorageName:  "config",
+		Count:        1,
+		SizeMiB:      1234,
+		ProviderType: "foo",
+		Attributes: map[string]string{
+			"laz": "baz",
+		},
+	}}
+	c.Check(result, tc.DeepEquals, expectedResult)
+}
+
+// TestGetFilesystemsTemplateForApplicationEmptyContainerMounts tests
+// the container does not have any mount points defined.
+func (s *filesystemSuite) TestGetFilesystemsTemplateForApplicationEmptyContainerMounts(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	appUUID := tc.Must(c, coreapplication.NewUUID)
+	stateTemplates := []internal.FilesystemTemplate{{
+		StorageName:       "config",
+		Count:             1,
+		MaxCount:          1,
+		SizeMiB:           1234,
+		ProviderType:      "foo",
+		ReadOnly:          true,
+		CharmLocationHint: "/bar",
+		Attributes: map[string]string{
+			"laz": "baz",
+		},
+	}}
+	s.state.EXPECT().GetFilesystemTemplatesForApplication(gomock.Any(), appUUID).
+		Return(stateTemplates, nil)
+	s.state.EXPECT().GetContainerMountsForApplication(gomock.Any(), appUUID).
+		Return(nil, nil)
+	s.state.EXPECT().GetProvisionedFilesystemAttachmentsForApplication(gomock.Any(), appUUID)
+
+	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
+	result, err := svc.GetFilesystemTemplatesForApplication(c.Context(), appUUID)
+	c.Assert(err, tc.ErrorIsNil)
+
+	expectedResult := []storageprovisioning.FilesystemTemplate{{
+		Attachments: []storageprovisioning.FilesystemAttachmentTemplateWithProvisioned{
+			{
+				FilesystemAttachmentTemplate: storageprovisioning.FilesystemAttachmentTemplate{
+					MountPoint:   "/bar",
+					ReadOnly:     true,
+					ContainerKey: "charm",
+				},
+			},
+		},
+		StorageName:  "config",
+		Count:        1,
+		SizeMiB:      1234,
+		ProviderType: "foo",
+		Attributes: map[string]string{
+			"laz": "baz",
+		},
+	}}
+	c.Check(result, tc.DeepEquals, expectedResult)
+}
+
+// TestGetFilesystemsTemplateForApplicationNoCharmLocation tests that when the
+// charm has not specified a preferred location we use the default location with
+// a combination of the storage name and attachment index. This ensures that
+// mount points are unique over many storage instances.
+func (s *filesystemSuite) TestGetFilesystemsTemplateForApplicationNoCharmLocation(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	appUUID := tc.Must(c, coreapplication.NewUUID)
+	stateTemplates := []internal.FilesystemTemplate{{
+		StorageName:  "config",
+		Count:        1,
+		MaxCount:     1,
+		SizeMiB:      1234,
+		ProviderType: "foo",
+		ReadOnly:     true,
+		Attributes: map[string]string{
+			"laz": "baz",
+		},
+	}}
+	s.state.EXPECT().GetFilesystemTemplatesForApplication(gomock.Any(), appUUID).
+		Return(stateTemplates, nil)
+	s.state.EXPECT().GetContainerMountsForApplication(gomock.Any(), appUUID).
+		Return(map[string][]internal.ContainerMount{
+			"config": {{
+				ContainerKey: "web-server",
+				StorageName:  "config",
+				MountPoint:   "/data/config",
+			}},
+		}, nil)
+	s.state.EXPECT().GetProvisionedFilesystemAttachmentsForApplication(gomock.Any(), appUUID)
+
+	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
+	result, err := svc.GetFilesystemTemplatesForApplication(c.Context(), appUUID)
+	c.Assert(err, tc.ErrorIsNil)
+
+	expectedResult := []storageprovisioning.FilesystemTemplate{{
+		Attachments: []storageprovisioning.FilesystemAttachmentTemplateWithProvisioned{
+			{
+				FilesystemAttachmentTemplate: storageprovisioning.FilesystemAttachmentTemplate{
+					MountPoint:   "/var/lib/juju/storage/config-0",
+					ReadOnly:     true,
+					ContainerKey: "charm",
+				},
+			},
+			// "web-server" doesn't default to `/var/lib/juju/storage/*`
+			// because the charm definition expects `containers[*].mounts[*].location`
+			// to have a value.
+			{
+				FilesystemAttachmentTemplate: storageprovisioning.FilesystemAttachmentTemplate{
+					MountPoint:   "/data/config",
+					ReadOnly:     true,
+					ContainerKey: "web-server",
+				},
+			},
+		},
+		StorageName:  "config",
+		Count:        1,
+		SizeMiB:      1234,
+		ProviderType: "foo",
+		Attributes: map[string]string{
+			"laz": "baz",
+		},
+	}}
 	c.Check(result, tc.DeepEquals, expectedResult)
 }
 
@@ -501,7 +838,7 @@ func (s *filesystemSuite) TestSetFilesystemProvisionedInfo(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	fsID := "123"
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 	info := storageprovisioning.FilesystemProvisionedInfo{
 		ProviderID: "x",
 		SizeMiB:    100,
@@ -521,9 +858,8 @@ func (s *filesystemSuite) TestSetFilesystemAttachmentProvisionedInfoForMachine(c
 	defer s.setupMocks(c).Finish()
 
 	fsID := "123"
-	fsUUID := domaintesting.GenFilesystemUUID(c)
-	fsAttachmentUUID, err := storageprovisioning.NewFilesystemAttachmentUUID()
-	c.Assert(err, tc.ErrorIsNil)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
+	fsAttachmentUUID := tc.Must(c, domainstorage.NewFilesystemAttachmentUUID)
 	info := storageprovisioning.FilesystemAttachmentProvisionedInfo{
 		MountPoint: "x",
 		ReadOnly:   true,
@@ -567,9 +903,8 @@ func (s *filesystemSuite) TestSetFilesystemAttachmentProvisionedInfoForUnit(c *t
 	defer s.setupMocks(c).Finish()
 
 	fsID := "123"
-	fsUUID := domaintesting.GenFilesystemUUID(c)
-	fsAttachmentUUID, err := storageprovisioning.NewFilesystemAttachmentUUID()
-	c.Assert(err, tc.ErrorIsNil)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
+	fsAttachmentUUID := tc.Must(c, domainstorage.NewFilesystemAttachmentUUID)
 	info := storageprovisioning.FilesystemAttachmentProvisionedInfo{
 		MountPoint: "x",
 		ReadOnly:   true,
@@ -613,16 +948,17 @@ func (s *filesystemSuite) TestSetFilesystemAttachmentProvisionedInfoForUnitInval
 func (s *filesystemSuite) TestGetFilesystemParams(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 
 	s.state.EXPECT().GetFilesystemParams(gomock.Any(), fsUUID).Return(
 		storageprovisioning.FilesystemParams{
 			Attributes: map[string]string{
 				"foo": "bar",
 			},
-			ID:       "spid",
-			Provider: "myprovider",
-			SizeMiB:  10,
+			ID:         "spid",
+			Provider:   "myprovider",
+			ProviderID: new("fs-provider-id"),
+			SizeMiB:    10,
 		}, nil,
 	)
 
@@ -632,9 +968,10 @@ func (s *filesystemSuite) TestGetFilesystemParams(c *tc.C) {
 		Attributes: map[string]string{
 			"foo": "bar",
 		},
-		ID:       "spid",
-		Provider: "myprovider",
-		SizeMiB:  10,
+		ID:         "spid",
+		Provider:   "myprovider",
+		ProviderID: new("fs-provider-id"),
+		SizeMiB:    10,
 	})
 }
 
@@ -644,7 +981,7 @@ func (s *filesystemSuite) TestGetFilesystemParams(c *tc.C) {
 func (s *filesystemSuite) TestGetFilesystemParamsNotFound(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 
 	s.state.EXPECT().GetFilesystemParams(gomock.Any(), fsUUID).Return(
 		storageprovisioning.FilesystemParams{},
@@ -658,7 +995,7 @@ func (s *filesystemSuite) TestGetFilesystemParamsNotFound(c *tc.C) {
 func (s *filesystemSuite) TestGetFilesystemRemovalParams(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 
 	s.state.EXPECT().GetFilesystemLife(gomock.Any(), fsUUID).Return(
 		domainlife.Dead, nil)
@@ -681,7 +1018,7 @@ func (s *filesystemSuite) TestGetFilesystemRemovalParams(c *tc.C) {
 func (s *filesystemSuite) TestGetFilesystemRemovalParamsWithObliterate(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 
 	s.state.EXPECT().GetFilesystemLife(gomock.Any(), fsUUID).Return(
 		domainlife.Dead, nil)
@@ -705,7 +1042,7 @@ func (s *filesystemSuite) TestGetFilesystemRemovalParamsWithObliterate(c *tc.C) 
 func (s *filesystemSuite) TestGetFilesystemRemovalParamsAlive(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 
 	s.state.EXPECT().GetFilesystemLife(gomock.Any(), fsUUID).Return(
 		domainlife.Alive, nil)
@@ -717,7 +1054,7 @@ func (s *filesystemSuite) TestGetFilesystemRemovalParamsAlive(c *tc.C) {
 func (s *filesystemSuite) TestGetFilesystemRemovalParamsDying(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 
 	s.state.EXPECT().GetFilesystemLife(gomock.Any(), fsUUID).Return(
 		domainlife.Dying, nil)
@@ -729,7 +1066,7 @@ func (s *filesystemSuite) TestGetFilesystemRemovalParamsDying(c *tc.C) {
 func (s *filesystemSuite) TestGetFilesystemRemovalParamsNotFound(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 
 	s.state.EXPECT().GetFilesystemLife(gomock.Any(), fsUUID).Return(
 		domainlife.Dead, nil)
@@ -745,7 +1082,7 @@ func (s *filesystemSuite) TestGetFilesystemRemovalParamsNotFound(c *tc.C) {
 func (s *filesystemSuite) TestGetFilesystemRemovalParamsNotFoundAtLife(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 
 	s.state.EXPECT().GetFilesystemLife(gomock.Any(), fsUUID).Return(
 		0, storageprovisioningerrors.FilesystemNotFound)
@@ -754,31 +1091,116 @@ func (s *filesystemSuite) TestGetFilesystemRemovalParamsNotFoundAtLife(c *tc.C) 
 	c.Check(err, tc.ErrorIs, storageprovisioningerrors.FilesystemNotFound)
 }
 
-// TestGetFilesystemAttachmentParams is a happy path test of
-// [Service.GetFilesystemAttachmentParams].
-func (s *filesystemSuite) TestGetFilesystemAttachmentParams(c *tc.C) {
+// TestGetFilesystemAttachmentParamsMountCalcSingelton tests that when a
+// filesystem attachment has no mount point set the service layer correctly
+// calculates one based off of the charm storage location.
+//
+// In this case the storage is considered a singleton so it gets mounted
+// verbatim for the location the charm specified.
+func (s *filesystemSuite) TestGetFilesystemAttachmentParamsMountCalcSingelton(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
-	fsaUUID := domaintesting.GenFilesystemAttachmentUUID(c)
+	fsaUUID := tc.Must(c, domainstorage.NewFilesystemAttachmentUUID)
 
-	s.state.EXPECT().GetFilesystemAttachmentParams(gomock.Any(), fsaUUID).Return(
+	stExp := s.state.EXPECT()
+	stExp.GetFilesystemAttachmentParams(gomock.Any(), fsaUUID).Return(
 		storageprovisioning.FilesystemAttachmentParams{
-			MachineInstanceID: "inst-1",
-			Provider:          "myprovider",
-			ProviderID:        "p-123",
-			MountPoint:        "/var/foo",
-			ReadOnly:          true,
+			CharmStorageCountMax: 1,
+			CharmStorageLocation: "/mnt/charm1",
+			CharmStorageReadOnly: false,
+			MachineInstanceID:    "inst-1",
+			MountPoint:           "", // No mount point has been set.
+			Provider:             "myprovider",
+			FilesystemProviderID: "p-123",
 		}, nil,
 	)
 
+	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
 	params, err := svc.GetFilesystemAttachmentParams(c.Context(), fsaUUID)
 	c.Check(err, tc.ErrorIsNil)
 	c.Check(params, tc.DeepEquals, storageprovisioning.FilesystemAttachmentParams{
-		MachineInstanceID: "inst-1",
-		Provider:          "myprovider",
-		ProviderID:        "p-123",
-		MountPoint:        "/var/foo",
-		ReadOnly:          true,
+		CharmStorageCountMax: 1,
+		CharmStorageLocation: "/mnt/charm1",
+		CharmStorageReadOnly: false,
+		MachineInstanceID:    "inst-1",
+		MountPoint:           "/mnt/charm1",
+		Provider:             "myprovider",
+		FilesystemProviderID: "p-123",
+	})
+}
+
+// TestGetFilesystemAttachmentParamsMountCalc tests that when a filesystem
+// attachment has no mount point set the service layer correctly calculates one
+// based off of the charm storage location.
+//
+// In this case the storage is not considered a singleton so it MUST get mounted
+// at a location under the charm storage location that is unique.
+func (s *filesystemSuite) TestGetFilesystemAttachmentParamsMountCalc(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+	fsaUUID := tc.Must(c, domainstorage.NewFilesystemAttachmentUUID)
+
+	stExp := s.state.EXPECT()
+	stExp.GetFilesystemAttachmentParams(gomock.Any(), fsaUUID).Return(
+		storageprovisioning.FilesystemAttachmentParams{
+			CharmStorageCountMax: 3,
+			CharmStorageLocation: "/mnt/charm1",
+			CharmStorageReadOnly: false,
+			MachineInstanceID:    "inst-1",
+			MountPoint:           "", // No mount point has been set.
+			Provider:             "myprovider",
+			FilesystemProviderID: "p-123",
+		}, nil,
+	)
+
+	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
+	params, err := svc.GetFilesystemAttachmentParams(c.Context(), fsaUUID)
+	c.Check(err, tc.ErrorIsNil)
+	c.Check(params, tc.DeepEquals, storageprovisioning.FilesystemAttachmentParams{
+		CharmStorageCountMax: 3,
+		CharmStorageLocation: "/mnt/charm1",
+		CharmStorageReadOnly: false,
+		MachineInstanceID:    "inst-1",
+		MountPoint:           "/mnt/charm1/" + fsaUUID.String(),
+		Provider:             "myprovider",
+		FilesystemProviderID: "p-123",
+	})
+}
+
+// TestGetFilesystemAttachmentParamsMountCalcNoCharmLocation tests that when a
+// filesystem attachment has no mount point set and no charm storage location
+// has been set the default Juju location is used in the calculated mount point.
+//
+// We specifically want to see that even though the charm storage can be
+// considered a singleton (max count of 1) because no charm location is set
+// the attachment must be made at a unique location under /var/lib/juju/storage.
+func (s *filesystemSuite) TestGetFilesystemAttachmentParamsMountCalcNoCharmLocation(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+	fsaUUID := tc.Must(c, domainstorage.NewFilesystemAttachmentUUID)
+
+	stExp := s.state.EXPECT()
+	stExp.GetFilesystemAttachmentParams(gomock.Any(), fsaUUID).Return(
+		storageprovisioning.FilesystemAttachmentParams{
+			CharmStorageCountMax: 1,  // Purposely set to 1 to appear as a singelton.
+			CharmStorageLocation: "", // No charm storage location set.
+			CharmStorageReadOnly: true,
+			MachineInstanceID:    "inst-1",
+			MountPoint:           "", // No mount point has been set.
+			Provider:             "myprovider",
+			FilesystemProviderID: "p-123",
+		}, nil,
+	)
+
+	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
+	params, err := svc.GetFilesystemAttachmentParams(c.Context(), fsaUUID)
+	c.Check(err, tc.ErrorIsNil)
+	c.Check(params, tc.DeepEquals, storageprovisioning.FilesystemAttachmentParams{
+		CharmStorageCountMax: 1,
+		CharmStorageLocation: "",
+		CharmStorageReadOnly: true,
+		MachineInstanceID:    "inst-1",
+		// Default storage location of /var/lib/juju/storage is used.
+		MountPoint:           "/var/lib/juju/storage/" + fsaUUID.String(),
+		Provider:             "myprovider",
+		FilesystemProviderID: "p-123",
 	})
 }
 
@@ -788,7 +1210,7 @@ func (s *filesystemSuite) TestGetFilesystemAttachmentParams(c *tc.C) {
 func (s *filesystemSuite) TestGetFilesystemAttachmentParamsNotFound(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	svc := NewService(s.state, s.watcherFactory, loggertesting.WrapCheckLog(c))
-	fsaUUID := domaintesting.GenFilesystemAttachmentUUID(c)
+	fsaUUID := tc.Must(c, domainstorage.NewFilesystemAttachmentUUID)
 
 	s.state.EXPECT().GetFilesystemAttachmentParams(gomock.Any(), fsaUUID).Return(
 		storageprovisioning.FilesystemAttachmentParams{},

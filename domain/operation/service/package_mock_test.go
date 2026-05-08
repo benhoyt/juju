@@ -201,45 +201,6 @@ func (c *MockStateCancelTaskCall) DoAndReturn(f func(context.Context, string) (o
 	return c
 }
 
-// DeleteImportedOperations mocks base method.
-func (m *MockState) DeleteImportedOperations(arg0 context.Context) ([]string, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteImportedOperations", arg0)
-	ret0, _ := ret[0].([]string)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// DeleteImportedOperations indicates an expected call of DeleteImportedOperations.
-func (mr *MockStateMockRecorder) DeleteImportedOperations(arg0 any) *MockStateDeleteImportedOperationsCall {
-	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteImportedOperations", reflect.TypeOf((*MockState)(nil).DeleteImportedOperations), arg0)
-	return &MockStateDeleteImportedOperationsCall{Call: call}
-}
-
-// MockStateDeleteImportedOperationsCall wrap *gomock.Call
-type MockStateDeleteImportedOperationsCall struct {
-	*gomock.Call
-}
-
-// Return rewrite *gomock.Call.Return
-func (c *MockStateDeleteImportedOperationsCall) Return(arg0 []string, arg1 error) *MockStateDeleteImportedOperationsCall {
-	c.Call = c.Call.Return(arg0, arg1)
-	return c
-}
-
-// Do rewrite *gomock.Call.Do
-func (c *MockStateDeleteImportedOperationsCall) Do(f func(context.Context) ([]string, error)) *MockStateDeleteImportedOperationsCall {
-	c.Call = c.Call.Do(f)
-	return c
-}
-
-// DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockStateDeleteImportedOperationsCall) DoAndReturn(f func(context.Context) ([]string, error)) *MockStateDeleteImportedOperationsCall {
-	c.Call = c.Call.DoAndReturn(f)
-	return c
-}
-
 // FilterTaskUUIDsForMachine mocks base method.
 func (m *MockState) FilterTaskUUIDsForMachine(arg0 context.Context, arg1 []string, arg2 string) ([]string, error) {
 	m.ctrl.T.Helper()

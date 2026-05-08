@@ -6,16 +6,19 @@ package provisionertask
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math/rand"
+	"slices"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/juju/collections/set"
+	"github.com/juju/collections/transform"
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 
 	"github.com/juju/juju/api"
 	apiprovisioner "github.com/juju/juju/api/agent/provisioner"
@@ -26,7 +29,6 @@ import (
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/logger"
-	"github.com/juju/juju/core/lxdprofile"
 	corenetwork "github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/core/status"
@@ -38,7 +40,6 @@ import (
 	"github.com/juju/juju/environs/instances"
 	"github.com/juju/juju/environs/simplestreams"
 	"github.com/juju/juju/internal/cloudconfig/instancecfg"
-	"github.com/juju/juju/internal/container"
 	"github.com/juju/juju/internal/password"
 	providercommon "github.com/juju/juju/internal/provider/common"
 	"github.com/juju/juju/internal/storage"
@@ -108,9 +109,13 @@ type RetryStrategy struct {
 // so it can be used when we don't have a machine service available.
 type GetMachineInstanceInfoSetter func(machineProvisioner apiprovisioner.MachineProvisioner) func(
 	ctx context.Context,
-	id instance.Id, displayName string, nonce string, characteristics *instance.HardwareCharacteristics,
-	networkConfig []params.NetworkConfig, volumes []params.Volume,
-	volumeAttachments map[string]params.VolumeAttachmentInfo, charmProfiles []string,
+	id instance.Id,
+	displayName string,
+	nonce string,
+	characteristics *instance.HardwareCharacteristics,
+	networkConfig []params.NetworkConfig,
+	volumes []params.Volume,
+	volumeAttachments map[string]params.VolumeAttachmentInfo,
 ) error
 
 // TaskConfig holds the initialisation data for a ProvisionerTask instance.
@@ -158,6 +163,7 @@ func NewProvisionerTask(cfg TaskConfig) (ProvisionerTask, error) {
 		machinesStarting:             make(map[string]bool),
 		machinesStopDeferred:         make(map[string]bool),
 		machinesStopping:             make(map[string]bool),
+		machinesStopped:              make(map[string]bool),
 		availabilityZoneMachines:     make([]*AvailabilityZoneMachine, 0),
 		imageStream:                  cfg.ImageStream,
 		retryStartInstanceStrategy:   cfg.RetryStartInstanceStrategy,
@@ -178,11 +184,12 @@ func NewProvisionerTask(cfg TaskConfig) (ProvisionerTask, error) {
 }
 
 // The list of events that are passed into the eventProcessed callback by the
-// main loop.
+// provisioner task.
 const (
 	eventTypeProcessedMachines         = "processed-machines"
 	eventTypeRetriedMachinesWithErrors = "retried-machines-with-errors"
 	eventTypeResizedWorkerPool         = "resized-worker-pool"
+	eventTypeQueuedStopInstances       = "queued-stop-instances"
 )
 
 type provisionerTask struct {
@@ -206,6 +213,7 @@ type provisionerTask struct {
 	machines                 map[string]apiprovisioner.MachineProvisioner // machine ID -> machine
 	machinesStarting         map[string]bool                              // machine IDs currently being started.
 	machinesStopping         map[string]bool                              // machine IDs currently being stopped.
+	machinesStopped          map[string]bool                              // machine IDs currently being stopped.
 	machinesStopDeferred     map[string]bool                              // machine IDs which were set as dead while starting. They will be stopped once they are online.
 	availabilityZoneMachines []*AvailabilityZoneMachine
 	instances                map[instance.Id]instances.Instance // instanceID -> instance
@@ -285,7 +293,20 @@ func (task *provisionerTask) loop() (taskErr error) {
 			// The worker pool has detected one or more errors and
 			// is in the process of shutting down. Collect and
 			// report any emitted errors.
-			return task.wp.Close()
+			err := task.wp.Close()
+			select {
+			case <-task.catacomb.Dying():
+				// If the provisioner task is dying, then we do not care about
+				// the reason why the worker pool is done, just log those
+				// errors.
+				task.logger.Debugf(
+					ctx, "worker pool error while provisioner task dying; err: %v",
+					err,
+				)
+				return task.catacomb.ErrDying()
+			default:
+			}
+			return err
 		}
 	}
 }
@@ -342,6 +363,14 @@ func (task *provisionerTask) processMachines(ctx context.Context, ids []string) 
 		return errors.Trace(err)
 	}
 
+	// Without the lock, check if the workerpool is idle.
+	idleCtx, idleCtxCancel := context.WithTimeout(ctx, time.Second)
+	defer idleCtxCancel()
+	if task.wp.Idle(idleCtx) {
+		// If the workerpool is idle, we can forget about any stopped machines.
+		task.forgetStoppedMachines()
+	}
+
 	// Maintain zone-machine distributions.
 	err := task.updateAvailabilityZoneMachines(ctx)
 	if err != nil && !errors.Is(err, errors.NotImplemented) {
@@ -356,7 +385,7 @@ func (task *provisionerTask) processMachines(ctx context.Context, ids []string) 
 
 	// Queue removal of any dead machines that are not already being
 	// stopped or flagged for deferred stopping once they are online.
-	if err := task.filterAndQueueRemovalOfDeadMachines(ctx, dead); err != nil {
+	if err := task.queueRemovalOfDeadMachines(ctx, dead); err != nil {
 		return errors.Trace(err)
 	}
 
@@ -375,18 +404,18 @@ func instanceIds(instances []instances.Instance) []string {
 // populateMachineMaps updates task.instances. Also updates task.machines map
 // if a list of IDs is given.
 func (task *provisionerTask) populateMachineMaps(ctx context.Context, ids []string) error {
+	task.machinesMutex.Lock()
+	defer task.machinesMutex.Unlock()
+
 	allInstances, err := task.broker.AllRunningInstances(ctx)
 	if err != nil {
 		return errors.Annotate(err, "getting all instances from broker")
 	}
-
 	instances := make(map[instance.Id]instances.Instance)
 	for _, i := range allInstances {
 		instances[i.Id()] = i
 	}
-	task.machinesMutex.Lock()
 	task.instances = instances
-	task.machinesMutex.Unlock()
 
 	// Update the machines map with new data for each of the machines in the
 	// change list.
@@ -398,8 +427,7 @@ func (task *provisionerTask) populateMachineMaps(ctx context.Context, ids []stri
 	if err != nil {
 		return errors.Annotatef(err, "getting machines %v", ids)
 	}
-	task.machinesMutex.Lock()
-	defer task.machinesMutex.Unlock()
+
 	for i, result := range machines {
 		switch {
 		case result.Err == nil:
@@ -413,6 +441,17 @@ func (task *provisionerTask) populateMachineMaps(ctx context.Context, ids []stri
 	}
 	task.logger.Tracef(ctx, "provisioner task machine map %v", task.machines)
 	return nil
+}
+
+// forgetStoppedMachines removes stopped machine flag if the machine is gone.
+func (task *provisionerTask) forgetStoppedMachines() {
+	task.machinesMutex.Lock()
+	defer task.machinesMutex.Unlock()
+	for name := range task.machinesStopped {
+		if _, ok := task.machines[name]; !ok {
+			delete(task.machinesStopped, name)
+		}
+	}
 }
 
 // pendingOrDead looks up machines with ids and returns those that do not
@@ -431,10 +470,13 @@ func (task *provisionerTask) pendingOrDead(
 		// stopping or are currently stopping.
 		if _, found := task.machinesStopDeferred[id]; found {
 			task.logger.Tracef(ctx, "pendingOrDead: ignoring machine %q; machine has deferred stop flag set", id)
-			continue // ignore: will be stopped once started
+			continue
 		} else if _, found := task.machinesStopping[id]; found {
 			task.logger.Tracef(ctx, "pendingOrDead: ignoring machine %q; machine is currently being stopped", id)
-			continue // ignore: currently being stopped.
+			continue
+		} else if _, found := task.machinesStopped[id]; found {
+			task.logger.Tracef(ctx, "pendingOrDead: ignoring machine %q; machine is already stopped", id)
+			continue
 		}
 
 		machine, found := task.machines[id]
@@ -538,18 +580,6 @@ func classifyMachine(ctx context.Context, logger logger.Logger, machine Classifi
 //     stop flag set.
 //   - Marks the remaining machines as stopping and queues a request for them to
 //     be cleaned up.
-func (task *provisionerTask) filterAndQueueRemovalOfDeadMachines(ctx context.Context, dead []apiprovisioner.MachineProvisioner) error {
-	// Flag any machines in the dead list that are still being started so
-	// they will be stopped once they come online.
-	task.deferStopForNotYetStartedMachines(dead)
-
-	// Filter the initial dead machine list. Any machines marked for
-	// deferred stopping, machines that are already being stopped and
-	// machines that have not yet finished provisioning will be removed
-	// from the filtered list.
-	return task.queueRemovalOfDeadMachines(ctx, task.filterDeadMachines(dead))
-}
-
 func (task *provisionerTask) queueRemovalOfDeadMachines(
 	ctx context.Context,
 	dead []apiprovisioner.MachineProvisioner,
@@ -559,20 +589,39 @@ func (task *provisionerTask) queueRemovalOfDeadMachines(
 		return nil
 	}
 
+	task.machinesMutex.Lock()
+	// Flag any machines in the dead list that are still being started so
+	// they will be stopped once they come online.
+	task.lockedDeferStopForNotYetStartedMachines(dead)
+	// Collect the list of machines to stop.
+	dead = task.lockedCollectStopListAndMark(dead)
 	// Collect the instances for all provisioned machines that are dead.
-	stopping, orphaned := task.instancesForDeadMachines(ctx, dead)
+	instanceClassification := task.lockedInstancesForDeadMachines(ctx, dead)
+	task.lockedForgetMissingMachines(instanceClassification.missing)
+	task.lockedDeferAlreadyStopping(instanceClassification.redefer)
+	task.machinesMutex.Unlock()
+
+	// Don't remove machines that need deferring again.
+	redeferIDs := transform.Slice(instanceClassification.redefer, apiprovisioner.MachineProvisioner.Id)
+	missingIDs := transform.Slice(instanceClassification.missing, apiprovisioner.MachineProvisioner.Id)
+	dead = slices.DeleteFunc(dead, func(m apiprovisioner.MachineProvisioner) bool {
+		id := m.Id()
+		return slices.Contains(redeferIDs, id) || slices.Contains(missingIDs, id)
+	})
 
 	// We know that there are dead machines, but none of them have an
 	// assigned instance, so there is nothing to stop in terms of an
 	// instance, but we still need to mark the machines for removal.
-	for _, machine := range orphaned {
+	for _, machine := range instanceClassification.orphaned {
 		task.logger.Infof(ctx, "removing dead machine with no machine ID")
 		if err := machine.MarkForRemoval(ctx); err != nil {
 			task.logger.Errorf(ctx, "failed to remove dead machine %q: %v", machine.Id(), err)
 		}
 	}
 
-	if len(stopping) == 0 {
+	if len(instanceClassification.instances) == 0 &&
+		len(dead) == 0 &&
+		len(instanceClassification.redefer) == 0 {
 		// Nothing to do.
 		return nil
 	}
@@ -580,15 +629,15 @@ func (task *provisionerTask) queueRemovalOfDeadMachines(
 	provTask := workerpool.Task{
 		Type: "stop-instances",
 		Process: func() error {
-			if len(stopping) > 0 {
-				task.logger.Infof(ctx, "stopping known instances %v", instanceIds(stopping))
+			if len(instanceClassification.instances) > 0 {
+				task.logger.Infof(ctx, "stopping known instances %v", instanceIds(instanceClassification.instances))
 			}
 
 			// It is important that we stop unknown instances before starting
 			// pending ones, because if we start an instance and then fail to
 			// set its InstanceId on the machine.
 			// We don't want to start a new instance for the same machine ID.
-			if err := task.doStopInstances(ctx, stopping); err != nil {
+			if err := task.doStopInstances(ctx, instanceClassification.instances); err != nil {
 				return errors.Trace(err)
 			}
 
@@ -598,12 +647,25 @@ func (task *provisionerTask) queueRemovalOfDeadMachines(
 				if err := machine.MarkForRemoval(ctx); err != nil {
 					task.logger.Errorf(ctx, "failed to remove dead machine %q: %v", machine.Id(), err)
 				}
-				task.removeMachineFromAZMap(machine)
+			}
+
+			task.machinesMutex.Lock()
+			for _, machine := range dead {
 				machID := machine.Id()
-				task.machinesMutex.Lock()
+				task.lockedRemoveMachineFromAZMap(machine)
 				delete(task.machines, machID)
 				delete(task.machinesStopping, machID)
-				task.machinesMutex.Unlock()
+				task.machinesStopped[machID] = true
+			}
+			task.machinesMutex.Unlock()
+
+			if len(instanceClassification.redefer) > 0 {
+				// Re-trigger machines that failed to prepare for removal.
+				task.logger.Debugf(
+					ctx, "triggering removal of deferred machines %v",
+					redeferIDs,
+				)
+				return task.queueRemovalOfDeadMachines(ctx, instanceClassification.redefer)
 			}
 
 			return nil
@@ -613,6 +675,7 @@ func (task *provisionerTask) queueRemovalOfDeadMachines(
 	select {
 	case task.wp.Queue() <- provTask:
 		// successfully enqueued removal request
+		task.notifyEventProcessedCallback(eventTypeQueuedStopInstances)
 		return nil
 	case <-task.catacomb.Dying():
 		return task.catacomb.ErrDying()
@@ -626,79 +689,127 @@ func (task *provisionerTask) queueRemovalOfDeadMachines(
 // deferred stopping, machines that are currently being stopped and any
 // machines that they have not finished starting.
 // This method also marks the filtered list of machines as stopping.
-func (task *provisionerTask) filterDeadMachines(dead []apiprovisioner.MachineProvisioner) []apiprovisioner.MachineProvisioner {
+func (task *provisionerTask) lockedCollectStopListAndMark(dead []apiprovisioner.MachineProvisioner) []apiprovisioner.MachineProvisioner {
 	var deadMachines []apiprovisioner.MachineProvisioner
 
-	task.machinesMutex.Lock()
 	for _, machine := range dead {
 		machID := machine.Id()
 
-		// Ignore any machines for which we have either deferred the
-		// stopping of the machine is currently being stopped or they
-		// are still being started.
-		if task.machinesStopDeferred[machID] || task.machinesStopping[machID] || task.machinesStarting[machID] {
+		// Ignore any machines that are stopped, starting or already stopping.
+		if task.machinesStopped[machID] {
 			continue
 		}
+		if task.machinesStopping[machID] {
+			continue
+		}
+		if task.machinesStarting[machID] {
+			continue
+		}
+		// Even if the machine was deferred stopped but not longer starting,
+		// stop it.
 		task.machinesStopping[machID] = true
+		delete(task.machinesStopDeferred, machID)
 
 		// This machine should be queued for deletion.
 		deadMachines = append(deadMachines, machine)
 	}
-	task.machinesMutex.Unlock()
 
 	return deadMachines
 }
 
+func (task *provisionerTask) lockedForgetMissingMachines(missing []apiprovisioner.MachineProvisioner) {
+	for _, machine := range missing {
+		task.lockedRemoveMachineFromAZMap(machine)
+		machID := machine.Id()
+		delete(task.machines, machID)
+		delete(task.machinesStopping, machID)
+		delete(task.machinesStopped, machID)
+		delete(task.machinesStopDeferred, machID)
+	}
+}
+
+// lockedDeferAlreadyStopping puts a machine back into the deferred stop.
+func (task *provisionerTask) lockedDeferAlreadyStopping(
+	redefer []apiprovisioner.MachineProvisioner,
+) {
+	for _, machine := range redefer {
+		machID := machine.Id()
+		task.machinesStopDeferred[machID] = true
+		delete(task.machinesStopping, machID)
+	}
+}
+
 // Iterate the list of dead machines and flag the ones that are still being
 // started so they can be immediately stopped once they come online.
-func (task *provisionerTask) deferStopForNotYetStartedMachines(dead []apiprovisioner.MachineProvisioner) {
-	task.machinesMutex.Lock()
+func (task *provisionerTask) lockedDeferStopForNotYetStartedMachines(dead []apiprovisioner.MachineProvisioner) {
 	for _, machine := range dead {
 		machID := machine.Id()
 		if task.machinesStarting[machID] {
 			task.machinesStopDeferred[machID] = true
 		}
 	}
-	task.machinesMutex.Unlock()
+}
+
+type machineInstancesClassification struct {
+	// missing are machines that have been removed entirely from state.
+	missing []apiprovisioner.MachineProvisioner
+	// orphaned are machines that do not have an instance associated with them.
+	orphaned []apiprovisioner.MachineProvisioner
+	// redefer are machines that failed to be classified for some misc reason,
+	// so we will try again later.
+	redefer []apiprovisioner.MachineProvisioner
+	// instances are the instances for the input machines which can be stopped.
+	instances []instances.Instance
 }
 
 // instancesForDeadMachines returns a list of instances that correspond to
 // machines with a life of "dead" in state. Missing machines and machines that
 // have not finished starting are omitted from the list.
-func (task *provisionerTask) instancesForDeadMachines(ctx context.Context, dead []apiprovisioner.MachineProvisioner) ([]instances.Instance, []apiprovisioner.MachineProvisioner) {
-	var (
-		deadInstances []instances.Instance
-		orphaned      []apiprovisioner.MachineProvisioner
-	)
+func (task *provisionerTask) lockedInstancesForDeadMachines(
+	ctx context.Context, dead []apiprovisioner.MachineProvisioner,
+) machineInstancesClassification {
+	var ret machineInstancesClassification
 	for _, machine := range dead {
-		// Ignore machines that are still provisioning
-		task.machinesMutex.RLock()
-		if task.machinesStarting[machine.Id()] {
-			task.machinesMutex.RUnlock()
+		instID, err := machine.InstanceId(ctx)
+		if params.IsCodeNotFound(err) {
+			// A NotFound error indicates that the machine itself does not exist.
+			// This means there is nothing to remove, so we should ignore this
+			// machine.
+			// This can happen in circumstances such as when a machine is removed
+			// without ever having an instance provisioned.
+			ret.missing = append(ret.missing, machine)
 			continue
-		}
-		task.machinesMutex.RUnlock()
-
-		instId, err := machine.InstanceId(ctx)
-		if params.IsCodeNotProvisioned(err) {
-			orphaned = append(orphaned, machine)
+		} else if params.IsCodeNotProvisioned(err) {
+			ret.orphaned = append(ret.orphaned, machine)
 			continue
 		} else if err == nil {
-			keep, _ := machine.KeepInstance(ctx)
-			if keep {
-				task.logger.Debugf(ctx, "machine %v is dead but keep-instance is true", instId)
+			keep, err := machine.KeepInstance(ctx)
+			if err != nil {
+				task.logger.Errorf(
+					ctx, "cannot fetch machine %s keep-instance status from controller: %v",
+					machine.Id(), err,
+				)
+				ret.redefer = append(ret.redefer, machine)
 				continue
 			}
-
-			// If the instance is not found we can't stop it.
-			task.machinesMutex.RLock()
-			if inst, found := task.instances[instId]; found {
-				deadInstances = append(deadInstances, inst)
+			if keep {
+				task.logger.Debugf(ctx, "machine %v is dead but keep-instance is true", instID)
+				continue
 			}
-			task.machinesMutex.RUnlock()
+			// If the instance is not found we can't stop it.
+			if inst, found := task.instances[instID]; found {
+				ret.instances = append(ret.instances, inst)
+			}
+		} else if err != nil {
+			task.logger.Errorf(
+				ctx, "cannot fetch machine %s instance ID from controller: %v",
+				machine.Id(), err,
+			)
+			ret.redefer = append(ret.redefer, machine)
+			continue
 		}
 	}
-	return deadInstances, orphaned
+	return ret
 }
 
 func (task *provisionerTask) doStopInstances(ctx context.Context, instances []instances.Instance) error {
@@ -778,10 +889,8 @@ func (task *provisionerTask) constructInstanceConfig(
 		return nil, errors.Trace(err)
 	}
 
-	instanceConfig.ControllerConfig = make(map[string]interface{})
-	for k, v := range pInfo.ControllerConfig {
-		instanceConfig.ControllerConfig[k] = v
-	}
+	instanceConfig.ControllerConfig = make(map[string]any)
+	maps.Copy(instanceConfig.ControllerConfig, pInfo.ControllerConfig)
 
 	instanceConfig.Tags = pInfo.Tags
 	if len(pInfo.Jobs) > 0 {
@@ -860,7 +969,9 @@ func (task *provisionerTask) constructStartInstanceParams(
 			return environs.StartInstanceParams{}, errors.Errorf("volume attachment params specifies instance ID")
 		}
 		if v.ProviderId == "" {
-			return environs.StartInstanceParams{}, errors.Errorf("volume attachment params does not specify volume ID")
+			return environs.StartInstanceParams{}, errors.Errorf(
+				"volume attachment params does not specify volume provider ID",
+			)
 		}
 		volumeAttachments[i] = storage.VolumeAttachmentParams{
 			AttachmentParams: storage.AttachmentParams{
@@ -908,7 +1019,6 @@ func (task *provisionerTask) constructStartInstanceParams(
 		ImageMetadata:     possibleImageMetadata,
 		StatusCallback:    machine.SetInstanceStatus,
 		Abort:             task.catacomb.Dying(),
-		CharmLXDProfiles:  provisioningInfo.CharmLXDProfiles,
 	}
 	if provisioningInfo.RootDisk != nil {
 		startInstanceParams.RootDisk = &storage.VolumeParams{
@@ -939,12 +1049,7 @@ func (az *AvailabilityZoneMachine) MatchesConstraints(cons constraints.Value) bo
 	if !cons.HasZones() {
 		return true
 	}
-	for _, zone := range *cons.Zones {
-		if az.ZoneName == zone {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(*cons.Zones, az.ZoneName)
 }
 
 // updateAvailabilityZoneMachines maintains a mapping of AZs to machines
@@ -1233,7 +1338,7 @@ func (task *provisionerTask) queueStartMachines(ctx context.Context, machines []
 		// before the machine has completed provisioning we can defer
 		// it until it does.
 		task.machinesMutex.Lock()
-		if _, alreadyStarting := task.machinesStarting[m.Id()]; alreadyStarting {
+		if alreadyStarting := task.machinesStarting[m.Id()]; alreadyStarting {
 			task.machinesMutex.Unlock()
 			task.logger.Debugf(ctx, "machine %q already being started", m.Id())
 			// Already being started, skip.
@@ -1261,15 +1366,13 @@ func (task *provisionerTask) queueStartMachines(ctx context.Context, machines []
 				// If the provisioning succeeded but a deletion
 				// request has been deferred queue it now.
 				stopDeferred := task.machinesStopDeferred[machID]
-				alreadyStopping := task.machinesStopping[machID]
-				if stopDeferred && !alreadyStopping {
-					delete(task.machinesStopDeferred, machID)
+				if stopDeferred {
 					task.machinesMutex.Unlock()
 
 					task.logger.Debugf(ctx, "triggering deferred stop of machine %q", machID)
-					return task.queueRemovalOfDeadMachines(ctx, task.filterDeadMachines([]apiprovisioner.MachineProvisioner{
+					return task.queueRemovalOfDeadMachines(ctx, []apiprovisioner.MachineProvisioner{
 						machine,
-					}))
+					})
 				}
 				task.machinesMutex.Unlock()
 
@@ -1374,7 +1477,9 @@ func (task *provisionerTask) doStartMachine(
 		} else if attemptsLeft <= 0 {
 			// Set the state to error, so the machine will be skipped
 			// next time until the error is resolved.
-			task.removeMachineFromAZMap(machine)
+			task.machinesMutex.Lock()
+			task.lockedRemoveMachineFromAZMap(machine)
+			task.machinesMutex.Unlock()
 			return task.setErrorStatus(ctx, "cannot start instance for machine %q: %v", machine, err)
 		} else {
 			if startInstanceParams.AvailabilityZone != "" {
@@ -1439,17 +1544,6 @@ func (task *provisionerTask) doStartMachine(
 	volumeNameToAttachmentInfo := volumeAttachmentsToAPIServer(result.VolumeAttachments)
 	instanceID := result.Instance.Id()
 
-	// TODO(nvinuesa): The charm LXD profiles will have to be re-wired once
-	// they are implemented as a dqlite domain.
-	// Gather the charm LXD profile names, including the lxd profile names from
-	// the container brokers.
-	charmLXDProfiles, err := task.gatherCharmLXDProfiles(
-		ctx,
-		instanceID.String(), machine.Tag().Id(), startInstanceParams.CharmLXDProfiles)
-	if err != nil {
-		return errors.Trace(err)
-	}
-
 	if err := task.getMachineInstanceInfoSetter(machine)(
 		ctx,
 		instanceID,
@@ -1459,7 +1553,6 @@ func (task *provisionerTask) doStartMachine(
 		networkConfig,
 		volumes,
 		volumeNameToAttachmentInfo,
-		charmLXDProfiles,
 	); err != nil {
 		// We need to stop the instance right away here, set error status and go on.
 		if err2 := task.setErrorStatus(ctx, "cannot register instance for machine %v: %v", machine, err); err2 != nil {
@@ -1472,7 +1565,7 @@ func (task *provisionerTask) doStartMachine(
 	}
 	task.logger.Infof(ctx,
 		"started machine %s as instance %s with hardware %q, network config %+v, "+
-			"volumes %v, volume attachments %v, subnets to zones %v, lxd profiles %v",
+			"volumes %v, volume attachments %v, subnets to zones %v",
 		machine,
 		instanceID,
 		result.Hardware,
@@ -1480,7 +1573,6 @@ func (task *provisionerTask) doStartMachine(
 		volumes,
 		volumeNameToAttachmentInfo,
 		startInstanceParams.SubnetsToZones,
-		startInstanceParams.CharmLXDProfiles,
 	)
 	return nil
 }
@@ -1561,30 +1653,6 @@ func (task *provisionerTask) populateExcludedMachines(ctx context.Context, machi
 	return nil
 }
 
-// gatherCharmLXDProfiles consumes the charms LXD Profiles from the different
-// sources. This includes getting the information from the broker.
-func (task *provisionerTask) gatherCharmLXDProfiles(
-	ctx context.Context,
-	instanceID, machineTag string, machineProfiles []string,
-) ([]string, error) {
-	if !names.IsContainerMachine(machineTag) {
-		return machineProfiles, nil
-	}
-
-	manager, ok := task.broker.(container.LXDProfileNameRetriever)
-	if !ok {
-		task.logger.Tracef(ctx, "failed to gather profile names, broker didn't conform to LXDProfileNameRetriever")
-		return machineProfiles, nil
-	}
-
-	profileNames, err := manager.LXDProfileNames(instanceID)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-
-	return lxdprofile.FilterLXDProfileNames(profileNames), nil
-}
-
 // markMachineFailedInAZ moves the machine in zone from MachineIds to FailedMachineIds
 // in availabilityZoneMachines, report if there are any availability zones not failed for
 // the specified machine.
@@ -1622,13 +1690,11 @@ func (task *provisionerTask) clearMachineAZFailures(machine apiprovisioner.Machi
 	}
 }
 
-// removeMachineFromAZMap removes the specified machine from availabilityZoneMachines.
+// lockedRemoveMachineFromAZMap removes the specified machine from availabilityZoneMachines.
 // It is assumed this is called when the machines are being deleted from state, or failed
 // provisioning.
-func (task *provisionerTask) removeMachineFromAZMap(machine apiprovisioner.MachineProvisioner) {
+func (task *provisionerTask) lockedRemoveMachineFromAZMap(machine apiprovisioner.MachineProvisioner) {
 	machineId := machine.Id()
-	task.machinesMutex.Lock()
-	defer task.machinesMutex.Unlock()
 	for _, zoneMachines := range task.availabilityZoneMachines {
 		zoneMachines.MachineIds.Remove(machineId)
 		zoneMachines.FailedMachineIds.Remove(machineId)
@@ -1688,7 +1754,7 @@ func volumeAttachmentsToAPIServer(attachments []storage.VolumeAttachment) map[st
 		var planInfo *params.VolumeAttachmentPlanInfo
 		if a.PlanInfo != nil {
 			planInfo = &params.VolumeAttachmentPlanInfo{
-				DeviceType:       a.PlanInfo.DeviceType,
+				DeviceType:       a.PlanInfo.DeviceType.String(),
 				DeviceAttributes: a.PlanInfo.DeviceAttributes,
 			}
 		}

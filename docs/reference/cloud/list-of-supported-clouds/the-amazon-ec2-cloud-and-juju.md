@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Configure and use Amazon EC2 cloud with Juju, including authentication types, instance roles, and machine cloud-specific requirements."
+---
+
 (cloud-ec2)=
 # The Amazon EC2 cloud and Juju
 

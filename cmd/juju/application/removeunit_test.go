@@ -16,12 +16,12 @@ import (
 	"github.com/juju/juju/api/jujuclient"
 	"github.com/juju/juju/api/jujuclient/jujuclienttesting"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/application"
 	"github.com/juju/juju/cmd/juju/application/mocks"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/environs/config"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc/params"
 )
@@ -185,7 +185,7 @@ func (s *RemoveUnitSuite) TestRemoveUnitWithPrompt(c *tc.C) {
 	ctx := cmdtesting.Context(c)
 	ctx.Stdin = &stdin
 
-	attrs := testing.FakeConfig().Merge(map[string]interface{}{config.ModeKey: config.RequiresPromptsMode})
+	attrs := testing.FakeConfig().Merge(map[string]any{config.ModeKey: config.RequiresPromptsMode})
 	s.mockModelConfigAPI.EXPECT().ModelGet(gomock.Any()).Return(attrs, nil)
 
 	s.mockApi.EXPECT().DestroyUnits(gomock.Any(), apiapplication.DestroyUnitsParams{
@@ -223,7 +223,7 @@ func (s *RemoveUnitSuite) TestRemoveUnitWithPromptOldFacade(c *tc.C) {
 	ctx := cmdtesting.Context(c)
 	ctx.Stdin = &stdin
 
-	attrs := testing.FakeConfig().Merge(map[string]interface{}{config.ModeKey: config.RequiresPromptsMode})
+	attrs := testing.FakeConfig().Merge(map[string]any{config.ModeKey: config.RequiresPromptsMode})
 	s.mockModelConfigAPI.EXPECT().ModelGet(gomock.Any()).Return(attrs, nil)
 
 	s.mockApi.EXPECT().DestroyUnits(gomock.Any(), apiapplication.DestroyUnitsParams{

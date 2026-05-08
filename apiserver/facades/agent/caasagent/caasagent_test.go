@@ -18,7 +18,6 @@ import (
 	apiservertesting "github.com/juju/juju/apiserver/testing"
 	"github.com/juju/juju/cloud"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/core/watcher/watchertest"
 	"github.com/juju/juju/environs/cloudspec"
@@ -52,7 +51,7 @@ type caasagentSuite struct {
 func (s *caasagentSuite) SetUpTest(c *tc.C) {
 	s.BaseSuite.SetUpTest(c)
 
-	s.modelUUID = modeltesting.GenModelUUID(c)
+	s.modelUUID = tc.Must0(c, coremodel.NewUUID)
 
 	credential := cloud.NewCredential("auth-type", map[string]string{"k": "v"})
 	s.result = cloudspec.CloudSpec{
@@ -112,7 +111,7 @@ func (s *caasagentSuite) TestCloudSpec(c *tc.C) {
 
 	s.modelProviderServicebService.EXPECT().GetCloudSpec(gomock.Any()).Return(s.result, nil)
 
-	otherModelTag := names.NewModelTag(modeltesting.GenModelUUID(c).String())
+	otherModelTag := names.NewModelTag(tc.Must0(c, coremodel.NewUUID).String())
 	machineTag := names.NewMachineTag("42")
 	result, err := s.facade.CloudSpec(
 		c.Context(),

@@ -89,7 +89,12 @@ func HumaniseInterval(interval time.Duration) string {
 // FormatTime returns a string with the local time formatted
 // in an arbitrary format used for status or and localized tz
 // or in UTC timezone and format RFC3339 if u is specified.
+//
+// If [t] is nil, the unix epoch is returned.
 func FormatTime(t *time.Time, formatISO bool) string {
+	if t == nil {
+		t = new(time.Unix(0, 0))
+	}
 	if formatISO {
 		// If requested, use ISO time format.
 		// The format we use is RFC3339 without the "T". From the spec:
@@ -119,11 +124,11 @@ func FormatTimeAsTimestamp(t *time.Time, formatISO bool) string {
 // necessary because YAML unmarshals map[interface{}]interface{} in nested
 // maps, which cannot be serialized by bson. Also, handle []interface{}.
 // cf. gopkg.in/juju/charm.v4/actions.go cleanse
-func ConformYAML(input interface{}) (interface{}, error) {
+func ConformYAML(input any) (any, error) {
 	switch typedInput := input.(type) {
 
-	case map[string]interface{}:
-		newMap := make(map[string]interface{})
+	case map[string]any:
+		newMap := make(map[string]any)
 		for key, value := range typedInput {
 			newValue, err := ConformYAML(value)
 			if err != nil {
@@ -133,8 +138,8 @@ func ConformYAML(input interface{}) (interface{}, error) {
 		}
 		return newMap, nil
 
-	case map[interface{}]interface{}:
-		newMap := make(map[string]interface{})
+	case map[any]any:
+		newMap := make(map[string]any)
 		for key, value := range typedInput {
 			typedKey, ok := key.(string)
 			if !ok {
@@ -144,8 +149,8 @@ func ConformYAML(input interface{}) (interface{}, error) {
 		}
 		return ConformYAML(newMap)
 
-	case []interface{}:
-		newSlice := make([]interface{}, len(typedInput))
+	case []any:
+		newSlice := make([]any, len(typedInput))
 		for i, sliceValue := range typedInput {
 			newSliceValue, err := ConformYAML(sliceValue)
 			if err != nil {

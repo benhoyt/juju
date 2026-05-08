@@ -11,8 +11,8 @@ import (
 	"gopkg.in/yaml.v2"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/modelcmd"
-	"github.com/juju/juju/internal/cmd"
 )
 
 type showCommand struct {
@@ -89,10 +89,10 @@ func (c *showCommand) Run(ctx *cmd.Context) error {
 	fmt.Fprintln(ctx.Stdout, info.Description+"\n\nArguments")
 
 	args := make(map[string]actionArg)
-	properties, ok := info.Params["properties"].(map[string]interface{})
+	properties, ok := info.Params["properties"].(map[string]any)
 	if ok {
 		for argName, info := range properties {
-			infoMap, ok := info.(map[string]interface{})
+			infoMap, ok := info.(map[string]any)
 			if !ok {
 				continue
 			}
@@ -114,7 +114,7 @@ func (c *showCommand) Run(ctx *cmd.Context) error {
 
 type actionArg struct {
 	// Use a struct so we can control the order of the printed values.
-	Type        interface{} `yaml:"type"`
-	Description interface{} `yaml:"description"`
-	Default     interface{} `yaml:"default,omitempty"`
+	Type        any `yaml:"type"`
+	Description any `yaml:"description"`
+	Default     any `yaml:"default,omitempty"`
 }

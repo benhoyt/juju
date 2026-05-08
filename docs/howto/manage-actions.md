@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn how to list, run, and manage Juju actions for deployed applications. Complete guide to working with charm-defined actions."
+---
+
 (manage-actions)=
 # How to manage actions
 

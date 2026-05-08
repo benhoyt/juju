@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/bakery"
+	"github.com/juju/names/v6"
 	"gopkg.in/macaroon.v2"
 
 	apiservererrors "github.com/juju/juju/apiserver/errors"
@@ -25,8 +26,8 @@ import (
 	"github.com/juju/juju/core/unit"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	relationerrors "github.com/juju/juju/domain/relation/errors"
+	"github.com/juju/juju/domain/secret"
 	secreterrors "github.com/juju/juju/domain/secret/errors"
-	"github.com/juju/juju/domain/secret/service"
 	secretbackendservice "github.com/juju/juju/domain/secretbackend/service"
 	"github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/internal/secrets"
@@ -52,7 +53,6 @@ type CrossModelSecretsAPI struct {
 	secretBackendService            SecretBackendService
 	secretServiceGetter             func(c context.Context, modelUUID model.UUID) (SecretService, error)
 	crossModelRelationServiceGetter func(c context.Context, modelUUID model.UUID) (CrossModelRelationService, error)
-	applicationServiceGetter        func(c context.Context, modelUUID model.UUID) (ApplicationService, error)
 }
 
 // NewCrossModelSecretsAPI returns a new server-side CrossModelSecretsAPI facade.
@@ -62,7 +62,6 @@ func NewCrossModelSecretsAPI(
 	auth facade.CrossModelAuthContext,
 	secretBackendService SecretBackendService,
 	secretServiceGetter func(c context.Context, modelUUID model.UUID) (SecretService, error),
-	applicationServiceGetter func(c context.Context, modelUUID model.UUID) (ApplicationService, error),
 	crossModelRelationServiceGetter func(c context.Context, modelUUID model.UUID) (CrossModelRelationService, error),
 	logger logger.Logger,
 ) (*CrossModelSecretsAPI, error) {
@@ -72,7 +71,6 @@ func NewCrossModelSecretsAPI(
 		auth:                            auth,
 		secretBackendService:            secretBackendService,
 		secretServiceGetter:             secretServiceGetter,
-		applicationServiceGetter:        applicationServiceGetter,
 		crossModelRelationServiceGetter: crossModelRelationServiceGetter,
 		logger:                          logger,
 	}, nil
@@ -113,12 +111,12 @@ func (s *CrossModelSecretsAPI) getSecretAccessScope(ctx context.Context, arg par
 		return "", errors.Errorf("secret URI with empty source UUID not valid").Add(coreerrors.NotValid)
 	}
 
-	applicationService, err := s.applicationServiceGetter(ctx, model.UUID(uri.SourceUUID))
+	crossModelService, err := s.crossModelRelationServiceGetter(ctx, model.UUID(uri.SourceUUID))
 	if err != nil {
 		return "", errors.Capture(err)
 	}
 
-	consumerApp, err := applicationService.GetApplicationName(ctx, coreapplication.UUID(arg.ApplicationToken))
+	consumerApp, err := crossModelService.GetRemoteConsumerApplicationName(ctx, coreapplication.UUID(arg.ApplicationToken))
 	if err != nil {
 		return "", errors.Capture(err)
 	}
@@ -142,8 +140,8 @@ func (s *CrossModelSecretsAPI) getSecretAccessScope(ctx context.Context, arg par
 
 func (s *CrossModelSecretsAPI) accessScope(ctx context.Context, secretService SecretService, uri *coresecrets.URI, unitName unit.Name) (relation.UUID, error) {
 	s.logger.Debugf(ctx, "scope for %q on secret %s", unitName, uri.ID)
-	relationUUID, err := secretService.GetSecretAccessRelationScope(ctx, uri, service.SecretAccessor{
-		Kind: service.UnitAccessor,
+	relationUUID, err := secretService.GetSecretAccessRelationScope(ctx, uri, secret.SecretAccessor{
+		Kind: secret.UnitAccessor,
 		ID:   unitName.String(),
 	})
 	if err == nil {
@@ -152,8 +150,8 @@ func (s *CrossModelSecretsAPI) accessScope(ctx context.Context, secretService Se
 	if !errors.Is(err, secreterrors.SecretAccessScopeNotFound) {
 		return "", errors.Capture(err)
 	}
-	relationUUID, err = secretService.GetSecretAccessRelationScope(ctx, uri, service.SecretAccessor{
-		Kind: service.ApplicationAccessor,
+	relationUUID, err = secretService.GetSecretAccessRelationScope(ctx, uri, secret.SecretAccessor{
+		Kind: secret.ApplicationAccessor,
 		ID:   unitName.Application(),
 	})
 	if err != nil {
@@ -266,7 +264,8 @@ func (s *CrossModelSecretsAPI) checkRelationMacaroons(
 
 	// A cross model secret can only be accessed if the corresponding cross model relation
 	// it is scoped to is accessible by the supplied macaroon.
-	_, err = s.auth.Authenticator().CheckOfferMacaroons(ctx, s.modelUUID.String(), offerUUID, mac, version)
+	relationTag := names.NewRelationTag(key.String())
+	err = s.auth.Authenticator().CheckRelationMacaroons(ctx, s.modelUUID.String(), offerUUID, relationTag, mac, version)
 	return err
 }
 
@@ -285,23 +284,18 @@ func (s *CrossModelSecretsAPI) getSecretContent(ctx context.Context, arg params.
 		return nil, nil, 0, errors.Errorf("empty secret revision not valid").Add(coreerrors.NotValid)
 	}
 
-	applicationService, err := s.applicationServiceGetter(ctx, model.UUID(uri.SourceUUID))
+	crossModelRelationService, err := s.crossModelRelationServiceGetter(ctx, model.UUID(uri.SourceUUID))
 	if err != nil {
 		return nil, nil, 0, errors.Capture(err)
 	}
 
-	consumerApp, err := applicationService.GetApplicationName(ctx, coreapplication.UUID(arg.ApplicationToken))
+	consumerApp, err := crossModelRelationService.GetRemoteConsumerApplicationName(ctx, coreapplication.UUID(arg.ApplicationToken))
 	if errors.Is(err, applicationerrors.ApplicationNotFound) {
 		return nil, nil, 0, apiservererrors.ParamsErrorf(params.CodeNotFound, "application %q not found", arg.ApplicationToken)
 	} else if err != nil {
 		return nil, nil, 0, errors.Capture(err)
 	}
 	consumerUnit, err := unit.NewNameFromParts(consumerApp, arg.UnitId)
-	if err != nil {
-		return nil, nil, 0, errors.Capture(err)
-	}
-
-	crossModelRelationService, err := s.crossModelRelationServiceGetter(ctx, model.UUID(uri.SourceUUID))
 	if err != nil {
 		return nil, nil, 0, errors.Capture(err)
 	}
@@ -346,8 +340,8 @@ func (s *CrossModelSecretsAPI) getBackend(ctx context.Context, modelUUID model.U
 	}
 	cfgInfo, err := s.secretBackendService.BackendConfigInfo(ctx, secretbackendservice.BackendConfigParams{
 		GrantedSecretsGetter: secretService.ListGrantedSecretsForBackend,
-		Accessor: service.SecretAccessor{
-			Kind: service.UnitAccessor,
+		Accessor: secret.SecretAccessor{
+			Kind: secret.UnitAccessor,
 			ID:   consumer.String(),
 		},
 		ModelUUID:      modelUUID,

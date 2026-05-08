@@ -128,22 +128,15 @@ type RelationService interface {
 
 // PortService provides methods to query opened ports for machines
 type PortService interface {
-	// WatchMachineOpenedPorts returns a strings watcher for opened ports. This watcher
+	// WatchOpenedPorts returns a strings watcher for opened ports. This watcher
 	// emits events for changes to the opened ports table. Each emitted event
-	// contains the machine name which is associated with the changed port range.
-	WatchMachineOpenedPorts(ctx context.Context) (watcher.StringsWatcher, error)
+	// contains the unit uuids which have seen changes to their opened ports.
+	WatchOpenedPorts(context.Context) (watcher.StringsWatcher, error)
 
 	// GetMachineOpenedPorts returns the opened ports for all endpoints, for all the
 	// units on the machine. Opened ports are grouped first by unit name and then by
 	// endpoint.
-	GetMachineOpenedPorts(ctx context.Context, machineUUID string) (map[unit.Name]network.GroupedPortRanges, error)
-}
-
-// MachineService provides methods to query machines.
-type MachineService interface {
-	// GetMachineUUID returns the UUID of a machine identified by its name.
-	// It returns a MachineNotFound if the machine does not exist.
-	GetMachineUUID(ctx context.Context, name machine.Name) (machine.UUID, error)
+	GetMachineOpenedPorts(context.Context, machine.UUID) (map[unit.Name]network.GroupedPortRanges, error)
 }
 
 // ApplicationService provides methods to query applications.
@@ -153,41 +146,32 @@ type ApplicationService interface {
 	// This notifies on any changes to the application's exposed endpoints. It is up
 	// to the caller to determine if the exposed endpoints they're interested in has
 	// changed.
-	//
-	// If the application does not exist an error satisfying
-	// [applicationerrors.NotFound] will be returned.
 	WatchApplicationExposed(ctx context.Context, name string) (watcher.NotifyWatcher, error)
 
 	// WatchUnitAddRemoveOnMachine returns a watcher that observes changes to the
 	// units on a specified machine, emitting the names of the units. That is, we
 	// emit unit names only when a unit is create or deleted on the specified machine.
-	// The following errors may be returned:
-	// - [applicationerrors.MachineNotFound] if the machine does not exist
 	WatchUnitAddRemoveOnMachine(context.Context, machine.Name) (watcher.StringsWatcher, error)
 
 	// IsApplicationExposed returns whether the provided application is exposed or not.
-	//
-	// If no application is found, an error satisfying
-	// [applicationerrors.ApplicationNotFound] is returned.
 	IsApplicationExposed(ctx context.Context, appName string) (bool, error)
 
 	// GetExposedEndpoints returns map where keys are endpoint names (or the ""
 	// value which represents all endpoints) and values are ExposedEndpoint
 	// instances that specify which sources (spaces or CIDRs) can access the
 	// opened ports for each endpoint once the application is exposed.
-	//
-	// If no application is found, an error satisfying
-	// [applicationerrors.ApplicationNotFound] is returned.
 	GetExposedEndpoints(ctx context.Context, appName string) (map[string]application.ExposedEndpoint, error)
 
 	// GetUnitMachineName gets the name of the unit's machine.
 	//
 	// The following errors may be returned:
-	//   - [applicationerrors.UnitMachineNotAssigned] if the unit does not have a
-	//     machine assigned.
-	//   - [applicationerrors.UnitNotFound] if the unit cannot be found.
-	//   - [applicationerrors.UnitIsDead] if the unit is dead.
 	GetUnitMachineName(context.Context, unit.Name) (machine.Name, error)
+
+	// GetUnitMachineNameAndUUID gets the name and UUID of the unit's machine.
+	GetUnitMachineNameAndUUID(context.Context, unit.UUID) (machine.Name, machine.UUID, error)
+
+	// GetUnitUUID returns the UUID for the named unit.
+	GetUnitUUID(context.Context, unit.Name) (unit.UUID, error)
 }
 
 // EnvironFirewaller defines methods to allow the worker to perform

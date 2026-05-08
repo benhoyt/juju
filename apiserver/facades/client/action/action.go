@@ -23,9 +23,9 @@ import (
 	"github.com/juju/juju/core/watcher"
 	applicationcharm "github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/domain/operation"
 	operationerrors "github.com/juju/juju/domain/operation/errors"
-	internalcharm "github.com/juju/juju/internal/charm"
 	internalerrors "github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/rpc/params"
 )
@@ -306,8 +306,8 @@ func (api *ActionAPI) WatchActionsProgress(ctx context.Context, actions params.E
 func makeOperationReceivers(applicationNames []string, machineNames []string, unitNames []string) operation.Receivers {
 	var units, leaderUnits []string
 	for _, unitName := range unitNames {
-		if strings.HasSuffix(unitName, leader) {
-			leaderUnits = append(leaderUnits, strings.TrimSuffix(unitName, leader))
+		if before, ok := strings.CutSuffix(unitName, leader); ok {
+			leaderUnits = append(leaderUnits, before)
 		} else {
 			units = append(units, unitName)
 		}

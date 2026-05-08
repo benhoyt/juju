@@ -11,7 +11,7 @@ import (
 	"github.com/juju/clock/testclock"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/apiserver/facades/agent/machine"
@@ -85,6 +85,9 @@ func (s *machinerSuite) makeAPI(c *tc.C) {
 	)
 	c.Assert(err, tc.ErrorIsNil)
 	s.machiner = machiner
+	c.Cleanup(func() {
+		s.machiner = nil
+	})
 }
 
 func (s *machinerSuite) TestMachinerFailsWithNonMachineAgentUser(c *tc.C) {
@@ -190,6 +193,10 @@ func (s *machinerSuite) TestSetStatusMachineNotFound(c *tc.C) {
 }
 
 func (s *machinerSuite) TestSetStatusInvalidTags(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+	s.makeAPI(c)
+
 	result, err := s.machiner.SetStatus(c.Context(), params.SetStatus{Entities: []params.EntityStatusArgs{
 		{Tag: "application-unknown"},
 		{Tag: "invalid-tag"},
@@ -240,7 +247,7 @@ func (s *machinerSuite) TestWatch(c *tc.C) {
 	watcher := watchertest.NewMockNotifyWatcher(ch)
 	defer workertest.CleanKill(c, watcher)
 
-	s.machineService.EXPECT().WatchMachineAndMachineUnitLife(gomock.Any(), coremachine.Name("1")).Return(watcher, nil)
+	s.machineService.EXPECT().WatchMachineLifeAndDependants(gomock.Any(), coremachine.Name("1")).Return(watcher, nil)
 	s.watcherRegistry.EXPECT().Register(gomock.Any(), gomock.Any()).Return("1", nil)
 
 	args := params.Entities{

@@ -1,5 +1,7 @@
 _build/
+_build
 _deps*/
+_deps
 cmd/juju/juju
 cmd/jujud/jujud
 cmd/builddb/builddb
@@ -35,3 +37,4 @@ dqlite-deps.tar.bz2
 .sphinx
 .envrc
 .direnv/
+.codex

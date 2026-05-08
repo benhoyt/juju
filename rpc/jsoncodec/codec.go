@@ -10,9 +10,9 @@ import (
 	"io"
 	"sync/atomic"
 
-	"github.com/juju/errors"
-
+	coreerrors "github.com/juju/juju/core/errors"
 	corelogger "github.com/juju/juju/core/logger"
+	"github.com/juju/juju/internal/errors"
 	internallogger "github.com/juju/juju/internal/logger"
 	"github.com/juju/juju/rpc"
 )
@@ -23,9 +23,9 @@ var logger = internallogger.GetLogger("juju.rpc.jsoncodec")
 // in JSON format.
 type JSONConn interface {
 	// Send sends a message.
-	Send(msg interface{}) error
+	Send(msg any) error
 	// Receive receives a message into msg.
-	Receive(msg interface{}) error
+	Receive(msg any) error
 	// Close closes the connection.
 	Close() error
 }
@@ -52,35 +52,35 @@ func New(conn JSONConn) *Codec {
 // in a RawMessage.
 
 type inMsgV1 struct {
-	RequestId  uint64                 `json:"request-id"`
-	Type       string                 `json:"type"`
-	Version    int                    `json:"version"`
-	Id         string                 `json:"id"`
-	Request    string                 `json:"request"`
-	Params     json.RawMessage        `json:"params"`
-	Error      string                 `json:"error"`
-	ErrorCode  string                 `json:"error-code"`
-	ErrorInfo  map[string]interface{} `json:"error-info"`
-	Response   json.RawMessage        `json:"response"`
-	TraceID    string                 `json:"trace-id"`
-	SpanID     string                 `json:"span-id"`
-	TraceFlags int                    `json:"trace-flags"`
+	RequestId  uint64          `json:"request-id"`
+	Type       string          `json:"type"`
+	Version    int             `json:"version"`
+	Id         string          `json:"id"`
+	Request    string          `json:"request"`
+	Params     json.RawMessage `json:"params"`
+	Error      string          `json:"error"`
+	ErrorCode  string          `json:"error-code"`
+	ErrorInfo  map[string]any  `json:"error-info"`
+	Response   json.RawMessage `json:"response"`
+	TraceID    string          `json:"trace-id"`
+	SpanID     string          `json:"span-id"`
+	TraceFlags int             `json:"trace-flags"`
 }
 
 type outMsgV1 struct {
-	RequestId  uint64                 `json:"request-id,omitempty"`
-	Type       string                 `json:"type,omitempty"`
-	Version    int                    `json:"version,omitempty"`
-	Id         string                 `json:"id,omitempty"`
-	Request    string                 `json:"request,omitempty"`
-	Params     interface{}            `json:"params,omitempty"`
-	Error      string                 `json:"error,omitempty"`
-	ErrorCode  string                 `json:"error-code,omitempty"`
-	ErrorInfo  map[string]interface{} `json:"error-info,omitempty"`
-	Response   interface{}            `json:"response,omitempty"`
-	TraceID    string                 `json:"trace-id,omitempty"`
-	SpanID     string                 `json:"span-id,omitempty"`
-	TraceFlags int                    `json:"trace-flags,omitempty"`
+	RequestId  uint64         `json:"request-id,omitempty"`
+	Type       string         `json:"type,omitempty"`
+	Version    int            `json:"version,omitempty"`
+	Id         string         `json:"id,omitempty"`
+	Request    string         `json:"request,omitempty"`
+	Params     any            `json:"params,omitempty"`
+	Error      string         `json:"error,omitempty"`
+	ErrorCode  string         `json:"error-code,omitempty"`
+	ErrorInfo  map[string]any `json:"error-info,omitempty"`
+	Response   any            `json:"response,omitempty"`
+	TraceID    string         `json:"trace-id,omitempty"`
+	SpanID     string         `json:"span-id,omitempty"`
+	TraceFlags int            `json:"trace-flags,omitempty"`
 }
 
 // Close closes the underlying connection and sets the codec to
@@ -104,10 +104,10 @@ func (c *Codec) ReadHeader(hdr *rpc.Header) error {
 
 		// If we've closed the connection, we may get a spurious error,
 		// so ignore it.
-		if c.isClosing() || err == io.EOF {
+		if c.isClosing() || errors.Is(err, io.EOF) {
 			return io.EOF
 		}
-		return errors.Annotate(err, "receiving message")
+		return errors.Errorf("receiving message: %w", err)
 	}
 
 	if logger.IsLevelEnabled(corelogger.TRACE) {
@@ -116,7 +116,7 @@ func (c *Codec) ReadHeader(hdr *rpc.Header) error {
 	var err error
 	c.msg, err = readMessage(m)
 	if err != nil {
-		return errors.Annotate(err, "reading message")
+		return errors.Errorf("reading message: %w", err)
 	}
 
 	hdr.RequestId = c.msg.RequestId
@@ -137,7 +137,7 @@ func (c *Codec) ReadHeader(hdr *rpc.Header) error {
 }
 
 // ReadBody reads the body from the connection.
-func (c *Codec) ReadBody(body interface{}, isRequest bool) error {
+func (c *Codec) ReadBody(body any, isRequest bool) error {
 	if body == nil {
 		return nil
 	}
@@ -156,10 +156,10 @@ func (c *Codec) ReadBody(body interface{}, isRequest bool) error {
 }
 
 // WriteMessage writes a message with the given header and body.
-func (c *Codec) WriteMessage(hdr *rpc.Header, body interface{}) error {
+func (c *Codec) WriteMessage(hdr *rpc.Header, body any) error {
 	msg, err := response(hdr, body)
 	if err != nil {
-		return errors.Annotate(err, "writing message")
+		return errors.Errorf("writing message: %w", err)
 	}
 	if logger.IsLevelEnabled(corelogger.TRACE) {
 		data, err := json.Marshal(msg)
@@ -177,14 +177,14 @@ func (c *Codec) WriteMessage(hdr *rpc.Header, body interface{}) error {
 // as it would be written by Codec.WriteMessage.
 // If the body cannot be marshalled as JSON, the data
 // will hold a JSON string describing the error.
-func DumpRequest(hdr *rpc.Header, body interface{}) []byte {
+func DumpRequest(hdr *rpc.Header, body any) []byte {
 	msg, err := response(hdr, body)
 	if err != nil {
-		return []byte(fmt.Sprintf("%q", err.Error()))
+		return fmt.Appendf(nil, "%q", err.Error())
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
-		return []byte(fmt.Sprintf("%q", "marshal error: "+err.Error()))
+		return fmt.Appendf(nil, "%q", "marshal error: "+err.Error())
 	}
 	return data
 }
@@ -192,22 +192,28 @@ func DumpRequest(hdr *rpc.Header, body interface{}) []byte {
 func readMessage(m json.RawMessage) (inMsgV1, error) {
 	var msg inMsgV1
 	if err := json.Unmarshal(m, &msg); err != nil {
-		return msg, errors.Annotate(err, "unmarshalling message")
+		return msg, errors.Errorf("unmarshalling message: %w", err)
 	}
 	if msg.RequestId == 0 {
-		return msg, errors.NotSupportedf("version 0")
+		return msg, errors.New(
+			"version 0 not supported",
+		).Add(coreerrors.NotSupported)
 	}
 	return msg, nil
 }
 
-func response(hdr *rpc.Header, body interface{}) (interface{}, error) {
+func response(hdr *rpc.Header, body any) (any, error) {
 	switch hdr.Version {
 	case 0:
-		return nil, errors.NotSupportedf("version 0")
+		return nil, errors.Errorf(
+			"version 0 not supported",
+		).Add(coreerrors.NotSupported)
 	case 1:
 		return newOutMsgV1(hdr, body), nil
 	default:
-		return nil, errors.NotSupportedf("version %d", hdr.Version)
+		return nil, errors.Errorf(
+			"version %d not supported", hdr.Version,
+		).Add(coreerrors.NotSupported)
 	}
 }
 
@@ -216,7 +222,7 @@ func response(hdr *rpc.Header, body interface{}) (interface{}, error) {
 // However, since Go determines structs to be sufficiently different if the
 // tags are different, we can't use the same code. Theoretically we could use
 // reflect, but no.
-func newOutMsgV1(hdr *rpc.Header, body interface{}) outMsgV1 {
+func newOutMsgV1(hdr *rpc.Header, body any) outMsgV1 {
 	result := outMsgV1{
 		RequestId:  hdr.RequestId,
 		Type:       hdr.Request.Type,

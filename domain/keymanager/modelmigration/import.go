@@ -7,7 +7,8 @@ import (
 	"context"
 	"strings"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/clock"
+	"github.com/juju/description/v12"
 
 	"github.com/juju/juju/core/logger"
 	coremodel "github.com/juju/juju/core/model"
@@ -43,16 +44,12 @@ type importServiceGetterFunc func(coremodel.UUID) ImportService
 // authorized keys of a model during migration.
 type ImportService interface {
 	// AddPublicKeysForUser is responsible for adding public keys for a user to a
-	// model. The following errors can be expected:
-	// - [errors.NotValid] when the user id is not valid
-	// - [github.com/juju/juju/domain/access/errors.UserNotFound] when the user does
-	// not exist.
-	// - [keyserrors.InvalidPublicKey] when a public key fails validation.
-	// - [keyserrors.ReservedCommentViolation] when a key being added contains a
-	// comment string that is reserved.
-	// - [keyserrors.PublicKeyAlreadyExists] when a public key being added
-	// for a user already exists.
+	// model.
 	AddPublicKeysForUser(context.Context, user.UUID, ...string) error
+
+	// DeletePublicKeysForModel removes all of the public keys associated with the
+	// model.
+	DeleteKeysForModel(context.Context) error
 }
 
 // UserService represents the service methods needed for finding users when
@@ -67,14 +64,38 @@ type UserService interface {
 	GetUserByName(context.Context, user.Name) (user.User, error)
 }
 
+// RegisterImport register's a new model authorized keys importer into the
+// supplied coordinator.
+func RegisterImport(coordinator Coordinator, clock clock.Clock, logger logger.Logger) {
+	coordinator.Add(&importOperation{
+		clock:  clock,
+		logger: logger,
+	})
+}
+
+// Setup the import operation, this will ensure the service is created and ready
+// to be used.
+func (i *importOperation) Setup(scope modelmigration.Scope) error {
+	i.serviceGetter = func(modelUUID coremodel.UUID) ImportService {
+		return service.NewService(
+			modelUUID,
+			state.NewState(scope.ControllerDB()),
+		)
+	}
+	i.userService = accessservice.NewUserService(accessstate.NewUserState(scope.ControllerDB(), i.clock), i.clock)
+	return nil
+}
+
 // importOperation is the type used to describe the import operation for
 // authorized keys between model's.
 type importOperation struct {
 	modelmigration.BaseOperation
 
-	logger        logger.Logger
 	serviceGetter importServiceGetterFunc
 	userService   UserService
+
+	clock  clock.Clock
+	logger logger.Logger
 }
 
 // Execute the import of the model description authorized keys.
@@ -190,9 +211,9 @@ func (i *importOperation) executeModelConfigAuthorizedKeys(
 
 	adminUser, err := i.userService.GetUserByName(ctx, user.AdminUserName)
 	if err != nil {
-		return errors.New(
-			"importing authorized keys from model config. " +
-				"Finding admin user to assign owner ship of keys",
+		return errors.Errorf(
+			"importing authorized keys from model config. "+
+				"Finding admin user to assign ownership of keys: %v", err,
 		)
 	}
 
@@ -217,28 +238,27 @@ func (i *importOperation) executeModelConfigAuthorizedKeys(
 	return nil
 }
 
+// Rollback is called if the operation fails.
+func (i *importOperation) Rollback(ctx context.Context, model description.Model) error {
+	modelUUID := coremodel.UUID(model.UUID())
+	if err := modelUUID.Validate(); err != nil {
+		return errors.Errorf(
+			"importing authorized keys for model %q: %w", modelUUID, err,
+		)
+	}
+
+	err := i.serviceGetter(modelUUID).DeleteKeysForModel(ctx)
+	if err != nil {
+		return errors.Errorf(
+			"rolling back imported authorized keys for model %q: %w",
+			modelUUID,
+			err,
+		)
+	}
+	return nil
+}
+
 // Name returns the user readable name for this import operation.
 func (i *importOperation) Name() string {
 	return "import model authorized keys"
-}
-
-// RegisterImport register's a new model authorized keys importer into the
-// supplied coordinator.
-func RegisterImport(coordinator Coordinator, logger logger.Logger) {
-	coordinator.Add(&importOperation{
-		logger: logger,
-	})
-}
-
-// Setup the import operation, this will ensure the service is created and ready
-// to be used.
-func (i *importOperation) Setup(scope modelmigration.Scope) error {
-	i.serviceGetter = func(modelUUID coremodel.UUID) ImportService {
-		return service.NewService(
-			modelUUID,
-			state.NewState(scope.ControllerDB()),
-		)
-	}
-	i.userService = accessservice.NewUserService(accessstate.NewUserState(scope.ControllerDB()))
-	return nil
 }

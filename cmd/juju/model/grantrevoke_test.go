@@ -12,11 +12,11 @@ import (
 
 	"github.com/juju/juju/api/jujuclient"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/model"
 	"github.com/juju/juju/core/crossmodel"
 	coremodel "github.com/juju/juju/core/model"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/testing"
 )
 
@@ -94,6 +94,18 @@ func (s *grantRevokeSuite) TestPassesOfferWithDefaultModelUser(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(s.fakeOffersAPI.user, tc.DeepEquals, "sam")
 	c.Assert(s.fakeOffersAPI.offerURLs, tc.SameContents, []string{"bob/foo.hosted-mysql"})
+	c.Assert(s.fakeOffersAPI.access, tc.Equals, "read")
+}
+
+func (s *grantRevokeSuite) TestPassesOfferWithDefaultModelExternalUser(c *tc.C) {
+	s.store.Accounts["test-master"] = jujuclient.AccountDetails{
+		User: "bob.smith@canonical.com",
+	}
+	offer := "foo.hosted-mysql"
+	_, err := s.run(c, "sam", "read", offer)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(s.fakeOffersAPI.user, tc.DeepEquals, "sam")
+	c.Assert(s.fakeOffersAPI.offerURLs, tc.SameContents, []string{"bob.smith@canonical.com/foo.hosted-mysql"})
 	c.Assert(s.fakeOffersAPI.access, tc.Equals, "read")
 }
 

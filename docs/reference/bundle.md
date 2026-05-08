@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju bundles reference: multi-charm solutions with automated deployment, configuration, and relations. Learn overlay and regular bundles."
+---
+
 (bundle)=
 # Bundle
 

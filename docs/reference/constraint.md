@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju constraints reference: customize compute resources with specifications for CPU, memory, storage, networking, and instance types."
+---
+
 (constraint)=
 # Constraint
 
@@ -108,7 +114,7 @@ Comma-delimited tags assigned to the machine. Tags can be positive, denoting an 
 (constraint-virt-type)=
 ### `virt-type`
 
-Virtualisation type. <p> **Valid values:** `virtual-machine`. When a machine is provisioned with a `lxd` specification, used to override the default type, which is a LXD container.
+Virtualisation type. <p> Only supported by {ref}`LXD <cloud-lxd>` and {ref}`OpenStack <cloud-openstack>`. **Valid values:** Cloud-dependent.
 
 (constraint-zones)=
 ### `zones`

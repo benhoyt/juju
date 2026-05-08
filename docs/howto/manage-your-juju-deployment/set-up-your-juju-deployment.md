@@ -1,3 +1,8 @@
+---
+myst:
+  html_meta:
+    description: "Step-by-step guide to setting up a Juju deployment: install the CLI, configure clouds, bootstrap controllers, and deploy applications."
+---
 
 (set-up-your-deployment)=
 # Set up your Juju deployment

@@ -6,25 +6,25 @@ run_secrets_vault() {
 
 	prepare_vault
 
-	juju add-secret-backend myvault vault endpoint="$VAULT_ADDR" token="$VAULT_TOKEN" ca-cert="$(cat $VAULT_CAPATH)"
+	juju add-secret-backend myvault vault endpoint="$VAULT_ADDR" token="$VAULT_TOKEN" mount-path=some-path ca-cert="$(cat "$VAULT_CAPATH")"
 
 	model_name='model-secrets-vault-charm-owned'
 	add_model "$model_name"
 	juju --show-log model-secret-backend myvault -m "$model_name"
 
-	check_secrets
+	check_secrets "myvault"
 	destroy_model "$model_name"
 
 	model_name='model-secrets-vault-model-owned'
 	add_model "$model_name"
-	juju --show-log model-config secret-backend=myvault -m "$model_name"
+	juju --show-log model-secret-backend myvault -m "$model_name"
 	run_user_secrets "$model_name"
 	destroy_model "$model_name"
 
 	# test remove-secret-backend with force.
 	model_name='model-remove-secret-backend-with-force'
 	add_model "$model_name"
-	juju --show-log model-config secret-backend=myvault -m "$model_name"
+	juju --show-log model-secret-backend myvault -m "$model_name"
 	# add a secret to the vault backend to make sure the backend is in-use.
 	# (make it a large secret which encodes to approx 1MB in size).
 	echo "data: $(cat /dev/zero | tr '\0' A | head -c 749500)" >"${TEST_DIR}/secret.txt"
@@ -49,9 +49,9 @@ run_secret_drain() {
 	add_model "$model_name"
 
 	vault_backend_name='myvault'
-	juju add-secret-backend "$vault_backend_name" vault endpoint="$VAULT_ADDR" token="$VAULT_TOKEN"
+	juju add-secret-backend "$vault_backend_name" vault endpoint="$VAULT_ADDR" token="$VAULT_TOKEN" ca-cert="$(cat "$VAULT_CAPATH")"
 
-	juju --show-log deploy jameinel-ubuntu-lite
+	juju --show-log deploy ubuntu-lite
 	wait_for "active" '.applications["ubuntu-lite"] | ."application-status".current'
 	wait_for "ubuntu-lite" "$(idle_condition "ubuntu-lite" 0)"
 
@@ -68,7 +68,7 @@ run_secret_drain() {
 	attempt=0
 	until [[ $(vault kv list -format json "${model_name}-${model_uuid: -6}" | jq length) -eq 2 ]]; do
 		if [[ ${attempt} -ge 30 ]]; then
-			echo "Failed: expected all secrets get drained to vault."
+			red "Failed: expected all secrets get drained to vault."
 			exit 1
 		fi
 		sleep 2
@@ -80,7 +80,7 @@ run_secret_drain() {
 	attempt=0
 	until [[ $(vault kv list -format json "${model_name}-${model_uuid: -6}" | jq length) -eq 0 ]]; do
 		if [[ ${attempt} -ge 30 ]]; then
-			echo "Failed: expected all secrets get drained back to juju controller."
+			red "Failed: expected all secrets get drained back to juju controller."
 			exit 1
 		fi
 		sleep 2
@@ -100,7 +100,7 @@ run_user_secret_drain() {
 	prepare_vault
 
 	vault_backend_name='myvault'
-	juju add-secret-backend "$vault_backend_name" vault endpoint="$VAULT_ADDR" token="$VAULT_TOKEN"
+	juju add-secret-backend "$vault_backend_name" vault endpoint="$VAULT_ADDR" token="$VAULT_TOKEN" ca-cert="$(cat "$VAULT_CAPATH")"
 
 	model_name='model-user-secrets-drain'
 	add_model "$model_name"
@@ -130,7 +130,7 @@ run_user_secret_drain() {
 	attempt=0
 	until [[ $(vault kv list -format json "${model_name}-${model_uuid: -6}" | jq length) -eq 0 ]]; do
 		if [[ ${attempt} -ge 30 ]]; then
-			echo "Failed: expected all secrets get drained back to juju controller."
+			red "Failed: expected all secrets get drained back to juju controller."
 			exit 1
 		fi
 		sleep 2
@@ -144,7 +144,7 @@ run_user_secret_drain() {
 	attempt=0
 	until [[ $(vault kv list -format json "${model_name}-${model_uuid: -6}" | jq length) -eq 2 ]]; do
 		if [[ ${attempt} -ge 30 ]]; then
-			echo "Failed: expected all secrets get drained to vault."
+			red "Failed: expected all secrets get drained to vault."
 			exit 1
 		fi
 		sleep 2
@@ -176,9 +176,32 @@ prepare_vault() {
 	wait_for "blocked" "$(workload_status vault 0).current"
 	vault_public_addr=$(juju status --format json | jq -r '.applications.vault.units."vault/0"."public-address"')
 	export VAULT_ADDR="https://${vault_public_addr}:8200"
+	mkdir -p ~/snap/vault/common/
 	TMP=$(mktemp -d ~/snap/vault/common/cacert-XXXXX)
-	cert_juju_secret_id=$(juju secrets --format=yaml | yq 'to_entries | .[] | select(.value.label == "self-signed-vault-ca-certificate") | .key')
-	juju show-secret "${cert_juju_secret_id}" --reveal --format=yaml | yq '.[].content.certificate' > "$TMP/vault.pem"
+
+	# Wait for the certificate secret to be created by the vault charm.
+	attempt=0
+	cert_juju_secret_id=""
+	until [[ -n "$cert_juju_secret_id" ]]; do
+		cert_juju_secret_id=$(juju secrets --format=yaml 2>/dev/null | yq 'to_entries | .[] | select(.value.label == "self-signed-vault-ca-certificate") | .key')
+		if [[ -z "$cert_juju_secret_id" ]]; then
+			if [[ ${attempt} -ge 30 ]]; then
+				red "vault certificate secret not found after 60 seconds."
+				exit 1
+			fi
+			echo "[+] Waiting for vault certificate secret (attempt ${attempt})"
+			sleep 2
+			attempt=$((attempt + 1))
+		fi
+	done
+	echo "[+] $(green 'Found vault certificate secret:') ${cert_juju_secret_id}"
+
+	cert_content=$(juju show-secret "${cert_juju_secret_id}" --reveal --format=yaml | yq -r '.[] | .content.certificate')
+	if [[ -z "$cert_content" ]]; then
+		red "Failed to extract certificate from secret."
+		exit 1
+	fi
+	echo "$cert_content" >"$TMP/vault.pem"
 	export VAULT_CAPATH="$TMP/vault.pem"
 	vault status || true
 	vault_init_output=$(vault operator init -key-shares=5 -key-threshold=3 -format json)
@@ -198,7 +221,7 @@ prepare_vault() {
 	attempt=0
 	until [[ $(vault status -format yaml 2>/dev/null | yq .initialized | grep -i 'true') ]]; do
 		if [[ ${attempt} -ge 30 ]]; then
-			echo "Failed: vault server was not initialized."
+			red "Failed: vault server was not initialized."
 			exit 1
 		fi
 		sleep 2
@@ -208,7 +231,7 @@ prepare_vault() {
 	attempt=0
 	until [[ $(vault status -format yaml 2>/dev/null | yq .ha_enabled | grep -i 'true') ]]; do
 		if [[ ${attempt} -ge 30 ]]; then
-			echo "Failed: vault server was not HA enabled."
+			red "Failed: vault server was not HA enabled."
 			exit 1
 		fi
 		sleep 2

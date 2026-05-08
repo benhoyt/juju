@@ -10,8 +10,8 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/juju/juju/agent"
@@ -19,17 +19,17 @@ import (
 	"github.com/juju/juju/apiserver"
 	"github.com/juju/juju/apiserver/apiserverhttp"
 	"github.com/juju/juju/apiserver/authentication/macaroon"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/commands"
 	"github.com/juju/juju/core/auditlog"
 	"github.com/juju/juju/core/changestream"
-	"github.com/juju/juju/core/database"
 	coredependency "github.com/juju/juju/core/dependency"
 	"github.com/juju/juju/core/flightrecorder"
 	corehttp "github.com/juju/juju/core/http"
 	"github.com/juju/juju/core/lease"
 	corelogger "github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/objectstore"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/core/providertracker"
 	"github.com/juju/juju/internal/jwtparser"
 	"github.com/juju/juju/internal/services"
 	"github.com/juju/juju/internal/worker/common"
@@ -76,8 +76,8 @@ type ManifoldConfig struct {
 	HTTPClientName         string
 	WatcherRegistryName    string
 	FlightRecorderName     string
+	ProviderTrackerName    string
 
-	DBAccessorName     string
 	ChangeStreamName   string
 	DomainServicesName string
 	TraceName          string
@@ -131,9 +131,6 @@ func (config ManifoldConfig) Validate() error {
 	if config.WatcherRegistryName == "" {
 		return errors.NotValidf("empty WatcherRegistryName")
 	}
-	if config.DBAccessorName == "" {
-		return errors.NotValidf("empty DBAccessorName")
-	}
 	if config.ChangeStreamName == "" {
 		return errors.NotValidf("empty ChangeStreamName")
 	}
@@ -152,6 +149,9 @@ func (config ManifoldConfig) Validate() error {
 	if config.JWTParserName == "" {
 		return errors.NotValidf("empty JWTParserName")
 	}
+	if config.ProviderTrackerName == "" {
+		return errors.NotValidf("empty ProviderTrackerName")
+	}
 	if config.NewWorker == nil {
 		return errors.NotValidf("nil NewWorker")
 	}
@@ -164,6 +164,7 @@ func (config ManifoldConfig) Validate() error {
 	if config.GetModelService == nil {
 		return errors.NotValidf("nil GetModelService")
 	}
+
 	return nil
 }
 
@@ -181,7 +182,6 @@ func Manifold(config ManifoldConfig) dependency.Manifold {
 			config.AuditConfigUpdaterName,
 			config.LeaseManagerName,
 			config.HTTPClientName,
-			config.DBAccessorName,
 			config.ChangeStreamName,
 			config.DomainServicesName,
 			config.TraceName,
@@ -190,6 +190,7 @@ func Manifold(config ManifoldConfig) dependency.Manifold {
 			config.LogSinkName,
 			config.JWTParserName,
 			config.WatcherRegistryName,
+			config.ProviderTrackerName,
 		},
 		Start: config.start,
 	}
@@ -265,11 +266,6 @@ func (config ManifoldConfig) start(ctx context.Context, getter dependency.Getter
 		return nil, errors.Trace(err)
 	}
 
-	var dbDeleter database.DBDeleter
-	if err := getter.Get(config.DBAccessorName, &dbDeleter); err != nil {
-		return nil, errors.Trace(err)
-	}
-
 	var domainServicesGetter services.DomainServicesGetter
 	if err := getter.Get(config.DomainServicesName, &domainServicesGetter); err != nil {
 		return nil, errors.Trace(err)
@@ -287,6 +283,11 @@ func (config ManifoldConfig) start(ctx context.Context, getter dependency.Getter
 
 	var watcherRegistryGetter watcherregistry.WatcherRegistryGetter
 	if err := getter.Get(config.WatcherRegistryName, &watcherRegistryGetter); err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	var providerFactory providertracker.ProviderFactory
+	if err := getter.Get(config.ProviderTrackerName, &providerFactory); err != nil {
 		return nil, errors.Trace(err)
 	}
 
@@ -333,7 +334,6 @@ func (config ManifoldConfig) start(ctx context.Context, getter dependency.Getter
 		CharmhubHTTPClient:                charmhubHTTPClient,
 		MacaroonHTTPClient:                macaroonHTTPClient,
 		DBGetter:                          dbGetter,
-		DBDeleter:                         dbDeleter,
 		DomainServicesGetter:              domainServicesGetter,
 		ControllerConfigService:           controllerConfigService,
 		TracerGetter:                      tracerGetter,
@@ -341,6 +341,7 @@ func (config ManifoldConfig) start(ctx context.Context, getter dependency.Getter
 		ObjectStoreGetter:                 objectStoreGetter,
 		ModelService:                      modelService,
 		WatcherRegistryGetter:             watcherRegistryGetter,
+		EphemeralProviderFactory:          providerFactory,
 	})
 	if err != nil {
 		// Ensure we clean up the resources we've registered with. This includes

@@ -3,6 +3,8 @@
 
 package migration
 
+import "slices"
+
 // Phase values specify model migration phases.
 type Phase int
 
@@ -68,23 +70,13 @@ func (p Phase) CanTransitionTo(targetPhase Phase) bool {
 	if !exists {
 		return false
 	}
-	for _, nextPhase := range nextPhases {
-		if nextPhase == targetPhase {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(nextPhases, targetPhase)
 }
 
 // IsTerminal returns true if the phase is one which signifies the end
 // of a migration.
 func (p Phase) IsTerminal() bool {
-	for _, t := range terminalPhases {
-		if p == t {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(terminalPhases, p)
 }
 
 // IsRunning returns true if the phase indicates the migration is
@@ -97,6 +89,18 @@ func (p Phase) IsRunning() bool {
 	}
 	switch p {
 	case QUIESCE, IMPORT, PROCESSRELATIONS, VALIDATION, SUCCESS:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsPostSuccess returns true if the phase is one of the post SUCCESS phases,
+// which allow the migration to complete successfully. They phases won't include
+// ABORT or ABORTDONE, which are used for failed migrations.
+func (p Phase) IsPostSuccess() bool {
+	switch p {
+	case LOGTRANSFER, REAP, REAPFAILED, DONE:
 		return true
 	default:
 		return false

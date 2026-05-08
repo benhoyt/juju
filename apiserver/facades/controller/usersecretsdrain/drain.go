@@ -12,7 +12,7 @@ import (
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/core/model"
 	coresecrets "github.com/juju/juju/core/secrets"
-	secretservice "github.com/juju/juju/domain/secret/service"
+	"github.com/juju/juju/domain/secret"
 	secretbackendservice "github.com/juju/juju/domain/secretbackend/service"
 	internallogger "github.com/juju/juju/internal/logger"
 	"github.com/juju/juju/internal/secrets"
@@ -45,8 +45,8 @@ func (s *SecretsDrainAPI) GetSecretBackendConfigs(ctx context.Context, arg param
 	}
 	cfgInfo, err := s.secretBackendService.DrainBackendConfigInfo(ctx, secretbackendservice.DrainBackendConfigParams{
 		GrantedSecretsGetter: s.secretService.ListGrantedSecretsForBackend,
-		Accessor: secretservice.SecretAccessor{
-			Kind: secretservice.ModelAccessor,
+		Accessor: secret.SecretAccessor{
+			Kind: secret.ModelAccessor,
 			ID:   s.modelUUID.String(),
 		},
 		ModelUUID: s.modelUUID,
@@ -130,8 +130,8 @@ func (s *SecretsDrainAPI) getSecretContent(ctx context.Context, arg params.GetSe
 		return nil, nil, false, errors.Trace(err)
 	}
 
-	val, valueRef, err := s.secretService.GetSecretValue(ctx, md.URI, md.LatestRevision, secretservice.SecretAccessor{
-		Kind: secretservice.ModelAccessor,
+	val, valueRef, err := s.secretService.GetSecretValue(ctx, md.URI, md.LatestRevision, secret.SecretAccessor{
+		Kind: secret.ModelAccessor,
 		ID:   s.modelUUID.String(),
 	})
 	if err != nil {
@@ -150,8 +150,8 @@ func (s *SecretsDrainAPI) getSecretContent(ctx context.Context, arg params.GetSe
 func (s *SecretsDrainAPI) getBackend(ctx context.Context, backendID string) (*provider.ModelBackendConfig, bool, error) {
 	cfgInfo, err := s.secretBackendService.BackendConfigInfo(ctx, secretbackendservice.BackendConfigParams{
 		GrantedSecretsGetter: s.secretService.ListGrantedSecretsForBackend,
-		Accessor: secretservice.SecretAccessor{
-			Kind: secretservice.ModelAccessor,
+		Accessor: secret.SecretAccessor{
+			Kind: secret.ModelAccessor,
 			ID:   s.modelUUID.String(),
 		},
 		ModelUUID:      s.modelUUID,
@@ -187,8 +187,8 @@ func (s *SecretsDrainAPI) GetSecretRevisionContentInfo(ctx context.Context, arg 
 	}
 
 	for i, rev := range arg.Revisions {
-		val, valueRef, err := s.secretService.GetSecretValue(ctx, uri, rev, secretservice.SecretAccessor{
-			Kind: secretservice.ModelAccessor,
+		val, valueRef, err := s.secretService.GetSecretValue(ctx, uri, rev, secret.SecretAccessor{
+			Kind: secret.ModelAccessor,
 			ID:   s.modelUUID.String(),
 		})
 		if err != nil {

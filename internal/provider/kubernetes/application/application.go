@@ -7,9 +7,11 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/juju/clock"
@@ -42,6 +44,7 @@ import (
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/core/watcher/eventsource"
 	"github.com/juju/juju/internal/cloudconfig/podcfg"
+	internalerrors "github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/internal/featureflag"
 	internallogger "github.com/juju/juju/internal/logger"
 	"github.com/juju/juju/internal/provider/kubernetes/constants"
@@ -105,6 +108,14 @@ type app struct {
 
 	newApplier     func() resources.Applier
 	controllerUUID string
+
+	pvcNamePrefixRegexGetter func() (*regexp.Regexp, error)
+}
+
+// pvcAndStorageName represents the pvc and storage name.
+type pvcAndStorageName struct {
+	pvc     string
+	storage string
 }
 
 // CharmContainerResourceRequirements defines the memory resource constraints
@@ -175,6 +186,9 @@ func newApplication(
 		clock:          clock,
 		newApplier:     newApplier,
 		controllerUUID: controllerUUID,
+		pvcNamePrefixRegexGetter: sync.OnceValues(func() (*regexp.Regexp, error) {
+			return regexp.Compile(`^(.+)-` + regexp.QuoteMeta(name) + `-\d+$`)
+		}),
 	}
 }
 
@@ -207,36 +221,39 @@ func (a *app) Ensure(config caas.ApplicationConfig) (err error) {
 		return errors.Annotate(err, "generating application podspec")
 	}
 
-	var handleVolume handleVolumeFunc = func(v corev1.Volume, mountPath string, readOnly bool) (*corev1.VolumeMount, error) {
+	var handleVolume handleVolumeFunc = func(
+		v corev1.Volume,
+		attachParams jujustorage.KubernetesFilesystemAttachmentParams,
+	) (*corev1.VolumeMount, error) {
 		if err := storage.PushUniqueVolume(podSpec, v, false); err != nil {
 			return nil, errors.Trace(err)
 		}
 		return &corev1.VolumeMount{
 			Name:      v.Name,
-			ReadOnly:  readOnly,
-			MountPath: mountPath,
+			ReadOnly:  attachParams.ReadOnly,
+			MountPath: attachParams.Path,
 		}, nil
 	}
-	var handleVolumeMount handleVolumeMountFunc = func(storageName string, m corev1.VolumeMount) error {
-		for i := range podSpec.Containers {
-			name := podSpec.Containers[i].Name
-			if name == constants.ApplicationCharmContainer {
-				podSpec.Containers[i].VolumeMounts = append(podSpec.Containers[i].VolumeMounts, m)
-				continue
-			}
-			for _, mount := range config.Containers[name].Mounts {
-				if mount.StorageName == storageName {
-					volumeMountCopy := m
-					// TODO(sidecar): volumeMountCopy.MountPath was defined in `caas.ApplicationConfig.Filesystems[*].Attachment.Path`.
-					// Consolidate `caas.ApplicationConfig.Filesystems[*].Attachment.Path` and `caas.ApplicationConfig.Containers[*].Mounts[*].Path`!!!
-					volumeMountCopy.MountPath = mount.Path
-					podSpec.Containers[i].VolumeMounts = append(podSpec.Containers[i].VolumeMounts, volumeMountCopy)
-				}
-			}
+
+	var handleVolumeMount handleVolumeMountFunc = func(
+		storageName string,
+		m corev1.VolumeMount,
+		containerName string,
+	) error {
+		idx := slices.IndexFunc(podSpec.Containers, func(container corev1.Container) bool {
+			return container.Name == containerName
+		})
+		if idx == -1 {
+			return errors.Errorf("cannot find container %q to mount %q", containerName, m.MountPath)
 		}
+		storage.PushUniqueVolumeMount(&podSpec.Containers[idx], m)
 		return nil
 	}
-	var handlePVCForStatelessResource handlePVCFunc = func(pvc corev1.PersistentVolumeClaim, mountPath string, readOnly bool) (*corev1.VolumeMount, error) {
+
+	var handlePVCForStatelessResource handlePVCFunc = func(
+		pvc corev1.PersistentVolumeClaim,
+		attachParams jujustorage.KubernetesFilesystemAttachmentParams,
+	) (*corev1.VolumeMount, error) {
 		// Ensure PVC.
 		r := resources.NewPersistentVolumeClaim(a.client.CoreV1().PersistentVolumeClaims(a.namespace), a.namespace, pvc.GetName(), &pvc)
 		applier.Apply(r)
@@ -247,11 +264,11 @@ func (a *app) Ensure(config caas.ApplicationConfig) (err error) {
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 					ClaimName: r.GetName(),
-					ReadOnly:  readOnly,
+					ReadOnly:  attachParams.ReadOnly,
 				},
 			},
 		}
-		return handleVolume(vol, mountPath, readOnly)
+		return handleVolume(vol, attachParams)
 	}
 	storageClasses, err := resources.ListStorageClass(context.TODO(), a.client.StorageV1().StorageClasses(), metav1.ListOptions{})
 	if err != nil {
@@ -278,17 +295,61 @@ func (a *app) Ensure(config caas.ApplicationConfig) (err error) {
 			return errors.Annotatef(err, "creating or updating headless service for %q %q", a.deploymentType, a.name)
 		}
 		exists := true
-		_, getErr := a.getStatefulSet()
+		existingSts, getErr := a.getStatefulSet()
 		if errors.Is(getErr, errors.NotFound) {
 			exists = false
 		} else if getErr != nil {
 			return errors.Trace(getErr)
 		}
+
+		// If the existing StatefulSet has a different storage unique ID,
+		// it is an orphan from a previous deployment. Kubernetes does not
+		// allow updating volumeClaimTemplates on an existing StatefulSet,
+		// so we must delete and recreate it to avoid a PVC name mismatch.
+		// See https://github.com/juju/juju/issues/21722.
+		if exists && a.shouldDeleteExistingStatefulSet(existingSts, config.StorageUniqueID) {
+			logger.Infof(context.TODO(), "deleting orphaned statefulset %q", a.name)
+			delErr := existingSts.Delete(context.TODO())
+			if delErr != nil && !errors.Is(delErr, errors.NotFound) {
+				return errors.Annotatef(delErr, "deleting orphaned statefulset %q", a.name)
+			}
+			// Wait for the StatefulSet to be fully removed.
+			// Kubernetes foreground deletion is async — the resource
+			// persists with a deletionTimestamp until dependents are gone.
+			if delErr == nil {
+				if err := a.waitForStatefulSetDeletion(); err != nil {
+					return errors.Trace(err)
+				}
+			}
+			// Keep exists=true so that numPods stays nil below.
+			// With nil Replicas, Kubernetes defaults to 1 replica
+			// on creation. The provisioner's EnsureScale will
+			// correct the replica count if needed.
+		}
+
 		var numPods *int32
 		if !exists {
 			numPods = pointer.Int32(int32(config.InitialScale))
 		}
 
+		var volumeClaimTemplates []corev1.PersistentVolumeClaim
+		if err = configureStorage(
+			config.StorageUniqueID,
+			func(pvc corev1.PersistentVolumeClaim,
+				attachParams jujustorage.KubernetesFilesystemAttachmentParams,
+			) (*corev1.VolumeMount, error) {
+				if err := storage.PushUniqueVolumeClaimTemplate(&volumeClaimTemplates, pvc); err != nil {
+					return nil, errors.Trace(err)
+				}
+				return &corev1.VolumeMount{
+					Name:      pvc.GetName(),
+					ReadOnly:  attachParams.ReadOnly,
+					MountPath: attachParams.Path,
+				}, nil
+			},
+		); err != nil {
+			return errors.Trace(err)
+		}
 		sts := &appsv1.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      a.name,
@@ -309,28 +370,12 @@ func (a *app) Ensure(config caas.ApplicationConfig) (err error) {
 					},
 					Spec: *podSpec,
 				},
-				PodManagementPolicy: appsv1.ParallelPodManagement,
-				ServiceName:         HeadlessServiceName(a.name),
+				VolumeClaimTemplates: volumeClaimTemplates,
+				PodManagementPolicy:  appsv1.ParallelPodManagement,
+				ServiceName:          HeadlessServiceName(a.name),
 			},
 		}
 		statefulset := resources.NewStatefulSet(a.client.AppsV1().StatefulSets(a.namespace), a.namespace, a.name, sts)
-
-		if err = configureStorage(
-			config.StorageUniqueID,
-			func(pvc corev1.PersistentVolumeClaim, mountPath string, readOnly bool) (*corev1.VolumeMount, error) {
-				if err := storage.PushUniqueVolumeClaimTemplate(&statefulset.Spec, pvc); err != nil {
-					return nil, errors.Trace(err)
-				}
-				return &corev1.VolumeMount{
-					Name:      pvc.GetName(),
-					ReadOnly:  readOnly,
-					MountPath: mountPath,
-				}, nil
-			},
-		); err != nil {
-			return errors.Trace(err)
-		}
-
 		applier.Apply(statefulset)
 	case caas.DeploymentStateless:
 		exists := true
@@ -857,6 +902,87 @@ func (a *app) getStatefulSet() (*resources.StatefulSet, error) {
 	return ss, nil
 }
 
+// watchStatefulSet returns a watcher that fires on changes to this
+// application's StatefulSet.
+func (a *app) watchStatefulSet() (k8swatcher.KubernetesNotifyWatcher, error) {
+	factory := informers.NewSharedInformerFactoryWithOptions(a.client, 0,
+		informers.WithNamespace(a.namespace),
+		informers.WithTweakListOptions(func(o *metav1.ListOptions) {
+			o.FieldSelector = a.fieldSelector()
+		}),
+	)
+	return a.newWatcher(factory.Apps().V1().StatefulSets().Informer(), a.name, a.clock)
+}
+
+// waitForStatefulSetDeletion watches until the StatefulSet for this application
+// is fully removed from Kubernetes. This is needed because foreground deletion
+// is async — the resource persists with a deletionTimestamp until all
+// dependents (pods) are terminated.
+func (a *app) waitForStatefulSetDeletion() error {
+	// Check before starting the watcher in case it's already gone.
+	_, err := a.getStatefulSet()
+	if errors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	w, err := a.watchStatefulSet()
+	if err != nil {
+		return errors.Annotatef(err, "watching statefulset %q for deletion", a.name)
+	}
+	defer w.Kill()
+
+	timeout := a.clock.After(2 * time.Minute)
+	for {
+		select {
+		case <-timeout:
+			return errors.Errorf("timed out waiting for orphaned statefulset %q to be deleted", a.name)
+		case _, ok := <-w.Changes():
+			if !ok {
+				return errors.Errorf("statefulset watcher closed unexpectedly for %q", a.name)
+			}
+			_, err := a.getStatefulSet()
+			if errors.IsNotFound(err) {
+				return nil
+			}
+			if err != nil {
+				return errors.Trace(err)
+			}
+		}
+	}
+}
+
+// shouldDeleteExistingStatefulSet checks whether the existing StatefulSet is an
+// orphan from a previous deployment that must be deleted before recreating.
+// It compares the storage unique ID annotation, verifies Juju ownership, and
+// confirms the StatefulSet belongs to the current model.
+func (a *app) shouldDeleteExistingStatefulSet(sts *resources.StatefulSet, expectedStorageUUID string) bool {
+	if expectedStorageUUID == "" {
+		return false
+	}
+	stsAnnotations := sts.GetAnnotations()
+	annKey := utils.AnnotationKeyApplicationUUID(a.labelVersion)
+	existingUUID := stsAnnotations[annKey]
+	if existingUUID == "" || existingUUID == expectedStorageUUID {
+		return false
+	}
+	// Only delete if the StatefulSet is managed by Juju and belongs to
+	// the current model, to avoid deleting resources we don't own.
+	stsLabels := sts.GetLabels()
+	if stsLabels[constants.LabelKubernetesAppManaged] != resources.JujuFieldManager {
+		return false
+	}
+	modelUUIDKey := utils.AnnotationModelUUIDKey(a.labelVersion)
+	if stsAnnotations[modelUUIDKey] != a.modelUUID {
+		return false
+	}
+	logger.Infof(context.TODO(), "detected orphaned statefulset %q: storage UUID %q does not match expected %q",
+		a.name, existingUUID, expectedStorageUUID)
+	return true
+}
+
 func (a *app) getDeployment() (*resources.Deployment, error) {
 	ss := resources.NewDeployment(a.client.AppsV1().Deployments(a.namespace), a.namespace, a.name, nil)
 	if err := ss.Get(context.TODO()); err != nil {
@@ -1002,6 +1128,9 @@ func (a *app) Delete() error {
 	resourcesToDelete := []resources.Resource(nil)
 
 	// Create selector labels.
+	// These label correspond to those which are added to a fixed
+	// set of resources by the model operator mutating web hook.
+	// See [github.com/juju/juju/internal/worker/caasadmission.NewAdmissionCreator].
 	resourceLabels := utils.LabelsForAppCreated(
 		a.name, a.modelName, a.modelUUID, a.controllerUUID, a.labelVersion)
 
@@ -1140,9 +1269,7 @@ func (a *app) Delete() error {
 	// List CRs for each CRD to be deleted.
 	var crs []resources.CustomResource
 	for _, crd := range crds {
-		res, err := resources.ListCRsForCRD(ctx, a.dynamicClient, a.namespace, &crd.CustomResourceDefinition, metav1.ListOptions{
-			LabelSelector: resourceLabels.String(),
-		})
+		res, err := resources.ListCRsForCRD(ctx, a.dynamicClient, a.namespace, &crd.CustomResourceDefinition, metav1.ListOptions{})
 		if err != nil {
 			return errors.Annotatef(err, "failed to list CRs for CRD %q", crd.Name)
 		}
@@ -1912,7 +2039,6 @@ func (a *app) ApplicationPodSpec(config caas.ApplicationConfig) (*corev1.PodSpec
 				MountPath: "/charm/bin",
 				SubPath:   "charm/bin",
 			},
-			// DO we need this in init container????
 			{
 				Name:      constants.CharmVolumeName,
 				MountPath: "/charm/containers",
@@ -2094,64 +2220,70 @@ func (a *app) matchImagePullSecret(name string) bool {
 	return strings.HasPrefix(name, a.name+"-") && strings.HasSuffix(name, "-secret")
 }
 
-type handleVolumeFunc func(vol corev1.Volume, mountPath string, readOnly bool) (*corev1.VolumeMount, error)
+type handleVolumeFunc func(
+	corev1.Volume, jujustorage.KubernetesFilesystemAttachmentParams,
+) (*corev1.VolumeMount, error)
 
-type handlePVCFunc func(pvc corev1.PersistentVolumeClaim, mountPath string, readOnly bool) (*corev1.VolumeMount, error)
+type handlePVCFunc func(
+	corev1.PersistentVolumeClaim,
+	jujustorage.KubernetesFilesystemAttachmentParams,
+) (*corev1.VolumeMount, error)
 
-type handleVolumeMountFunc func(string, corev1.VolumeMount) error
+type handleVolumeMountFunc func(string, corev1.VolumeMount, string) error
 
 type handleStorageClassFunc func(storagev1.StorageClass) error
 
-func (a *app) volumeName(storageName string) string {
+func (a *app) appStorageName(storageName string) string {
 	return fmt.Sprintf("%s-%s", a.name, storageName)
 }
 
-// pvcNames returns a mapping of volume name to PVC name for this app's PVCs.
-func (a *app) pvcNames(storagePrefix string) (map[string]string, error) {
-	// Fetch all Juju PVCs associated with this app
-	labelSelectors := map[string]string{
-		"app.kubernetes.io/managed-by": "juju",
-		"app.kubernetes.io/name":       a.name,
-	}
-	opts := metav1.ListOptions{
-		LabelSelector: utils.LabelsToSelector(labelSelectors).String(),
-	}
-	pvcs, err := resources.ListPersistentVolumeClaims(context.TODO(), a.client, a.namespace, opts)
-	if err != nil {
-		return nil, errors.Annotate(err, "fetching persistent volume claims")
-	}
-
+// storageNameToPVCTemplateNames returns a mapping of storage name to PVC template name for this app's PVCs.
+func (a *app) storageNameToPVCTemplateNames(
+	filesystems []jujustorage.KubernetesFilesystemParams,
+) (map[string]string, error) {
+	pvcAndStorageNames := a.collectPVCAndStorageNames(filesystems)
 	names := make(map[string]string)
-	for _, pvc := range pvcs {
-		// Look up Juju storage name
-		s, ok := pvc.Labels["storage.juju.is/name"]
-		if !ok {
-			continue
+	for _, pvcAndStorage := range pvcAndStorageNames {
+		pvcTemplateName, err := a.getPVCTemplateName(pvcAndStorage.pvc)
+		if err != nil {
+			return nil, internalerrors.Capture(err)
 		}
-
-		// Try to match different PVC name formats that have evolved over time
-		storagePart := s + "-" + storagePrefix
-		regexes := []string{
-			// Sidecar "{appName}-{storageName}-{uniqueId}", e.g., "dex-auth-test-0837847d-dex-auth-0"
-			"^" + regexp.QuoteMeta(a.name+"-"+storagePart),
-			// Pod-spec "{storageName}-{uniqueId}", e.g., "test-0837847d-dex-auth-0"
-			"^" + regexp.QuoteMeta(storagePart),
-			// Legacy "juju-{storageName}-{n}", e.g., "juju-test-1-dex-auth-0"
-			"^juju-" + regexp.QuoteMeta(s) + `-[0-9]+`,
-		}
-		for _, regex := range regexes {
-			r, err := regexp.Compile(regex)
-			if err != nil {
-				return nil, errors.Trace(err)
-			}
-			match := r.FindString(pvc.Name)
-			if match != "" {
-				names[a.volumeName(s)] = match
-				break
-			}
-		}
+		names[a.appStorageName(pvcAndStorage.storage)] = pvcTemplateName
 	}
 	return names, nil
+}
+
+// getPVCTemplateName extracts the PVC template name from a complete PVC name.
+// A complete PVC name is expected to be suffixed with an ordinal. This function
+// returns the prefix that identifies the PVC template, excluding the ordinal
+// and application-specific suffix.
+//
+// Supported complete PVC name formats include:
+//
+//   - given {appname}-{storagename}-{uniqid}-{appname}-{ordinal}
+//     returns {appname}-{storagename}-{uniqid}
+//
+//   - given {storagename}-{uniqid}-{appname}-{ordinal}
+//     returns {storagename}-{uniqid}
+//
+//   - given juju-{storagename}-{number}-{appname}-{ordinal}
+//     returns juju-{storagename}-{number}
+//
+//   - If the PVC template name cannot be extracted, an error is returned.
+func (a *app) getPVCTemplateName(completePVCName string) (string, error) {
+	pvcNamePrefixRegexp, err := a.pvcNamePrefixRegexGetter()
+	if err != nil {
+		return "", errors.Trace(err)
+	}
+	if pvcNamePrefixRegexp == nil {
+		return "", errors.New("pvcNamePrefixRegexp is nil")
+	}
+	matches := pvcNamePrefixRegexp.FindStringSubmatch(completePVCName)
+	if matches == nil || len(matches) != 2 {
+		return "", errors.NotValidf("extracting pvc template name from existing pvc %q", completePVCName)
+	}
+
+	return matches[1], nil
 }
 
 func (a *app) configureStorage(
@@ -2167,15 +2299,15 @@ func (a *app) configureStorage(
 	for _, v := range storageClasses {
 		storageClassMap[v.Name] = v
 	}
-
-	pvcNames, err := a.pvcNames(storageUniqueID)
+	pvcTemplateNames, err := a.storageNameToPVCTemplateNames(filesystems)
 	if err != nil {
-		return errors.Trace(err)
+		return errors.Annotatef(err, "mapping pvc template names for app %q", a.name)
 	}
-	logger.Tracef(context.TODO(), "persistent volume claim name mapping = %v", pvcNames)
+	logger.Tracef(context.TODO(), "persistent volume claim name mapping = %v", pvcTemplateNames)
 
 	fsNames := set.NewStrings()
-	for index, fs := range filesystems {
+
+	for _, fs := range filesystems {
 		if fsNames.Contains(fs.StorageName) {
 			return errors.NotValidf("duplicated storage name %q for %q", fs.StorageName, a.name)
 		}
@@ -2183,50 +2315,76 @@ func (a *app) configureStorage(
 
 		logger.Debugf(context.TODO(), "%s has filesystem %s: %s", a.name, fs.StorageName, pretty.Sprint(fs))
 
-		readOnly := false
-		if fs.Attachment != nil {
-			readOnly = fs.Attachment.ReadOnly
-		}
-
-		name := a.volumeName(fs.StorageName)
-		pvcNameGetter := a.pvcNameGetter(pvcNames, storageUniqueID)
+		name := a.appStorageName(fs.StorageName)
+		pvcNameGetter := a.pvcNameGetter(pvcTemplateNames, storageUniqueID)
 
 		vol, pvc, sc, err := a.filesystemToVolumeInfo(name, fs, storageClassMap, pvcNameGetter)
 		if err != nil {
 			return errors.Trace(err)
 		}
 
-		var volumeMount *corev1.VolumeMount
-		mountPath := storage.GetMountPathForFilesystem(index, a.name, fs)
-		if vol != nil && handleVolume != nil {
-			logger.Debugf(context.TODO(), "using volume for %s filesystem %s: %s", a.name, fs.StorageName, pretty.Sprint(*vol))
-			volumeMount, err = handleVolume(*vol, mountPath, readOnly)
-			if err != nil {
-				return errors.Trace(err)
+		for _, attachment := range fs.Attachments {
+			var volumeMount *corev1.VolumeMount
+			if vol != nil && handleVolume != nil {
+				logger.Debugf(context.TODO(), "using volume for %s filesystem %s: %s", a.name, fs.StorageName, pretty.Sprint(*vol))
+				volumeMount, err = handleVolume(*vol, attachment)
+				if err != nil {
+					return errors.Trace(err)
+				}
 			}
-		}
-		if sc != nil && handleStorageClass != nil {
-			logger.Debugf(context.TODO(), "creating storage class for %s filesystem %s: %s", a.name, fs.StorageName, pretty.Sprint(*sc))
-			if err = handleStorageClass(*sc); err != nil {
-				return errors.Trace(err)
+			if sc != nil && handleStorageClass != nil {
+				logger.Debugf(context.TODO(), "creating storage class for %s filesystem %s: %s", a.name, fs.StorageName, pretty.Sprint(*sc))
+				if err = handleStorageClass(*sc); err != nil {
+					return errors.Trace(err)
+				}
+				storageClassMap[sc.Name] = resources.StorageClass{StorageClass: *sc}
 			}
-			storageClassMap[sc.Name] = resources.StorageClass{StorageClass: *sc}
-		}
-		if pvc != nil && handlePVC != nil {
-			logger.Debugf(context.TODO(), "using persistent volume claim for %s filesystem %s: %s", a.name, fs.StorageName, pretty.Sprint(*pvc))
-			volumeMount, err = handlePVC(*pvc, mountPath, readOnly)
-			if err != nil {
-				return errors.Trace(err)
+			if pvc != nil && handlePVC != nil {
+				logger.Debugf(context.TODO(), "using persistent volume claim for %s filesystem %s: %s", a.name, fs.StorageName, pretty.Sprint(*pvc))
+				volumeMount, err = handlePVC(*pvc, attachment)
+				if err != nil {
+					return errors.Trace(err)
+				}
 			}
-		}
 
-		if volumeMount != nil {
-			if err = handleVolumeMount(fs.StorageName, *volumeMount); err != nil {
-				return errors.Trace(err)
+			if volumeMount != nil {
+				if err = handleVolumeMount(
+					fs.StorageName,
+					*volumeMount,
+					attachment.ContainerName,
+				); err != nil {
+					return errors.Trace(err)
+				}
 			}
 		}
 	}
 	return nil
+}
+
+func (a *app) collectPVCAndStorageNames(
+	filesystems []jujustorage.KubernetesFilesystemParams,
+) []pvcAndStorageName {
+	pvcAndStorageNames := make([]pvcAndStorageName, 0)
+	// TODO: this func doesn't currently consider multiple storage instances of
+	// the same name attached to a unit. i.e a charm that allows for more then
+	// one storage instance.
+	for _, fs := range filesystems {
+		for _, attachment := range fs.Attachments {
+			// This is must have been a new deployment so a realized attachment
+			// is not yet available.
+			if len(attachment.ProvisionedPVCNames) == 0 {
+				continue
+			}
+			pvcAndStorageNames = append(pvcAndStorageNames, pvcAndStorageName{
+				// Since all PVCs for a given fs storage share the same template
+				// name prefix (only differing by ordinal suffix), we only need one
+				// representative attachment per container+storage pair to extract the prefix.
+				pvc:     attachment.ProvisionedPVCNames[0],
+				storage: fs.StorageName,
+			})
+		}
+	}
+	return pvcAndStorageNames
 }
 
 func (a *app) filesystemToVolumeInfo(

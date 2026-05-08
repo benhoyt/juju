@@ -14,16 +14,26 @@ import (
 
 // Register is called to expose a package of facades onto a given registry.
 func Register(registry facade.FacadeRegistry) {
+	registry.MustRegister("Provisioner", 12, func(stdCtx context.Context, ctx facade.ModelContext) (facade.Facade, error) {
+		return newProvisionerAPIV12(stdCtx, ctx) // Relies on agent-set origin in SetHostMachineNetworkConfig.
+	}, reflect.TypeFor[*ProvisionerAPI]())
 	registry.MustRegister("Provisioner", 11, func(stdCtx context.Context, ctx facade.ModelContext) (facade.Facade, error) {
 		return newProvisionerAPIV11(stdCtx, ctx) // Relies on agent-set origin in SetHostMachineNetworkConfig.
-	}, reflect.TypeOf((*ProvisionerAPIV11)(nil)))
+	}, reflect.TypeFor[*ProvisionerAPIV11]())
 }
 
-// newProvisionerAPIV11 creates a new server-side Provisioner API facade.
+// newProvisionerAPIV12 creates a new server-side Provisioner API facade.
+func newProvisionerAPIV12(stdCtx context.Context, ctx facade.ModelContext) (*ProvisionerAPI, error) {
+	api, err := MakeProvisionerAPI(stdCtx, ctx)
+	return api, errors.Trace(err)
+}
+
+// newProvisionerAPIV11 creates a new server-side Provisioner API facade
+// for version 11.
 func newProvisionerAPIV11(stdCtx context.Context, ctx facade.ModelContext) (*ProvisionerAPIV11, error) {
-	provisionerAPI, err := MakeProvisionerAPI(stdCtx, ctx)
+	api, err := MakeProvisionerAPI(stdCtx, ctx)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	return &ProvisionerAPIV11{ProvisionerAPI: provisionerAPI}, nil
+	return &ProvisionerAPIV11{ProvisionerAPI: api}, nil
 }

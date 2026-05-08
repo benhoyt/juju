@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn how to contribute to Juju development with comprehensive guides and technical references for contributors."
+---
+
 (dev)=
 # Juju contributor documentation
 

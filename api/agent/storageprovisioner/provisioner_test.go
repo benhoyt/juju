@@ -28,7 +28,7 @@ type provisionerSuite struct {
 
 func (s *provisionerSuite) TestWatchVolumes(c *tc.C) {
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -55,7 +55,7 @@ func (s *provisionerSuite) TestWatchVolumes(c *tc.C) {
 
 func (s *provisionerSuite) TestWatchFilesystems(c *tc.C) {
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -82,7 +82,7 @@ func (s *provisionerSuite) TestWatchFilesystems(c *tc.C) {
 
 func (s *provisionerSuite) TestWatchVolumeAttachments(c *tc.C) {
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -109,7 +109,7 @@ func (s *provisionerSuite) TestWatchVolumeAttachments(c *tc.C) {
 
 func (s *provisionerSuite) TestWatchVolumeAttachmentPlans(c *tc.C) {
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -136,7 +136,7 @@ func (s *provisionerSuite) TestWatchVolumeAttachmentPlans(c *tc.C) {
 
 func (s *provisionerSuite) TestWatchFilesystemAttachments(c *tc.C) {
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -162,7 +162,7 @@ func (s *provisionerSuite) TestWatchFilesystemAttachments(c *tc.C) {
 }
 
 func (s *provisionerSuite) TestWatchBlockDevices(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -187,7 +187,7 @@ func (s *provisionerSuite) TestWatchBlockDevices(c *tc.C) {
 
 func (s *provisionerSuite) TestVolumes(c *tc.C) {
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -229,7 +229,7 @@ func (s *provisionerSuite) TestVolumes(c *tc.C) {
 
 func (s *provisionerSuite) TestFilesystems(c *tc.C) {
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -279,7 +279,7 @@ func (s *provisionerSuite) TestVolumeAttachments(c *tc.C) {
 	}}
 
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -313,7 +313,7 @@ func (s *provisionerSuite) TestVolumeAttachmentPlans(c *tc.C) {
 			MachineTag: "machine-100",
 			VolumeTag:  "volume-100",
 			PlanInfo: params.VolumeAttachmentPlanInfo{
-				DeviceType: storage.DeviceTypeISCSI,
+				DeviceType: storage.DeviceTypeISCSI.String(),
 				DeviceAttributes: map[string]string{
 					"iqn":         "bogusIQN",
 					"address":     "192.168.1.1",
@@ -329,7 +329,7 @@ func (s *provisionerSuite) TestVolumeAttachmentPlans(c *tc.C) {
 	}}
 
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -366,7 +366,7 @@ func (s *provisionerSuite) TestVolumeBlockDevices(c *tc.C) {
 		},
 	}}
 
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -404,7 +404,7 @@ func (s *provisionerSuite) TestFilesystemAttachments(c *tc.C) {
 	}}
 
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -434,7 +434,7 @@ func (s *provisionerSuite) TestFilesystemAttachments(c *tc.C) {
 
 func (s *provisionerSuite) TestVolumeParams(c *tc.C) {
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -467,7 +467,7 @@ func (s *provisionerSuite) TestVolumeParams(c *tc.C) {
 }
 
 func (s *provisionerSuite) TestRemoveVolumeParams(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -501,16 +501,16 @@ func (s *provisionerSuite) TestRemoveVolumeParams(c *tc.C) {
 
 func (s *provisionerSuite) TestFilesystemParams(c *tc.C) {
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
 		c.Check(request, tc.Equals, "FilesystemParams")
 		c.Check(arg, tc.DeepEquals, params.Entities{Entities: []params.Entity{{"filesystem-100"}}})
-		c.Assert(result, tc.FitsTypeOf, &params.FilesystemParamsResults{})
-		*(result.(*params.FilesystemParamsResults)) = params.FilesystemParamsResults{
-			Results: []params.FilesystemParamsResult{{
-				Result: params.FilesystemParams{
+		c.Assert(result, tc.FitsTypeOf, &params.FilesystemParamsResultsV5{})
+		*(result.(*params.FilesystemParamsResultsV5)) = params.FilesystemParamsResultsV5{
+			Results: []params.FilesystemParamsResultV5{{
+				Result: params.FilesystemParamsV5{
 					FilesystemTag: "filesystem-100",
 					SizeMiB:       1024,
 					Provider:      "loop",
@@ -526,15 +526,15 @@ func (s *provisionerSuite) TestFilesystemParams(c *tc.C) {
 	filesystemParams, err := st.FilesystemParams(c.Context(), []names.FilesystemTag{names.NewFilesystemTag("100")})
 	c.Check(err, tc.ErrorIsNil)
 	c.Check(callCount, tc.Equals, 1)
-	c.Assert(filesystemParams, tc.DeepEquals, []params.FilesystemParamsResult{{
-		Result: params.FilesystemParams{
+	c.Assert(filesystemParams, tc.DeepEquals, []params.FilesystemParamsResultV5{{
+		Result: params.FilesystemParamsV5{
 			FilesystemTag: "filesystem-100", SizeMiB: 1024, Provider: "loop",
 		},
 	}})
 }
 
 func (s *provisionerSuite) TestRemoveFilesystemParams(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -577,7 +577,7 @@ func (s *provisionerSuite) TestVolumeAttachmentParams(c *tc.C) {
 	}}
 
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -606,8 +606,8 @@ func (s *provisionerSuite) TestVolumeAttachmentParams(c *tc.C) {
 }
 
 func (s *provisionerSuite) TestFilesystemAttachmentParams(c *tc.C) {
-	paramsResults := []params.FilesystemAttachmentParamsResult{{
-		Result: params.FilesystemAttachmentParams{
+	paramsResults := []params.FilesystemAttachmentParamsResultV5{{
+		Result: params.FilesystemAttachmentParamsV5{
 			MachineTag:    "machine-100",
 			FilesystemTag: "filesystem-100",
 			InstanceId:    "inst-ance",
@@ -617,7 +617,7 @@ func (s *provisionerSuite) TestFilesystemAttachmentParams(c *tc.C) {
 	}}
 
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -627,8 +627,8 @@ func (s *provisionerSuite) TestFilesystemAttachmentParams(c *tc.C) {
 				MachineTag: "machine-100", AttachmentTag: "filesystem-100",
 			}},
 		})
-		c.Assert(result, tc.FitsTypeOf, &params.FilesystemAttachmentParamsResults{})
-		*(result.(*params.FilesystemAttachmentParamsResults)) = params.FilesystemAttachmentParamsResults{
+		c.Assert(result, tc.FitsTypeOf, &params.FilesystemAttachmentParamsResultsV5{})
+		*(result.(*params.FilesystemAttachmentParamsResultsV5)) = params.FilesystemAttachmentParamsResultsV5{
 			Results: paramsResults,
 		}
 		callCount++
@@ -647,7 +647,7 @@ func (s *provisionerSuite) TestFilesystemAttachmentParams(c *tc.C) {
 
 func (s *provisionerSuite) TestSetVolumeInfo(c *tc.C) {
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -694,7 +694,7 @@ func (s *provisionerSuite) TestCreateVolumeAttachmentPlan(c *tc.C) {
 			MachineTag: "machine-100",
 			VolumeTag:  "volume-100",
 			PlanInfo: params.VolumeAttachmentPlanInfo{
-				DeviceType: storage.DeviceTypeISCSI,
+				DeviceType: storage.DeviceTypeISCSI.String(),
 				DeviceAttributes: map[string]string{
 					"iqn":         "bogusIQN",
 					"address":     "192.168.1.1",
@@ -709,7 +709,7 @@ func (s *provisionerSuite) TestCreateVolumeAttachmentPlan(c *tc.C) {
 		},
 	}
 
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -720,7 +720,7 @@ func (s *provisionerSuite) TestCreateVolumeAttachmentPlan(c *tc.C) {
 					MachineTag: "machine-100",
 					VolumeTag:  "volume-100",
 					PlanInfo: params.VolumeAttachmentPlanInfo{
-						DeviceType: storage.DeviceTypeISCSI,
+						DeviceType: storage.DeviceTypeISCSI.String(),
 						DeviceAttributes: map[string]string{
 							"iqn":         "bogusIQN",
 							"address":     "192.168.1.1",
@@ -760,7 +760,7 @@ func (s *provisionerSuite) TestSetVolumeAttachmentPlanBlockInfo(c *tc.C) {
 			MachineTag: "machine-100",
 			VolumeTag:  "volume-100",
 			PlanInfo: params.VolumeAttachmentPlanInfo{
-				DeviceType: storage.DeviceTypeISCSI,
+				DeviceType: storage.DeviceTypeISCSI.String(),
 				DeviceAttributes: map[string]string{
 					"iqn":         "bogusIQN",
 					"address":     "192.168.1.1",
@@ -775,7 +775,7 @@ func (s *provisionerSuite) TestSetVolumeAttachmentPlanBlockInfo(c *tc.C) {
 		},
 	}
 
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -786,7 +786,7 @@ func (s *provisionerSuite) TestSetVolumeAttachmentPlanBlockInfo(c *tc.C) {
 					MachineTag: "machine-100",
 					VolumeTag:  "volume-100",
 					PlanInfo: params.VolumeAttachmentPlanInfo{
-						DeviceType: storage.DeviceTypeISCSI,
+						DeviceType: storage.DeviceTypeISCSI.String(),
 						DeviceAttributes: map[string]string{
 							"iqn":         "bogusIQN",
 							"address":     "192.168.1.1",
@@ -820,7 +820,7 @@ func (s *provisionerSuite) TestSetVolumeAttachmentPlanBlockInfo(c *tc.C) {
 
 func (s *provisionerSuite) TestRemoveVolumeAttachmentPlan(c *tc.C) {
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -851,7 +851,7 @@ func (s *provisionerSuite) TestRemoveVolumeAttachmentPlan(c *tc.C) {
 
 func (s *provisionerSuite) TestSetFilesystemInfo(c *tc.C) {
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -899,7 +899,7 @@ func (s *provisionerSuite) TestSetVolumeAttachmentInfo(c *tc.C) {
 	}}
 
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -932,7 +932,7 @@ func (s *provisionerSuite) TestSetFilesystemAttachmentInfo(c *tc.C) {
 	}}
 
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -959,7 +959,7 @@ func (s *provisionerSuite) testOpWithTags(
 	c *tc.C, opName string, apiCall func(*storageprovisioner.Client, []names.Tag) ([]params.ErrorResult, error),
 ) {
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -990,7 +990,7 @@ func (s *provisionerSuite) TestRemove(c *tc.C) {
 
 func (s *provisionerSuite) TestLife(c *tc.C) {
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "StorageProvisioner")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -1014,7 +1014,7 @@ func (s *provisionerSuite) TestLife(c *tc.C) {
 }
 
 func (s *provisionerSuite) testClientError(c *tc.C, apiCall func(*storageprovisioner.Client) error) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		return errors.New("blargh")
 	})
 	st, err := storageprovisioner.NewClient(apiCaller)
@@ -1101,7 +1101,7 @@ func (s *provisionerSuite) TestAttachmentLifeClientError(c *tc.C) {
 }
 
 func (s *provisionerSuite) TestWatchVolumesServerError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		*(result.(*params.StringsWatchResults)) = params.StringsWatchResults{
 			Results: []params.StringsWatchResult{{
 				Error: &params.Error{Message: "MSG", Code: "621"},
@@ -1116,7 +1116,7 @@ func (s *provisionerSuite) TestWatchVolumesServerError(c *tc.C) {
 }
 
 func (s *provisionerSuite) TestVolumesServerError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		*(result.(*params.VolumeResults)) = params.VolumeResults{
 			Results: []params.VolumeResult{{
 				Error: &params.Error{Message: "MSG", Code: "621"},
@@ -1133,7 +1133,7 @@ func (s *provisionerSuite) TestVolumesServerError(c *tc.C) {
 }
 
 func (s *provisionerSuite) TestVolumeParamsServerError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		*(result.(*params.VolumeParamsResults)) = params.VolumeParamsResults{
 			Results: []params.VolumeParamsResult{{
 				Error: &params.Error{Message: "MSG", Code: "621"},
@@ -1150,7 +1150,7 @@ func (s *provisionerSuite) TestVolumeParamsServerError(c *tc.C) {
 }
 
 func (s *provisionerSuite) TestRemoveVolumeParamsServerError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		*(result.(*params.RemoveVolumeParamsResults)) = params.RemoveVolumeParamsResults{
 			Results: []params.RemoveVolumeParamsResult{{
 				Error: &params.Error{Message: "MSG", Code: "621"},
@@ -1167,9 +1167,9 @@ func (s *provisionerSuite) TestRemoveVolumeParamsServerError(c *tc.C) {
 }
 
 func (s *provisionerSuite) TestFilesystemParamsServerError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
-		*(result.(*params.FilesystemParamsResults)) = params.FilesystemParamsResults{
-			Results: []params.FilesystemParamsResult{{
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
+		*(result.(*params.FilesystemParamsResultsV5)) = params.FilesystemParamsResultsV5{
+			Results: []params.FilesystemParamsResultV5{{
 				Error: &params.Error{Message: "MSG", Code: "621"},
 			}},
 		}
@@ -1184,7 +1184,7 @@ func (s *provisionerSuite) TestFilesystemParamsServerError(c *tc.C) {
 }
 
 func (s *provisionerSuite) TestRemoveFilesystemParamsServerError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		*(result.(*params.RemoveFilesystemParamsResults)) = params.RemoveFilesystemParamsResults{
 			Results: []params.RemoveFilesystemParamsResult{{
 				Error: &params.Error{Message: "MSG", Code: "621"},
@@ -1201,7 +1201,7 @@ func (s *provisionerSuite) TestRemoveFilesystemParamsServerError(c *tc.C) {
 }
 
 func (s *provisionerSuite) TestSetVolumeInfoServerError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		*(result.(*params.ErrorResults)) = params.ErrorResults{
 			Results: []params.ErrorResult{{
 				Error: &params.Error{Message: "MSG", Code: "621"},
@@ -1220,7 +1220,7 @@ func (s *provisionerSuite) TestSetVolumeInfoServerError(c *tc.C) {
 }
 
 func (s *provisionerSuite) testServerError(c *tc.C, apiCall func(*storageprovisioner.Client, []names.Tag) ([]params.ErrorResult, error)) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		*(result.(*params.ErrorResults)) = params.ErrorResults{
 			Results: []params.ErrorResult{{
 				Error: &params.Error{Message: "MSG", Code: "621"},
@@ -1246,7 +1246,7 @@ func (s *provisionerSuite) TestRemoveServerError(c *tc.C) {
 }
 
 func (s *provisionerSuite) TestLifeServerError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		*(result.(*params.LifeResults)) = params.LifeResults{
 			Results: []params.LifeResult{{
 				Error: &params.Error{Message: "MSG", Code: "621"},

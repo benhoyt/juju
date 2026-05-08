@@ -1,0 +1,132 @@
+// Copyright 2015 Canonical Ltd.
+// Licensed under the AGPLv3, see LICENCE file for details.
+
+package upgradestepsagent
+
+import (
+	"context"
+
+	"github.com/juju/clock"
+	"github.com/juju/errors"
+	"github.com/juju/names/v6"
+	"github.com/juju/worker/v5"
+	"gopkg.in/tomb.v2"
+
+	"github.com/juju/juju/agent"
+	"github.com/juju/juju/api/base"
+	"github.com/juju/juju/core/logger"
+	"github.com/juju/juju/core/status"
+	jujuversion "github.com/juju/juju/core/version"
+	"github.com/juju/juju/internal/upgrades"
+	"github.com/juju/juju/internal/upgradesteps"
+	"github.com/juju/juju/internal/worker/gate"
+)
+
+// NewAgentWorker returns a new instance of the agentWorker. It
+// will run any required steps to upgrade a agent to the currently running
+// Juju version.
+func NewAgentWorker(
+	upgradeCompleteLock gate.Lock,
+	agent agent.Agent,
+	apiCaller base.APICaller,
+	preUpgradeSteps upgrades.PreUpgradeStepsFunc,
+	performUpgradeSteps upgrades.UpgradeStepsFunc,
+	statusSetter upgradesteps.StatusSetter,
+	logger logger.Logger,
+	clock clock.Clock,
+) worker.Worker {
+	return newAgentWorker(&upgradesteps.BaseWorker{
+		Agent:               agent,
+		APICaller:           apiCaller,
+		Tag:                 agent.CurrentConfig().Tag(),
+		UpgradeCompleteLock: upgradeCompleteLock,
+		PreUpgradeSteps:     preUpgradeSteps,
+		PerformUpgradeSteps: performUpgradeSteps,
+		StatusSetter:        statusSetter,
+		FromVersion:         agent.CurrentConfig().UpgradedToVersion(),
+		ToVersion:           jujuversion.Current,
+		Logger:              logger,
+		Clock:               clock,
+	})
+}
+
+func newAgentWorker(base *upgradesteps.BaseWorker) *agentWorker {
+	w := &agentWorker{
+		base:   base,
+		logger: base.Logger,
+	}
+	w.tomb.Go(w.run)
+	return w
+}
+
+type agentWorker struct {
+	base *upgradesteps.BaseWorker
+
+	tomb tomb.Tomb
+
+	logger logger.Logger
+}
+
+// Kill is part of the worker.Worker interface.
+func (w *agentWorker) Kill() {
+	w.tomb.Kill(nil)
+}
+
+// Wait is part of the worker.Worker interface.
+func (w *agentWorker) Wait() error {
+	return w.tomb.Wait()
+}
+
+func (w *agentWorker) run() error {
+	// We're already upgraded, so do nothing.
+	if w.base.AlreadyUpgraded() {
+		return nil
+	}
+
+	ctx, cancel := w.scopedContext()
+	defer cancel()
+
+	// Run the upgrade steps for a agent.
+	if err := w.runUpgrades(ctx); err != nil {
+		// Only return an error from the worker if the connection to
+		// state went away (possible mongo primary change). Returning
+		// an error when the connection is lost will cause the agent
+		// to restart.
+		if errors.Is(err, &upgradesteps.APILostDuringUpgrade{}) {
+			return errors.Trace(err)
+		}
+
+		// We don't want to retry the upgrade if it failed, so signal
+		// that the upgrade as being blocked.
+		return nil
+	}
+
+	// Upgrade succeeded - signal that the upgrade is complete.
+	w.logger.Infof(ctx, "upgrade to %v completed successfully.", w.base.ToVersion)
+	_ = w.base.StatusSetter.SetStatus(ctx, status.Started, "", nil)
+	w.base.UpgradeCompleteLock.Unlock()
+	return nil
+}
+
+// runUpgrades runs the upgrade operations for each job type and
+// updates the updatedToVersion on success.
+func (w *agentWorker) runUpgrades(ctx context.Context) error {
+	// Every upgrade needs to prepare the environment for the upgrade.
+	w.logger.Infof(ctx, "checking that upgrade can proceed")
+	if err := w.base.PreUpgradeSteps(w.base.Agent.CurrentConfig()); err != nil {
+		return errors.Annotatef(err, "%s cannot be upgraded", names.ReadableString(w.base.Tag))
+	}
+
+	w.logger.Infof(ctx, "running upgrade steps for %q", w.base.Tag)
+	if err := w.base.Agent.ChangeConfig(w.base.RunUpgradeSteps(ctx, []upgrades.Target{
+		upgrades.HostMachine,
+	})); err != nil {
+		return errors.Annotatef(err, "failed to run upgrade steps")
+	}
+
+	return nil
+}
+
+func (w *agentWorker) scopedContext() (context.Context, context.CancelFunc) {
+	return context.WithCancel(w.tomb.Context(context.Background()))
+}

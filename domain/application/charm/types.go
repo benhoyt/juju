@@ -12,7 +12,7 @@ import (
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/domain/application/architecture"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
-	internalcharm "github.com/juju/juju/internal/charm"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -252,8 +252,9 @@ const (
 	ProvenanceDownload Provenance = "download"
 	// ProvenanceUpload represents a charm download from an upload.
 	ProvenanceUpload Provenance = "upload"
-	// ProvenanceMigration represents a charm download from a migration.
-	ProvenanceMigration Provenance = "migration"
+	// ProvenanceLegacyMigration represents a charm download from a migration
+	// using the legacy migration mechanism.
+	ProvenanceLegacyMigration Provenance = "migration"
 	// ProvenanceBootstrap represents a charm placement during bootstrap.
 	ProvenanceBootstrap Provenance = "bootstrap"
 )
@@ -379,14 +380,23 @@ const (
 	StorageFilesystem StorageType = "filesystem"
 )
 
+const (
+	// StorageNoMaxCount defines the value used on [Storage.MaxCount] when no
+	// upper limit exists for the number of storage instances that can be made
+	// for a storage.
+	//
+	// This situation would be seen when a charm has no opinionated maximum.
+	StorageNoMaxCount = -1
+)
+
 // Storage represents a charm's storage requirement.
 type Storage struct {
-	// Name is the name of the store.
+	// Name is the name of the storage.
 	//
 	// Name has no default, and must be specified.
 	Name string
 
-	// Description is a description of the store.
+	// Description is a description of the storage.
 	//
 	// Description has no default, and is optional.
 	Description string
@@ -418,8 +428,8 @@ type Storage struct {
 	CountMin int
 
 	// CountMax is the largest number of storage instances that can be
-	// attached to the charm. If CountMax is -1, then there is no upper
-	// bound.
+	// attached to the charm. If CountMax is [StorageNoMaxCount], then there
+	// is no upper bound.
 	//
 	// CountMax defaults to 1 for singleton stores.
 	CountMax int
@@ -588,4 +598,10 @@ type Option struct {
 	Type        OptionType
 	Description string
 	Default     any
+}
+
+// String returns the string representation of [StorageType]. This func
+// implements the [fmt.Stringer] interface.
+func (s StorageType) String() string {
+	return string(s)
 }

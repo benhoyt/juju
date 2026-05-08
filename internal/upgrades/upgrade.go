@@ -59,10 +59,6 @@ const (
 
 	// Controller is a machine participating in a Juju controller cluster.
 	Controller = Target("controller")
-
-	// DatabaseMaster is a Controller that has the master database, and as such
-	// is the only target that should run database schema upgrade steps.
-	DatabaseMaster = Target("databaseMaster")
 )
 
 // upgradeToVersion encapsulates the steps which need to be run to

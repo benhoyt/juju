@@ -10,15 +10,13 @@ import (
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
-	caas "github.com/juju/juju/caas"
+	"github.com/juju/juju/caas"
 	coreapplication "github.com/juju/juju/core/application"
 	coreerrors "github.com/juju/juju/core/errors"
 	coreunit "github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/application"
-	"github.com/juju/juju/domain/application/internal"
 	domainnetwork "github.com/juju/juju/domain/network"
 	domainstorage "github.com/juju/juju/domain/storage"
-	domainstorageprov "github.com/juju/juju/domain/storageprovisioning"
 )
 
 type registerCAASUnitSuite struct {
@@ -31,13 +29,13 @@ func TestRegisterCAASUnitSuite(t *testing.T) {
 
 func (s *registerCAASUnitSuite) makeStorageArg(
 	c *tc.C,
-) internal.RegisterUnitStorageArg {
-	fsUUID := tc.Must(c, domainstorageprov.NewFilesystemUUID)
+) domainstorage.RegisterUnitStorageArg {
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 	storageInstUUID := tc.Must(c, domainstorage.NewStorageInstanceUUID)
 	storagePoolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
-	rval := internal.RegisterUnitStorageArg{
-		CreateUnitStorageArg: internal.CreateUnitStorageArg{
-			StorageDirectives: []internal.CreateUnitStorageDirectiveArg{
+	rval := domainstorage.RegisterUnitStorageArg{
+		CreateUnitStorageArg: domainstorage.CreateUnitStorageArg{
+			StorageDirectives: []domainstorage.DirectiveArg{
 				{
 					Count:    1,
 					Name:     "st1",
@@ -45,12 +43,12 @@ func (s *registerCAASUnitSuite) makeStorageArg(
 					Size:     1024,
 				},
 			},
-			StorageInstances: []internal.CreateUnitStorageInstanceArg{
+			StorageInstances: []domainstorage.CreateUnitStorageInstanceArg{
 				{
 					CharmName: "foo",
-					Filesystem: &internal.CreateUnitStorageFilesystemArg{
+					Filesystem: &domainstorage.CreateUnitStorageFilesystemArg{
 						UUID:           fsUUID,
-						ProvisionScope: domainstorageprov.ProvisionScopeModel,
+						ProvisionScope: domainstorage.ProvisionScopeModel,
 					},
 					Kind:            domainstorage.StorageKindFilesystem,
 					RequestSizeMiB:  1024,
@@ -58,20 +56,20 @@ func (s *registerCAASUnitSuite) makeStorageArg(
 					UUID:            storageInstUUID,
 				},
 			},
-			StorageToAttach: []internal.CreateUnitStorageAttachmentArg{
+			StorageToAttach: []domainstorage.CreateUnitStorageAttachmentArg{
 				{
-					FilesystemAttachment: &internal.CreateUnitStorageFilesystemAttachmentArg{
+					FilesystemAttachment: &domainstorage.CreateUnitStorageFilesystemAttachmentArg{
 						FilesystemUUID: fsUUID,
-						ProvisionScope: domainstorageprov.ProvisionScopeModel,
-						UUID:           tc.Must(c, domainstorageprov.NewFilesystemAttachmentUUID),
+						ProvisionScope: domainstorage.ProvisionScopeModel,
+						UUID:           tc.Must(c, domainstorage.NewFilesystemAttachmentUUID),
 					},
-					UUID:                tc.Must(c, domainstorageprov.NewStorageAttachmentUUID),
+					UUID:                tc.Must(c, domainstorage.NewStorageAttachmentUUID),
 					StorageInstanceUUID: storageInstUUID,
 				},
 			},
 			StorageToOwn: []domainstorage.StorageInstanceUUID{storageInstUUID},
 		},
-		FilesystemProviderIDs: map[domainstorageprov.FilesystemUUID]string{
+		FilesystemProviderIDs: map[domainstorage.FilesystemUUID]string{
 			fsUUID: "fs-providerid-1",
 		},
 	}
@@ -81,14 +79,14 @@ func (s *registerCAASUnitSuite) makeStorageArg(
 
 func (*registerCAASUnitSuite) storageChecker() *tc.MultiChecker {
 	mc := tc.NewMultiChecker()
-	mc.AddExpr(`_.CreateUnitStorageArg.StorageToAttach[_].FilesystemAttachment.NetNodeUUID`, tc.Ignore)
+	mc.AddExpr(`_.CreateUnitStorageArg.NewStorageToAttach[_].FilesystemAttachment.NetNodeUUID`, tc.Ignore)
 	return mc
 }
 
 // TestRegisterNewCAASUnit tests the happy path of registering a new CAAS unit
 // into the model.
 func (s *registerCAASUnitSuite) TestRegisterNewCAASUnit(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
@@ -100,8 +98,8 @@ func (s *registerCAASUnitSuite) TestRegisterNewCAASUnit(c *tc.C) {
 		Address: "10.6.6.6",
 		Ports:   []string{"8080"},
 		FilesystemInfo: []caas.FilesystemInfo{{
-			FilesystemId: "fs-providerid-1",
-			StorageName:  "st1",
+			PersistentVolumeClaimName: "fs-providerid-1",
+			StorageName:               "st1",
 		}},
 	}}, nil)
 	s.caasProvider.EXPECT().Application("foo", caas.DeploymentStateful).Return(app)
@@ -115,11 +113,12 @@ func (s *registerCAASUnitSuite) TestRegisterNewCAASUnit(c *tc.C) {
 	).Return(storageArg, nil).AnyTimes()
 
 	arg := application.RegisterCAASUnitArg{
+		UnitUUID:               tc.Must(c, coreunit.NewUUID),
 		UnitName:               "foo/666",
 		PasswordHash:           "secret",
 		ProviderID:             "foo-666",
-		Address:                ptr("10.6.6.6"),
-		Ports:                  ptr([]string{"8080"}),
+		Address:                new("10.6.6.6"),
+		Ports:                  new([]string{"8080"}),
 		OrderedScale:           true,
 		OrderedId:              666,
 		RegisterUnitStorageArg: storageArg,
@@ -144,6 +143,7 @@ func (s *registerCAASUnitSuite) TestRegisterNewCAASUnit(c *tc.C) {
 
 	mc := tc.NewMultiChecker()
 	mc.AddExpr(`_.PasswordHash`, tc.Ignore)
+	mc.AddExpr(`_.UnitUUID`, tc.IsNonZeroUUID)
 	mc.AddExpr(`_.NetNodeUUID`, tc.IsNonZeroUUID)
 	mc.AddExpr(`_.RegisterUnitStorageArg`, s.storageChecker(), tc.ExpectedValue)
 	c.Assert(gotRCA, mc, arg)
@@ -160,7 +160,7 @@ func (s *registerCAASUnitSuite) TestRegisterNewCAASUnit(c *tc.C) {
 // Key observabilities in this test:
 // - We want to see that the existing net node uuid for the caas unit is re-used.
 func (s *registerCAASUnitSuite) TestRegisterExistingCAASUnit(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
@@ -174,8 +174,8 @@ func (s *registerCAASUnitSuite) TestRegisterExistingCAASUnit(c *tc.C) {
 		Address: "10.6.6.6",
 		Ports:   []string{"8080"},
 		FilesystemInfo: []caas.FilesystemInfo{{
-			FilesystemId: "fs-providerid-1",
-			StorageName:  "st1",
+			PersistentVolumeClaimName: "fs-providerid-1",
+			StorageName:               "st1",
 		}},
 	}}, nil)
 	s.caasProvider.EXPECT().Application("foo", caas.DeploymentStateful).Return(app)
@@ -189,15 +189,16 @@ func (s *registerCAASUnitSuite) TestRegisterExistingCAASUnit(c *tc.C) {
 	).Return(storageArg, nil).AnyTimes()
 
 	expectedArg := application.RegisterCAASUnitArg{
-		Address:                ptr("10.6.6.6"),
+		Address:                new("10.6.6.6"),
 		NetNodeUUID:            unitNetNodeUUID,
 		OrderedId:              666,
 		OrderedScale:           true,
 		PasswordHash:           "secret",
-		Ports:                  ptr([]string{"8080"}),
+		Ports:                  new([]string{"8080"}),
 		ProviderID:             "foo-666",
 		RegisterUnitStorageArg: storageArg,
 		UnitName:               "foo/666",
+		UnitUUID:               unitUUID,
 	}
 
 	var gotRCA application.RegisterCAASUnitArg
@@ -246,7 +247,7 @@ func (s *registerCAASUnitSuite) TestRegisterCAASUnitMissingProviderID(c *tc.C) {
 //
 // NOTE(tlm): It is unclear if this test has any value.
 func (s *registerCAASUnitSuite) TestRegisterCAASUnitApplicationNoPods(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)

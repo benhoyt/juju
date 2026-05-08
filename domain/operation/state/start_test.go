@@ -15,6 +15,7 @@ import (
 	corestatus "github.com/juju/juju/core/status"
 	"github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/operation"
+	operationerrors "github.com/juju/juju/domain/operation/errors"
 	"github.com/juju/juju/domain/operation/internal"
 	internaluuid "github.com/juju/juju/internal/uuid"
 )
@@ -511,7 +512,25 @@ func (s *startSuite) TestAddActionOperationCharmNotFound(c *tc.C) {
 	}
 
 	_, err := s.state.AddActionOperation(c.Context(), operationUUID, targetUnits, args)
-	c.Assert(err, tc.ErrorMatches, ".*inserting action \"nonexistent-action\" for charm.*")
+	c.Assert(err, tc.ErrorIs, operationerrors.ActionNotDefined{CharmName: charmUUID,
+		UnitName: targetUnits[0].String(), HasActions: false})
+}
+
+func (s *startSuite) TestCheckActionDefinedActionMissingButCharmHasOthers(c *tc.C) {
+	// Arrange: charm has an action defined, but we request a different one.
+	charmUUID := s.addCharm(c)
+	s.addCharmAction(c, charmUUID) // defines "test-action"
+	_ = s.addUnitWithName(c, charmUUID, "some-app/0")
+
+	// Act: request a different (missing) action name.
+	operationUUID := internaluuid.MustNewUUID()
+	targetUnits := []unit.Name{"some-app/0"}
+	args := operation.TaskArgs{ActionName: "another-missing-action"}
+
+	// Assert: expect ActionNotDefined with HasActions == true.
+	_, err := s.state.AddActionOperation(c.Context(), operationUUID, targetUnits, args)
+	c.Assert(err, tc.ErrorIs, operationerrors.ActionNotDefined{CharmName: charmUUID,
+		UnitName: targetUnits[0].String(), HasActions: true})
 }
 
 func (s *startSuite) TestAddActionOperationParametersStored(c *tc.C) {

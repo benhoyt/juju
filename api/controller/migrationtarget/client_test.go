@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
@@ -343,7 +343,7 @@ func (fakeHTTPCaller) BestFacadeVersion(string) int {
 	return 0
 }
 
-func (f *fakeHTTPCaller) RootHTTPClient() (*httprequest.Client, error) {
+func (f *fakeHTTPCaller) HTTPClient(base.HTTPClientScope) (*httprequest.Client, error) {
 	return f.httpClient, f.err
 }
 

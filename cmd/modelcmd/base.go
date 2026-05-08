@@ -23,11 +23,13 @@ import (
 	"github.com/juju/juju/api/client/modelmanager"
 	"github.com/juju/juju/api/jujuclient"
 	"github.com/juju/juju/cloud"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/internal/loginprovider"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/environs"
 	environscloudspec "github.com/juju/juju/environs/cloudspec"
 	"github.com/juju/juju/environs/config"
-	"github.com/juju/juju/internal/cmd"
+	internallogger "github.com/juju/juju/internal/logger"
 	"github.com/juju/juju/internal/pki"
 	k8sproxy "github.com/juju/juju/internal/provider/kubernetes/proxy"
 	proxyerrors "github.com/juju/juju/internal/proxy/errors"
@@ -258,7 +260,7 @@ func (c *CommandBase) NewAPIRootWithDialOpts(
 		param.AccountDetails.LastKnownAccess = conn.ControllerAccess()
 		err := store.UpdateAccount(controllerName, *param.AccountDetails)
 		if err != nil {
-			logger.Errorf(context.TODO(), "cannot update account information: %v", err)
+			logger.Errorf(ctx, "cannot update account information: %v", err)
 		}
 	}
 	if redirErr, ok := errors.Cause(err).(*api.RedirectError); ok {
@@ -268,7 +270,7 @@ func (c *CommandBase) NewAPIRootWithDialOpts(
 		return nil, errors.New("no controller API addresses; is bootstrap still in progress?")
 	}
 	if proxyerrors.IsProxyConnectError(err) {
-		logger.Debugf(context.TODO(), "proxy connection error: %v", err)
+		logger.Debugf(ctx, "proxy connection error: %v", err)
 		if proxyerrors.ProxyType(err) == k8sproxy.ProxierTypeKey {
 			return nil, errors.Annotate(err, "cannot connect to k8s api server; try running 'juju update-k8s --client <k8s cloud name>'")
 		}
@@ -610,12 +612,17 @@ func newAPIConnectionParams(
 	}
 
 	if controllerDetails.OIDCLogin {
-		dialOpts.LoginProvider = sessionLoginFactory.NewLoginProvider(
-			accountDetails.SessionToken,
-			cmdOut,
-			func(sessionToken string) {
-				accountDetails.SessionToken = sessionToken
-			},
+		// If the controller is OIDCLogin, we know it is capable of device and client credential flows.
+		dialOpts.LoginProvider = loginprovider.NewTryInOrderLoginProvider(
+			internallogger.GetLogger("juju.cmd.loginprovider"),
+			api.NewClientCredentialsLoginProviderFromEnvironment(func() {}),
+			sessionLoginFactory.NewLoginProvider(
+				accountDetails.SessionToken,
+				cmdOut,
+				func(sessionToken string) {
+					accountDetails.SessionToken = sessionToken
+				},
+			),
 		)
 	}
 

@@ -4,8 +4,24 @@
 package agentbinary
 
 import (
+	"iter"
+
 	"github.com/juju/juju/core/objectstore"
+	"github.com/juju/juju/core/semversion"
 )
+
+// AgentBinary represents an agent binary without implying a source or
+// availability.
+type AgentBinary struct {
+	// Architecture is the architecture of the agent binary.
+	Architecture Architecture
+
+	// Stream represents the stream the agent binary is applicable to.
+	Stream Stream
+
+	// Version is the version of the agent binary.
+	Version semversion.Number
+}
 
 // RegisterAgentBinaryArg describes the arguments for adding an agent binary.
 // It contains the version, architecture, and object store UUID of the agent binary.
@@ -34,31 +50,47 @@ type Metadata struct {
 	SHA256 string
 }
 
-// Architecture represents the architecture of the agent.
-type Architecture int
-
-const (
-	AMD64 Architecture = iota
-	ARM64
-	PPC64EL
-	S390X
-	RISCV64
-)
-
-// String returns the primitive string values for [Architecture].
-func (a Architecture) String() string {
-	switch a {
-	case AMD64:
-		return "amd64"
-	case ARM64:
-		return "arm64"
-	case PPC64EL:
-		return "ppc64el"
-	case S390X:
-		return "s390x"
-	case RISCV64:
-		return "riscv64"
-	default:
-		return ""
+// AgentBinaryArchitectures provides a sequence of architectures from a slice
+// of [AgentBinary]s. No deduplication is performed.
+func AgentBinaryArchitectures(abs []AgentBinary) iter.Seq[Architecture] {
+	return func(yield func(Architecture) bool) {
+		for _, ab := range abs {
+			if !yield(ab.Architecture) {
+				return
+			}
+		}
 	}
+}
+
+// function to remove all [AgentBinary] values from a slice that have the same
+// version.
+//
+// This func ignores [AgentBinary.Stream] and [AgentBinary.Architecture] when
+// comparing two [AgentBinary] values.
+func AgentBinaryCompactOnVersion(a, b AgentBinary) bool {
+	return a.Version.Compare(b.Version) == 0
+}
+
+// AgentBinaryCompareOnVersion provides a comparison func for comparing
+// [AgentBinary] against their [AgentBinary.Version] field.
+func AgentBinaryCompareOnVersion(a, b AgentBinary) int {
+	return a.Version.Compare(b.Version)
+}
+
+// AgentBinaryNotMatchingVersion provides a helper closure to use with the
+// slices package for filtering agent binaries that do match the supplied
+// version.
+func AgentBinaryNotMatchingVersion(v semversion.Number) func(AgentBinary) bool {
+	return func(a AgentBinary) bool {
+		return a.Version.Compare(v) != 0
+	}
+}
+
+// AgentBinaryHighestVersion is a func for use with [slices.MaxFunc] to extract
+// the highest [AgentBinary.Version] available in a slice.
+//
+// This func ignores [AgentBinary.Stream] and [AgentBinary.Architecture] when
+// comparing two [AgentBinary] values.
+func AgentBinaryHighestVersion(a, b AgentBinary) int {
+	return a.Version.Compare(b.Version)
 }

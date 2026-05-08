@@ -26,15 +26,15 @@ const (
 type CrossModelAuthContextProvider interface {
 	// NewCrossModelAuthContext creates a new OfferAuthContext for the
 	// given request host.
-	NewCrossModelAuthContext(ctx context.Context, requestHost string) (facade.CrossModelAuthContext, error)
+	NewCrossModelAuthContext(requestHost string) (facade.CrossModelAuthContext, error)
 }
 
 // AddOfferAuthHandlers adds the HTTP handlers used for application offer
 // macaroon authentication.
-func AddOfferAuthHandlers(authContextProvider CrossModelAuthContextProvider, keyPair *bakery.KeyPair, mux *apiserverhttp.Mux) error {
+func AddOfferAuthHandlers(authContextProvider CrossModelAuthContextProvider, keyPair *bakery.KeyPair, mux *apiserverhttp.Mux, logger logger.Logger) error {
 	appOfferDischargeMux := http.NewServeMux()
 
-	appOfferHandler := &localOfferAuthHandler{authContextProvider: authContextProvider}
+	appOfferHandler := &localOfferAuthHandler{authContextProvider: authContextProvider, logger: logger}
 	discharger := httpbakery.NewDischarger(httpbakery.DischargerParams{
 		Key:     keyPair,
 		Checker: httpbakery.ThirdPartyCaveatCheckerFunc(appOfferHandler.checkThirdPartyCaveat),
@@ -59,7 +59,7 @@ type localOfferAuthHandler struct {
 func (h *localOfferAuthHandler) checkThirdPartyCaveat(ctx context.Context, req *http.Request, cavInfo *bakery.ThirdPartyCaveatInfo, _ *httpbakery.DischargeToken) ([]checkers.Caveat, error) {
 	h.logger.Debugf(ctx, "check offer third party caveat %q", cavInfo.Condition)
 
-	authContext, err := h.authContextProvider.NewCrossModelAuthContext(ctx, req.Host)
+	authContext, err := h.authContextProvider.NewCrossModelAuthContext(req.Host)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}

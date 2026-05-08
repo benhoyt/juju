@@ -472,46 +472,6 @@ func netAddrToDML(
 	return dml, nil
 }
 
-// machineInterfaceRow is the type for a row from the v_machine_interface view.
-type machineInterfaceRow struct {
-	// MachineUUID and associated machine fields.
-	MachineUUID string `db:"machine_uuid"`
-	MachineName string `db:"machine_name"`
-	NetNodeUUID string `db:"net_node_uuid"`
-
-	// DeviceUUID and associated link-layer device fields.
-	DeviceUUID        string         `db:"device_uuid"`
-	DeviceName        string         `db:"device_name"`
-	MTU               sql.NullInt64  `db:"mtu"`
-	MacAddress        sql.NullString `db:"mac_address"`
-	ProviderID        sql.NullString `db:"device_provider_id"`
-	DeviceTypeID      int64          `db:"device_type_id"`
-	VirtualPortTypeID int64          `db:"virtual_port_type_id"`
-	IsAutoStart       bool           `db:"is_auto_start"`
-	IsEnabled         bool           `db:"is_enabled"`
-	ParentDeviceUUID  sql.NullString `db:"parent_device_uuid"`
-	ParentDeviceName  sql.NullString `db:"parent_device_name"`
-	GatewayAddress    sql.NullString `db:"gateway_address"`
-	IsDefaultGateway  bool           `db:"is_default_gateway"`
-	VLANTag           uint64         `db:"vlan_tag"`
-	DNSAddress        sql.NullString `db:"dns_address"`
-	DNSSearchDomain   sql.NullString `db:"search_domain"`
-
-	// AddressUUID and associated IP address fields.
-	AddressUUID       sql.NullString `db:"address_uuid"`
-	ProviderAddressID sql.NullString `db:"provider_address_id"`
-	AddressValue      sql.NullString `db:"address_value"`
-	SubnetUUID        sql.NullString `db:"subnet_uuid"`
-	CIDR              sql.NullString `db:"cidr"`
-	ProviderSubnetID  sql.NullString `db:"provider_subnet_id"`
-	AddressTypeID     sql.NullInt64  `db:"address_type_id"`
-	ConfigTypeID      sql.NullInt64  `db:"config_type_id"`
-	OriginID          sql.NullInt64  `db:"origin_id"`
-	ScopeID           sql.NullInt64  `db:"scope_id"`
-	IsSecondary       sql.NullBool   `db:"is_secondary"`
-	IsShadow          sql.NullBool   `db:"is_shadow"`
-}
-
 type machineNameNetNode struct {
 	MachineName string `db:"name"`
 	NetNodeUUID string `db:"net_node_uuid"`
@@ -535,22 +495,6 @@ type linkLayerDevice struct {
 	Type            int            `db:"device_type_id"`
 	VirtualPortType int            `db:"virtual_port_type_id"`
 	VLAN            int            `db:"vlan_tag"`
-}
-
-// readLinkLayerDevice is used to verify data in tests.
-// It contains type names rather than IDs.
-type readLinkLayerDevice struct {
-	UUID           string         `db:"uuid"`
-	NetNodeUUID    string         `db:"net_node_uuid"`
-	Name           string         `db:"name"`
-	MTU            sql.NullInt64  `db:"mtu"`
-	MAC            sql.NullString `db:"mac_address"`
-	GatewayAddress sql.NullString `db:"gateway_address"`
-	IsAutoStart    bool           `db:"is_auto_start"`
-	IsEnabled      bool           `db:"is_enabled"`
-	DeviceType     string         `db:"device_type"`
-	VirtualPort    string         `db:"virtual_port_type"`
-	VLAN           int            `db:"vlan_tag"`
 }
 
 // linkLayerDeviceName is used for identifying
@@ -668,30 +612,23 @@ type subnetGroup struct {
 
 type subnetGroups []subnetGroup
 
-// subnetForIP returns the subnet UUID for the input IP address in CIDR format
-// if one can be determined.
-// If the UUIDs for the CIDR are not unique, an empty string is returned.
-func (subs subnetGroups) subnetForIP(ip string) (string, error) {
-	netIP, _, _ := net.ParseCIDR(ip)
-	if netIP == nil {
-		return "", errors.Errorf("invalid IP address %q", ip)
-	}
-
+// subnetForIP returns the subnet UUID for the input IP address in
+// CIDR format if one can be determined.
+// Typed errors are returned for scenarios that do not result in a
+// unique subnet match.
+func (subs subnetGroups) subnetForIP(ip net.IP) (string, error) {
 	var matches []string
 	for _, s := range subs {
-		if s.ipNet.Contains(netIP) {
+		if s.ipNet.Contains(ip) {
 			matches = append(matches, s.uuids...)
 		}
 	}
 
 	if len(matches) == 0 {
-		return "", errors.Errorf("no subnet found for IP %q", ip)
+		return "", errAddrSubnetMatchNone
 	}
-
-	// If there are multiple subnets for the same CIDR,
-	// the caller must create a subnet for the IP address.
 	if len(matches) > 1 {
-		return "", nil
+		return "", errAddrSubnetMatchMulti
 	}
 	return matches[0], nil
 }
@@ -713,13 +650,6 @@ type spaceConstraint struct {
 	SpaceUUID string `db:"uuid"`
 	SpaceName string `db:"space"`
 	Exclude   bool   `db:"exclude"`
-}
-
-// spaceEndpoint represents the relationship between a network endpoint and its
-// associated space. It maps an endpoint name to a specific space UUID.
-type spaceEndpoint struct {
-	EndpointName string `db:"endpoint_name"`
-	SpaceUUID    string `db:"space_uuid"`
 }
 
 type positiveSpaceConstraintFailure struct {
@@ -751,12 +681,4 @@ func nilZeroPtr[T comparable](v T) *T {
 		return nil
 	}
 	return &v
-}
-
-func zeroNilPtr[T comparable](v *T) T {
-	var zero T
-	if v == nil {
-		return zero
-	}
-	return *v
 }

@@ -10,10 +10,10 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/tc"
 
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/firewall"
 	"github.com/juju/juju/environs/config"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/testing"
 )
 
@@ -78,7 +78,7 @@ func (s *mockSetRuleAPI) Close() error {
 	return nil
 }
 
-func (s *mockSetRuleAPI) ModelSet(ctx context.Context, cfg map[string]interface{}) error {
+func (s *mockSetRuleAPI) ModelSet(ctx context.Context, cfg map[string]any) error {
 	if s.err != nil {
 		return s.err
 	}

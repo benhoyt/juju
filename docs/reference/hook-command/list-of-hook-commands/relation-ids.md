@@ -1,7 +1,7 @@
 (hook-command-relation-ids)=
 # `relation-ids`
 ## Summary
-List all relation IDs for the given endpoint.
+Lists all relation IDs for the given endpoint.
 
 ## Usage
 ``` relation-ids [options] <name>```
@@ -19,10 +19,10 @@ List all relation IDs for the given endpoint.
 
 ## Details
 
-relation-ids outputs a list of the related applications with a relation name.
+`relation-ids` outputs a list of the related applications with a relation name.
 Accepts a single argument (relation-name) which, in a relation hook, defaults
 to the name of the current relation. The output is useful as input to the
-relation-list, relation-get, relation-set, and relation-model-get commands
+`relation-list`, `relation-get`, `relation-set`, and `relation-model-get` commands
 to read or write other relation values.
 
 Only relation ids for relations which are not broken are included.

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/juju/clock"
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
@@ -35,6 +35,7 @@ import (
 type Suite struct {
 	authorizer *apiservertesting.FakeAuthorizer
 
+	cloudService              *MockCloudService
 	controllerConfigService   *MockControllerConfigService
 	domainServices            *MockDomainServices
 	domainServicesGetter      *MockDomainServicesGetter
@@ -47,6 +48,7 @@ type Suite struct {
 	objectStoreGetter         *MockModelObjectStoreGetter
 	modelMigrationService     *MockModelMigrationService
 	agentService              *MockModelAgentService
+	removalService            *MockRemovalService
 
 	facadeContext facadetest.ModelContext
 }
@@ -210,21 +212,16 @@ func (s *Suite) TestImport(c *tc.C) {
 }
 
 func (s *Suite) TestAbort(c *tc.C) {
-	c.Skip("re-implment testing import when model migration is implemented on dqlite")
 	defer s.setupMocks(c).Finish()
 
 	s.expectImportModel(c)
+	s.removalService.EXPECT().RemoveMigratingModel(gomock.Any(), gomock.Any()).Return(nil)
 
 	api := s.mustNewAPI(c, c.MkDir())
 	tag := s.importModel(c, api)
 
 	err := api.Abort(c.Context(), params.ModelArgs{ModelTag: tag.String()})
 	c.Assert(err, tc.ErrorIsNil)
-
-	// The model should no longer exist.
-	//exists, err := s.State.ModelExists(tag.Id())
-	//c.Assert(err, tc.ErrorIsNil)
-	//c.Check(exists, tc.IsFalse)
 }
 
 func (s *Suite) TestAbortNotATag(c *tc.C) {
@@ -244,25 +241,11 @@ func (s *Suite) TestAbortMissingModel(c *tc.C) {
 	c.Assert(err, tc.ErrorMatches, `model "`+newUUID+`" not found`)
 }
 
-func (s *Suite) TestAbortNotImportingModel(c *tc.C) {
-	c.Skip("re-implment testing import when model migration is implemented on dqlite")
-	defer s.setupMocks(c).Finish()
-
-	//st := s.Factory.MakeModel(c, nil)
-	//defer st.Close()
-	//model, err := st.Model()
-	//c.Assert(err, tc.ErrorIsNil)
-
-	//api := s.mustNewAPI(c, c.MkDir())
-	//err = api.Abort(c.Context(), params.ModelArgs{ModelTag: model.ModelTag().String()})
-	//c.Assert(err, tc.ErrorMatches, `migration mode for the model is not importing`)
-}
-
 func (s *Suite) TestActivate(c *tc.C) {
-	c.Skip("re-implment testing import when model migration is implemented on dqlite")
 	defer s.setupMocks(c).Finish()
 
 	s.expectImportModel(c)
+	s.modelMigrationService.EXPECT().ActivateImport(gomock.Any()).Return(nil)
 
 	api := s.mustNewAPI(c, c.MkDir())
 	tag := s.importModel(c, api)
@@ -286,10 +269,6 @@ func (s *Suite) TestActivate(c *tc.C) {
 		SourceCACert:    jujutesting.CACert,
 	})
 	c.Assert(err, tc.ErrorIsNil)
-
-	//mode, err := s.State.MigrationMode()
-	//c.Assert(err, tc.ErrorIsNil)
-	//c.Assert(mode, tc.Equals, state.MigrationModeNone)
 }
 
 func (s *Suite) TestActivateNotATag(c *tc.C) {
@@ -430,6 +409,7 @@ func (s *Suite) setupMocks(c *tc.C) *gomock.Controller {
 	s.modelMigrationService = NewMockModelMigrationService(ctrl)
 
 	s.agentService = NewMockModelAgentService(ctrl)
+	s.removalService = NewMockRemovalService(ctrl)
 
 	s.authorizer = &apiservertesting.FakeAuthorizer{
 		Tag:      names.NewUserTag("fred"),
@@ -455,6 +435,7 @@ func (s *Suite) setupMocks(c *tc.C) *gomock.Controller {
 		s.objectStoreGetter = nil
 		s.statusService = nil
 		s.upgradeService = nil
+		s.removalService = nil
 	})
 
 	return ctrl
@@ -468,10 +449,15 @@ func (s *Suite) agentServiceGetter(context.Context, model.UUID) (migrationtarget
 	return s.agentService, nil
 }
 
-func (s *Suite) newAPI(versions facades.FacadeVersions, logDir string) (*migrationtarget.API, error) {
+func (s *Suite) removalServiceGetter(context.Context, model.UUID) (migrationtarget.RemovalService, error) {
+	return s.removalService, nil
+}
+
+func (s *Suite) newAPI(c *tc.C, versions facades.FacadeVersions, logDir string) (*migrationtarget.API, error) {
 	return migrationtarget.NewAPI(
 		&s.facadeContext,
 		s.authorizer,
+		s.cloudService,
 		s.controllerConfigService,
 		s.externalControllerService,
 		s.modelService,
@@ -480,32 +466,32 @@ func (s *Suite) newAPI(versions facades.FacadeVersions, logDir string) (*migrati
 		s.machineService,
 		s.agentServiceGetter,
 		s.migrationServiceGetter,
+		s.removalServiceGetter,
 		versions,
 		logDir,
+		loggertesting.WrapCheckLog(c),
 	)
 }
 
 func (s *Suite) mustNewAPI(c *tc.C, logDir string) *migrationtarget.API {
-	api, err := s.newAPI(facades.FacadeVersions{}, logDir)
+	api, err := s.newAPI(c, facades.FacadeVersions{}, logDir)
 	c.Assert(err, tc.ErrorIsNil)
 	return api
 }
 
-func (s *Suite) newAPIWithFacadeVersions(versions facades.FacadeVersions, logDir string) (*migrationtarget.API, error) {
-	api, err := s.newAPI(versions, logDir)
+func (s *Suite) newAPIWithFacadeVersions(c *tc.C, versions facades.FacadeVersions, logDir string) (*migrationtarget.API, error) {
+	api, err := s.newAPI(c, versions, logDir)
 	return api, err
 }
 
 func (s *Suite) mustNewAPIWithFacadeVersions(c *tc.C, versions facades.FacadeVersions) *migrationtarget.API {
-	api, err := s.newAPIWithFacadeVersions(versions, c.MkDir())
+	api, err := s.newAPIWithFacadeVersions(c, versions, c.MkDir())
 	c.Assert(err, tc.ErrorIsNil)
 	return api
 }
 
 func (s *Suite) makeExportedModel(c *tc.C) (string, []byte) {
 	var model description.Model
-	//model, err := s.State.Export(jujujujutesting.NewObjectStore(c, s.State.ModelUUID()))
-	//c.Assert(err, tc.ErrorIsNil)
 
 	newUUID := uuid.MustNewUUID().String()
 	model.UpdateConfig(map[string]any{
@@ -525,15 +511,16 @@ func (s *Suite) controllerVersion(*tc.C) semversion.Number {
 func (s *Suite) expectImportModel(c *tc.C) {
 	s.domainServicesGetter.EXPECT().ServicesForModel(gomock.Any(), gomock.Any()).Return(s.domainServices, nil)
 	s.modelImporter.EXPECT().ImportModel(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, bytes []byte) error {
-		scope := func(model.UUID) modelmigration.Scope { return modelmigration.NewScope(nil, nil, nil) }
+		scope := func(model.UUID) modelmigration.Scope {
+			return modelmigration.NewScope(nil, nil, nil, nil, tc.Must0(c, model.NewUUID))
+		}
 		return migration.NewModelImporter(
 			scope,
-			s.controllerConfigService,
 			s.domainServicesGetter,
 			corestorage.ConstModelStorageRegistry(func() storage.ProviderRegistry {
 				return nil
 			}),
-			s.objectStoreGetter,
+			"",
 			loggertesting.WrapCheckLog(c),
 			clock.WallClock,
 		).ImportModel(ctx, bytes)

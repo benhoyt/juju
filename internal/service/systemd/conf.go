@@ -152,9 +152,34 @@ func serializeUnit(conf common.Conf) []*unit.UnitOption {
 		})
 	}
 
+	requires := []string{
+		"network.target",
+		"local-fs.target",
+	}
+	for _, name := range requires {
+		unitOptions = append(unitOptions, &unit.UnitOption{
+			Section: "Unit",
+			Name:    "Requires",
+			Value:   name,
+		})
+	}
+
+	wants := []string{
+		"lxd-agent.target",
+	}
+	for _, name := range wants {
+		unitOptions = append(unitOptions, &unit.UnitOption{
+			Section: "Unit",
+			Name:    "Wants",
+			Value:   name,
+		})
+	}
+
 	after := []string{
 		"syslog.target",
 		"network.target",
+		"local-fs.target",
+		"lxd-agent.target",
 		"systemd-user-sessions.service",
 	}
 	for _, name := range after {
@@ -285,7 +310,7 @@ func deserializeOptions(opts []*unit.UnitOption, renderer shell.Renderer) (commo
 			switch uo.Name {
 			case "Description":
 				conf.Desc = uo.Value
-			case "After":
+			case "Wants", "Requires", "After":
 				// Do nothing until we support it in common.Conf.
 			default:
 				return conf, errors.NotSupportedf("Unit directive %q", uo.Name)

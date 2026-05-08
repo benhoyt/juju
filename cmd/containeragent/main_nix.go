@@ -16,20 +16,20 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	proxyutils "github.com/juju/proxy"
 
 	"github.com/juju/juju/agent/introspect"
+	proxy "github.com/juju/juju/api/proxy/config"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/containeragent/config"
 	initcommand "github.com/juju/juju/cmd/containeragent/initialize"
 	unitcommand "github.com/juju/juju/cmd/containeragent/unit"
 	"github.com/juju/juju/cmd/internal/run"
 	"github.com/juju/juju/core/machinelock"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/internal/featureflag"
 	internallogger "github.com/juju/juju/internal/logger"
-	proxy "github.com/juju/juju/internal/proxy/config"
 	_ "github.com/juju/juju/internal/secrets/provider/all" // Import the secret providers.
 	"github.com/juju/juju/internal/worker/logsender"
 	"github.com/juju/juju/juju/names"
@@ -70,12 +70,14 @@ type containerAgentLogWriter struct {
 	target io.Writer
 }
 
-func (w *containerAgentLogWriter) Write(entry loggo.Entry) {
+func (w *containerAgentLogWriter) Write(ctx context.Context, entry loggo.Entry) error {
+	var err error
 	if strings.HasPrefix(entry.Module, "unit.") {
-		fmt.Fprintln(w.target, w.unitFormat(entry))
+		_, err = fmt.Fprintln(w.target, w.unitFormat(entry))
 	} else {
-		fmt.Fprintln(w.target, loggo.DefaultFormatter(entry))
+		_, err = fmt.Fprintln(w.target, loggo.DefaultFormatter(entry))
 	}
+	return err
 }
 
 func (w *containerAgentLogWriter) unitFormat(entry loggo.Entry) string {

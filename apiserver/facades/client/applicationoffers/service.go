@@ -38,6 +38,10 @@ type AccessService interface {
 
 // ModelService defines the interface for interacting with the model domain.
 type ModelService interface {
+	// GetAllModels returns a slice of all models in the controller. If no
+	// models exist an empty slice is returned.
+	GetAllModels(ctx context.Context) ([]coremodel.Model, error)
+
 	// GetModelByNameAndQualifier returns the model associated with the given
 	// model name and qualifier.
 	GetModelByNameAndQualifier(
@@ -49,19 +53,26 @@ type ModelService interface {
 
 // CrossModelRelationService defines the interface for interacting with the crossmodelrelation domain.
 type CrossModelRelationService interface {
+	// GetConsumeDetails returns the offer uuid and endpoints necessary to
+	// consume the offer.
+	GetConsumeDetails(
+		ctx context.Context,
+		offerURL crossmodel.OfferURL,
+	) (crossmodelrelation.ConsumeDetails, error)
+
 	// GetOfferUUID returns the uuid for the provided offer URL.
 	GetOfferUUID(ctx context.Context, offerURL crossmodel.OfferURL) (offer.UUID, error)
 
-	// GetOffers returns offer details for all offers satisfying any of the
-	// provided filters.
-	GetOffers(
+	// GetOffersWithConnections returns offer details for all offers satisfying any of the
+	// provided filters, including offer connections
+	GetOffersWithConnections(
 		ctx context.Context,
 		filters []crossmodelrelationservice.OfferFilter,
-	) ([]*crossmodelrelation.OfferDetail, error)
+	) ([]*crossmodelrelation.OfferDetailWithConnections, error)
 
-	// Offer updates an existing offer, or creates a new offer if it does not
-	// exist. Permissions are created for a new offer only.
-	Offer(
+	// CreateOffer updates an existing offer, or creates a new offer if it does
+	// not exist. Permissions are created for a new offer only.
+	CreateOffer(
 		ctx context.Context,
 		args crossmodelrelation.ApplicationOfferArgs,
 	) error

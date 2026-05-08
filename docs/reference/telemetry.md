@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju telemetry reference: automatic business metrics collection for improving Juju, including deployment statistics and cloud usage."
+---
+
 (telemetry)=
 # Telemetry
 

@@ -43,8 +43,19 @@ const (
 	// RemoteApplicationOffererJob indicates a job to remove a remote
 	// application offerer.
 	RemoteApplicationOffererJob
-	// RemoteRelationJob indicates a job to remove a remote relation.
-	RemoteRelationJob
+	// RelationWithRemoteOffererJob indicates a job to remove a relation with
+	// a remote offerer.
+	RelationWithRemoteOffererJob
+	// RelationWithRemoteConsumerJob indicates a job to remove a relation with
+	// a remote consumer.
+	RelationWithRemoteConsumerJob
+	// ControllerModelJob indicates a job to remove a controller model.
+	ControllerModelJob
+	// UserSecretJob indicates a job to remove a user secret.
+	UserSecretJob
+	// ObsoleteUserSecretRevisionsJob indicates a job to prune obsolete
+	// user secret revisions.
+	ObsoleteUserSecretRevisionsJob
 )
 
 // String is used in logging output make job type identifiers readable.
@@ -69,8 +80,24 @@ func (t JobType) String() string {
 		return "storage volume"
 	case StorageFilesystemJob:
 		return "storage filesystem"
+	case StorageFilesystemAttachmentJob:
+		return "storage filesystem attachment"
+	case StorageVolumeAttachmentJob:
+		return "storage volume attachment"
+	case StorageVolumeAttachmentPlanJob:
+		return "storage volume attachment plan"
 	case RemoteApplicationOffererJob:
 		return "remote application offerer"
+	case RelationWithRemoteOffererJob:
+		return "relation with remote offerer"
+	case RelationWithRemoteConsumerJob:
+		return "relation with remote consumer"
+	case ControllerModelJob:
+		return "controller model"
+	case UserSecretJob:
+		return "user secret"
+	case ObsoleteUserSecretRevisionsJob:
+		return "obsolete user secret revisions"
 	default:
 		return strconv.FormatInt(int64(t), 10)
 	}

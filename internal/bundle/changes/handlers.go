@@ -15,7 +15,7 @@ import (
 	corebase "github.com/juju/juju/core/base"
 	corecharm "github.com/juju/juju/core/charm"
 	"github.com/juju/juju/core/logger"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/internal/naturalsort"
 )
 
@@ -1080,11 +1080,12 @@ func fixupConstraintsWithBindings(inputConstraints string, endpointBindings map[
 	// To make test tests stable.
 	naturalsort.Sort(outputSpaces)
 	naturalsort.Sort(constraintsKeyList)
-	output := "spaces=" + strings.Join(outputSpaces, ",")
+	var output strings.Builder
+	output.WriteString("spaces=" + strings.Join(outputSpaces, ","))
 	for _, constraint := range constraintsKeyList {
-		output += " " + constraint + "=" + constraintsMap[constraint]
+		output.WriteString(" " + constraint + "=" + constraintsMap[constraint])
 	}
-	return output, nil
+	return output.String(), nil
 }
 
 func (p *unitProcessor) addContainer(up unitPlacement, application *charm.ApplicationSpec, containerType string) (unitPlacement, error) {

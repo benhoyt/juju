@@ -1,86 +1,168 @@
-// Copyright 2025 Canonical Ltd.
+// Copyright 2026 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
 package agentbinary
 
 import (
-	"database/sql"
 	"testing"
 
 	"github.com/juju/tc"
-
-	schematesting "github.com/juju/juju/domain/schema/testing"
 )
 
-type controllerSuite struct {
-	schematesting.ControllerSuite
+// architectureSuite defines a suite of tests for asserting the interface on
+// offer for the [Architecture] type.
+type architectureSuite struct{}
+
+// TestArchitectureSuite runs all of the tests contained in [architectureSuite].
+func TestArchitectureSuite(t *testing.T) {
+	tc.Run(t, architectureSuite{})
 }
 
-type modelSuite struct {
-	schematesting.ModelSuite
+// TestArchitecturesNotIn is a happy path test for [ArchitectureNotIn] to ensure
+// that it correctly returns architectures in a that are not present in b.
+func (architectureSuite) TestArchitecturesNotIn(c *tc.C) {
+	a := []Architecture{S390X, PPC64EL}
+	b := []Architecture{S390X, AMD64}
+
+	val := ArchitectureNotIn(a, b)
+	c.Check(val, tc.DeepEquals, []Architecture{PPC64EL})
 }
 
-func TestControllerSuite(t *testing.T) {
-	tc.Run(t, &controllerSuite{})
+// TestArchitecturesNotInEqual is a happy path test for [ArchitectureNotIn] to
+// ensure that given two slices with the same values [ArchitectureNotIn] returns
+// an empty result slice.
+func (architectureSuite) TestArchitecturesNotInEqual(c *tc.C) {
+	a := []Architecture{S390X, AMD64}
+	b := []Architecture{AMD64, S390X}
+
+	val := ArchitectureNotIn(a, b)
+	c.Check(val, tc.HasLen, 0)
 }
 
-func TestModelSuite(t *testing.T) {
-	tc.Run(t, &modelSuite{})
-}
+// TestArchitecturesNotInEmpty ensures that [ArchitectureNotIn] behaves
+// correctly when either a or b are nil and that for a nilness is preserved.
+func (architectureSuite) TestArchitecturesNotInEmpty(c *tc.C) {
+	c.Run("a and b nil", func(t *testing.T) {
+		val := ArchitectureNotIn(nil, nil)
+		tc.Check(t, val, tc.IsNil)
+	})
 
-// testArchitectureValuesAlignedToDB tests that architectures values in the DB
-// aligns with the architecture names and IDs we have defined in the application level.
-func testArchitectureValuesAlignedToDB(c *tc.C, db *sql.DB) {
-	rows, err := db.Query("SELECT id, name FROM architecture ORDER BY ID ASC")
-	c.Assert(err, tc.ErrorIsNil)
-	defer rows.Close()
+	c.Run("a nil", func(t *testing.T) {
+		val := ArchitectureNotIn(nil, []Architecture{AMD64})
+		tc.Check(t, val, tc.IsNil)
+	})
 
-	type architecture struct {
-		Id   int
-		Name string
-	}
-
-	var arch architecture
-	var archs []architecture
-	for rows.Next() {
-		err := rows.Scan(&arch.Id, &arch.Name)
-		c.Assert(err, tc.ErrorIsNil)
-		archs = append(archs, arch)
-	}
-
-	err = rows.Err()
-	c.Assert(err, tc.ErrorIsNil)
-
-	c.Assert(archs, tc.DeepEquals, []architecture{
-		{
-			Id:   int(AMD64),
-			Name: AMD64.String(),
-		},
-		{
-			Id:   int(ARM64),
-			Name: ARM64.String(),
-		},
-		{
-			Id:   int(PPC64EL),
-			Name: PPC64EL.String(),
-		},
-		{
-			Id:   int(S390X),
-			Name: S390X.String(),
-		},
-		{
-			Id:   int(RISCV64),
-			Name: RISCV64.String(),
-		},
+	c.Run("b nil", func(t *testing.T) {
+		val := ArchitectureNotIn([]Architecture{AMD64, ARM64}, nil)
+		tc.Check(t, val, tc.DeepEquals, []Architecture{AMD64, ARM64})
 	})
 }
 
-// TestArchitectureValuesAlignedToControllerDB tests for controller DB.
-func (s *controllerSuite) TestArchitectureValuesAlignedToControllerDB(c *tc.C) {
-	testArchitectureValuesAlignedToDB(c, s.DB())
+// TestFromString tests all of the well known valid architecture
+// string values to make sure that they convert correctly to an [Architecture]
+// type.
+func (architectureSuite) TestFromString(c *tc.C) {
+	tests := []struct {
+		E Architecture
+		V string
+	}{
+		{
+			E: AMD64,
+			V: "amd64",
+		},
+		{
+			E: ARM64,
+			V: "arm64",
+		},
+		{
+			E: PPC64EL,
+			V: "ppc64el",
+		},
+		{
+			E: S390X,
+			V: "s390x",
+		},
+		{
+			E: RISCV64,
+			V: "riscv64",
+		},
+	}
+
+	for _, t := range tests {
+		c.Run(t.V, func(c *testing.T) {
+			a, converted := ArchitectureFromString(t.V)
+			tc.Check(c, converted, tc.IsTrue)
+			tc.Check(c, a, tc.Equals, t.E)
+		})
+	}
 }
 
-// TestArchitectureValuesAlignedToControllerDB tests for model DB.
-func (s *modelSuite) TestArchitectureValuesAlignedToModelDB(c *tc.C) {
-	testArchitectureValuesAlignedToDB(c, s.DB())
+// TestFromStringUnknown tests that calling [ArchitectureFromString] with an
+// unknown architecture string returns false and an invalid [Architecture]
+// value.
+func (architectureSuite) TestFromStringUnknown(c *tc.C) {
+	val, converted := ArchitectureFromString("unknown")
+	c.Check(converted, tc.IsFalse)
+	c.Check(val.IsValid(), tc.IsFalse)
+}
+
+// TestIsValid checks all of the defined [Architecture] constants report that
+// they are a valid value with [Architecture.IsValid].
+func (architectureSuite) TestIsValid(c *tc.C) {
+	tests := []Architecture{
+		AMD64, ARM64, PPC64EL, S390X, RISCV64,
+	}
+	for _, t := range tests {
+		c.Run(t.String(), func(c *testing.T) {
+			tc.Check(c, t.IsValid(), tc.IsTrue)
+		})
+	}
+}
+
+// TestIsValidFail checks that an invalid [Architecture] value returns false for
+// isValid.
+func (architectureSuite) TestIsValidFail(c *tc.C) {
+	c.Check(Architecture(-10).IsValid(), tc.IsFalse)
+}
+
+// TestToString tests all of the well known valid [Architecture]
+// constants to make sure they correctly convert to the correct string value.
+func (architectureSuite) TestToString(c *tc.C) {
+	tests := []struct {
+		E string
+		V Architecture
+	}{
+		{
+			E: "amd64",
+			V: AMD64,
+		},
+		{
+			E: "arm64",
+			V: ARM64,
+		},
+		{
+			E: "ppc64el",
+			V: PPC64EL,
+		},
+		{
+			E: "s390x",
+			V: S390X,
+		},
+		{
+			E: "riscv64",
+			V: RISCV64,
+		},
+	}
+
+	for _, t := range tests {
+		c.Run(t.E, func(c *testing.T) {
+			tc.Check(c, t.V.String(), tc.Equals, t.E)
+		})
+	}
+}
+
+// TestToStringInvalid checks that an invlaid [Architecture] values String
+// method returns a zero value string when the value is invalid.
+func (architectureSuite) TestToStringInvalid(c *tc.C) {
+	c.Check(Architecture(-10).String(), tc.Equals, "")
 }

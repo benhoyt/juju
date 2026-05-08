@@ -12,9 +12,9 @@ import (
 	"github.com/juju/gnuflag"
 
 	"github.com/juju/juju/api/client/client"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/status"
 	"github.com/juju/juju/cmd/modelcmd"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -88,6 +88,6 @@ func (c *baselistMachinesCommand) Run(ctx *cmd.Context) error {
 	return c.out.Write(ctx, formatted)
 }
 
-func (c *baselistMachinesCommand) tabular(writer io.Writer, value interface{}) error {
+func (c *baselistMachinesCommand) tabular(writer io.Writer, value any) error {
 	return status.FormatMachineTabular(writer, c.color, value)
 }

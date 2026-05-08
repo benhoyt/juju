@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Clean up local Juju test environments: remove Multipass VMs, destroy controllers, and uninstall development tools."
+---
+
 (tear-things-down)=
 # Tear down your deployment -- local testing and development
 

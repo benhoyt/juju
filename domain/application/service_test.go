@@ -18,6 +18,7 @@ import (
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/database"
 	"github.com/juju/juju/core/life"
+	"github.com/juju/juju/core/model"
 	corestorage "github.com/juju/juju/core/storage"
 	"github.com/juju/juju/domain"
 	"github.com/juju/juju/domain/application"
@@ -26,15 +27,14 @@ import (
 	"github.com/juju/juju/domain/application/service"
 	applicationservicestorage "github.com/juju/juju/domain/application/service/storage"
 	"github.com/juju/juju/domain/application/state"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
 	machineservice "github.com/juju/juju/domain/machine/service"
 	"github.com/juju/juju/domain/schema/testing"
 	domaintesting "github.com/juju/juju/domain/testing"
 	"github.com/juju/juju/environs"
-	internalcharm "github.com/juju/juju/internal/charm"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	internalstorage "github.com/juju/juju/internal/storage"
 	coretesting "github.com/juju/juju/internal/testing"
-	"github.com/juju/juju/internal/uuid"
 )
 
 type serviceSuite struct {
@@ -381,9 +381,11 @@ func (s *serviceSuite) setupMocks(c *tc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 
 	s.caasProvider = NewMockCAASProvider(ctrl)
+	modelUUID := tc.Must(c, model.NewUUID)
 
 	state := state.NewState(
 		func(context.Context) (database.TxnRunner, error) { return s.ModelTxnRunner(), nil },
+		modelUUID,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -394,7 +396,7 @@ func (s *serviceSuite) setupMocks(c *tc.C) *gomock.Controller {
 
 	s.svc = service.NewProviderService(
 		state,
-		applicationservicestorage.NewService(state, poolProvider),
+		applicationservicestorage.NewService(state, poolProvider, loggertesting.WrapCheckLog(c)),
 		domaintesting.NoopLeaderEnsurer(),
 		nil,
 		func(ctx context.Context) (service.Provider, error) {
@@ -403,13 +405,16 @@ func (s *serviceSuite) setupMocks(c *tc.C) *gomock.Controller {
 		func(ctx context.Context) (service.CAASProvider, error) {
 			return s.caasProvider, nil
 		},
+		func(ctx context.Context) (service.CloudInfoProvider, error) {
+			return cloudInfoProvider{}, nil
+		},
 		nil,
 		domain.NewStatusHistory(loggertesting.WrapCheckLog(c), clock.WallClock),
+		modelUUID,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
 
-	modelUUID := uuid.MustNewUUID()
 	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO model (uuid, controller_uuid,  name, qualifier, type, cloud, cloud_type)
@@ -464,4 +469,12 @@ func (serviceProvider) ConstraintsValidator(ctx context.Context) (constraints.Va
 
 func (serviceProvider) Application(string, caas.DeploymentType) caas.Application {
 	return nil
+}
+
+type cloudInfoProvider struct {
+	service.CloudInfoProvider
+}
+
+func (cloudInfoProvider) APIVersion() (string, error) {
+	return "", nil
 }

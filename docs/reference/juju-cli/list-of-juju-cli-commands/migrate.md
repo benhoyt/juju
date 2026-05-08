@@ -12,6 +12,7 @@ Migrate a workload model to another controller.
 | Flag | Default | Usage |
 | --- | --- | --- |
 | `-B`, `--no-browser-login` | false | Do not use web browser for authentication |
+| `--dry-run` | false | Runs the migration prechecks, but does not start the migration. Returns nothing if the migration can proceed. |
 
 ## Details
 

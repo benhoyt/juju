@@ -18,7 +18,7 @@ import (
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/secrets"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/internal/testhelpers"
 	coretesting "github.com/juju/juju/internal/testing"
@@ -39,7 +39,7 @@ type hookCommitMatcher struct {
 	expected params.CommitHookChangesArgs
 }
 
-func (m hookCommitMatcher) Matches(x interface{}) bool {
+func (m hookCommitMatcher) Matches(x any) bool {
 	obtained, ok := x.(params.CommitHookChangesArgs)
 	if !ok {
 		return false

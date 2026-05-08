@@ -10,8 +10,8 @@ import (
 	"github.com/juju/gnuflag"
 	"github.com/juju/tc"
 
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/internal/worker/uniter/runner/jujuc"
 )
 
@@ -36,7 +36,7 @@ func (s *JujuRebootSuite) TestInfo(c *tc.C) {
 
 	c.Assert(cmdInfo.Name, tc.Equals, "juju-reboot")
 	c.Assert(cmdInfo.Args, tc.Equals, "")
-	c.Assert(cmdInfo.Purpose, tc.Equals, "Reboot the host machine.")
+	c.Assert(cmdInfo.Purpose, tc.Equals, "Reboots the host machine.")
 }
 
 func (s *JujuRebootSuite) TestSetFlags(c *tc.C) {

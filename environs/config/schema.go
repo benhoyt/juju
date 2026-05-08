@@ -162,11 +162,6 @@ bridge.
 		Type:  configschema.Tbool,
 		Group: configschema.EnvironGroup,
 	},
-	IgnoreMachineAddresses: {
-		Description: "Whether the machine worker should discover machine addresses on startup",
-		Type:        configschema.Tbool,
-		Group:       configschema.EnvironGroup,
-	},
 	EnableOSRefreshUpdateKey: {
 		Description: `Whether newly provisioned instances should run their respective OS's update capability.`,
 		Documentation: `
@@ -227,7 +222,7 @@ that port).
 inside the model. It's useful for clouds without support for either
 global or per instance security groups.`,
 		Type:      configschema.Tstring,
-		Values:    []interface{}{FwInstance, FwGlobal, FwNone},
+		Values:    []any{FwInstance, FwGlobal, FwNone},
 		Immutable: true,
 		Group:     configschema.EnvironGroup,
 	},

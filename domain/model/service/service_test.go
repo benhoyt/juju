@@ -24,7 +24,6 @@ import (
 	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/life"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
@@ -51,7 +50,6 @@ type serviceSuite struct {
 	state    *dummyState
 	deleter  *dummyDeleter
 
-	mockModelDeleter   *MockModelDeleter
 	mockState          *MockState
 	mockWatcherFactory *MockWatcherFactory
 	mockStringsWatcher *MockStringsWatcher[[]string]
@@ -87,7 +85,6 @@ func (s *serviceSuite) SetUpTest(c *tc.C) {
 
 func (s *serviceSuite) setupMocks(c *tc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
-	s.mockModelDeleter = NewMockModelDeleter(ctrl)
 	s.mockState = NewMockState(ctrl)
 	s.mockWatcherFactory = NewMockWatcherFactory(ctrl)
 	s.mockStringsWatcher = NewMockStringsWatcher[[]string](ctrl)
@@ -210,14 +207,14 @@ func (s *serviceSuite) TestModelCreation(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(exists, tc.IsTrue)
 
-	modelList, err := svc.ListModelUUIDs(c.Context())
+	modelList, err := svc.GetModelUUIDs(c.Context())
 	c.Check(err, tc.ErrorIsNil)
 	c.Check(len(modelList), tc.Equals, 2)
 }
 
 func (s *serviceSuite) TestCheckExistsNoModel(c *tc.C) {
 	svc := s.newStubService(c)
-	id := modeltesting.GenModelUUID(c)
+	id := tc.Must(c, coremodel.NewUUID)
 	exists, err := svc.CheckModelExists(c.Context(), id)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(exists, tc.IsFalse)
@@ -359,7 +356,7 @@ func (s *serviceSuite) TestModelCreationNameOwnerConflict(c *tc.C) {
 }
 
 func (s *serviceSuite) TestUpdateModelCredentialForInvalidModel(c *tc.C) {
-	id := modeltesting.GenModelUUID(c)
+	id := tc.Must(c, coremodel.NewUUID)
 
 	svc := s.newStubService(c)
 	err := svc.UpdateCredential(c.Context(), id, credential.Key{
@@ -540,25 +537,25 @@ func (s *serviceSuite) TestUpdateModelCredentialNotFound(c *tc.C) {
 	c.Assert(err, tc.ErrorIs, coreerrors.NotFound)
 }
 
-// TestListAllModelsNoResults is asserting that when no models exist the return
-// value of ListAllModels is an empty slice.
-func (s *serviceSuite) TestListAllModelsNoResults(c *tc.C) {
+// TestGetAllModelsNoResults is asserting that when no models exist the return
+// value of GetAllModels is an empty slice.
+func (s *serviceSuite) TestGetAllModelsNoResults(c *tc.C) {
 	svc := s.newStubService(c)
-	models, err := svc.ListAllModels(c.Context())
+	models, err := svc.GetAllModels(c.Context())
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(len(models), tc.Equals, 1)
 }
 
-// TestListAllModel is a basic test to assert the happy path of
-// [Service.ListAllModels].
-func (s *serviceSuite) TestListAllModels(c *tc.C) {
+// TestGetAllModel is a basic test to assert the happy path of
+// [Service.GetAllModels].
+func (s *serviceSuite) TestGetAllModels(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	svc := s.newService(c)
 
-	id1 := modeltesting.GenModelUUID(c)
-	id2 := modeltesting.GenModelUUID(c)
-	s.mockState.EXPECT().ListAllModels(gomock.Any()).Return([]coremodel.Model{
+	id1 := tc.Must(c, coremodel.NewUUID)
+	id2 := tc.Must(c, coremodel.NewUUID)
+	s.mockState.EXPECT().GetAllModels(gomock.Any()).Return([]coremodel.Model{
 		{
 			Name:         "my-awesome-model",
 			AgentVersion: jujuversion.Current,
@@ -591,7 +588,7 @@ func (s *serviceSuite) TestListAllModels(c *tc.C) {
 		},
 	}, nil)
 
-	models, err := svc.ListAllModels(c.Context())
+	models, err := svc.GetAllModels(c.Context())
 	c.Check(err, tc.ErrorIsNil)
 	c.Check(models, tc.DeepEquals, []coremodel.Model{
 		{
@@ -789,7 +786,7 @@ func (s *serviceSuite) TestGetModelUsersBadUUID(c *tc.C) {
 }
 
 func (s *serviceSuite) TestGetModelUser(c *tc.C) {
-	uuid := modeltesting.GenModelUUID(c)
+	uuid := tc.Must(c, coremodel.NewUUID)
 	bobName := usertesting.GenNewName(c, "bob")
 	jimName := usertesting.GenNewName(c, "jim")
 	adminName := usertesting.GenNewName(c, "admin")
@@ -817,7 +814,7 @@ func (s *serviceSuite) TestGetModelUserBadUUID(c *tc.C) {
 
 func (s *serviceSuite) TestGetModelUserZeroUserName(c *tc.C) {
 	svc := s.newStubService(c)
-	_, err := svc.GetModelUser(c.Context(), modeltesting.GenModelUUID(c), user.Name{})
+	_, err := svc.GetModelUser(c.Context(), tc.Must(c, coremodel.NewUUID), user.Name{})
 	c.Assert(err, tc.ErrorIs, accesserrors.UserNameNotValid)
 }
 
@@ -877,7 +874,7 @@ func (s *serviceSuite) TestDefaultModelCloudInfoNotFound(c *tc.C) {
 	// There exists to ways for the controller model to not be found. This is
 	// asserting the second path where the code get's the uuid but the model
 	// no longer exists for this uuid.
-	ctrlModelUUID := modeltesting.GenModelUUID(c)
+	ctrlModelUUID := tc.Must(c, coremodel.NewUUID)
 	s.mockState.EXPECT().GetControllerModelUUID(gomock.Any()).Return(
 		ctrlModelUUID,
 		nil,
@@ -900,7 +897,7 @@ func (s *serviceSuite) TestDefaultModelCloudInfo(c *tc.C) {
 	// There exists to ways for the controller model to not be found. This is
 	// asserting the second path where the code get's the uuid but the model
 	// no longer exists for this uuid.
-	ctrlModelUUID := modeltesting.GenModelUUID(c)
+	ctrlModelUUID := tc.Must(c, coremodel.NewUUID)
 	s.mockState.EXPECT().GetControllerModelUUID(gomock.Any()).Return(
 		ctrlModelUUID,
 		nil,
@@ -929,8 +926,8 @@ func (s *serviceSuite) TestWatchActivatedModels(c *tc.C) {
 	)
 
 	changes := make(chan []string, 1)
-	activatedModelUUID1 := modeltesting.GenModelUUID(c)
-	activatedModelUUID2 := modeltesting.GenModelUUID(c)
+	activatedModelUUID1 := tc.Must(c, coremodel.NewUUID)
+	activatedModelUUID2 := tc.Must(c, coremodel.NewUUID)
 	activatedModelUUIDs := []coremodel.UUID{activatedModelUUID1, activatedModelUUID2}
 	activatedModelUUIDsStr := transform.Slice(activatedModelUUIDs, func(uuid coremodel.UUID) string {
 		return uuid.String()
@@ -979,14 +976,14 @@ func (s *serviceSuite) TestWatchActivatedModelsMapper(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	ctx := c.Context()
 
-	activatedModelUUID1 := modeltesting.GenModelUUID(c)
-	activatedModelUUID2 := modeltesting.GenModelUUID(c)
-	activatedModelUUID3 := modeltesting.GenModelUUID(c)
-	activatedModelUUID4 := modeltesting.GenModelUUID(c)
-	activatedModelUUID5 := modeltesting.GenModelUUID(c)
+	activatedModelUUID1 := tc.Must(c, coremodel.NewUUID)
+	activatedModelUUID2 := tc.Must(c, coremodel.NewUUID)
+	activatedModelUUID3 := tc.Must(c, coremodel.NewUUID)
+	activatedModelUUID4 := tc.Must(c, coremodel.NewUUID)
+	activatedModelUUID5 := tc.Must(c, coremodel.NewUUID)
 	duplicateActivatedModelUUID := activatedModelUUID1
-	unactivatedModelUUID1 := modeltesting.GenModelUUID(c)
-	unactivatedModelUUID2 := modeltesting.GenModelUUID(c)
+	unactivatedModelUUID1 := tc.Must(c, coremodel.NewUUID)
+	unactivatedModelUUID2 := tc.Must(c, coremodel.NewUUID)
 
 	inputModelUUIDs := []coremodel.UUID{activatedModelUUID1, activatedModelUUID2, unactivatedModelUUID1,
 		activatedModelUUID3, unactivatedModelUUID2, activatedModelUUID4, activatedModelUUID5, duplicateActivatedModelUUID}
@@ -1022,7 +1019,7 @@ func (s *serviceSuite) TestGetModelByNameAndQualifierSuccess(c *tc.C) {
 
 	svc := s.newService(c)
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must(c, coremodel.NewUUID)
 	modelName := "test"
 	ownerUserName := usertesting.GenNewName(c, "test-user")
 	model := coremodel.Model{
@@ -1085,7 +1082,7 @@ func (s *serviceSuite) TestGetModelByNameAndQualifierNotFound(c *tc.C) {
 func (s *serviceSuite) TestGetModelLife(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must(c, coremodel.NewUUID)
 
 	s.mockState.EXPECT().GetModelLife(gomock.Any(), modelUUID).Return(
 		domainlife.Alive,
@@ -1111,7 +1108,7 @@ func (s *serviceSuite) TestGetModelLifeInvalidUUID(c *tc.C) {
 func (s *serviceSuite) TestGetModelLifeNotFound(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must(c, coremodel.NewUUID)
 
 	s.mockState.EXPECT().GetModelLife(gomock.Any(), modelUUID).Return(
 		domainlife.Alive,
@@ -1127,7 +1124,7 @@ func (s *serviceSuite) TestGetModelLifeNotFound(c *tc.C) {
 func (s *serviceSuite) TestWatchModelCloudCredential(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must(c, coremodel.NewUUID)
 	cloudUUID := cloudtesting.GenCloudUUID(c)
 	credentialUUID := credential.UUID(uuid.MustNewUUID().String())
 	s.mockState.EXPECT().GetModelCloudAndCredential(gomock.Any(), modelUUID).Return(cloudUUID, credentialUUID, nil)
@@ -1160,7 +1157,7 @@ func (s *serviceSuite) TestWatchModelCloudCredential(c *tc.C) {
 func (s *serviceSuite) TestListModelUUIDsForUser(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must(c, coremodel.NewUUID)
 	s.mockState.EXPECT().ListModelUUIDsForUser(gomock.Any(), s.userUUID).Return(
 		[]coremodel.UUID{modelUUID}, nil,
 	)
@@ -1200,7 +1197,7 @@ func (s *serviceSuite) TestListModelUUIDsForUserNotValid(c *tc.C) {
 func (s *serviceSuite) TestGetControllerModelUUID(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	expectedControllerModelUUID := modeltesting.GenModelUUID(c)
+	expectedControllerModelUUID := tc.Must(c, coremodel.NewUUID)
 	s.mockState.EXPECT().GetControllerModelUUID(gomock.Any()).Return(
 		expectedControllerModelUUID,
 		nil,
@@ -1244,4 +1241,40 @@ func (s *serviceSuite) TestDefaultCloudCredentialKeyForOwner(c *tc.C) {
 	key, err = svc.DefaultCloudCredentialKeyForOwner(c.Context(), fred, "cirrus")
 	c.Assert(err, tc.ErrorIs, credentialerrors.NotFound)
 	c.Assert(key, tc.DeepEquals, credential.Key{})
+}
+
+func (s *serviceSuite) TestGetModelUUIDs(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	svc := s.newService(c)
+
+	modelUUID1 := tc.Must(c, coremodel.NewUUID)
+	modelUUID2 := tc.Must(c, coremodel.NewUUID)
+	modelUUID3 := tc.Must(c, coremodel.NewUUID)
+
+	s.mockState.EXPECT().GetModelUUIDs(gomock.Any()).Return(
+		[]coremodel.UUID{modelUUID1, modelUUID2, modelUUID3}, nil,
+	)
+
+	uuids, err := svc.GetModelUUIDs(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(uuids, tc.DeepEquals, []coremodel.UUID{modelUUID1, modelUUID2, modelUUID3})
+}
+
+func (s *serviceSuite) TestGetHostedModelUUIDs(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	svc := s.newService(c)
+
+	modelUUID1 := tc.Must(c, coremodel.NewUUID)
+	modelUUID2 := tc.Must(c, coremodel.NewUUID)
+	modelUUID3 := tc.Must(c, coremodel.NewUUID)
+
+	s.mockState.EXPECT().GetHostedModelUUIDs(gomock.Any()).Return(
+		[]coremodel.UUID{modelUUID1, modelUUID2, modelUUID3}, nil,
+	)
+
+	uuids, err := svc.GetHostedModelUUIDs(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(uuids, tc.DeepEquals, []coremodel.UUID{modelUUID1, modelUUID2, modelUUID3})
 }

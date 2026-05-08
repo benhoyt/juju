@@ -89,6 +89,7 @@ func (st *State) addSubnet(ctx context.Context, tx *sqlair.TX, subnetInfo networ
 	if subnetInfo.SpaceID == "" {
 		spaceUUIDValue = network.AlphaSpaceId
 	}
+
 	subnetUUID := subnetInfo.ID.String()
 
 	subnet := subnet{
@@ -97,16 +98,6 @@ func (st *State) addSubnet(ctx context.Context, tx *sqlair.TX, subnetInfo networ
 		VLANtag:   subnetInfo.VLANTag,
 		SpaceUUID: spaceUUIDValue,
 	}
-	providerSub := providerSubnet{
-		SubnetUUID: subnetUUID,
-		ProviderID: subnetInfo.ProviderId,
-	}
-	providerNet := providerNetwork{
-		ProviderNetworkID: subnetInfo.ProviderNetworkId,
-	}
-	providerNetSub := providerNetworkSubnet{
-		SubnetUUID: subnetUUID,
-	}
 
 	insertSubnetStmt, err := st.Prepare(`
 INSERT INTO subnet (*)
@@ -114,82 +105,123 @@ VALUES ($subnet.*)`, subnet)
 	if err != nil {
 		return errors.Capture(err)
 	}
+
+	// Add the subnet entity.
+	if err := tx.Query(ctx, insertSubnetStmt, subnet).Run(); err != nil {
+		return errors.Capture(err)
+	}
+
+	// If provider IDs are provided, add them to the appropriate tables.
+	if subnetInfo.ProviderId != "" {
+		if err := st.addProviderIDForSubnet(ctx, tx, subnetUUID, subnetInfo); err != nil {
+			return errors.Errorf("adding subnet %q: %w", subnetUUID, err)
+		}
+	}
+
+	// If provider network IDs are provided, add them to the appropriate tables.
+	// Do this before adding provider
+	if subnetInfo.ProviderNetworkId != "" {
+		if err := st.addProviderNetworkIDForSubnet(ctx, tx, subnetUUID, subnetInfo); err != nil {
+			return errors.Errorf("adding subnet %q: %w", subnetUUID, err)
+		}
+	}
+
+	return st.addAvailabilityZones(ctx, tx, subnetUUID, subnetInfo)
+}
+
+func (st *State) addProviderIDForSubnet(ctx context.Context, tx *sqlair.TX, subnetUUID string, subnetInfo network.SubnetInfo) error {
+	providerSub := providerSubnet{
+		SubnetUUID: subnetUUID,
+		ProviderID: subnetInfo.ProviderId,
+	}
+
 	insertSubnetProviderIDStmt, err := st.Prepare(`
 INSERT INTO provider_subnet (*)
 VALUES ($providerSubnet.*)`, providerSub)
 	if err != nil {
 		return errors.Capture(err)
 	}
-	retrieveProviderNetworkUUIDStmt, err := st.Prepare(`
+
+	// Add the subnet uuid to the provider ids table.
+	if err := tx.Query(ctx, insertSubnetProviderIDStmt, providerSub).Run(); err != nil {
+		if internaldatabase.IsErrConstraintPrimaryKey(err) || internaldatabase.IsErrConstraintUnique(err) {
+			return errors.Errorf("provider id %q already exists", subnetInfo.ProviderId).Add(coreerrors.AlreadyExists)
+		}
+
+		return errors.Errorf("inserting provider id %q: %w", subnetInfo.ProviderId, err)
+	}
+
+	return nil
+}
+
+func (st *State) addProviderNetworkIDForSubnet(ctx context.Context, tx *sqlair.TX, subnetUUID string, subnetInfo network.SubnetInfo) error {
+	providerNet := providerNetwork{
+		ProviderNetworkID: subnetInfo.ProviderNetworkId,
+	}
+	providerNetSub := providerNetworkSubnet{}
+
+	selectProviderNetworkUUIDStmt, err := st.Prepare(`
 SELECT uuid AS &providerNetworkSubnet.provider_network_uuid
 FROM   provider_network
 WHERE  provider_network_id = $providerNetwork.provider_network_id`, providerNet, providerNetSub)
 	if err != nil {
 		return errors.Capture(err)
 	}
+
+	// Check if the provider network already exists. If it does, just insert
+	// the mapping between the subnet and the provider network.
+	if err := tx.Query(ctx, selectProviderNetworkUUIDStmt, providerNet).Get(&providerNetSub); err != nil && !errors.Is(err, sqlair.ErrNoRows) {
+		return errors.Errorf("retrieving provider network ID %q: %w", subnetInfo.ProviderNetworkId, err)
+	} else if err == nil && providerNetSub.ProviderNetworkUUID != "" {
+		return st.addProviderNetworkSubnetForSubnet(ctx, tx, subnetUUID, providerNetSub.ProviderNetworkUUID)
+	}
+
+	// If the provider network doesn't exist, insert it.
+	pnUUID, err := uuid.NewV7()
+	if err != nil {
+		return errors.Capture(err)
+	}
+
 	insertSubnetProviderNetworkIDStmt, err := st.Prepare(`
 INSERT INTO provider_network (*)
 VALUES ($providerNetwork.*)`, providerNet)
 	if err != nil {
 		return errors.Capture(err)
 	}
+
+	// Record the new UUID in provider network and the provider network
+	// subnet.
+	providerNet.ProviderNetworkUUID = pnUUID.String()
+
+	// Add the provider network id and its uuid to the provider_network
+	// table.
+	if err := tx.Query(ctx, insertSubnetProviderNetworkIDStmt, providerNet).Run(); err != nil {
+		return errors.Errorf("inserting provider network id %q: %w", subnetInfo.ProviderNetworkId, err)
+	}
+
+	return st.addProviderNetworkSubnetForSubnet(ctx, tx, subnetUUID, providerNet.ProviderNetworkUUID)
+}
+
+func (st *State) addProviderNetworkSubnetForSubnet(ctx context.Context, tx *sqlair.TX, subnetUUID, providerNetworkUUID string) error {
+	providerNetSub := providerNetworkSubnet{
+		SubnetUUID:          subnetUUID,
+		ProviderNetworkUUID: providerNetworkUUID,
+	}
+
 	insertSubnetProviderNetworkSubnetStmt, err := st.Prepare(`
 INSERT INTO provider_network_subnet (*)
 VALUES ($providerNetworkSubnet.*)`, providerNetSub)
 	if err != nil {
 		return errors.Capture(err)
 	}
-	// Add the subnet entity.
-	if err := tx.Query(ctx, insertSubnetStmt, subnet).Run(); err != nil {
-		st.logger.Errorf(ctx, "inserting subnet %q, %v", subnetInfo.CIDR, err)
-		return errors.Capture(err)
-	}
 
-	// Add the subnet uuid to the provider ids table.
-	if providerSub.ProviderID != "" {
-		if err := tx.Query(ctx, insertSubnetProviderIDStmt, providerSub).Run(); err != nil {
-			if internaldatabase.IsErrConstraintPrimaryKey(err) || internaldatabase.IsErrConstraintUnique(err) {
-				st.logger.Debugf(ctx, "inserting provider id %q for subnet %q, %v", subnetInfo.ProviderId, subnetUUID, err)
-				return errors.Errorf("provider id %q for subnet %q %w", subnetInfo.ProviderId, subnetUUID, coreerrors.AlreadyExists)
-			}
-			st.logger.Errorf(ctx, "inserting provider id %q for subnet %q, %v", subnetInfo.ProviderId, subnetUUID, err)
-			return errors.Errorf("inserting provider id %q for subnet %q: %w", subnetInfo.ProviderId, subnetUUID, err)
-		}
-	}
-
-	var pnUUIDStr string
-	err = tx.Query(ctx, retrieveProviderNetworkUUIDStmt, providerNet).Get(&providerNetSub)
-	if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
-		st.logger.Errorf(ctx, "retrieving provider network ID %q for subnet %q, %v", subnetInfo.ProviderNetworkId, subnetUUID, err)
-		return errors.Errorf("retrieving provider network ID %q for subnet %q: %w", subnetInfo.ProviderNetworkId, subnetUUID, err)
-	} else if errors.Is(err, sqlair.ErrNoRows) {
-		// If the provider network doesn't exist, insert it.
-		pnUUID, err := uuid.NewV7()
-		if err != nil {
-			return errors.Capture(err)
-		}
-
-		// Record the new UUID in provider network and the provider network
-		// subnet.
-		pnUUIDStr := pnUUID.String()
-		providerNet.ProviderNetworkUUID = pnUUIDStr
-		providerNetSub.ProviderNetworkUUID = pnUUIDStr
-		// Add the provider network id and its uuid to the
-		// provider_network table.
-		if err := tx.Query(ctx, insertSubnetProviderNetworkIDStmt, providerNet).Run(); err != nil {
-			st.logger.Errorf(ctx, "inserting provider network id %q for subnet %q, %v", subnetInfo.ProviderNetworkId, subnetUUID, err)
-			return errors.Errorf("inserting provider network id %q for subnet %q: %w", subnetInfo.ProviderNetworkId, subnetUUID, err)
-		}
-	}
-
-	// Insert the providerNetworkUUID into provider network to
-	// subnets mapping table.
+	// Insert the providerNetworkUUID into provider network to subnets mapping
+	// table.
 	if err := tx.Query(ctx, insertSubnetProviderNetworkSubnetStmt, providerNetSub).Run(); err != nil {
-		st.logger.Errorf(ctx, "inserting association between provider network id %q and subnet %q, %v", subnetInfo.ProviderNetworkId, subnetUUID, err)
-		return errors.Errorf("inserting association between provider network id (%q) %q and subnet %q: %w", pnUUIDStr, subnetInfo.ProviderNetworkId, subnetUUID, err)
+		return errors.Errorf("inserting association between provider network id %q: %w", providerNetSub.ProviderNetworkUUID, err)
 	}
 
-	return st.addAvailabilityZones(ctx, tx, subnetUUID, subnetInfo)
+	return nil
 }
 
 // addAvailabilityZones adds the availability zones of a subnet if they don't exist, and

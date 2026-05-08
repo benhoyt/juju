@@ -24,12 +24,50 @@ func TestProvisionerWorkerPoolSuite(t *testing.T) {
 type ProvisionerWorkerPoolSuite struct {
 }
 
+func (s *ProvisionerWorkerPoolSuite) TestIdle(c *tc.C) {
+	doneCh := make(chan struct{}, 10)
+	wp := NewWorkerPool(loggertesting.WrapCheckLog(c), 5)
+	c.Assert(wp.Size(), tc.Equals, 5)
+
+	for i := range 10 {
+		task := Task{
+			Type: "alien invasion",
+			Process: func() error {
+				time.Sleep(time.Duration(i*i) * time.Millisecond)
+				doneCh <- struct{}{}
+				return nil
+			},
+		}
+
+		select {
+		case wp.Queue() <- task:
+		case <-time.After(coretesting.LongWait):
+			c.Fatal("timeout waiting to enqueue task")
+		}
+	}
+
+	// Wait for idle.
+	c.Assert(wp.Idle(c.Context()), tc.IsTrue)
+
+	// Shutdown the pool and ensure that no errors got reported.
+	c.Assert(wp.Close(), tc.ErrorIsNil)
+
+	// Check that everything was actually processed.
+	for range 10 {
+		select {
+		case <-doneCh:
+		default:
+			c.Fatal("missing ack")
+		}
+	}
+}
+
 func (s *ProvisionerWorkerPoolSuite) TestProcessMoreTasksThanWorkers(c *tc.C) {
 	doneCh := make(chan struct{}, 10)
 	wp := NewWorkerPool(loggertesting.WrapCheckLog(c), 5)
 	c.Assert(wp.Size(), tc.Equals, 5)
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		task := Task{
 			Type: "alien invasion",
 			Process: func() error {
@@ -45,7 +83,7 @@ func (s *ProvisionerWorkerPoolSuite) TestProcessMoreTasksThanWorkers(c *tc.C) {
 		}
 	}
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		select {
 		case <-doneCh: // task ACK'd
 		case <-time.After(coretesting.LongWait):
@@ -65,7 +103,7 @@ func (s *ProvisionerWorkerPoolSuite) TestConsolidateErrors(c *tc.C) {
 	)
 
 	wg.Add(3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		// The even-numbered workers emit an error while the odd ones
 		// do not.
 		var expErr error

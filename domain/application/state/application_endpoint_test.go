@@ -48,7 +48,7 @@ func TestApplicationEndpointStateSuite(t *testing.T) {
 func (s *applicationEndpointStateSuite) SetUpTest(c *tc.C) {
 	s.baseSuite.SetUpTest(c)
 
-	s.state = NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	s.state = NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	// Arrange suite context, same for all tests:
 	s.appID = tc.Must(c, coreapplication.NewUUID)
@@ -170,7 +170,7 @@ func (s *applicationEndpointStateSuite) TestInsertApplicationEndpointsNoCharmRel
 	// Act: noop, no error
 	err = db.Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return s.state.insertApplicationEndpointBindings(c.Context(), tx, insertApplicationEndpointsParams{
-			appID:    s.appID,
+			appID:    s.appID.String(),
 			bindings: nil,
 		})
 	})
@@ -193,7 +193,7 @@ func (s *applicationEndpointStateSuite) TestInsertApplicationNoBindings(c *tc.C)
 	// Act: Charm relation will create application endpoint bounded to the default space (alpha)
 	err = db.Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return s.state.insertApplicationEndpointBindings(c.Context(), tx, insertApplicationEndpointsParams{
-			appID:    s.appID,
+			appID:    s.appID.String(),
 			bindings: nil,
 		})
 	})
@@ -231,7 +231,7 @@ func (s *applicationEndpointStateSuite) TestInsertApplicationEndpointDefaultedSp
 	// Act: Charm relation will create application endpoint bounded to the default space (beta)
 	err = db.Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return s.state.insertApplicationEndpointBindings(c.Context(), tx, insertApplicationEndpointsParams{
-			appID:    s.appID,
+			appID:    s.appID.String(),
 			bindings: bindings,
 		})
 	})
@@ -273,7 +273,7 @@ func (s *applicationEndpointStateSuite) TestInsertApplicationEndpointBindOneToBe
 	// Act: Charm relation will create application endpoint bounded to the specified space (beta)
 	err = db.Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return s.state.insertApplicationEndpointBindings(c.Context(), tx, insertApplicationEndpointsParams{
-			appID:    s.appID,
+			appID:    s.appID.String(),
 			bindings: bindings,
 		})
 	})
@@ -327,7 +327,7 @@ func (s *applicationEndpointStateSuite) TestInsertApplicationEndpointBindOneToBe
 	// or the specified one
 	err = db.Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return s.state.insertApplicationEndpointBindings(c.Context(), tx, insertApplicationEndpointsParams{
-			appID:    s.appID,
+			appID:    s.appID.String(),
 			bindings: bindings,
 		})
 	})
@@ -379,7 +379,7 @@ func (s *applicationEndpointStateSuite) TestInsertApplicationEndpointRestoreDefa
 	// Act:
 	err = db.Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return s.state.insertApplicationEndpointBindings(c.Context(), tx, insertApplicationEndpointsParams{
-			appID:    s.appID,
+			appID:    s.appID.String(),
 			bindings: bindings,
 		})
 	})
@@ -422,7 +422,7 @@ func (s *applicationEndpointStateSuite) TestInsertApplicationEndpointUnknownSpac
 	// Act: Charm relation will create application endpoint bounded to the default space (alpha)
 	err = db.Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return s.state.insertApplicationEndpointBindings(c.Context(), tx, insertApplicationEndpointsParams{
-			appID:    s.appID,
+			appID:    s.appID.String(),
 			bindings: bindings,
 		})
 	})
@@ -449,7 +449,7 @@ func (s *applicationEndpointStateSuite) TestInsertApplicationEndpointUnknownRela
 	// Act
 	err = db.Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return s.state.insertApplicationEndpointBindings(c.Context(), tx, insertApplicationEndpointsParams{
-			appID:    s.appID,
+			appID:    s.appID.String(),
 			bindings: bindings,
 		})
 	})
@@ -1438,4 +1438,69 @@ func (s *applicationEndpointStateSuite) addUnitAnotherIPWithSpace(c *tc.C, unitU
 		return nil
 	})
 	c.Assert(err, tc.ErrorIsNil, tc.Commentf(unitUUID+" "+netNodeUUID+" "+spaceUUID+" "+ip+" "+subnetCIDR))
+}
+
+// TestMergeApplicationEndpointBindingsNoOpSkipsValidation verifies that when
+// the incoming bindings do not change any stored value, the operation
+// succeeds without running validateUnitsInSpaces — even when the unit has no
+// link-layer device data (which is the case immediately after bootstrap,
+// before the instance poller has run).
+//
+// This is the regression test for https://github.com/juju/juju/issues/22096:
+// binding a controller to alpha (its default) should be a no-op.
+func (s *applicationEndpointStateSuite) TestMergeApplicationEndpointBindingsNoOpSkipsValidation(c *tc.C) {
+	// Arrange: application bound to alpha with some endpoints explicitly bound
+	// to beta. A second space (beta) exists so that the alpha binding is not
+	// trivially the only option. The unit exists but has NO NIC data,
+	// simulating the post-bootstrap window before the instance poller runs.
+	s.addSpace(c, "beta")
+	bindings := map[string]network.SpaceName{
+		"":         network.AlphaSpaceName,
+		"endpoint": "beta",
+		"misc":     network.AlphaSpaceName,
+		"extra":    network.AlphaSpaceName,
+	}
+	appUUID := s.createIAASApplicationWithEndpointBindings(c, "ctrl", life.Alive, bindings)
+	// Unit exists but has no link_layer_device / ip_address rows.
+	_ = s.addUnit(c, "ctrl/0", appUUID)
+
+	// Act: re-submit the same bindings for the merged endpoints only
+	// ("endpoint": "beta" is intentionally omitted from the map) — this is a
+	// no-op for the submitted bindings.
+	err := s.state.MergeApplicationEndpointBindings(c.Context(), appUUID.String(),
+		map[string]string{
+			"":      network.AlphaSpaceName.String(),
+			"misc":  network.AlphaSpaceName.String(),
+			"extra": network.AlphaSpaceName.String(),
+		}, false,
+	)
+
+	// Assert: no error even though the unit has no NIC data.
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+// TestMergeApplicationEndpointBindingsActualChangeRunsValidation verifies that
+// when at least one incoming binding genuinely differs from the stored value,
+// validateUnitsInSpaces is still executed — preserving the existing behaviour.
+func (s *applicationEndpointStateSuite) TestMergeApplicationEndpointBindingsActualChangeRunsValidation(c *tc.C) {
+	// Arrange: application bound to alpha, unit has NO NIC data.
+	s.addSpace(c, "beta")
+	bindings := map[string]network.SpaceName{
+		"":      network.AlphaSpaceName,
+		"misc":  network.AlphaSpaceName,
+		"extra": network.AlphaSpaceName,
+	}
+	appUUID := s.createIAASApplicationWithEndpointBindings(c, "ctrl", life.Alive, bindings)
+	_ = s.addUnit(c, "ctrl/0", appUUID)
+
+	// Act: attempt to bind misc to a different space (beta).
+	// Because the unit has no NIC data, validation must fail.
+	err := s.state.MergeApplicationEndpointBindings(c.Context(), appUUID.String(),
+		map[string]string{
+			"misc": "beta",
+		}, false,
+	)
+
+	// Assert: validation fires and returns an error.
+	c.Assert(err, tc.ErrorMatches, `.*unit "ctrl/0" not in space "beta"`)
 }

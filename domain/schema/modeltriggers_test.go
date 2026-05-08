@@ -507,8 +507,9 @@ func (s *modelStorageSuite) newStorageInstanceWithCharmUUID(
 	storageID := fmt.Sprintf("mystorage/%d", seq)
 
 	_, err = s.DB().Exec(`
-INSERT INTO charm_storage (charm_uuid, name, storage_kind_id, count_min, count_max)
-VALUES (?, ?, 0, 0, 1)`, charmUUID, storageName)
+INSERT INTO charm_storage (charm_uuid, name, storage_kind_id, count_min,
+                           count_max, shared)
+VALUES (?, ?, 0, 0, 1, false)`, charmUUID, storageName)
 	c.Assert(err, tc.ErrorIsNil)
 
 	// Get the metadata charm name for the storage instance.
@@ -1578,6 +1579,19 @@ func (s *modelSuite) TestRelationLifeSuspendedTriggerSuspendedChange(c *tc.C) {
 	s.assertChangeEvent(
 		c, "custom_relation_life_suspended", relationUUID,
 	)
+}
+
+func (s *modelSuite) TestRelationEmptyUUID(c *tc.C) {
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.Exec(`
+INSERT INTO relation (uuid, relation_id, life_id, scope_id)
+SELECT ?, ?, id, 0
+FROM life
+WHERE value = ?
+`, "", 7, life.Alive)
+		return err
+	})
+	c.Assert(err, tc.ErrorMatches, `CHECK constraint failed: chk_empty_relation_uuid`)
 }
 
 func (s *modelSuite) insertRelation(c *tc.C) string {

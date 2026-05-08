@@ -1,22 +1,24 @@
-// Copyright 2024 Canonical Ltd.
+// Copyright 2026 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
 package modelmigration
 
 import (
 	"context"
+	"maps"
 	"reflect"
 	"sort"
-	"strings"
 
 	"github.com/juju/collections/set"
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/names/v6"
 
 	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/modelmigration"
 	"github.com/juju/juju/core/secrets"
+	domainmodelmigration "github.com/juju/juju/domain/modelmigration/modelmigration"
+	"github.com/juju/juju/domain/secret"
 	secreterrors "github.com/juju/juju/domain/secret/errors"
 	"github.com/juju/juju/domain/secret/service"
 	"github.com/juju/juju/domain/secret/state"
@@ -41,12 +43,13 @@ func RegisterImport(coordinator Coordinator, logger logger.Logger) {
 // ImportService provides a subset of the secret domain
 // service methods needed for secret import.
 type ImportService interface {
-	ImportSecrets(context.Context, *service.SecretExport) error
+	ImportSecrets(context.Context, *service.SecretImport) error
 }
 
 // SecretBackendService provides a subset of the secret backend
 // domain service methods needed for secret import.
 type SecretBackendService interface {
+	GetBuiltInKubernetesBackendID(ctx context.Context) (string, error)
 	ListBackendIDs(ctx context.Context) ([]string, error)
 }
 
@@ -59,6 +62,7 @@ type importOperation struct {
 
 	knownSecretBackends set.Strings
 	seenBackendIds      set.Strings
+	migrateBackendID    func(backendID string) (string, error)
 }
 
 // Name returns the name of this operation.
@@ -92,46 +96,42 @@ func ownerFromTag(owner names.Tag) (secrets.Owner, error) {
 	return secrets.Owner{}, errors.Errorf("tag kind %q %w", owner.Kind(), coreerrors.NotValid)
 }
 
-func accessorFromTag(tag names.Tag) (service.SecretAccessor, error) {
-	result := service.SecretAccessor{
+func accessorFromTag(tag names.Tag) (secret.SecretAccessor, error) {
+	result := secret.SecretAccessor{
 		ID: tag.Id(),
 	}
 	switch kind := tag.Kind(); kind {
 	case names.ApplicationTagKind:
-		if strings.HasPrefix(result.ID, "remote-") {
-			result.Kind = service.RemoteApplicationAccessor
-		} else {
-			result.Kind = service.ApplicationAccessor
-		}
+		result.Kind = secret.ApplicationAccessor
 	case names.UnitTagKind:
-		result.Kind = service.UnitAccessor
+		result.Kind = secret.UnitAccessor
 	case names.ModelTagKind:
-		result.Kind = service.ModelAccessor
+		result.Kind = secret.ModelAccessor
 	default:
-		return service.SecretAccessor{}, errors.Errorf("tag kind %q not valid", kind)
+		return secret.SecretAccessor{}, errors.Errorf("tag kind %q not valid", kind)
 	}
 	return result, nil
 }
 
-func scopeFromTag(scope string) (service.SecretAccessScope, error) {
+func scopeFromTag(scope string) (secret.SecretAccessScope, error) {
 	tag, err := names.ParseTag(scope)
 	if err != nil {
-		return service.SecretAccessScope{}, errors.Capture(err)
+		return secret.SecretAccessScope{}, errors.Capture(err)
 	}
-	result := service.SecretAccessScope{
+	result := secret.SecretAccessScope{
 		ID: tag.Id(),
 	}
 	switch kind := tag.Kind(); kind {
 	case names.ApplicationTagKind:
-		result.Kind = service.ApplicationAccessScope
+		result.Kind = secret.ApplicationAccessScope
 	case names.UnitTagKind:
-		result.Kind = service.UnitAccessScope
+		result.Kind = secret.UnitAccessScope
 	case names.RelationTagKind:
-		result.Kind = service.RelationAccessScope
+		result.Kind = secret.RelationAccessScope
 	case names.ModelTagKind:
-		result.Kind = service.ModelAccessScope
+		result.Kind = secret.ModelAccessScope
 	default:
-		return service.SecretAccessScope{}, errors.Errorf("tag kind %q not valid", kind)
+		return secret.SecretAccessScope{}, errors.Errorf("tag kind %q not valid", kind)
 	}
 	return result, nil
 }
@@ -145,20 +145,50 @@ func (i *importOperation) Execute(ctx context.Context, model description.Model) 
 		return errors.Errorf("loading secret backend IDs: %w", err)
 	}
 	i.knownSecretBackends = set.NewStrings(backendIDs...)
+	i.seenBackendIds = set.NewStrings()
+	builtInCaaSBackendID, err := i.backendService.GetBuiltInKubernetesBackendID(ctx)
+	if err != nil {
+		// This should never happen, except for DB error,
+		// since this backend is always present
+		return errors.Errorf("getting built-in CaaS backend ID: %w", err)
+	}
+	modelUUID := model.UUID()
+	i.migrateBackendID = func(backendID string) (string, error) {
+		// Set the backend ID to the built-in CaaS backend ID
+		// if it matches the model's UUID.
+		// - On IaaS models, exported secrets from the builtin backend are
+		//   by value (so we won't pass into this code).
+		// - On CaaS models, exported secrets from the builtin backend are
+		//   by reference, with a backend ID of the model's UUID. However,
+		//   those secrets are stored in the model namespace in k8s, so we just
+		//   need to change the backend ID to the built-in CaaS backend ID which
+		//   would store the secret in the model namespace.
+		if backendID == modelUUID {
+			return builtInCaaSBackendID, nil
+		}
 
-	modelSecrets := model.Secrets()
-	modelRemoteSecrets := model.RemoteSecrets()
-	allSecrets := service.SecretExport{
-		Secrets:         make([]*secrets.SecretMetadata, len(modelSecrets)),
-		Revisions:       make(map[string][]*secrets.SecretRevisionMetadata),
-		Content:         make(map[string]map[int]secrets.SecretData),
-		Access:          make(map[string][]service.SecretAccess),
-		Consumers:       make(map[string][]service.ConsumerInfo),
-		RemoteConsumers: make(map[string][]service.ConsumerInfo),
-		RemoteSecrets:   make([]service.RemoteSecret, len(modelRemoteSecrets)),
+		// If the backend id is not the CaaS builtin, check it exists in the
+		// target controller.
+		if !i.seenBackendIds.Contains(backendID) {
+			if !i.knownSecretBackends.Contains(backendID) {
+				return "", errors.Errorf(
+					"target controller does not have all required secret backends set up, missing %q",
+					backendID).Add(secreterrors.MissingSecretBackendID)
+
+			}
+		}
+		i.seenBackendIds.Add(backendID)
+		return backendID, nil
 	}
 
-	i.seenBackendIds = set.NewStrings()
+	modelSecrets := model.Secrets()
+	allSecrets := service.SecretImport{
+		Secrets:   make([]*secrets.SecretMetadata, len(modelSecrets)),
+		Revisions: make(map[string][]*secrets.SecretRevisionMetadata),
+		Content:   make(map[string]map[int]secrets.SecretData),
+		Access:    make(map[string][]service.SecretAccess),
+		Consumers: make(map[string][]service.ConsumerInfo),
+	}
 	for j, secret := range modelSecrets {
 		ownerTag, err := secret.Owner()
 		if err != nil {
@@ -188,7 +218,6 @@ func (i *importOperation) Execute(ctx context.Context, model description.Model) 
 			nextRotateTime := secret.NextRotateTime()
 			allSecrets.Secrets[j].NextRotateTime = nextRotateTime
 		}
-
 		secretRevisions, secretContent, err := i.collateRevisionInfo(secret.Revisions())
 		if err != nil {
 			return errors.Errorf("collating revisions for secret %q: %w", secret.Id(), err)
@@ -207,30 +236,6 @@ func (i *importOperation) Execute(ctx context.Context, model description.Model) 
 			return errors.Errorf("collating consumers for secret %q: %w", secret.Id(), err)
 		}
 		allSecrets.Consumers[secret.Id()] = secretConsumers
-
-		remoteConsumers, err := i.collateRemoteConsumers(secret.RemoteConsumers())
-		if err != nil {
-			return errors.Errorf("collating remote consumers for secret %q: %w", secret.Id(), err)
-		}
-		allSecrets.RemoteConsumers[secret.Id()] = remoteConsumers
-	}
-
-	for j, secret := range modelRemoteSecrets {
-		consumer, err := secret.Consumer()
-		if err != nil {
-			return errors.Errorf("invalid remote secret consumer: %w", err)
-		}
-		accessor, err := accessorFromTag(consumer)
-		if err != nil {
-			return errors.Errorf("invalid remote secret consumer: %w", err)
-		}
-		allSecrets.RemoteSecrets[j] = service.RemoteSecret{
-			URI:             &secrets.URI{ID: secret.ID(), SourceUUID: secret.SourceUUID()},
-			Label:           secret.Label(),
-			CurrentRevision: secret.CurrentRevision(),
-			LatestRevision:  secret.LatestRevision(),
-			Accessor:        accessor,
-		}
 	}
 
 	err = i.service.ImportSecrets(ctx, &allSecrets)
@@ -245,9 +250,7 @@ func (i *importOperation) collateRevisionInfo(revisions []description.SecretRevi
 	secretContent := make(map[int]secrets.SecretData)
 	for j, rev := range revisions {
 		dataCopy := make(secrets.SecretData)
-		for k, v := range rev.Content() {
-			dataCopy[k] = v
-		}
+		maps.Copy(dataCopy, rev.Content())
 		var valueRef *secrets.ValueRef
 		if len(dataCopy) == 0 {
 			// This should ever happen, but just in case, avoid a nil pointer dereference.
@@ -257,19 +260,14 @@ func (i *importOperation) collateRevisionInfo(revisions []description.SecretRevi
 					return nil, nil, errors.Errorf("missing content for secret revision %d", rev.Number())
 				}
 			}
+			destBackendID, err := i.migrateBackendID(rev.ValueRef().BackendID())
+			if err != nil {
+				return nil, nil, errors.Capture(err)
+			}
 			valueRef = &secrets.ValueRef{
-				BackendID:  rev.ValueRef().BackendID(),
+				BackendID:  destBackendID,
 				RevisionID: rev.ValueRef().RevisionID(),
 			}
-			if !secrets.IsInternalSecretBackendID(valueRef.BackendID) && !i.seenBackendIds.Contains(valueRef.BackendID) {
-				if !i.knownSecretBackends.Contains(valueRef.BackendID) {
-					return nil, nil, errors.Errorf(
-						"target controller does not have all required secret backends set up, missing %q",
-						valueRef.BackendID).Add(secreterrors.MissingSecretBackendID)
-
-				}
-			}
-			i.seenBackendIds.Add(valueRef.BackendID)
 		} else {
 			secretContent[rev.Number()] = dataCopy
 		}
@@ -312,27 +310,6 @@ func (i *importOperation) collateConsumers(consumers []description.SecretConsume
 	return result, nil
 }
 
-func (i *importOperation) collateRemoteConsumers(remoteConsumers []description.SecretRemoteConsumer) ([]service.ConsumerInfo, error) {
-	result := make([]service.ConsumerInfo, len(remoteConsumers))
-	for i, info := range remoteConsumers {
-		consumer, err := info.Consumer()
-		if err != nil {
-			return nil, errors.Errorf("invalid remote consumer: %w", err)
-		}
-		accessor, err := accessorFromTag(consumer)
-		if err != nil {
-			return nil, errors.Errorf("invalid remote consumer: %w", err)
-		}
-		result[i] = service.ConsumerInfo{
-			Accessor: accessor,
-			SecretConsumerMetadata: secrets.SecretConsumerMetadata{
-				CurrentRevision: info.CurrentRevision(),
-			},
-		}
-	}
-	return result, nil
-}
-
 func (i *importOperation) collateAccess(secretAccess map[string]description.SecretAccess) ([]service.SecretAccess, error) {
 	// Sort for testing.
 	var consumers []string
@@ -355,6 +332,12 @@ func (i *importOperation) collateAccess(secretAccess map[string]description.Secr
 		scope, err := scopeFromTag(access.Scope())
 		if err != nil {
 			return nil, errors.Errorf("invalid access scope: %w", err)
+		}
+
+		if domainmodelmigration.IsRemoteSecretGrant(consumerTag) {
+			// Remote secrets are not imported in secret domain.
+			// See crossmodelrelation/modelmigration/import.go
+			continue
 		}
 
 		result = append(result, service.SecretAccess{

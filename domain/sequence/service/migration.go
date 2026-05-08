@@ -18,10 +18,6 @@ type State interface {
 	// ImportSequences imports the sequences from the given map. This is used to
 	// import the sequences from the database.
 	ImportSequences(ctx context.Context, seqs map[string]uint64) error
-
-	// RemoveAllSequences removes all sequences from the database. This is used
-	// to remove all sequences from the database.
-	RemoveAllSequences(ctx context.Context) error
 }
 
 // MigrationServic provides the API for working with sequences.
@@ -50,12 +46,4 @@ func (m *MigrationServic) ImportSequences(ctx context.Context, seqs map[string]u
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 	return m.st.ImportSequences(ctx, seqs)
-}
-
-// RemoveAllSequences removes all sequences from the database. This is used to
-// remove all sequences from the database.
-func (m *MigrationServic) RemoveAllSequences(ctx context.Context) error {
-	ctx, span := trace.Start(ctx, trace.NameFromFunc())
-	defer span.End()
-	return m.st.RemoveAllSequences(ctx)
 }

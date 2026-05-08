@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Configure Microsoft Azure cloud with Juju, including required IAM permissions, resource group management, and authentication setup."
+---
+
 (cloud-azure)=
 # The Microsoft Azure cloud and Juju
 

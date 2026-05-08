@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn how to deploy a chat service with Juju and charms on Kubernetes. Step-by-step tutorial using Multipass, MicroK8s, Mattermost, and PostgreSQL."
+---
+
 (tutorial)=
 # Get started with Juju
 
@@ -21,13 +27,19 @@ First, [install Multipass](https://documentation.ubuntu.com/multipass/en/latest/
 Now, launch an Ubuntu VM and open a shell in the VM:
 
 ```{terminal}
+:copy:
 :user:
 :host:
-:input: multipass launch --cpus 4 --memory 8G --disk 50G --name my-juju-vm
+multipass launch --cpus 4 --memory 8G --disk 50G --name my-juju-vm
 
 Launched: my-juju-vm
+```
 
-:input: multipass shell my-juju-vm
+```{terminal}
+:copy:
+:user:
+:host:
+multipass shell my-juju-vm
 
 Welcome to Ubuntu 24.04.2 LTS (GNU/Linux 6.8.0-64-generic x86_64)
 
@@ -55,8 +67,6 @@ See https://ubuntu.com/esm or run: sudo pro status
 
 To run a command as administrator (user "root"), use "sudo <command>".
 See "man sudo_root" for details.
-
-
 ```
 
 (If the VM launch fails, run `multipass delete --purge my-juju-vm` to clean up, then try the launch line again.)
@@ -73,6 +83,16 @@ At any point:
 ## Set up Juju
 
 ```{figure} tutorial-setup.svg
+   :figclass: only-light
+   :align: center
+   :alt: Juju consists of a client and a controller and needs access to a cloud and to Charmhub
+
+   _Juju consists of at least a client and a controller, and needs access to a cloud (anything that can provide compute, networking, and storage) and to Charmhub (the charm store; otherwise, a local source of charms)._
+```
+
+```{figure} tutorial-setup.dark.svg
+   :figclass: only-dark
+   :align: center
    :alt: Juju consists of a client and a controller and needs access to a cloud and to Charmhub
 
    _Juju consists of at least a client and a controller, and needs access to a cloud (anything that can provide compute, networking, and storage) and to Charmhub (the charm store; otherwise, a local source of charms)._
@@ -89,29 +109,45 @@ This includes traditional machine clouds (Amazon AWS, Google GCE, Microsoft Azur
 
 In this tutorial we will use MicroK8s, a lightweight Kubernetes that you can also use to get a small, single-node localhost Kubernetes cluster. Let's set it up on your VM:
 
+<!-- # Install the MicroK8s package: -->
+
 ```{terminal}
+:copy:
 :user: ubuntu
 :host: my-juju-vm
-
-# Install the MicroK8s package:
-:input: sudo snap install microk8s --channel 1.28-strict
+sudo snap install microk8s --channel 1.28-strict
 
 2025-08-01T09:47:10+02:00 INFO Waiting for automatic snapd restart...
 microk8s (1.28-strict/stable) v1.28.15 from Canonical✓ installed
 
-# Add your user to the `microk8s` group for unprivileged access:
+```
 
-:input: sudo adduser $USER snap_microk8s
+<!-- # Add your user to the `microk8s` group for unprivileged access: -->
+```{terminal}
+:copy:
+:user: ubuntu
+:host: my-juju-vm
+sudo adduser $USER snap_microk8s
 
 info: Adding user `ubuntu' to group `snap_microk8s' ...
 
-# Give your user permissions to read the ~/.kube directory:
+```
 
-:input: sudo chown -f -R $USER ~/.kube
+<!-- # Give your user permissions to read the ~/.kube directory: -->
+```{terminal}
+:copy:
+:user: ubuntu
+:host: my-juju-vm
+sudo chown -f -R $USER ~/.kube
 
-# Wait for MicroK8s to finish initialising:
+```
 
-:input: sudo microk8s status --wait-ready
+<!-- # Wait for MicroK8s to finish initialising: -->
+```{terminal}
+:copy:
+:user: ubuntu
+:host: my-juju-vm
+sudo microk8s status --wait-ready
 
 microk8s is running
 high-availability: no
@@ -142,8 +178,14 @@ addons:
     rook-ceph            # (core) Distributed Ceph storage using Rook
     storage              # (core) Alias to hostpath-storage add-on, deprecated
 
-# Enable the 'storage' and 'dns' addons (required for the Juju controller):
-:input: sudo microk8s enable hostpath-storage dns
+```
+
+<!-- # Enable the 'storage' and 'dns' addons (required for the Juju controller): -->
+```{terminal}
+:copy:
+:user: ubuntu
+:host: my-juju-vm
+sudo microk8s enable hostpath-storage dns
 
 Infer repository core for addon hostpath-storage
 Infer repository core for addon dns
@@ -162,18 +204,36 @@ clusterrolebinding.rbac.authorization.k8s.io/microk8s-hostpath created
 Storage will be available soon.
 Addon core/dns is already enabled
 
-# Alias kubectl so it interacts with MicroK8s by default:
-:input: sudo snap alias microk8s.kubectl kubectl
+```
+
+<!-- # Alias kubectl so it interacts with MicroK8s by default: -->
+```{terminal}
+:copy:
+:user: ubuntu
+:host: my-juju-vm
+sudo snap alias microk8s.kubectl kubectl
 
 Added:
   - microk8s.kubectl as kubectl
 
-# Ensure your new group membership is apparent in the current terminal:
-# (Not required once you have logged out and back in again)
-:input: newgrp snap_microk8s
+```
 
-# Since the juju package is strictly confined, you also need to manually create a path:
-:input: mkdir -p ~/.local/share
+<!-- # Ensure your new group membership is apparent in the current terminal: -->
+<!-- # (Not required once you have logged out and back in again) -->
+```{terminal}
+:copy:
+:user: ubuntu
+:host: my-juju-vm
+newgrp snap_microk8s
+
+```
+
+<!-- # Since the juju package is strictly confined, you also need to manually create a path: -->
+```{terminal}
+:copy:
+:user: ubuntu
+:host: my-juju-vm
+mkdir -p ~/.local/share
 
 ```
 
@@ -190,9 +250,10 @@ In Juju a (user-facing) client is anything that can talk to a Juju controller. T
 In your VM, install the `juju` CLI client:
 
 ```{terminal}
+:copy:
 :user: ubuntu
 :host: my-juju-vm
-:input: sudo snap install juju
+sudo snap install juju
 
 juju (3/stable) 3.6.8 from Canonical✓ installed
 ```
@@ -200,9 +261,10 @@ juju (3/stable) 3.6.8 from Canonical✓ installed
 Now, ensure the client has access to your cloud (i.e., knows where to find your cloud and has the credentials to access your cloud). For a localhost MicroK8s cloud installed from a strictly confined snap like ours, your `juju` client can read the local kubeconfig file and retrieve the cloud definition (and credentials) from there automatically, as you can verify:
 
 ```{terminal}
+:copy:
 :user: ubuntu
 :host: my-juju-vm
-:input: juju clouds --client
+juju clouds --client
 
 Only clouds with registered credentials are shown.
 There are more clouds, use --all to see them.
@@ -212,7 +274,6 @@ Clouds available on the client:
 Cloud      Regions  Default    Type  Credentials  Source    Description
 localhost  1        localhost  lxd   0            built-in  LXD Container Hypervisor
 microk8s   1        localhost  k8s   1            built-in  A Kubernetes Cluster
-
 ```
 
 (If this doesn't show any output: Exit the VM (`exit`), re-enter it (`multipass shell my-juju-vm`), then try again.)
@@ -220,16 +281,22 @@ microk8s   1        localhost  k8s   1            built-in  A Kubernetes Cluster
 Ensure also that the client has access to Charmhub by performing a random search, e.g., using the keyword "ingress", and then asking for more information about one of the results it shows:
 
 ```{terminal}
+:copy:
 :user: ubuntu
 :host: my-juju-vm
-:input: juju find ingress
+juju find ingress
 
 # Output should show all the charms or charm bundles related to this query that are available on Charmhub.
 # For best results always double-check Charmhub.
+```
 
-:input: juju info traefik-k8s
+```{terminal}
+:copy:
+:user: ubuntu
+:host: my-juju-vm
+juju info traefik-k8s
 
-# Output should show name, publisher, quick description, integration endpoints, etc.
+# Output should show name, publisher, quick description, relation endpoints, etc.
 # For the full features and more info see directly the charm's page on Charmhub.
 ```
 
@@ -253,9 +320,11 @@ A Juju controller is your Juju control plane -- the entity that holds the Juju A
 In your VM, use your client and its access to the MicroK8s cloud to bootstrap a Juju controller:
 
 ```{terminal}
+:copy:
 :user: ubuntu
 :host: my-juju-vm
-:input: juju bootstrap microk8s my-first-juju-controller
+juju bootstrap microk8s my-first-juju-controller
+
 Creating Juju controller "my-first-juju-controller" on microk8s/localhost
 Bootstrap to Kubernetes cluster identified as microk8s/localhost
 Creating k8s resources for controller "controller-my-first-juju-controller"
@@ -269,7 +338,6 @@ Bootstrap complete, controller "my-first-juju-controller" is now available in na
 Now you can run
 	juju add-model <model-name>
 to create a new model to deploy k8s workloads.
-
 ```
 
 This will use ingredients from your client, the `juju-controller` charm from Charmhub and a pod from MicroK8s (backed by your current node -- your VM) to give you a running Juju controller.
@@ -281,6 +349,16 @@ At this point we could connect to it further clouds or set up the Juju dashboard
 ## Handle authentication and authorization
 
 ```{figure} tutorial-handle-auth.svg
+   :figclass: only-light
+   :align: center
+   :alt: A user is any person that can log in to a Juju controller.
+
+   _A user is any person that can log in to a Juju controller._
+```
+
+```{figure} tutorial-handle-auth.dark.svg
+   :figclass: only-dark
+   :align: center
    :alt: A user is any person that can log in to a Juju controller.
 
    _A user is any person that can log in to a Juju controller._
@@ -289,15 +367,22 @@ At this point we could connect to it further clouds or set up the Juju dashboard
 Your client and controller can already talk to a cloud and Charmhub, but they don't run on their own -- enter the user! In Juju, the user is any person that can log in to a controller, and what they can do can be controlled at the level of the controller or some of the smaller entities associated with that controller. As the entity that has bootstrapped the controller, you have automatically been logged in and given `superuser` access. Let's verify:
 
 ```{terminal}
+:copy:
 :user: ubuntu
 :host: my-juju-vm
-:input: juju whoami
+juju whoami
 
 Controller:  my-first-juju-controller
 Model:       <no-current-model>
 User:        admin
+```
 
-:input: juju show-user admin
+```{terminal}
+:copy:
+:user: ubuntu
+:host: my-juju-vm
+juju show-user admin
+
 user-name: admin
 display-name: admin
 access: superuser
@@ -310,6 +395,16 @@ At this point you could add further users and control their permissions. However
 ## Provision infrastructure and operate applications
 
 ```{figure} tutorial-provision-deploy.svg
+   :figclass: only-light
+   :align: center
+   :alt: A user uses the client to talk to the controller to talk to the cloud and to Charmhub to provision infrastructure and to deploy and operate charmed applications.
+
+   _A user interacts with the client to reach the controller. The controller talks to the cloud and to Charmhub to provision infrastructure and to deploy charms. Next to a deployed charm there is always a Juju agent which periodically checks its internal state against the Juju controller and executes the deployed charm accordingly to install, configure, and otherwise manage applications._
+```
+
+```{figure} tutorial-provision-deploy.dark.svg
+   :figclass: only-dark
+   :align: center
    :alt: A user uses the client to talk to the controller to talk to the cloud and to Charmhub to provision infrastructure and to deploy and operate charmed applications.
 
    _A user interacts with the client to reach the controller. The controller talks to the cloud and to Charmhub to provision infrastructure and to deploy charms. Next to a deployed charm there is always a Juju agent which periodically checks its internal state against the Juju controller and executes the deployed charm accordingly to install, configure, and otherwise manage applications._
@@ -318,9 +413,11 @@ At this point you could add further users and control their permissions. However
 Anything you provision or deploy and operate with a Juju controller goes onto a workspace called a 'model'. Let's create the model that will hold our chat applications:
 
 ```{terminal}
+:copy:
 :user: ubuntu
 :host: my-juju-vm
-:input: juju add-model my-chat-model
+juju add-model my-chat-model
+
 Added 'my-chat-model' model on microk8s/localhost with credential 'microk8s' for user 'admin'
 ```
 
@@ -332,49 +429,65 @@ First, [Mattermost](https://charmhub.io/mattermost-k8s):
 
 
 ```{terminal}
+:copy:
 :user: ubuntu
 :host: my-juju-vm
-:input: juju deploy mattermost-k8s --constraints "mem=2G"
+juju deploy mattermost-k8s --constraints "mem=2G"
+
 Deployed "mattermost-k8s" from charm-hub charm "mattermost-k8s", revision 27 in channel latest/stable on ubuntu@20.04/stable
 ```
 
 Now, its dependencies. Mattermost needs a PostgreSQL database, and [its charmed version supports an easy way to integrate with such a database](https://charmhub.io/mattermost-k8s/integrations#db). Let's deploy [the PostgreSQL charm for Kubernetes](https://charmhub.io/postgresql-k8s) in the recommended way, from track `14` with risk `stable`; with `--trust` -- i.e., permission to use our cloud credentials (this charm needs to create and manage some Kubernetes resources); because we're just playing around, setting [the `profile` config](https://charmhub.io/postgresql-k8s/configurations#profile) to `testing`, so we don't use too many resources; and, just for fun, with `-n 2`, that is, two replicas (in a real life setting you'll want to distribute them over multiple nodes -- something Juju would do automatically here too, except we're doing everything on a single node).
 
 ```{terminal}
+:copy:
 :user: ubuntu
 :host: my-juju-vm
-:input: juju deploy postgresql-k8s --channel 14/stable --trust --config profile=testing -n 2
+juju deploy postgresql-k8s --channel 14/stable --trust --config profile=testing -n 2
+
 Deployed "postgresql-k8s" from charm-hub charm "postgresql-k8s", revision 495 in channel 14/stable on ubuntu@22.04/stable
 ```
 
 Mattermost wants PostgreSQL status to be TLS-encrypted. There are a few ways to do that. Because we're just trying things out, we can use [Self Signed X.509 Certificates](https://charmhub.io/self-signed-certificates) (don't do this in production!). Let's deploy it and integrate it with our PostgreSQL to enable TLS encryption on our PostgreSQL cluster:
 
 ```{terminal}
+:copy:
 :user: ubuntu
 :host: my-juju-vm
-:input: juju deploy self-signed-certificates
+juju deploy self-signed-certificates
+
 Deployed "self-signed-certificates" from charm-hub charm "self-signed-certificates", revision 317 in channel 1/stable on ubuntu@24.04/stable
 
-# Two charmed application can be integrated with one another if they have endpoints that
+```
+
+<!-- # Two charmed applications can be integrated with one another if they have endpoints that
 # support the same interface (e.g., 'tls-certificates') and
-# have opposite endpoint roles ('requires' vs. 'provides').
-:input: juju integrate self-signed-certificates postgresql-k8s
+# have opposite endpoint roles ('requires' vs. 'provides'). -->
+```{terminal}
+:copy:
+:user: ubuntu
+:host: my-juju-vm
+juju integrate self-signed-certificates postgresql-k8s
+
 ```
 
 Finally, time to integrate Postgresql with Mattermost:
 
 ```{terminal}
+:copy:
 :user: ubuntu
 :host: my-juju-vm
-:input: juju integrate postgresql-k8s:db mattermost-k8s
+juju integrate postgresql-k8s:db mattermost-k8s
+
 ```
 
 While executing any of these commands returns automatically so you can execute the next, standing things up in the cloud takes a little bit of time; watch your progress with `juju status --relations --color --watch 1s`. Things are all set when the output looks similar to the one below:
 
 ```{terminal}
+:copy:
 :user: ubuntu
 :host: my-juju-vm
-:input: juju status --relations --color
+juju status --relations --color
 
 Model          Controller                Cloud/Region        Version  SLA          Timestamp
 my-chat-model  my-first-juju-controller  microk8s/localhost  3.6.8    unsupported  13:26:28+02:00
@@ -390,7 +503,7 @@ postgresql-k8s/0*            active    idle   10.1.32.139            Primary
 postgresql-k8s/1             active    idle   10.1.32.140
 self-signed-certificates/0*  active    idle   10.1.32.141
 
-Integration provider                   Requirer                       Interface         Type     Message
+Relation provider                      Requirer                       Interface         Type     Message
 postgresql-k8s:database-peers          postgresql-k8s:database-peers  postgresql_peers  peer
 postgresql-k8s:db                      mattermost-k8s:db              pgsql             regular
 postgresql-k8s:restart                 postgresql-k8s:restart         rolling_op        peer
@@ -401,9 +514,11 @@ self-signed-certificates:certificates  postgresql-k8s:certificates    tls-certif
 Time to test the results! From the output of `juju status`> `Unit` > `mattermost-k8s/0`, retrieve the IP address and the port and feed them to `curl` on the template `curl <IP address>:<port number>/api/v4/system/ping`. Given the IP we got above:
 
 ```{terminal}
+:copy:
 :user: ubuntu
 :host: my-juju-vm
-:input: curl 10.1.32.142:8065/api/v4/system/ping
+curl 10.1.32.142:8065/api/v4/system/ping
+
 {"ActiveSearchBackend":"database","AndroidLatestVersion":"","AndroidMinVersion":"","IosLatestVersion":"","IosMinVersion":"","status":"OK"}
 ```
 
@@ -419,13 +534,15 @@ To tear everything down at once, skip to the step where you delete your Multipas
 
 Tear down your Juju deployment:
 
+<!-- # Destroy any models you've created
+# (this will also remove applications along with their configs, relations, etc.,
+# and the cloud resources associated with them): -->
 ```{terminal}
+:copy:
 :user: ubuntu
 :host: my-juju-vm
-# Destroy any models you've created
-# (this will also remove applications along with their configs, relations, etc.,
-# and the cloud resources associated with them):
-:input: juju destroy-model my-chat-model --destroy-storage
+juju destroy-model my-chat-model --destroy-storage
+
 WARNING This command will destroy the "my-chat-model" model and affect the following resources. It cannot be stopped.
 
  - 3 applications will be removed
@@ -442,9 +559,15 @@ Waiting for model to be removed, 2 application(s).....
 Waiting for model to be removed, 1 application(s)............
 Waiting for model to be removed........
 Model destroyed.
+```
 
-# Destroy any controllers you've created:
-:input: juju destroy-controller my-first-juju-controller
+<!-- # Destroy any controllers you've created: -->
+```{terminal}
+:copy:
+:user: ubuntu
+:host: my-juju-vm
+juju destroy-controller my-first-juju-controller
+
 WARNING This command will destroy the "my-first-juju-controller" controller and all its resources
 
 
@@ -453,12 +576,26 @@ Destroying controller
 Waiting for model resources to be reclaimed
 All models reclaimed, cleaning up controller machines
 
-# Uninstall the juju client:
-:input: sudo snap remove juju
+```
+
+<!-- # Uninstall the juju client: -->
+```{terminal}
+:copy:
+:user: ubuntu
+:host: my-juju-vm
+sudo snap remove juju
+
 juju removed
 
-# Reset Microk8s:
-:input:  sudo microk8s reset
+```
+
+<!-- # Reset Microk8s: -->
+```{terminal}
+:copy:
+:user: ubuntu
+:host: my-juju-vm
+sudo microk8s reset
+
 Disabling all addons
 Disabling addon : core/cert-manager
 Disabling addon : core/cis-hardening
@@ -491,23 +628,45 @@ Removing StorageClasses
 Restarting cluster
 Setting up the CNI
 
-# Uninstall Microk8s:
-:input: $ sudo snap remove microk8s
+```
+
+<!-- # Uninstall Microk8s: -->
+```{terminal}
+:copy:
+:user: ubuntu
+:host: my-juju-vm
+$ sudo snap remove microk8s
+
 microk8s removed
 
-# Remove your user from the snap_microk8s group:
-:input: sudo gpasswd -d $USER snap_microk8s
+```
+
+% # Remove your user from the snap_microk8s group:
+```{terminal}
+:copy:
+:user: ubuntu
+:host: my-juju-vm
+sudo gpasswd -d $USER snap_microk8s
+
 Removing user ubuntu from group snap_microk8s
 ```
 
 Now exit the VM (in your terminal type `exit`); then, from your host machine, delete the VM:
 
 ```{terminal}
+:copy:
 :user:
 :host:
-:input: multipass delete --purge my-juju-vm
+multipass delete --purge my-juju-vm
 
-:input: multipass list
+```
+
+```{terminal}
+:copy:
+:user:
+:host:
+multipass list
+
 No instances found.
 ```
 

@@ -78,8 +78,8 @@ run_context_background() {
 
 run_go() {
 	VER=$(golangci-lint --version | tr -s ' ' | cut -d ' ' -f 4 | cut -d '.' -f 1,2)
-	if [[ ${VER} != "2.5" ]] && [[ ${VER} != "v2.5.0" ]]; then
-		(echo >&2 -e '\nError: golangci-lint version does not match 2.5.0. Please upgrade/downgrade to the right version.')
+	if [[ ${VER} != "2.11" ]]; then
+		(echo >&2 -e "\nError: golangci-lint version ${VER} does not match 2.11+. Please upgrade/downgrade to the right version.")
 		exit 1
 	fi
 	OUT=$(golangci-lint run -c .golangci.yml 2>&1 | sed '/0 issues./d')
@@ -104,7 +104,7 @@ run_go_fanout() {
 	# Ensure that the following binaries don't import each other, or are not
 	# imported by any other package outside of their own package.
 	for cmd in "containeragent" "jujuc" "jujud"; do
-		LIST=$(find . -type f -name "*.go" | sort -u | xargs grep -EH "github\.com\/juju\/juju\/cmd\/$cmd(\/|\")" | grep -v "^./cmd/$cmd")
+		LIST=$(find . -type f -name "*.go" | sort -u | xargs grep -EH "github\.com\/juju\/juju\/cmd\/$cmd(\/|\")" | grep -v "^./cmd/$cmd" | grep -v "scripts/engine-dag")
 		if [[ -n ${LIST} ]]; then
 			(echo >&2 -e "\\nError: $cmd binary is being used outside of it's package. Refactor the following list:\\n\\n${LIST}")
 			exit 1
@@ -134,8 +134,31 @@ join() {
 run_govulncheck() {
 	ignore=(
 		# The vulnerability below is for a method not used since Juju 1.x.
+		#
 		# https://pkg.go.dev/vuln/GO-2025-3798
 		"GO-2025-3798"
+		# false positive vulnerabilities in github.com/canonical/lxd. These are
+		# resolved in lxd-5.21.4.
+		#
+		# https://pkg.go.dev/vuln/GO-2025-3999
+		# https://pkg.go.dev/vuln/GO-2025-4003
+		"GO-2025-3999"
+		"GO-2025-4003"
+		# The vulnerability is in github.com/canonical/lxd. This is resolved in
+		# the yet to be released lxd-5.21.5.
+		#
+		# https://pkg.go.dev/vuln/GO-2025-4121
+		"GO-2025-4121"
+		# The vulnerabilities below are fixed in the version of
+		# golang.org/x/crypto we now use but the govuln db
+		# seems out of date at the time of writing.
+		# https://pkg.go.dev/vuln/GO-2025-4134
+		# https://pkg.go.dev/vuln/GO-2025-4135
+		"GO-2025-4134"
+		"GO-2025-4135"
+		# LXD daemon vulnerability not client
+		# https://pkg.go.dev/vuln/GO-2026-4595
+		"GO-2026-4595"
 	)
 	ignoreMatcher=$(join "|" "${ignore[@]}")
 

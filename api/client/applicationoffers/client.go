@@ -14,7 +14,7 @@ import (
 	"github.com/juju/juju/core/crossmodel"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/relation"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 	internallogger "github.com/juju/juju/internal/logger"
 	"github.com/juju/juju/rpc/params"
 )
@@ -133,6 +133,7 @@ func offerParamsToDetails(offer params.ApplicationOfferAdminDetailsV5) (*crossmo
 		OfferName:              offer.OfferName,
 		CharmURL:               offer.CharmURL,
 		OfferURL:               offer.OfferURL,
+		OfferUUID:              offer.OfferUUID,
 		Endpoints:              eps,
 	}
 	for _, oc := range offer.Connections {

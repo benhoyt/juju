@@ -10,7 +10,7 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/utils/v4/voyeur"
-	"github.com/juju/worker/v4/dependency"
+	"github.com/juju/worker/v5/dependency"
 	"github.com/prometheus/client_golang/prometheus"
 
 	coreagent "github.com/juju/juju/agent"
@@ -18,6 +18,7 @@ import (
 	"github.com/juju/juju/api"
 	agentlifeflag "github.com/juju/juju/api/agent/lifeflag"
 	"github.com/juju/juju/api/base"
+	proxy "github.com/juju/juju/api/proxy/config"
 	"github.com/juju/juju/core/life"
 	corelogger "github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/machinelock"
@@ -27,7 +28,6 @@ import (
 	coretrace "github.com/juju/juju/core/trace"
 	internallogger "github.com/juju/juju/internal/logger"
 	"github.com/juju/juju/internal/observability/probe"
-	proxy "github.com/juju/juju/internal/proxy/config"
 	"github.com/juju/juju/internal/upgrades"
 	"github.com/juju/juju/internal/upgradesteps"
 	jworker "github.com/juju/juju/internal/worker"
@@ -55,7 +55,7 @@ import (
 	"github.com/juju/juju/internal/worker/trace"
 	"github.com/juju/juju/internal/worker/uniter"
 	"github.com/juju/juju/internal/worker/units3caller"
-	"github.com/juju/juju/internal/worker/upgradestepsmachine"
+	"github.com/juju/juju/internal/worker/upgradestepsagent"
 )
 
 // manifoldsConfig allows specialisation of the result of Manifolds.
@@ -251,7 +251,7 @@ func Manifolds(config manifoldsConfig) dependency.Manifolds {
 		// starts and runs any steps required to upgrade to the
 		// running jujud version. Once upgrade steps have run, the
 		// upgradesteps gate is unlocked and the worker exits.
-		upgradeStepsName: ifNotDead(upgradestepsmachine.Manifold(upgradestepsmachine.ManifoldConfig{
+		upgradeAgentStepsName: ifNotDead(upgradestepsagent.Manifold(upgradestepsagent.ManifoldConfig{
 			AgentName:            agentName,
 			APICallerName:        apiCallerName,
 			UpgradeStepsGateName: upgradeStepsGateName,
@@ -260,8 +260,9 @@ func Manifolds(config manifoldsConfig) dependency.Manifolds {
 			NewAgentStatusSetter: func(ctx context.Context, a base.APICaller) (upgradesteps.StatusSetter, error) {
 				return noopStatusSetter{}, nil
 			},
-			Logger: internallogger.GetLogger("juju.worker.upgradestepsmachine"),
-			Clock:  config.Clock,
+			NewAgentWorker: upgradestepsagent.NewAgentWorker,
+			Logger:         internallogger.GetLogger("juju.worker.upgradestepsagent"),
+			Clock:          config.Clock,
 		})),
 
 		// The migration workers collaborate to run migrations;
@@ -458,10 +459,10 @@ const (
 	leadershipTrackerName = "leadership-tracker"
 	hookRetryStrategyName = "hook-retry-strategy"
 
-	upgraderName         = "upgrader"
-	upgradeStepsName     = "upgrade-steps-runner"
-	upgradeStepsGateName = "upgrade-steps-gate"
-	upgradeStepsFlagName = "upgrade-steps-flag"
+	upgraderName          = "upgrader"
+	upgradeAgentStepsName = "upgrade-agent-steps-runner"
+	upgradeStepsGateName  = "upgrade-steps-gate"
+	upgradeStepsFlagName  = "upgrade-steps-flag"
 
 	migrationFortressName     = "migration-fortress"
 	migrationInactiveFlagName = "migration-inactive-flag"

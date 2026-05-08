@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/juju/clock"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 	"gopkg.in/tomb.v2"
 
 	"github.com/juju/juju/api"
@@ -62,6 +62,8 @@ type Config struct {
 }
 
 type request struct {
+	// Ctx is the context from the *caller*, not from the catacomb.
+	Ctx       context.Context
 	ModelName model.UUID
 	Response  chan response
 }
@@ -126,21 +128,23 @@ func (w *remoteWorker) Wait() error {
 	return w.catacomb.Wait()
 }
 
-func (w *remoteWorker) Report() map[string]any {
-	return w.runner.Report()
+func (w *remoteWorker) Report(ctx context.Context) map[string]any {
+	return w.runner.Report(ctx)
 }
 
 // GetConnectionForModel returns the remote API connection for the
 // specified model. The connection must be valid for the lifetime of the
 // returned RemoteConnection.
 func (w *remoteWorker) GetConnectionForModel(ctx context.Context, modelName model.UUID) (api.Connection, error) {
-	response := make(chan response)
+	// Buffer the response to avoid blocking the worker loop if the caller context
+	// is cancelled after enqueueing the request but before receiving the response.
+	response := make(chan response, 1)
 	select {
 	case <-w.catacomb.Dying():
 		return nil, errors.Capture(ErrAPIRemoteRelationCallerDead)
 	case <-ctx.Done():
 		return nil, errors.Capture(ctx.Err())
-	case w.requests <- request{ModelName: modelName, Response: response}:
+	case w.requests <- request{Ctx: ctx, ModelName: modelName, Response: response}:
 	}
 
 	select {
@@ -154,15 +158,22 @@ func (w *remoteWorker) GetConnectionForModel(ctx context.Context, modelName mode
 }
 
 func (w *remoteWorker) loop() error {
-	ctx := w.catacomb.Context(context.Background())
-
 	for {
 		select {
 		case <-w.catacomb.Dying():
 			return w.catacomb.ErrDying()
 
 		case req := <-w.requests:
-			conn, err := w.getConnectionForModel(ctx, req.ModelName)
+			ctx := w.catacomb.Context(req.Ctx)
+
+			var (
+				conn api.Connection
+				err  error
+			)
+
+			if err = ctx.Err(); err == nil {
+				conn, err = w.getConnectionForModel(ctx, req.ModelName)
+			}
 
 			select {
 			case <-w.catacomb.Dying():
@@ -234,7 +245,7 @@ func (w *connectionWorker) Connection() api.Connection {
 	return w.conn
 }
 
-func (w *connectionWorker) Report() map[string]any {
+func (w *connectionWorker) Report(ctx context.Context) map[string]any {
 	return map[string]any{
 		"addresses":       w.apiInfo.Addrs,
 		"controller-uuid": w.apiInfo.ControllerUUID,

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju script reference: tasks, operations, and script execution on compute resources including actions and terminal commands."
+---
+
 (script)=
 # Script
 

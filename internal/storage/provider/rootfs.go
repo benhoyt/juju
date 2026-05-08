@@ -4,9 +4,11 @@
 package provider
 
 import (
+	"bufio"
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
@@ -318,16 +320,81 @@ func (s *rootfsFilesystemSource) tryBindMount(
 	if err != nil {
 		return false, errors.Annotate(err, "getting target mount-point source")
 	}
-	if targetSource == source {
-		// Already bind mounted.
-		return true, nil
+	var mountErr error
+	if targetSource != source {
+		// Not already bind mounted.
+		mountErr = s.dirFuncs.bindMount(ctx, source, target)
 	}
-	if err := s.dirFuncs.bindMount(ctx, source, target); err != nil {
+	if mountErr != nil {
 		logger.Debugf(ctx, "cannot bind-mount: %v", err)
 	} else {
+		etcDir := s.dirFuncs.etcDir()
+		options := "defaults,bind,nofail"
+		if err := ensureFstabEntry(etcDir, source, target, "none", options); err != nil {
+			return false, errors.Annotate(err, "updating /etc/fstab failed")
+		}
 		return true, nil
 	}
 	return false, nil
+}
+
+// ensureFstabEntry creates an entry in /etc/fstab for
+// the specified source path and mount point so long
+// as there's no existing entry already.
+// Based on `ensureDeviceFstabEntry()` but without
+// the additional parsing for device mounts.
+func ensureFstabEntry(etcDir, sourcePath, mountPoint, fsType, options string) error {
+	f, err := os.Open(filepath.Join(etcDir, "fstab"))
+	if err != nil && !os.IsNotExist(err) {
+		return errors.Annotate(err, "opening /etc/fstab")
+	}
+	if err == nil {
+		defer f.Close()
+	}
+
+	newFsTab, err := os.CreateTemp(etcDir, "juju-fstab-")
+	if err != nil {
+		return errors.Trace(err)
+	}
+	defer func() {
+		_ = newFsTab.Close()
+		_ = os.Remove(newFsTab.Name())
+	}()
+	if err := os.Chmod(newFsTab.Name(), 0644); err != nil {
+		return errors.Trace(err)
+	}
+
+	entry := strings.Join([]string{sourcePath, mountPoint, fsType, options}, " ")
+	addNewEntry := true
+	// Scan all the fstab lines, searching for one
+	// which describes the entry we want to create.
+	scanner := bufio.NewScanner(f)
+	for f != nil && scanner.Scan() {
+		line := scanner.Text()
+		fields := strings.Fields(line)
+		if len(fields) >= 2 &&
+			fields[0] == sourcePath &&
+			fields[1] == mountPoint {
+			addNewEntry = false
+		}
+		_, err := newFsTab.WriteString(line + "\n")
+		if err != nil {
+			return errors.Trace(err)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return errors.Trace(err)
+	}
+
+	if !addNewEntry {
+		return nil
+	}
+
+	if _, err = newFsTab.WriteString(entry + "\n"); err != nil {
+		return errors.Trace(err)
+	}
+
+	return os.Rename(newFsTab.Name(), filepath.Join(etcDir, "fstab"))
 }
 
 func (s *rootfsFilesystemSource) validateSameMountPoints(source, target string) error {

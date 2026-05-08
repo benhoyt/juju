@@ -8,8 +8,8 @@ import (
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/core/secrets"
-	"github.com/juju/juju/internal/cmd"
 )
 
 type secretGetCommand struct {
@@ -35,10 +35,10 @@ func (c *secretGetCommand) Info() *cmd.Info {
 Get the content of a secret with a given secret ID.
 The first time the value is fetched, the latest revision is used.
 Subsequent calls will always return this same revision unless
---peek or --refresh are used.
-Using --peek will fetch the latest revision just this time.
-Using --refresh will fetch the latest revision and continue to
-return the same revision next time unless --peek or --refresh is used.
+` + "`--peek`" + ` or ` + "`--refresh`" + ` are used.
+Using ` + "`--peek`" + ` will fetch the latest revision just this time.
+Using ` + "`--refresh`" + ` will fetch the latest revision and continue to
+return the same revision next time unless ` + "`--peek`" + ` or ` + "`--refresh`" + ` is used.
 
 Either the ID or label can be used to identify the secret.
 `
@@ -54,7 +54,7 @@ Either the ID or label can be used to identify the secret.
 	return jujucmd.Info(&cmd.Info{
 		Name:     "secret-get",
 		Args:     "<ID> [key[#base64]]",
-		Purpose:  "Get the content of a secret.",
+		Purpose:  "Gets the content of a secret.",
 		Doc:      doc,
 		Examples: examples,
 	})
@@ -66,11 +66,11 @@ func (c *secretGetCommand) SetFlags(f *gnuflag.FlagSet) {
 		"yaml": cmd.FormatYaml,
 		"json": cmd.FormatJson,
 	})
-	f.StringVar(&c.label, "label", "", "a label used to identify the secret in hooks")
+	f.StringVar(&c.label, "label", "", "Specifies a label used to identify the secret in hooks.")
 	f.BoolVar(&c.peek, "peek", false,
-		`get the latest revision just this time`)
+		`Gets the latest revision just this time.`)
 	f.BoolVar(&c.refresh, "refresh", false,
-		`get the latest revision and also get this same revision for subsequent calls`)
+		`Gets the latest revision and also gets this same revision for subsequent calls.`)
 }
 
 // Init implements cmd.Command.
@@ -104,7 +104,7 @@ func (c *secretGetCommand) Run(ctx *cmd.Context) error {
 		return err
 	}
 
-	var val interface{}
+	var val any
 	val, err = value.Values()
 	if err != nil {
 		return err

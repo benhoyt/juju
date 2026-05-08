@@ -13,9 +13,9 @@ import (
 
 	"github.com/juju/juju/api/jujuclient/jujuclienttesting"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/application"
 	"github.com/juju/juju/core/crossmodel"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/testhelpers"
 	jtesting "github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc/params"
@@ -35,6 +35,7 @@ func (s *AddRelationSuite) SetUpTest(c *tc.C) {
 		return nil, s.mockAPI.NextErr()
 	}
 }
+
 func TestAddRelationSuite(t *testing.T) {
 	tc.Run(t, &AddRelationSuite{})
 }
@@ -49,15 +50,15 @@ func (s *AddRelationSuite) runAddRelation(c *tc.C, args ...string) error {
 func (s *AddRelationSuite) TestAddRelationWrongNumberOfArguments(c *tc.C) {
 	// No arguments
 	err := s.runAddRelation(c)
-	c.Assert(err, tc.ErrorMatches, "an integration must involve two applications")
+	c.Assert(err, tc.ErrorMatches, "a relation must involve two applications")
 
 	// 1 argument
 	err = s.runAddRelation(c, "application1")
-	c.Assert(err, tc.ErrorMatches, "an integration must involve two applications")
+	c.Assert(err, tc.ErrorMatches, "a relation must involve two applications")
 
 	// more than 2 arguments
 	err = s.runAddRelation(c, "application1", "application2", "application3")
-	c.Assert(err, tc.ErrorMatches, "an integration must involve two applications")
+	c.Assert(err, tc.ErrorMatches, "a relation must involve two applications")
 }
 
 func (s *AddRelationSuite) TestAddRelationSuccess(c *tc.C) {

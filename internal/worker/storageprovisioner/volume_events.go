@@ -119,7 +119,7 @@ func processAliveVolumePlans(
 	}
 
 	for idx, val := range volumeAttachmentPlans {
-		volPlan, err := plans.PlanByType(val.PlanInfo.DeviceType)
+		volPlan, err := plans.PlanByType(storage.DeviceType(val.PlanInfo.DeviceType))
 		if err != nil {
 			if !errors.Is(err, errors.NotFound) {
 				return errors.Trace(err)
@@ -169,7 +169,7 @@ func processDyingVolumePlans(
 	deps.config.Logger.Tracef(ctx, "processDyingVolumePlans: %#v", volumePlans)
 	ids := volumePlansToMachineIds(volumePlans)
 	for _, val := range volumePlans {
-		volPlan, err := plans.PlanByType(val.Result.PlanInfo.DeviceType)
+		volPlan, err := plans.PlanByType(storage.DeviceType(val.Result.PlanInfo.DeviceType))
 		if err != nil {
 			if !errors.Is(err, errors.NotFound) {
 				return errors.Trace(err)
@@ -258,10 +258,6 @@ func volumeAttachmentsChanged(
 // removing them from provisioning-pending as necessary.
 func processDyingVolumes(ctx context.Context, deps *dependencies, tags []names.Tag) error {
 	deps.config.Logger.Tracef(ctx, "volumesChanged: %#v", tags)
-	if deps.isApplicationKind() {
-		// only care dead for application.
-		return nil
-	}
 	for _, tag := range tags {
 		removePendingVolume(ctx, deps, tag.(names.VolumeTag))
 	}
@@ -371,6 +367,10 @@ func processDeadVolumes(
 			destroy = append(destroy, tag)
 			continue
 		}
+		if params.IsCodeNotFound(result.Error) {
+			deps.config.Logger.Debugf(ctx, "dead volume %s is not found", tag.Id())
+			continue
+		}
 		if params.IsCodeNotProvisioned(result.Error) {
 			deps.config.Logger.Debugf(ctx, "volume %s is not provisioned, queuing for removal", tag.Id())
 			remove = append(remove, tag)
@@ -444,10 +444,6 @@ func processAliveVolumes(
 	ctx context.Context,
 	deps *dependencies, tags []names.Tag, volumeResults []params.VolumeResult) error {
 	deps.config.Logger.Tracef(ctx, "processAliveVolumes: %#v %#v", tags, volumeResults)
-	if deps.isApplicationKind() {
-		// only care dead for application kind.
-		return nil
-	}
 
 	// Filter out the already-provisioned volumes.
 	pending := make([]names.VolumeTag, 0, len(tags))
@@ -636,7 +632,7 @@ func volumeAttachmentsFromStorage(in []storage.VolumeAttachment) []params.Volume
 	for i, v := range in {
 		planInfo := &params.VolumeAttachmentPlanInfo{}
 		if v.PlanInfo != nil {
-			planInfo.DeviceType = v.PlanInfo.DeviceType
+			planInfo.DeviceType = v.PlanInfo.DeviceType.String()
 			planInfo.DeviceAttributes = v.PlanInfo.DeviceAttributes
 		} else {
 			planInfo = nil

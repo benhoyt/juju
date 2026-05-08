@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju platform reference: CLI client, agent binaries, releases, version compatibility, and deployment architecture overview."
+---
+
 (juju)=
 # Juju
 

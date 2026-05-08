@@ -79,6 +79,44 @@ func (c *MockRemoteServerConnectionCall) DoAndReturn(f func(context.Context, fun
 	return c
 }
 
+// ControllerID mocks base method.
+func (m *MockRemoteServer) ControllerID() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ControllerID")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// ControllerID indicates an expected call of ControllerID.
+func (mr *MockRemoteServerMockRecorder) ControllerID() *MockRemoteServerControllerIDCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ControllerID", reflect.TypeOf((*MockRemoteServer)(nil).ControllerID))
+	return &MockRemoteServerControllerIDCall{Call: call}
+}
+
+// MockRemoteServerControllerIDCall wrap *gomock.Call
+type MockRemoteServerControllerIDCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockRemoteServerControllerIDCall) Return(arg0 string) *MockRemoteServerControllerIDCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockRemoteServerControllerIDCall) Do(f func() string) *MockRemoteServerControllerIDCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockRemoteServerControllerIDCall) DoAndReturn(f func() string) *MockRemoteServerControllerIDCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // Kill mocks base method.
 func (m *MockRemoteServer) Kill() {
 	m.ctrl.T.Helper()
@@ -111,6 +149,44 @@ func (c *MockRemoteServerKillCall) Do(f func()) *MockRemoteServerKillCall {
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockRemoteServerKillCall) DoAndReturn(f func()) *MockRemoteServerKillCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// Report mocks base method.
+func (m *MockRemoteServer) Report(arg0 context.Context) map[string]any {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Report", arg0)
+	ret0, _ := ret[0].(map[string]any)
+	return ret0
+}
+
+// Report indicates an expected call of Report.
+func (mr *MockRemoteServerMockRecorder) Report(arg0 any) *MockRemoteServerReportCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Report", reflect.TypeOf((*MockRemoteServer)(nil).Report), arg0)
+	return &MockRemoteServerReportCall{Call: call}
+}
+
+// MockRemoteServerReportCall wrap *gomock.Call
+type MockRemoteServerReportCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockRemoteServerReportCall) Return(arg0 map[string]any) *MockRemoteServerReportCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockRemoteServerReportCall) Do(f func(context.Context) map[string]any) *MockRemoteServerReportCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockRemoteServerReportCall) DoAndReturn(f func(context.Context) map[string]any) *MockRemoteServerReportCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

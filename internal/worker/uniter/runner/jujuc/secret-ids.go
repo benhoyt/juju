@@ -7,7 +7,7 @@ import (
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/cmd/cmd"
 )
 
 type secretIdsCommand struct {
@@ -37,7 +37,7 @@ Returns the secret ids for secrets owned by the application.
 `
 	return jujucmd.Info(&cmd.Info{
 		Name:     "secret-ids",
-		Purpose:  "Print secret IDs.",
+		Purpose:  "Prints secret IDs.",
 		Doc:      doc,
 		Examples: examples,
 	})

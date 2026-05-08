@@ -7,6 +7,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/juju/clock"
 	"github.com/juju/tc"
@@ -15,10 +16,10 @@ import (
 	"github.com/juju/juju/controller"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/credential"
+	"github.com/juju/juju/core/database"
 	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/lease"
 	"github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/providertracker"
@@ -145,6 +146,7 @@ func (s *DomainServicesSuite) SeedAdminUser(c *tc.C) {
 				Key:        jujutesting.ControllerTag.Id(),
 			},
 		},
+		time.Now(),
 	)
 	s.AdminUserUUID = uuid
 	err := fn(c.Context(), s.ControllerTxnRunner(), s.NoopTxnRunner())
@@ -302,8 +304,9 @@ func (s *DomainServicesSuite) DomainServicesGetterWithStorageRegistry(c *tc.C, o
 			modelApplicationLeaseManagerGetter(func() lease.LeaseManager {
 				return leaseManager
 			}),
-			c.MkDir(),
+			stubClusterDescriber{},
 			&http.Client{},
+			c.MkDir(),
 			clock,
 			logger,
 		)
@@ -321,6 +324,7 @@ func (s *DomainServicesSuite) ObjectStoreServicesGetter(c *tc.C) ObjectStoreServ
 		return domainservices.NewObjectStoreServices(
 			databasetesting.ConstFactory(s.TxnRunner()),
 			databasetesting.ConstFactory(s.ModelTxnRunner(c, modelUUID.String())),
+			clock.WallClock,
 			loggertesting.WrapCheckLog(c),
 		)
 	}
@@ -342,13 +346,13 @@ func (s *DomainServicesSuite) NoopLeaseManager(c *tc.C) lease.LeaseManager {
 func (s *DomainServicesSuite) SetUpTest(c *tc.C) {
 	s.ControllerModelSuite.SetUpTest(c)
 	if s.ControllerModelUUID == "" {
-		s.ControllerModelUUID = modeltesting.GenModelUUID(c)
+		s.ControllerModelUUID = tc.Must0(c, model.NewUUID)
 	}
 	if s.ControllerConfig == nil {
 		s.ControllerConfig = jujutesting.FakeControllerConfig()
 	}
 	if s.DefaultModelUUID == "" {
-		s.DefaultModelUUID = modeltesting.GenModelUUID(c)
+		s.DefaultModelUUID = tc.Must0(c, model.NewUUID)
 	}
 	s.SeedControllerConfig(c)
 	s.SeedAdminUser(c)
@@ -397,20 +401,20 @@ type TestingObjectStore struct{}
 
 // Get returns an io.ReadCloser for data at path, namespaced to the
 // model.
-func (TestingObjectStore) Get(ctx context.Context, name string) (io.ReadCloser, int64, error) {
-	return nil, 0, errors.Errorf(name+" %w", coreerrors.NotFound)
+func (TestingObjectStore) Get(ctx context.Context, name string) (io.ReadCloser, objectstore.Digest, error) {
+	return nil, objectstore.Digest{}, errors.Errorf(name+" %w", coreerrors.NotFound)
 }
 
 // GetBySHA256 returns an io.ReadCloser for data at path, namespaced to the
 // model.
-func (TestingObjectStore) GetBySHA256(ctx context.Context, sha256 string) (io.ReadCloser, int64, error) {
-	return nil, 0, errors.Errorf(sha256+" %w", coreerrors.NotFound)
+func (TestingObjectStore) GetBySHA256(ctx context.Context, sha256 string) (io.ReadCloser, objectstore.Digest, error) {
+	return nil, objectstore.Digest{}, errors.Errorf(sha256+" %w", coreerrors.NotFound)
 }
 
 // GetBySHA256Prefix returns an io.ReadCloser for data at path, namespaced to the
 // model.
-func (TestingObjectStore) GetBySHA256Prefix(ctx context.Context, sha256 string) (io.ReadCloser, int64, error) {
-	return nil, 0, errors.Errorf(sha256+" %w", coreerrors.NotFound)
+func (TestingObjectStore) GetBySHA256Prefix(ctx context.Context, sha256 string) (io.ReadCloser, objectstore.Digest, error) {
+	return nil, objectstore.Digest{}, errors.Errorf(sha256+" %w", coreerrors.NotFound)
 }
 
 // Put stores data from reader at path, namespaced to the model.
@@ -554,5 +558,13 @@ func (s stubProvider) StorageProvider(storage.ProviderType) (storage.Provider, e
 
 // StorageProviderTypes implements providertracker.Provider.
 func (s stubProvider) StorageProviderTypes() ([]storage.ProviderType, error) {
+	return nil, nil
+}
+
+type stubClusterDescriber struct{}
+
+// ClusterDetails returns the node information for Dqlite nodes configured to be
+// in the cluster.
+func (stubClusterDescriber) ClusterDetails(context.Context) ([]database.ClusterNodeInfo, error) {
 	return nil, nil
 }

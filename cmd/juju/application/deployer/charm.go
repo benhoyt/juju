@@ -16,6 +16,7 @@ import (
 	"github.com/juju/juju/api/client/resources"
 	commoncharm "github.com/juju/juju/api/common/charm"
 	apicharms "github.com/juju/juju/api/common/charms"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/application/utils"
 	coreapplication "github.com/juju/juju/core/application"
 	corebase "github.com/juju/juju/core/base"
@@ -23,9 +24,9 @@ import (
 	"github.com/juju/juju/core/devices"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/model"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/storage"
+	"github.com/juju/juju/core/storage"
+	"github.com/juju/juju/domain/deployment/charm"
+	internalstorage "github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/internal/storage/provider"
 )
 
@@ -89,7 +90,7 @@ func (d *deployCharm) deploy(
 			continue
 		}
 		for _, s := range d.storage {
-			if !provider.AllowedContainerProvider(storage.ProviderType(s.Pool)) {
+			if !provider.AllowedContainerProvider(internalstorage.ProviderType(s.Pool)) {
 				return errors.NotSupportedf("adding storage of type %q to %s container", s.Pool, string(t))
 			}
 		}

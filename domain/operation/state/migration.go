@@ -8,6 +8,7 @@ import (
 
 	"github.com/canonical/sqlair"
 
+	coreoperation "github.com/juju/juju/core/operation"
 	"github.com/juju/juju/domain/operation/internal"
 	"github.com/juju/juju/internal/errors"
 )
@@ -51,7 +52,9 @@ func (st *State) InsertMigratingOperations(ctx context.Context, args internal.Im
 			}
 
 			// Insert operation action if any
-			if ops.Application != "" {
+			// juju-exec actions are special system actions that don't require charm metadata,
+			// so we skip charm UUID retrieval for them.
+			if ops.Application != "" && !coreoperation.IsJujuExecAction(ops.ActionName) {
 				charmUUID, err := st.getCharmUUIDByApplication(ctx, tx, ops.Application)
 				if err != nil {
 					return errors.Errorf("getting charm UUID for application %q: %w", ops.Application, err)
@@ -101,7 +104,7 @@ func (st *State) InsertMigratingOperations(ctx context.Context, args internal.Im
 						task.ID, task.StorePath, ops.ID, err)
 				}
 
-				err = st.insertOperationTaskStatus(ctx, tx, task.UUID, task.Status)
+				err = st.insertOperationTaskStatus(ctx, tx, task.UUID, task.Status, task.Message)
 				if err != nil {
 					return errors.Errorf("inserting task %q status at operation %q: %w", task.ID, ops.ID, err)
 				}
@@ -121,34 +124,6 @@ func (st *State) InsertMigratingOperations(ctx context.Context, args internal.Im
 	}
 
 	return nil
-}
-
-// DeleteImportedOperations deletes all imported operations in a model during rollback.
-// it returns all the storePaths of the deleted operations.
-func (st *State) DeleteImportedOperations(ctx context.Context) ([]string, error) {
-	db, err := st.DB(ctx)
-	if err != nil {
-		return nil, errors.Capture(err)
-	}
-
-	var storePaths []string
-	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		opUUIDs, err := st.getAllOperationUUIDs(ctx, tx)
-		if err != nil {
-			return errors.Errorf("getting all operation UUIDs: %w", err)
-		}
-		storePaths, err = st.deleteOperationByUUIDs(ctx, tx, opUUIDs)
-		if err != nil {
-			return errors.Errorf("deleting operations: %w", err)
-		}
-
-		return nil
-	})
-	if err != nil {
-		return nil, errors.Errorf("deleting imported operations: %w", err)
-	}
-
-	return storePaths, nil
 }
 
 // nilZeroPtr returns a pointer to the given value if it is not zero, or nil if it is.

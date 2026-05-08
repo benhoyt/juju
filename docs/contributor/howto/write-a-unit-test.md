@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn how to write unit tests for Juju using gocheck, including creating test files, suites, and implementing effective test patterns."
+---
+
 (write-a-unit-test)=
 # Write a unit test
 > See also: {ref}`unit-testing`

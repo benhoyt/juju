@@ -27,61 +27,88 @@ func (s *statusSuite) SetUpTest(c *tc.C) {
 	s.now = time.Now()
 }
 
-func (s *statusSuite) TestEncodeK8sPodStatus(c *tc.C) {
-	testCases := []struct {
-		input  corestatus.StatusInfo
-		output status.StatusInfo[status.K8sPodStatusType]
-	}{
-		{
-			input: corestatus.StatusInfo{
-				Status: corestatus.Waiting,
-			},
-			output: status.StatusInfo[status.K8sPodStatusType]{
+func (s *statusSuite) TestEncodeDecodeK8sPodStatus(c *tc.C) {
+	c.Run("Waiting", func(t *testing.T) {
+		input := corestatus.StatusInfo{
+			Status: corestatus.Waiting,
+		}
+		output, err := encodeK8sPodStatus(input)
+		tc.Assert(t, err, tc.ErrorIsNil)
+		tc.Assert(t, output, tc.DeepEquals,
+			status.StatusInfo[status.K8sPodStatusType]{
 				Status: status.K8sPodStatusWaiting,
 			},
-		},
-		{
-			input: corestatus.StatusInfo{
-				Status: corestatus.Blocked,
-			},
-			output: status.StatusInfo[status.K8sPodStatusType]{
+		)
+		result, err := decodeK8sPodStatus(output)
+		tc.Assert(t, err, tc.ErrorIsNil)
+		tc.Assert(t, result, tc.DeepEquals, input)
+	})
+	c.Run("Blocked", func(t *testing.T) {
+		input := corestatus.StatusInfo{
+			Status: corestatus.Blocked,
+		}
+		output, err := encodeK8sPodStatus(input)
+		tc.Assert(t, err, tc.ErrorIsNil)
+		tc.Assert(t, output, tc.DeepEquals,
+			status.StatusInfo[status.K8sPodStatusType]{
 				Status: status.K8sPodStatusBlocked,
 			},
-		},
-		{
-			input: corestatus.StatusInfo{
-				Status: corestatus.Running,
-			},
-			output: status.StatusInfo[status.K8sPodStatusType]{
+		)
+		result, err := decodeK8sPodStatus(output)
+		tc.Assert(t, err, tc.ErrorIsNil)
+		tc.Assert(t, result, tc.DeepEquals, input)
+	})
+	c.Run("Running", func(t *testing.T) {
+		input := corestatus.StatusInfo{
+			Status: corestatus.Running,
+		}
+		output, err := encodeK8sPodStatus(input)
+		tc.Assert(t, err, tc.ErrorIsNil)
+		tc.Assert(t, output, tc.DeepEquals,
+			status.StatusInfo[status.K8sPodStatusType]{
 				Status: status.K8sPodStatusRunning,
 			},
-		},
-		{
-			input: corestatus.StatusInfo{
-				Status:  corestatus.Running,
-				Message: "I'm active!",
-				Data:    map[string]interface{}{"foo": "bar"},
-				Since:   &s.now,
-			},
-			output: status.StatusInfo[status.K8sPodStatusType]{
+		)
+		result, err := decodeK8sPodStatus(output)
+		tc.Assert(t, err, tc.ErrorIsNil)
+		tc.Assert(t, result, tc.DeepEquals, input)
+	})
+	c.Run("RunningWithData", func(t *testing.T) {
+		input := corestatus.StatusInfo{
+			Status:  corestatus.Running,
+			Message: "I'm active!",
+			Data:    map[string]any{"foo": "bar"},
+			Since:   &s.now,
+		}
+		output, err := encodeK8sPodStatus(input)
+		tc.Assert(t, err, tc.ErrorIsNil)
+		tc.Assert(t, output, tc.DeepEquals,
+			status.StatusInfo[status.K8sPodStatusType]{
 				Status:  status.K8sPodStatusRunning,
 				Message: "I'm active!",
 				Data:    []byte(`{"foo":"bar"}`),
 				Since:   &s.now,
 			},
-		},
-	}
-
-	for i, test := range testCases {
-		c.Run(fmt.Sprintf("Test %d", i), func(t *testing.T) {
-			output, err := encodeK8sPodStatus(test.input)
-			tc.Assert(t, err, tc.ErrorIsNil)
-			tc.Assert(t, output, tc.DeepEquals, test.output)
-			result, err := decodeK8sPodStatus(output)
-			tc.Assert(t, err, tc.ErrorIsNil)
-			tc.Assert(t, result, tc.DeepEquals, test.input)
-		})
-	}
+		)
+		result, err := decodeK8sPodStatus(output)
+		tc.Assert(t, err, tc.ErrorIsNil)
+		tc.Assert(t, result, tc.DeepEquals, input)
+	})
+	c.Run("Error", func(t *testing.T) {
+		input := corestatus.StatusInfo{
+			Status: corestatus.Error,
+		}
+		output, err := encodeK8sPodStatus(input)
+		tc.Assert(t, err, tc.ErrorIsNil)
+		tc.Assert(t, output, tc.DeepEquals,
+			status.StatusInfo[status.K8sPodStatusType]{
+				Status: status.K8sPodStatusError,
+			},
+		)
+		result, err := decodeK8sPodStatus(output)
+		tc.Assert(t, err, tc.ErrorIsNil)
+		tc.Assert(t, result, tc.DeepEquals, input)
+	})
 }
 
 func (s *statusSuite) TestEncodeUnitAgentStatus(c *tc.C) {
@@ -193,7 +220,7 @@ func (s *statusSuite) TestDecodeUnitDisplayAndAgentStatus(c *tc.C) {
 	c.Assert(workload, tc.DeepEquals, corestatus.StatusInfo{
 		Status:  corestatus.Error,
 		Since:   &s.now,
-		Data:    map[string]interface{}{"foo": "bar"},
+		Data:    map[string]any{"foo": "bar"},
 		Message: "hook failed: hook-name",
 	})
 }
@@ -263,7 +290,7 @@ func (s *statusSuite) TestEncodeWorkloadStatus(c *tc.C) {
 			input: corestatus.StatusInfo{
 				Status:  corestatus.Active,
 				Message: "I'm active!",
-				Data:    map[string]interface{}{"foo": "bar"},
+				Data:    map[string]any{"foo": "bar"},
 				Since:   &s.now,
 			},
 			output: status.StatusInfo[status.WorkloadStatusType]{
@@ -302,7 +329,7 @@ func (s *statusSuite) TestSelectWorkloadOrK8sPodStatusWorkloadTerminatedBlockedM
 	expected := corestatus.StatusInfo{
 		Status:  corestatus.Terminated,
 		Message: "msg",
-		Data:    map[string]interface{}{"key": "value"},
+		Data:    map[string]any{"key": "value"},
 		Since:   &s.now,
 	}
 
@@ -340,7 +367,7 @@ func (s *statusSuite) TestSelectWorkloadOrK8sPodStatusContainerBlockedDominates(
 	c.Assert(info, tc.DeepEquals, corestatus.StatusInfo{
 		Status:  corestatus.Blocked,
 		Message: "msg",
-		Data:    map[string]interface{}{"key": "value"},
+		Data:    map[string]any{"key": "value"},
 		Since:   &s.now,
 	})
 }
@@ -362,12 +389,12 @@ func (s *statusSuite) TestSelectWorkloadOrK8sPodStatusContainerWaitingDominatesA
 	c.Assert(info, tc.DeepEquals, corestatus.StatusInfo{
 		Status:  corestatus.Waiting,
 		Message: "msg",
-		Data:    map[string]interface{}{"key": "value"},
+		Data:    map[string]any{"key": "value"},
 		Since:   &s.now,
 	})
 }
 
-func (s *statusSuite) TestSelectWorkloadOrK8sPodStatusContainerRunningDominatesWaitingWorkload(c *tc.C) {
+func (s *statusSuite) TestSelectWorkloadOrK8sPodStatusContainerRunningDominatesWaitingWorkloadForCertainMessages(c *tc.C) {
 	workloadStatus := status.StatusInfo[status.WorkloadStatusType]{
 		Status: status.WorkloadStatusWaiting,
 	}
@@ -379,12 +406,41 @@ func (s *statusSuite) TestSelectWorkloadOrK8sPodStatusContainerRunningDominatesW
 		Since:   &s.now,
 	}
 
+	for _, msg := range []string{
+		corestatus.MessageWaitForContainer,
+		corestatus.MessageInitializingAgent,
+		corestatus.MessageInstallingAgent,
+	} {
+		workloadStatus.Message = msg
+		info, err := selectWorkloadOrK8sPodStatus(workloadStatus, containerStatus, true)
+		c.Assert(err, tc.ErrorIsNil)
+		c.Check(info, tc.DeepEquals, corestatus.StatusInfo{
+			Status:  corestatus.Running,
+			Message: "msg",
+			Data:    map[string]any{"key": "value"},
+			Since:   &s.now,
+		})
+	}
+}
+
+func (s *statusSuite) TestSelectWorkloadOrK8sPodStatusContainerRunnerWorkloadDominatedForMiscMessages(c *tc.C) {
+	workloadStatus := status.StatusInfo[status.WorkloadStatusType]{
+		Status:  status.WorkloadStatusWaiting,
+		Message: "foo",
+		Data:    []byte(`{"key":"value"}`),
+		Since:   &s.now,
+	}
+
+	containerStatus := status.StatusInfo[status.K8sPodStatusType]{
+		Status: status.K8sPodStatusRunning,
+	}
+
 	info, err := selectWorkloadOrK8sPodStatus(workloadStatus, containerStatus, true)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(info, tc.DeepEquals, corestatus.StatusInfo{
-		Status:  corestatus.Running,
-		Message: "msg",
-		Data:    map[string]interface{}{"key": "value"},
+	c.Check(info, tc.DeepEquals, corestatus.StatusInfo{
+		Status:  corestatus.Waiting,
+		Message: "foo",
+		Data:    map[string]any{"key": "value"},
 		Since:   &s.now,
 	})
 }
@@ -586,7 +642,7 @@ func (s *statusSuite) TestApplicationDisplayStatusFromUnitsWithError(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(info, tc.DeepEquals, corestatus.StatusInfo{
 		Status: corestatus.Error,
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"foo": "baz",
 		},
 		Message: "hook failed: hook-name",
@@ -597,58 +653,76 @@ func (s *statusSuite) TestApplicationDisplayStatusFromUnitsWithError(c *tc.C) {
 func (s *statusSuite) TestEncodeMachineStatus(c *tc.C) {
 	testCases := []struct {
 		input  corestatus.StatusInfo
-		output status.StatusInfo[status.MachineStatusType]
+		output status.MachineStatusInfo[status.MachineStatusType]
 	}{
 		{
 			input: corestatus.StatusInfo{
 				Status: corestatus.Started,
 			},
-			output: status.StatusInfo[status.MachineStatusType]{
-				Status: status.MachineStatusStarted,
+			output: status.MachineStatusInfo[status.MachineStatusType]{
+				StatusInfo: status.StatusInfo[status.MachineStatusType]{
+					Status: status.MachineStatusStarted,
+				},
+				Present: true,
 			},
 		},
 		{
 			input: corestatus.StatusInfo{
 				Status: corestatus.Stopped,
 			},
-			output: status.StatusInfo[status.MachineStatusType]{
-				Status: status.MachineStatusStopped,
+			output: status.MachineStatusInfo[status.MachineStatusType]{
+				StatusInfo: status.StatusInfo[status.MachineStatusType]{
+					Status: status.MachineStatusStopped,
+				},
+				Present: true,
 			},
 		},
 		{
 			input: corestatus.StatusInfo{
 				Status: corestatus.Error,
 			},
-			output: status.StatusInfo[status.MachineStatusType]{
-				Status: status.MachineStatusError,
+			output: status.MachineStatusInfo[status.MachineStatusType]{
+				StatusInfo: status.StatusInfo[status.MachineStatusType]{
+					Status: status.MachineStatusError,
+				},
+				Present: true,
 			},
 		},
 		{
 			input: corestatus.StatusInfo{
 				Status: corestatus.Pending,
 			},
-			output: status.StatusInfo[status.MachineStatusType]{
-				Status: status.MachineStatusPending,
+			output: status.MachineStatusInfo[status.MachineStatusType]{
+				StatusInfo: status.StatusInfo[status.MachineStatusType]{
+					Status: status.MachineStatusPending,
+				},
+				Present: true,
 			},
 		},
 		{
 			input: corestatus.StatusInfo{
 				Status: corestatus.Down,
 			},
-			output: status.StatusInfo[status.MachineStatusType]{
-				Status: status.MachineStatusDown,
+			output: status.MachineStatusInfo[status.MachineStatusType]{
+				StatusInfo: status.StatusInfo[status.MachineStatusType]{
+					Status: status.MachineStatusDown,
+				},
+				Present: true,
 			},
 		},
 		{
 			input: corestatus.StatusInfo{
 				Status: corestatus.Down,
-				Data: map[string]interface{}{
+				Data: map[string]any{
 					"foo": "bar",
 				},
 			},
-			output: status.StatusInfo[status.MachineStatusType]{
-				Status: status.MachineStatusDown,
-				Data:   []byte(`{"foo":"bar"}`),
+			output: status.MachineStatusInfo[status.MachineStatusType]{
+				StatusInfo: status.StatusInfo[status.MachineStatusType]{
+					Status: status.MachineStatusDown,
+					Data:   []byte(`{"foo":"bar"}`),
+				},
+				Present: true,
 			},
 		},
 	}
@@ -657,8 +731,9 @@ func (s *statusSuite) TestEncodeMachineStatus(c *tc.C) {
 		c.Logf("test %d", i)
 		output, err := encodeMachineStatus(test.input)
 		c.Assert(err, tc.ErrorIsNil)
-		c.Assert(output, tc.DeepEquals, test.output)
-		result, err := decodeMachineStatus(output)
+		c.Assert(output, tc.DeepEquals, test.output.StatusInfo)
+
+		result, err := decodeMachineStatus(output, test.output.Present)
 		c.Assert(err, tc.ErrorIsNil)
 		c.Assert(result, tc.DeepEquals, test.input)
 	}
@@ -671,10 +746,10 @@ func (s *statusSuite) TestEncodeInstanceStatus(c *tc.C) {
 	}{
 		{
 			input: corestatus.StatusInfo{
-				Status: corestatus.Unset,
+				Status: corestatus.Unknown,
 			},
 			output: status.StatusInfo[status.InstanceStatusType]{
-				Status: status.InstanceStatusUnset,
+				Status: status.InstanceStatusUnknown,
 			},
 		},
 		{
@@ -704,7 +779,7 @@ func (s *statusSuite) TestEncodeInstanceStatus(c *tc.C) {
 		{
 			input: corestatus.StatusInfo{
 				Status: corestatus.Running,
-				Data: map[string]interface{}{
+				Data: map[string]any{
 					"foo": "bar",
 				},
 			},

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Execute commands in a unit's hook context using juju-exec, including relation context, remote units, and operator-specific execution."
+---
+
 (juju-exec)=
 # `juju-exec`
 

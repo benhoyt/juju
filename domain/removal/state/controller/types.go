@@ -13,3 +13,7 @@ type entityUUID struct {
 type entityLife struct {
 	Life int `db:"life_id"`
 }
+
+type count struct {
+	Count int `db:"count"`
+}

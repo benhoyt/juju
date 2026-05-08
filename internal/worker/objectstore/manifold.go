@@ -10,8 +10,8 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
 
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/controller"
@@ -20,6 +20,7 @@ import (
 	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/model"
 	coreobjectstore "github.com/juju/juju/core/objectstore"
+	objectstoreservice "github.com/juju/juju/domain/objectstore/service"
 	"github.com/juju/juju/internal/objectstore"
 	"github.com/juju/juju/internal/services"
 	"github.com/juju/juju/internal/worker/apiremotecaller"
@@ -54,7 +55,7 @@ type ModelClaimGetter interface {
 
 // MetadataService is the interface that is used to get a object store.
 type MetadataService interface {
-	ObjectStore() coreobjectstore.ObjectStoreMetadata
+	ObjectStore() coreobjectstore.RemoteObjectStoreMetadata
 }
 
 // ControllerConfigService is the interface that the worker uses to get the
@@ -67,6 +68,18 @@ type ControllerConfigService interface {
 // GetControllerConfigServiceFunc is a helper function that gets a service from
 // the manifold.
 type GetControllerConfigServiceFunc func(getter dependency.Getter, name string) (ControllerConfigService, error)
+
+// ObjectStoreService is the interface that the worker uses to get the active
+// object store backend.
+type ObjectStoreService interface {
+	// GetActiveObjectStoreBackend returns the active object store backend
+	// information.
+	GetActiveObjectStoreBackend(ctx context.Context) (objectstoreservice.BackendInfo, error)
+}
+
+// GetObjectStoreServiceFunc is a helper function that gets a service from
+// the manifold.
+type GetObjectStoreServiceFunc func(getter dependency.Getter, name string) (ObjectStoreService, error)
 
 // GetMetadataServiceFunc is a helper function that gets a service from
 // the manifold.
@@ -89,6 +102,7 @@ type ManifoldConfig struct {
 	Logger                     logger.Logger
 	NewObjectStoreWorker       objectstore.ObjectStoreWorkerFunc
 	GetControllerConfigService GetControllerConfigServiceFunc
+	GetObjectStoreService      GetObjectStoreServiceFunc
 	GetMetadataService         GetMetadataServiceFunc
 	IsBootstrapController      IsBootstrapControllerFunc
 }
@@ -106,6 +120,9 @@ func (cfg ManifoldConfig) Validate() error {
 	}
 	if cfg.GetControllerConfigService == nil {
 		return errors.NotValidf("nil GetControllerConfigService")
+	}
+	if cfg.GetObjectStoreService == nil {
+		return errors.NotValidf("nil GetObjectStoreService")
 	}
 	if cfg.GetMetadataService == nil {
 		return errors.NotValidf("nil GetMetadataService")
@@ -165,6 +182,10 @@ func Manifold(config ManifoldConfig) dependency.Manifold {
 			if err != nil {
 				return nil, errors.Trace(err)
 			}
+			objectStoreService, err := config.GetObjectStoreService(getter, config.ObjectStoreServicesName)
+			if err != nil {
+				return nil, errors.Trace(err)
+			}
 			metadataService, err := config.GetMetadataService(getter, config.ObjectStoreServicesName)
 			if err != nil {
 				return nil, errors.Trace(err)
@@ -199,7 +220,17 @@ func Manifold(config ManifoldConfig) dependency.Manifold {
 				return nil, errors.Trace(err)
 			}
 
-			dataDir := a.CurrentConfig().DataDir()
+			backendInfo, err := objectStoreService.GetActiveObjectStoreBackend(ctx)
+			if err != nil {
+				return nil, errors.Trace(err)
+			}
+
+			currentConfig := a.CurrentConfig()
+			dataDir := currentConfig.DataDir()
+
+			// The controller node ID is the machine ID of the current
+			// controller.
+			controllerNodeID := currentConfig.Tag().Id()
 
 			w, err := NewWorker(WorkerConfig{
 				TracerGetter:              tracerGetter,
@@ -208,10 +239,12 @@ func Manifold(config ManifoldConfig) dependency.Manifold {
 				Clock:                     config.Clock,
 				Logger:                    config.Logger,
 				NewObjectStoreWorker:      config.NewObjectStoreWorker,
+				NewTrackerWorker:          NewTrackerWorker,
+				NewControllerWorker:       NewControllerWorker,
 				S3Client:                  s3Client,
 				APIRemoteCaller:           apiRemoteCaller,
 				ControllerMetadataService: metadataService,
-				ControllerConfigService:   controllerConfigService,
+				ObjectStoreService:        objectStoreService,
 				ModelServiceGetter: modelServiceGetter{
 					servicesGetter: objectStoreServicesGetter,
 				},
@@ -221,7 +254,8 @@ func Manifold(config ManifoldConfig) dependency.Manifold {
 				ModelClaimGetter: modelClaimGetter{
 					manager: leaseManager,
 				},
-				AllowDraining: AllowDraining(controllerConfig, config.IsBootstrapController(dataDir)),
+				AllowDraining:    AllowDraining(backendInfo, config.IsBootstrapController(dataDir)),
+				ControllerNodeID: controllerNodeID,
 			})
 			return w, errors.Trace(err)
 		},
@@ -263,7 +297,7 @@ type controllerMetadataService struct {
 
 // ObjectStore returns the object store metadata for the controller model.
 // This is the global object store.
-func (s controllerMetadataService) ObjectStore() coreobjectstore.ObjectStoreMetadata {
+func (s controllerMetadataService) ObjectStore() coreobjectstore.RemoteObjectStoreMetadata {
 	return s.factory.AgentObjectStore()
 }
 
@@ -281,7 +315,7 @@ type modelMetadataService struct {
 }
 
 // ObjectStore returns the object store metadata for the given model UUID
-func (s modelMetadataService) ObjectStore() coreobjectstore.ObjectStoreMetadata {
+func (s modelMetadataService) ObjectStore() coreobjectstore.RemoteObjectStoreMetadata {
 	return s.factory.ObjectStore()
 }
 
@@ -379,6 +413,14 @@ func GetControllerConfigService(getter dependency.Getter, name string) (Controll
 	})
 }
 
+// GetObjectStoreService is a helper function that gets a service from the
+// manifold.
+func GetObjectStoreService(getter dependency.Getter, name string) (ObjectStoreService, error) {
+	return coredependency.GetDependencyByName(getter, name, func(factory services.ControllerObjectStoreServices) ObjectStoreService {
+		return factory.AgentObjectStore()
+	})
+}
+
 // GetMetadataService is a helper function that gets a service from the
 // manifold.
 func GetMetadataService(getter dependency.Getter, name string) (MetadataService, error) {
@@ -391,6 +433,6 @@ func GetMetadataService(getter dependency.Getter, name string) (MetadataService,
 
 // AllowDraining returns true if the worker should allow draining. This
 // currently is only true for the bootstrap controller.
-func AllowDraining(config controller.Config, isBootstrapController bool) bool {
-	return config.ObjectStoreType() == coreobjectstore.S3Backend && isBootstrapController
+func AllowDraining(info objectstoreservice.BackendInfo, isBootstrapController bool) bool {
+	return info.Type == coreobjectstore.S3Backend && isBootstrapController
 }

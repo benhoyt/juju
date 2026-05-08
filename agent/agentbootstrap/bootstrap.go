@@ -75,6 +75,7 @@ type AgentBootstrap struct {
 
 	stateInitializationParams instancecfg.StateInitializationParams
 
+	clock clock.Clock
 	// StorageProviderRegistry is used to determine and store the
 	// details of the default storage pools.
 	logger logger.Logger
@@ -132,6 +133,7 @@ func NewAgentBootstrap(args AgentBootstrapArgs) (*AgentBootstrap, error) {
 		adminUser:                 args.AdminUser,
 		agentConfig:               args.AgentConfig,
 		bootstrapDqlite:           args.BootstrapDqlite,
+		clock:                     clock.WallClock,
 		logger:                    args.Logger,
 		stateInitializationParams: args.StateInitializationParams,
 	}, nil
@@ -149,14 +151,6 @@ func (b *AgentBootstrap) Initialize(ctx context.Context) (resultErr error) {
 	if !ok {
 		return errors.Errorf("controller agent info not available")
 	}
-
-	// N.B. no users are set up when we're initializing the state,
-	// so don't use any tag or password when opening it.
-	info, ok := agentConfig.MongoInfo()
-	if !ok {
-		return errors.Errorf("state info not available")
-	}
-	info.Tag = nil
 
 	stateParams := b.stateInitializationParams
 
@@ -187,6 +181,7 @@ func (b *AgentBootstrap) Initialize(ctx context.Context) (resultErr error) {
 				Key:        controllerUUID.String(),
 			},
 		},
+		b.clock.Now().UTC(),
 	)
 
 	controllerModelArgs := modeldomain.GlobalModelCreationArgs{
@@ -254,7 +249,7 @@ func (b *AgentBootstrap) Initialize(ctx context.Context) (resultErr error) {
 	if !isCAAS {
 		databaseBootstrapOptions = append(databaseBootstrapOptions,
 			cloudimagemetadatabootstrap.AddCustomImageMetadata(
-				clock.WallClock, stateParams.ControllerModelConfig.ImageStream(), stateParams.CustomImageMetadata),
+				b.clock, stateParams.ControllerModelConfig.ImageStream(), stateParams.CustomImageMetadata),
 		)
 	}
 
@@ -275,7 +270,6 @@ func (b *AgentBootstrap) Initialize(ctx context.Context) (resultErr error) {
 		return errors.Trace(err)
 	}
 
-	b.logger.Debugf(ctx, "initializing address %v", info.Addrs)
 	b.agentConfig.SetControllerAgentInfo(controllerAgentInfo)
 
 	// Create a new password. It is used down below to set  the agent's initial

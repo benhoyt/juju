@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Deploy applications on Amazon EKS with Juju, including Kubernetes cloud setup, storage providers, and EKS-specific configuration details."
+---
+
 (cloud-kubernetes-eks)=
 # The Amazon EKS cloud and Juju
 

@@ -16,14 +16,14 @@ import (
 	charmscommon "github.com/juju/juju/apiserver/internal/charms"
 	corecharm "github.com/juju/juju/core/charm"
 	corehttp "github.com/juju/juju/core/http"
-	"github.com/juju/juju/internal/charm/repository"
+	"github.com/juju/juju/domain/deployment/charm/repository"
 )
 
 // Register is called to expose a package of facades onto a given registry.
 func Register(registry facade.FacadeRegistry) {
 	registry.MustRegister("Charms", 7, func(stdCtx context.Context, ctx facade.ModelContext) (facade.Facade, error) {
 		return newFacadeV7(stdCtx, ctx)
-	}, reflect.TypeOf((*APIv7)(nil)))
+	}, reflect.TypeFor[*APIv7]())
 }
 
 func newFacadeV7(stdCtx context.Context, ctx facade.ModelContext) (*APIv7, error) {

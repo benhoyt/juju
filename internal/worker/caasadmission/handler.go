@@ -4,6 +4,7 @@
 package caasadmission
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,9 +25,9 @@ import (
 )
 
 type patchOperation struct {
-	Op    string      `json:"op"`
-	Path  string      `json:"path"`
-	Value interface{} `json:"value,omitempty"`
+	Op    string `json:"op"`
+	Path  string `json:"path"`
+	Value any    `json:"value,omitempty"`
 }
 
 type RBACMapper interface {
@@ -155,7 +156,7 @@ func admissionHandler(logger logger.Logger, rbacMapper RBACMapper, labelVersion 
 		}
 
 		patchJSON, err := json.Marshal(
-			patchForLabels(metaObj.Labels, appName, labelVersion, controllerUUID, modelUUID, modelName))
+			patchForLabels(req.Context(), logger, metaObj.Labels, appName, labelVersion, controllerUUID, modelUUID, modelName))
 		if err != nil {
 			http.Error(res,
 				fmt.Sprintf("marshalling patch object to json: %v", err),
@@ -193,6 +194,8 @@ func patchEscape(s string) string {
 }
 
 func patchForLabels(
+	ctx context.Context,
+	logger logger.Logger,
 	labels map[string]string,
 	appName string,
 	labelVersion providerconst.LabelVersion,
@@ -212,6 +215,14 @@ func patchForLabels(
 
 	for k, v := range neededLabels {
 		if extVal, found := labels[k]; found && extVal != v {
+			// Avoid overriding an existing app.kubernetes.io/managed-by label.
+			// For example, the spark-integration-hub-k8s and kyuubi-k8s integration
+			// relies on the label selector app.kubernetes.io/managed-by=spark8t, which is used by a
+			// watcher service to inject additional Spark configuration via K8s secrets.
+			if k == providerconst.LabelKubernetesAppManaged {
+				logger.Debugf(ctx, "skipping patch to existing managed-by label, ext value found: %q", extVal)
+				continue
+			}
 			patches = append(patches, patchOperation{
 				Op:    replaceOp,
 				Path:  fmt.Sprintf("/metadata/labels/%s", patchEscape(k)),

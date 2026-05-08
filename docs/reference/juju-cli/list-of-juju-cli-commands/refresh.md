@@ -12,7 +12,7 @@ Refresh an application's charm.
 | Flag | Default | Usage |
 | --- | --- | --- |
 | `-B`, `--no-browser-login` | false | Do not use web browser for authentication |
-| `--base` |  | Select a different base than what is currently running. |
+| `--base` |  | Specifies the base to match when picking the charm. |
 | `--bind` |  | Configure application endpoint bindings to spaces |
 | `--channel` |  | Channel to use when getting the charm from Charmhub |
 | `--config` |  | Either a path to yaml-formatted application config file or a key=value pair  |
@@ -44,9 +44,8 @@ To refresh the resources for application `foo`:
 
 ## Details
 
-When no options are set, the application's charm will be refreshed to the latest
-revision available in the repository from which it was originally deployed. An
-explicit revision can be chosen with the `--revision` option.
+When no options are set, the application's charm will be refreshed to the latest revision 
+in its current channel. An explicit revision can be chosen with the --revision option. 
 
 Refreshing a local packaged charm will require a path to be supplied to allow an
 updated copy of the charm.
@@ -119,3 +118,9 @@ cause unexpected behavior.
 `--force` option for LXD Profiles is not generally recommended when upgrading an
 application; overriding profiles on the container may cause unexpected
 behavior.
+
+### Behavior on machines vs. Kubernetes
+
+On machines, charm upgrades happen at the same time on all units of an application.
+However, on Kubernetes, because Juju deploys applications as `StatefulSets`
+with rolling updates, charm upgrades happen sequentially, unit by unit.

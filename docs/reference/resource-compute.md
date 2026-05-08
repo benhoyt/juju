@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Compute resource reference: machines and Kubernetes containers provisioned by Juju for application deployments."
+---
+
 (resource-compute)=
 # Resource (compute)
 

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 
 	"github.com/juju/juju/domain/life"
+	"github.com/juju/juju/domain/storageprovisioning"
 )
 
 // attachmentLife represents the current life value of either a filesystem or
@@ -111,11 +112,15 @@ func (l filesystemLives) Iter(yield func(string, life.Life) bool) {
 // filesystemAttachmentParams represents the attachment params for a filesystem
 // attachment from the model database.
 type filesystemAttachmentParams struct {
-	Type       string           `db:"type"`
-	InstanceID sql.Null[string] `db:"instance_id"`
-	ProviderID sql.Null[string] `db:"provider_id"`
-	Location   sql.Null[string] `db:"location"`
-	ReadOnly   sql.Null[bool]   `db:"read_only"`
+	CharmStorageCountMax           int              `db:"charm_storage_count_max"`
+	CharmStorageLocation           sql.Null[string] `db:"charm_storage_location"`
+	CharmStorageReadOnly           sql.Null[bool]   `db:"charm_storage_read_only"`
+	CAASInstanceID                 sql.Null[string] `db:"caas_instance_id"`
+	MachineInstanceID              sql.Null[string] `db:"machine_instance_id"`
+	MountPoint                     sql.Null[string] `db:"mount_point"`
+	FilesystemProviderID           sql.Null[string] `db:"filesystem_provider_id"`
+	FilesystemAttachmentProviderID sql.Null[string] `db:"filesystem_attachment_provider_id"`
+	StoragePoolType                string           `db:"storage_pool_type"`
 }
 
 // filesystemProvisioningParams represents the provisioning params for a filesystem from the
@@ -125,6 +130,7 @@ type filesystemProvisioningParams struct {
 	Type         string           `db:"type"`
 	SizeMiB      uint64           `db:"size_mib"`
 	VolumeID     sql.Null[string] `db:"volume_id"`
+	ProviderID   sql.Null[string] `db:"provider_id"`
 }
 
 // filesystemRemovalParams represents the removal params for a filesystem from
@@ -184,6 +190,18 @@ type modelResourceTagInfo struct {
 type storagePoolAttribute struct {
 	Key   string `db:"key"`
 	Value string `db:"value"`
+}
+
+// storagePoolAttributeWithUUID represents a single attribute from the
+// storage_pool_attribute table including the storage pool UUID. This value
+// is useful when expecting multiple storage pool parameters.
+//
+// If you only expect attributes for a single storage pool then use
+// [storagePoolAtribute].
+type storagePoolAttributeWithUUID struct {
+	StoragePoolUUID string `db:"storage_pool_uuid"`
+	Key             string `db:"key"`
+	Value           string `db:"value"`
 }
 
 // volumeAttachmentPlanLife represents the life of a volume attachment plan in
@@ -306,6 +324,32 @@ type filesystemTemplate struct {
 	Location     string `db:"location"`
 }
 
+// machineVolumeAttachmentProvisioningParams represents the provisioning params
+// for a volume attachment onto a machine in the model.
+type machineVolumeAttachmentProvisioningParams struct {
+	BlockDeviceUUID  sql.Null[string] `db:"block_device_uuid"`
+	ProviderType     string           `db:"provider_type"`
+	ReadOnly         sql.Null[bool]   `db:"read_only"`
+	StorageName      string           `db:"storage_name"`
+	VolumeID         string           `db:"volume_id"`
+	VolumeProviderID sql.Null[string] `db:"provider_id"`
+	VolumeUUID       string           `db:"volume_uuid"`
+}
+
+// machineVolumeProvisioningParams represents the provisioning params for a
+// volume that is to be attached or is attached to a machine in the model.
+type machineVolumeProvisioningParams struct {
+	ProviderType         string           `db:"provider_type"`
+	RequestedSizeMiB     uint64           `db:"requested_size_mib"`
+	SizeMiB              uint64           `db:"size_mib"`
+	StorageID            string           `db:"storage_id"`
+	StorageName          string           `db:"storage_name"`
+	StoragePoolUUID      string           `db:"storage_pool_uuid"`
+	StorageUnitOwnerName sql.Null[string] `db:"storage_unit_owner_name"`
+	VolumeID             string           `db:"volume_id"`
+	UUID                 string           `db:"uuid"`
+}
+
 // volumeProvisioningParams represents the provisioning params for a volume from the model
 // database.
 type volumeProvisioningParams struct {
@@ -397,4 +441,37 @@ type storageAttachmentInfo struct {
 	Life                  life.Life `db:"life_id"`
 	FilesystemMountPoint  string    `db:"mount_point"`
 	BlockDeviceUUID       string    `db:"block_device_uuid"`
+}
+
+// containerMount represents the charm container mount from the database.
+type containerMount struct {
+	CharmContainerKey string `db:"charm_container_key"`
+	Storage           string `db:"storage"`
+	Location          string `db:"location"`
+}
+
+// existingFilesystemAttachment represents a realized filesystem attachment.
+type existingFilesystemAttachment struct {
+	AttachmentUUID string `db:"uuid"`
+	StorageName    string `db:"storage_name"`
+	ProviderID     string `db:"provider_id"`
+}
+
+type existingFilesystemAttachmentRows []existingFilesystemAttachment
+
+func (rows existingFilesystemAttachmentRows) toProvisionedFilesystemAttachment() (
+	map[string][]storageprovisioning.ProvisionedFilesystemAttachment,
+	error,
+) {
+	attachmentsByStorage := make(map[string][]storageprovisioning.ProvisionedFilesystemAttachment)
+	for _, existing := range rows {
+		attachmentsByStorage[existing.StorageName] = append(
+			attachmentsByStorage[existing.StorageName],
+			storageprovisioning.ProvisionedFilesystemAttachment{
+				AttachmentUUID: existing.AttachmentUUID,
+				StorageName:    existing.StorageName,
+				ProviderID:     existing.ProviderID,
+			})
+	}
+	return attachmentsByStorage, nil
 }

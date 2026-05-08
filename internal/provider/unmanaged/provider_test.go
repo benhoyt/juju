@@ -79,8 +79,8 @@ func (s *providerSuite) TestBootstrap(c *tc.C) {
 	s.CheckCall(c, 2, "DetectBaseAndHardwareCharacteristics", "hostname", "")
 }
 
-// TestBootstrapUserHost tests the bootstrap process for an unmanaged provider with
-// a "user@host" endpoint configuration.
+// TestBootstrapUserHost tests the bootstrap process for an unmanaged provider
+// with a "user@host" endpoint configuration.
 func (s *providerSuite) TestBootstrapUserHost(c *tc.C) {
 	ctx, err := s.testBootstrap(c, testBootstrapArgs{
 		endpoint: "user@hostwithuser",
@@ -89,6 +89,18 @@ func (s *providerSuite) TestBootstrapUserHost(c *tc.C) {
 	s.CheckCall(c, 0, "CheckProvisioned", "hostwithuser", "user")
 	s.CheckCall(c, 1, "InitUbuntuUser", "hostwithuser", "user", "", "", ctx.GetStdin(), ctx.GetStdout())
 	s.CheckCall(c, 2, "DetectBaseAndHardwareCharacteristics", "hostwithuser", "user")
+}
+
+// TestBootstrapSSHUserHost tests the bootstrap process for an unmanaged
+// provider with a "ssh:user@host" endpoint configuration.
+func (s *providerSuite) TestBootstrapUserSSHHost(c *tc.C) {
+	ctx, err := s.testBootstrap(c, testBootstrapArgs{
+		endpoint: "ssh:user@host",
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	s.CheckCall(c, 0, "CheckProvisioned", "host", "user")
+	s.CheckCall(c, 1, "InitUbuntuUser", "host", "user", "", "", ctx.GetStdin(), ctx.GetStdout())
+	s.CheckCall(c, 2, "DetectBaseAndHardwareCharacteristics", "host", "user")
 }
 
 // TestBootstrapUserHostAuthorizedKeys tests bootstrapping with authorized SSH
@@ -204,7 +216,7 @@ func (s *providerSuite) TestDefaultsCanBeOverriden(c *tc.C) {
 }
 
 func (s *providerSuite) TestSchema(c *tc.C) {
-	vals := map[string]interface{}{"endpoint": "http://foo.com/bar"}
+	vals := map[string]any{"endpoint": "http://foo.com/bar"}
 
 	p, err := environs.Provider("unmanaged")
 	c.Assert(err, tc.ErrorIsNil)

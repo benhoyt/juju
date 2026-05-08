@@ -5,6 +5,7 @@ package broker
 
 import (
 	"context"
+	"maps"
 	"net"
 	"strings"
 
@@ -140,6 +141,9 @@ func associateDNSConfig(
 				if ipNet.Contains(dnsIP) {
 					// Make sure we only add the nameserver to this device once.
 					nsAddr := dns.Nameservers[j]
+					// Either we've already seen this nameserver,
+					// or we're adding it now
+					dnsUsed[j] = true
 					if nameservers.Contains(nsAddr) {
 						continue
 					}
@@ -147,7 +151,6 @@ func associateDNSConfig(
 					logger.Infof(ctx, "setting DNS address %q for interface %q", nsAddr, nic.InterfaceName)
 					nic.DNSServers = append(nic.DNSServers, dns.Nameservers[j])
 					nameservers.Add(nsAddr)
-					dnsUsed[j] = true
 				}
 			}
 		}
@@ -162,12 +165,34 @@ func associateDNSConfig(
 		if used {
 			continue
 		}
-		for j := range results {
-			results[j].DNSServers = append(results[j].DNSServers, dns.Nameservers[i])
-		}
+		addFallbackDNS(ctx, results, dns.Nameservers[i])
 	}
 
 	return results
+}
+
+// Apply fallback DNS for any unused nameservers
+func addFallbackDNS(ctx context.Context, results corenetwork.InterfaceInfos, dnsServer string) {
+	for j := range results {
+		// Skip adding this DNS server if it’s already configured.
+		alreadyPresent := false
+		for _, nameserver := range results[j].DNSServers {
+			if nameserver == dnsServer {
+				alreadyPresent = true
+				logger.Debugf(
+					ctx, "nameserver %q already present for interface %q during fallback; skipping",
+					nameserver,
+					results[j].InterfaceName,
+				)
+				break
+			}
+		}
+		if alreadyPresent {
+			continue
+		}
+		results[j].DNSServers = append(results[j].DNSServers, dnsServer)
+		logger.Debugf(ctx, "Fallback DNS added: %q to NIC %q", dnsServer, results[j].InterfaceName)
+	}
 }
 
 // findDNSServerConfig is a heuristic method to find an adequate DNS
@@ -247,10 +272,10 @@ var newMachineInitReader = cloudconfig.NewMachineInitReader
 // combinedCloudInitData returns a combined map of the given cloudInitData
 // and instance cloud init properties provided.
 func combinedCloudInitData(
-	cloudInitData map[string]interface{},
+	cloudInitData map[string]any,
 	containerInheritProperties string, base corebase.Base,
 	log corelogger.Logger,
-) (map[string]interface{}, error) {
+) (map[string]any, error) {
 	if containerInheritProperties == "" {
 		return cloudInitData, nil
 	}
@@ -269,7 +294,7 @@ func combinedCloudInitData(
 	}
 
 	if cloudInitData == nil {
-		cloudInitData = make(map[string]interface{})
+		cloudInitData = make(map[string]any)
 	}
 
 	props := strings.Split(containerInheritProperties, ",")
@@ -289,9 +314,7 @@ func combinedCloudInitData(
 	}
 
 	resultsMap := reader.ExtractPropertiesFromConfig(props, machineData, log)
-	for k, v := range resultsMap {
-		cloudInitData[k] = v
-	}
+	maps.Copy(cloudInitData, resultsMap)
 
 	return cloudInitData, nil
 }

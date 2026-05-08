@@ -17,6 +17,7 @@ var registry = map[storage.DeviceType]common.Plan{
 	storage.DeviceTypeISCSI: iscsi.NewiSCSIPlan(),
 }
 
+// PlanByType returns the storage plan for the given device type.
 func PlanByType(name storage.DeviceType) (common.Plan, error) {
 	plan, ok := registry[name]
 	if !ok {

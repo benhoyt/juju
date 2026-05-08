@@ -8,16 +8,18 @@ import (
 	"database/sql"
 	stdtesting "testing"
 
+	"github.com/canonical/sqlair"
 	"github.com/juju/clock"
 	"github.com/juju/tc"
 
+	coreapplication "github.com/juju/juju/core/application"
 	"github.com/juju/juju/domain/application"
 	"github.com/juju/juju/domain/application/charm"
+	applicationerrors "github.com/juju/juju/domain/application/errors"
 	"github.com/juju/juju/domain/application/internal"
-	schematesting "github.com/juju/juju/domain/schema/testing"
+	"github.com/juju/juju/domain/life"
 	domainstorage "github.com/juju/juju/domain/storage"
 	storageerrors "github.com/juju/juju/domain/storage/errors"
-	storagetesting "github.com/juju/juju/domain/storage/testing"
 	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 )
@@ -26,7 +28,7 @@ import (
 // The primary means for testing state funcs not realted to applications
 // themselves.
 type storageSuite struct {
-	schematesting.ModelSuite
+	baseSuite
 	storageHelper
 }
 
@@ -39,9 +41,9 @@ func TestStorageSuite(t *stdtesting.T) {
 func (s *storageSuite) TestGetStorageUUIDByID(c *tc.C) {
 	ctx := c.Context()
 
-	uuid := storagetesting.GenStorageInstanceUUID(c)
+	uuid := tc.Must(c, domainstorage.NewStorageInstanceUUID)
 
-	poolUUID := storagetesting.GenStoragePoolUUID(c)
+	poolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
 	_, err := s.ModelSuite.DB().Exec(`
 INSERT INTO storage_pool (uuid, name, type) VALUES (?, ?, ?)`,
 		poolUUID, "rootfs", "rootfs")
@@ -63,6 +65,7 @@ VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
 
 	st := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		s.modelUUID,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -74,6 +77,7 @@ VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
 func (s *storageSuite) TestGetStorageUUIDByIDNotFound(c *tc.C) {
 	st := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		s.modelUUID,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -84,7 +88,7 @@ func (s *storageSuite) TestGetStorageUUIDByIDNotFound(c *tc.C) {
 func (s *applicationStateSuite) createStoragePool(
 	c *tc.C, name, providerType string,
 ) domainstorage.StoragePoolUUID {
-	poolUUID := storagetesting.GenStoragePoolUUID(c)
+	poolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
 	_, err := s.DB().Exec(`
 INSERT INTO storage_pool (uuid, name, type) VALUES (?, ?, ?)
 `,
@@ -92,6 +96,90 @@ INSERT INTO storage_pool (uuid, name, type) VALUES (?, ?, ?)
 	)
 	c.Assert(err, tc.ErrorIsNil)
 	return poolUUID
+}
+
+func (s *applicationStateSuite) TestGetApplicationStorageDirectivesInfo(c *tc.C) {
+	ctx := c.Context()
+
+	ebsPoolUUID := s.createStoragePool(c, "my-ebs", "ebs")
+	rootFsPoolUUID := s.createStoragePool(c, "my-rootfs", "rootfs")
+	fastPoolUUID := s.createStoragePool(c, "my-fast", "ebs")
+
+	chStorage := []charm.Storage{{
+		Name: "database",
+		Type: "block",
+	}, {
+		Name: "logs",
+		Type: "filesystem",
+	}, {
+		Name: "cache",
+		Type: "block",
+	}}
+
+	directives := []domainstorage.DirectiveArg{
+		{
+			Name:     "database",
+			PoolUUID: ebsPoolUUID,
+			Size:     10,
+			Count:    2,
+		},
+		{
+			Name:     "logs",
+			PoolUUID: rootFsPoolUUID,
+			Size:     20,
+			Count:    1,
+		},
+		{
+			Name:     "cache",
+			PoolUUID: fastPoolUUID,
+			Size:     30,
+			Count:    1,
+		},
+	}
+
+	appName := "test-app-storage"
+	appUUID, _, err := s.state.CreateIAASApplication(
+		ctx,
+		appName,
+		s.addIAASApplicationArgForStorage(
+			c,
+			appName,
+			chStorage,
+			directives,
+		),
+		nil,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(appUUID.IsEmpty(), tc.Equals, false)
+
+	foundDirectives, err := s.state.GetApplicationStorageDirectivesInfo(ctx, appUUID)
+	c.Assert(err, tc.ErrorIsNil)
+
+	d0count := uint64(directives[0].Count)
+	d1count := uint64(directives[1].Count)
+	d2count := uint64(directives[2].Count)
+	c.Assert(
+		foundDirectives,
+		tc.DeepEquals,
+		map[string]application.ApplicationStorageInfo{
+			"database": {StoragePoolName: "my-ebs", SizeMiB: directives[0].Size, Count: d0count},
+			"logs":     {StoragePoolName: "my-rootfs", SizeMiB: directives[1].Size, Count: d1count},
+			"cache":    {StoragePoolName: "my-fast", SizeMiB: directives[2].Size, Count: d2count},
+		},
+	)
+}
+
+func (s *applicationStateSuite) TestGetApplicationStorageDirectivesInfo_ApplicationNotFound(c *tc.C) {
+	ctx := c.Context()
+
+	_, err := s.state.GetApplicationStorageDirectivesInfo(ctx, "invalid-uuid")
+	tc.Check(c, err, tc.ErrorIs, applicationerrors.ApplicationNotFound)
+
+	randomAppUUID, err := coreapplication.NewUUID()
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = s.state.GetApplicationStorageDirectivesInfo(ctx, randomAppUUID)
+	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationNotFound)
 }
 
 // TestCreateApplicationWithResources tests creation of an application with
@@ -113,7 +201,7 @@ func (s *applicationStateSuite) TestCreateApplicationWithStorage(c *tc.C) {
 		Name: "cache",
 		Type: "block",
 	}}
-	directives := []internal.CreateApplicationStorageDirectiveArg{
+	directives := []domainstorage.DirectiveArg{
 		{
 			Name:     "database",
 			PoolUUID: ebsPoolUUID,
@@ -148,7 +236,7 @@ WHERE name=?`, "666").Scan(&charmUUID)
 	c.Assert(err, tc.ErrorIsNil)
 	var (
 		foundCharmStorage []charm.Storage
-		foundAppStorage   []internal.CreateApplicationStorageDirectiveArg
+		foundAppStorage   []domainstorage.DirectiveArg
 	)
 
 	err = s.TxnRunner().StdTxn(ctx, func(ctx context.Context, tx *sql.Tx) error {
@@ -182,7 +270,7 @@ WHERE application_uuid = ? AND charm_uuid = ?`, appUUID, charmUUID)
 		}
 		defer func() { _ = rows.Close() }()
 		for rows.Next() {
-			stor := internal.CreateApplicationStorageDirectiveArg{}
+			stor := domainstorage.DirectiveArg{}
 			if err := rows.Scan(&stor.Name, &stor.PoolUUID, &stor.Size, &stor.Count); err != nil {
 				return errors.Capture(err)
 			}
@@ -195,20 +283,210 @@ WHERE application_uuid = ? AND charm_uuid = ?`, appUUID, charmUUID)
 	c.Check(foundAppStorage, tc.SameContents, directives)
 }
 
+func (s *applicationStateSuite) TestUpdateApplicationStorageDirectives(c *tc.C) {
+	ctx := c.Context()
+
+	poolUUID1 := s.createStoragePool(c, "pool-a", "lxd")
+	poolUUID2 := s.createStoragePool(c, "pool-b", "ebs")
+
+	// Setup charm with 2 storages.
+	chStorage := []charm.Storage{{
+		Name:        "database",
+		Type:        "block",
+		CountMin:    1,
+		CountMax:    3,
+		MinimumSize: 10,
+	}, {
+		Name:        "logs",
+		Type:        "filesystem",
+		CountMin:    1,
+		CountMax:    2,
+		MinimumSize: 5,
+	}}
+
+	// Setup application with 2 storage directives.
+	directives := []domainstorage.DirectiveArg{
+		{
+			Name:     "database",
+			PoolUUID: poolUUID1,
+			Size:     10,
+			Count:    1,
+		},
+		{
+			Name:     "logs",
+			PoolUUID: poolUUID2,
+			Size:     20,
+			Count:    2,
+		},
+	}
+
+	// Create application with the above directives and charm storages.
+	appUUID, _, err := s.state.CreateIAASApplication(
+		ctx,
+		"charm-name",
+		s.addIAASApplicationArgForStorage(c, "charm-name", chStorage, directives),
+		nil,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Get charmUUID for the application.
+	var charmUUID string
+	err = s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		var err error
+		charmUUID, err = s.state.getCharmIDByApplicationUUID(c.Context(), tx, appUUID.String())
+		return err
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Update storage directives for the application.
+	overrides := []domainstorage.DirectiveArg{
+		{
+			Name:     "database",
+			PoolUUID: poolUUID2,
+			Size:     99,
+			Count:    3,
+		},
+		{
+			Name:     "logs",
+			PoolUUID: poolUUID1,
+			Size:     5,
+			Count:    1,
+		},
+	}
+	err = s.TxnRunner().Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		return s.state.updateApplicationStorageDirectives(ctx, tx, appUUID, charmUUID, overrides)
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Verify that the storage directives have been updated.
+	applicationStorageDirectives, err := s.state.GetApplicationStorageDirectives(ctx, appUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(applicationStorageDirectives, tc.SameContents, []internal.StorageDirective{
+		{
+			CharmMetadataName: "charm-name",
+			CharmStorageType:  charm.StorageBlock,
+			Name:              "database",
+			PoolUUID:          poolUUID2,
+			Size:              99,
+			Count:             3,
+			MaxCount:          3,
+		},
+		{
+			CharmMetadataName: "charm-name",
+			CharmStorageType:  charm.StorageFilesystem,
+			Name:              "logs",
+			PoolUUID:          poolUUID1,
+			Size:              5,
+			Count:             1,
+			MaxCount:          2,
+		},
+	})
+}
+
+func (s *applicationStateSuite) TestUpdateApplicationStorageDirectivesMissingStorage(c *tc.C) {
+	ctx := c.Context()
+
+	poolUUID1 := s.createStoragePool(c, "pool-a", "lxd")
+	poolUUID2 := s.createStoragePool(c, "pool-b", "ebs")
+
+	// Setup charm with 3 storages.
+	chStorage := []charm.Storage{{
+		Name:        "database",
+		Type:        "block",
+		CountMin:    1,
+		CountMax:    3,
+		MinimumSize: 10,
+	}, {
+		Name:        "logs",
+		Type:        "filesystem",
+		CountMin:    1,
+		CountMax:    2,
+		MinimumSize: 5,
+	}, {
+		Name:        "cache",
+		Type:        "block",
+		CountMin:    1,
+		CountMax:    1,
+		MinimumSize: 1,
+	}}
+
+	// Setup application with 2 storage directives.
+	directives := []domainstorage.DirectiveArg{
+		{
+			Name:     "database",
+			PoolUUID: poolUUID1,
+			Size:     10,
+			Count:    1,
+		},
+		{
+			Name:     "logs",
+			PoolUUID: poolUUID2,
+			Size:     20,
+			Count:    2,
+		},
+	}
+
+	// Create application with the above directives and charm storages.
+	appUUID, _, err := s.state.CreateIAASApplication(
+		ctx,
+		"charm-name",
+		s.addIAASApplicationArgForStorage(c, "charm-name", chStorage, directives),
+		nil,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Get charmUUID for the application.
+	var charmUUID string
+	err = s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		var err error
+		charmUUID, err = s.state.getCharmIDByApplicationUUID(c.Context(), tx, appUUID.String())
+		return err
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Attempt to update 3 storage directives for the application, even though the application currently only has 2.
+	// This provides the situation where a storage directive is manually removed.
+	overrides := []domainstorage.DirectiveArg{
+		{
+			Name:     "database",
+			PoolUUID: poolUUID2,
+			Size:     99,
+			Count:    3,
+		},
+		{
+			Name:     "logs",
+			PoolUUID: poolUUID1,
+			Size:     5,
+			Count:    1,
+		},
+		{
+			Name:     "cache",
+			PoolUUID: poolUUID2,
+			Size:     1,
+			Count:    1,
+		},
+	}
+	err = s.TxnRunner().Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		return s.state.updateApplicationStorageDirectives(ctx, tx, appUUID, charmUUID, overrides)
+	})
+	c.Assert(err, tc.ErrorMatches, `missing storage directive for charm storage "cache"`)
+}
+
 // TestGetProviderTypeOfPoolNotFound tests that trying to get the provider type
 // for a pool that doesn't exist returns the caller an error satisfying
-// [storageerrors.PoolNotFoundError].
+// [storageerrors.StoragePoolNotFound].
 func (s *storageSuite) TestGetProviderTypeForPoolNotFound(c *tc.C) {
 	poolUUID, err := domainstorage.NewStoragePoolUUID()
 	c.Assert(err, tc.ErrorIsNil)
 	st := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		s.modelUUID,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
 
 	_, err = st.GetProviderTypeForPool(c.Context(), poolUUID)
-	c.Check(err, tc.ErrorIs, storageerrors.PoolNotFoundError)
+	c.Check(err, tc.ErrorIs, storageerrors.StoragePoolNotFound)
 }
 
 // TestGetProviderTypeOfPool checks that the provider type of a storage pool
@@ -217,6 +495,7 @@ func (s *storageSuite) TestGetProviderTypeForPool(c *tc.C) {
 	poolUUID := s.newStoragePool(c, "test-pool", "ptype")
 	st := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		s.modelUUID,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -233,6 +512,7 @@ func (s *storageSuite) TestGetModelStoragePoolsWithModelConfig(c *tc.C) {
 
 	st := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		s.modelUUID,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -288,6 +568,7 @@ func (s *storageSuite) TestGetModelStoragePoolsWithModelDefaults(c *tc.C) {
 
 	st := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		s.modelUUID,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -348,7 +629,8 @@ func (s *storageSuite) TestGetModelStoragePoolsMix(c *tc.C) {
 	poolUUID2 := s.storageHelper.newStoragePool(c, "test-pool2", "ptype")
 
 	st := NewState(
-		s.ModelSuite.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c),
+		s.ModelSuite.TxnRunnerFactory(), s.modelUUID,
+		clock.WallClock, loggertesting.WrapCheckLog(c),
 	)
 	db := s.ModelSuite.DB()
 	_, err := db.Exec(
@@ -394,6 +676,7 @@ VALUES (?, ?)
 func (s *storageSuite) TestGetStorageInstancesForProviderIDsNotFound(c *tc.C) {
 	st := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		s.modelUUID,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -412,6 +695,7 @@ func (s *storageSuite) TestGetStorageInstancesForProviderIDsNotFound(c *tc.C) {
 func (s *storageSuite) TestGetStorageInstancesForNoProviderIDs(c *tc.C) {
 	st := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		s.modelUUID,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -434,6 +718,7 @@ func (s *storageSuite) TestGetStorageInstancesForProviderIDsNotUsingProviderIDs(
 
 	st := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		s.modelUUID,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -446,20 +731,28 @@ func (s *storageSuite) TestGetStorageInstancesForProviderIDsNotUsingProviderIDs(
 	c.Check(err, tc.ErrorIsNil)
 	mc := tc.NewMultiChecker()
 	mc.AddExpr("_.Filesystem.ProvisionScope", tc.Ignore)
+	mc.AddExpr("_.Filesystem.Size", tc.Ignore)
 	mc.AddExpr("_.Volume.ProvisionScope", tc.Ignore)
+	mc.AddExpr("_.Volume.Size", tc.Ignore)
 	c.Check(err, tc.ErrorIsNil)
 	c.Check(
 		res,
-		tc.UnorderedMatch[[]internal.StorageInstanceComposition](mc),
-		[]internal.StorageInstanceComposition{
+		tc.UnorderedMatch[[]domainstorage.StorageInstanceInfoForAttach](mc),
+		[]domainstorage.StorageInstanceInfoForAttach{
 			{
-				Filesystem: &internal.StorageInstanceCompositionFilesystem{
-					UUID: fsUUID,
-				},
-				StorageName: "st1",
-				UUID:        instUUID,
-				Volume: &internal.StorageInstanceCompositionVolume{
-					UUID: vUUID,
+				StorageInstanceAttachInfo: domainstorage.StorageInstanceAttachInfo{
+					UUID:      instUUID,
+					CharmName: new("charm"),
+					Filesystem: &domainstorage.StorageInstanceAttachFilesystemInfo{
+						UUID: fsUUID,
+					},
+					Volume: &domainstorage.StorageInstanceAttachVolumeInfo{
+						UUID: vUUID,
+					},
+					Kind:             domainstorage.StorageKindFilesystem,
+					Life:             life.Alive,
+					RequestedSizeMIB: 1024,
+					StorageName:      "st1",
 				},
 			},
 		},
@@ -478,6 +771,7 @@ func (s *storageSuite) TestGetStorageInstancesForProviderIDs(c *tc.C) {
 
 	st := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		s.modelUUID,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -493,39 +787,65 @@ func (s *storageSuite) TestGetStorageInstancesForProviderIDs(c *tc.C) {
 	)
 	mc := tc.NewMultiChecker()
 	mc.AddExpr("_.Filesystem.ProvisionScope", tc.Ignore)
+	mc.AddExpr("_.Filesystem.Size", tc.Ignore)
 	mc.AddExpr("_.Volume.ProvisionScope", tc.Ignore)
+	mc.AddExpr("_.Volume.Size", tc.Ignore)
 	c.Check(err, tc.ErrorIsNil)
 	c.Check(
 		res,
-		tc.UnorderedMatch[[]internal.StorageInstanceComposition](mc),
-		[]internal.StorageInstanceComposition{
+		tc.UnorderedMatch[[]domainstorage.StorageInstanceInfoForAttach](mc),
+		[]domainstorage.StorageInstanceInfoForAttach{
 			{
-				Filesystem: &internal.StorageInstanceCompositionFilesystem{
-					UUID: fsUUID1,
+				StorageInstanceAttachInfo: domainstorage.StorageInstanceAttachInfo{
+					UUID:      instUUID1,
+					CharmName: new("charm"),
+					Filesystem: &domainstorage.StorageInstanceAttachFilesystemInfo{
+						UUID: fsUUID1,
+					},
+					Kind:             domainstorage.StorageKindFilesystem,
+					Life:             life.Alive,
+					RequestedSizeMIB: 1024,
+					StorageName:      "st1",
 				},
-				StorageName: "st1",
-				UUID:        instUUID1,
 			},
 			{
-				Filesystem: &internal.StorageInstanceCompositionFilesystem{
-					UUID: fsUUID3,
+				StorageInstanceAttachInfo: domainstorage.StorageInstanceAttachInfo{
+					UUID:      instUUID3,
+					CharmName: new("charm"),
+					Filesystem: &domainstorage.StorageInstanceAttachFilesystemInfo{
+						UUID: fsUUID3,
+					},
+					Kind:             domainstorage.StorageKindFilesystem,
+					Life:             life.Alive,
+					RequestedSizeMIB: 1024,
+					StorageName:      "st1",
 				},
-				StorageName: "st1",
-				UUID:        instUUID3,
 			},
 			{
-				Filesystem: &internal.StorageInstanceCompositionFilesystem{
-					UUID: fsUUID2,
+				StorageInstanceAttachInfo: domainstorage.StorageInstanceAttachInfo{
+					UUID:      instUUID2,
+					CharmName: new("charm"),
+					Filesystem: &domainstorage.StorageInstanceAttachFilesystemInfo{
+						UUID: fsUUID2,
+					},
+					Kind:             domainstorage.StorageKindFilesystem,
+					Life:             life.Alive,
+					RequestedSizeMIB: 1024,
+					StorageName:      "st2",
 				},
-				StorageName: "st2",
-				UUID:        instUUID2,
 			},
 			{
-				StorageName: "st3",
-				Volume: &internal.StorageInstanceCompositionVolume{
-					UUID: vUUID1,
+				StorageInstanceAttachInfo: domainstorage.StorageInstanceAttachInfo{
+					UUID:      instUUID4,
+					CharmName: new("charm"),
+					Volume: &domainstorage.StorageInstanceAttachVolumeInfo{
+						UUID: vUUID1,
+					},
+					Kind:             domainstorage.StorageKindFilesystem,
+					Life:             life.Alive,
+					RequestedSizeMIB: 1024,
+					StorageName:      "st3",
 				},
-				UUID: instUUID4,
 			},
 		},
 	)
@@ -542,11 +862,13 @@ func (s *storageSuite) TestGetStorageInstancesForProviderIDSomeStorageOwned(c *t
 	instUUID3, fsUUID3 := s.newStorageInstanceFilesysatemWithProviderID(c, "st1", "provider3")
 	instUUID4, vUUID1 := s.newStorageInstanceVolumeWithProviderID(c, "st3", "provider4")
 
-	unitUUID := s.newUnit(c)
+	_, unitUUIDs := s.createIAASApplicationWithNUnits(c, "foo", life.Alive, 1)
+	unitUUID := unitUUIDs[0]
 	s.newStorageUnitOwner(c, instUUID1, unitUUID)
 
 	st := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		s.modelUUID,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -564,29 +886,49 @@ func (s *storageSuite) TestGetStorageInstancesForProviderIDSomeStorageOwned(c *t
 	mc := tc.NewMultiChecker()
 	mc.AddExpr("_", tc.SameContents, tc.ExpectedValue)
 	mc.AddExpr("_[_].Filesystem.ProvisionScope", tc.Ignore)
+	mc.AddExpr("_[_].Filesystem.Size", tc.Ignore)
 	mc.AddExpr("_[_].Volume.ProvisionScope", tc.Ignore)
+	mc.AddExpr("_[_].Volume.Size", tc.Ignore)
 	c.Check(err, tc.ErrorIsNil)
-	c.Check(res, mc, []internal.StorageInstanceComposition{
+	c.Check(res, mc, []domainstorage.StorageInstanceInfoForAttach{
 		{
-			Filesystem: &internal.StorageInstanceCompositionFilesystem{
-				UUID: fsUUID3,
+			StorageInstanceAttachInfo: domainstorage.StorageInstanceAttachInfo{
+				UUID:      instUUID3,
+				CharmName: new("charm"),
+				Filesystem: &domainstorage.StorageInstanceAttachFilesystemInfo{
+					UUID: fsUUID3,
+				},
+				Kind:             domainstorage.StorageKindFilesystem,
+				Life:             life.Alive,
+				RequestedSizeMIB: 1024,
+				StorageName:      "st1",
 			},
-			StorageName: "st1",
-			UUID:        instUUID3,
 		},
 		{
-			Filesystem: &internal.StorageInstanceCompositionFilesystem{
-				UUID: fsUUID2,
+			StorageInstanceAttachInfo: domainstorage.StorageInstanceAttachInfo{
+				UUID:      instUUID2,
+				CharmName: new("charm"),
+				Filesystem: &domainstorage.StorageInstanceAttachFilesystemInfo{
+					UUID: fsUUID2,
+				},
+				Kind:             domainstorage.StorageKindFilesystem,
+				Life:             life.Alive,
+				RequestedSizeMIB: 1024,
+				StorageName:      "st2",
 			},
-			StorageName: "st2",
-			UUID:        instUUID2,
 		},
 		{
-			StorageName: "st3",
-			Volume: &internal.StorageInstanceCompositionVolume{
-				UUID: vUUID1,
+			StorageInstanceAttachInfo: domainstorage.StorageInstanceAttachInfo{
+				UUID:      instUUID4,
+				CharmName: new("charm"),
+				Volume: &domainstorage.StorageInstanceAttachVolumeInfo{
+					UUID: vUUID1,
+				},
+				Kind:             domainstorage.StorageKindFilesystem,
+				Life:             life.Alive,
+				RequestedSizeMIB: 1024,
+				StorageName:      "st3",
 			},
-			UUID: instUUID4,
 		},
 	})
 }
@@ -608,6 +950,7 @@ func (s *storageSuite) TestGetStorageInstancesForProviderIDsVolumeBackedFilesyst
 
 	st := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		s.modelUUID,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -622,31 +965,45 @@ func (s *storageSuite) TestGetStorageInstancesForProviderIDsVolumeBackedFilesyst
 
 	mc := tc.NewMultiChecker()
 	mc.AddExpr("_.Filesystem.ProvisionScope", tc.Ignore)
+	mc.AddExpr("_.Filesystem.Size", tc.Ignore)
 	mc.AddExpr("_.Volume.ProvisionScope", tc.Ignore)
+	mc.AddExpr("_.Volume.Size", tc.Ignore)
 	c.Check(err, tc.ErrorIsNil)
 	c.Check(
 		res,
-		tc.UnorderedMatch[[]internal.StorageInstanceComposition](mc),
-		[]internal.StorageInstanceComposition{
+		tc.UnorderedMatch[[]domainstorage.StorageInstanceInfoForAttach](mc),
+		[]domainstorage.StorageInstanceInfoForAttach{
 			{
-				Filesystem: &internal.StorageInstanceCompositionFilesystem{
-					UUID: fsUUID1,
+				StorageInstanceAttachInfo: domainstorage.StorageInstanceAttachInfo{
+					UUID:      instUUID1,
+					CharmName: new("charm"),
+					Filesystem: &domainstorage.StorageInstanceAttachFilesystemInfo{
+						UUID: fsUUID1,
+					},
+					Volume: &domainstorage.StorageInstanceAttachVolumeInfo{
+						UUID: vUUID1,
+					},
+					Kind:             domainstorage.StorageKindFilesystem,
+					Life:             life.Alive,
+					RequestedSizeMIB: 1024,
+					StorageName:      "st1",
 				},
-				StorageName: "st1",
-				Volume: &internal.StorageInstanceCompositionVolume{
-					UUID: vUUID1,
-				},
-				UUID: instUUID1,
 			},
 			{
-				Filesystem: &internal.StorageInstanceCompositionFilesystem{
-					UUID: fsUUID2,
+				StorageInstanceAttachInfo: domainstorage.StorageInstanceAttachInfo{
+					UUID:      instUUID2,
+					CharmName: new("charm"),
+					Filesystem: &domainstorage.StorageInstanceAttachFilesystemInfo{
+						UUID: fsUUID2,
+					},
+					Volume: &domainstorage.StorageInstanceAttachVolumeInfo{
+						UUID: vUUID2,
+					},
+					Kind:             domainstorage.StorageKindFilesystem,
+					Life:             life.Alive,
+					RequestedSizeMIB: 1024,
+					StorageName:      "st2",
 				},
-				StorageName: "st2",
-				Volume: &internal.StorageInstanceCompositionVolume{
-					UUID: vUUID2,
-				},
-				UUID: instUUID2,
 			},
 		})
 }

@@ -10,8 +10,8 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
 	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/juju/juju/apiserver/apiserverhttp"
@@ -145,14 +145,17 @@ func (config ManifoldConfig) start(ctx context.Context, getter dependency.Getter
 	)
 
 	w, err := config.NewWorker(Config{
-		AgentName:       config.AgentName,
-		Clock:           config.Clock,
-		TLSConfig:       tlsConfig,
-		Mux:             mux,
-		MuxShutdownWait: config.MuxShutdownWait,
-		LogDir:          config.LogDir,
-		Logger:          config.Logger,
-		APIPort:         controllerConfig.APIPort(),
+		AgentName:              config.AgentName,
+		Clock:                  config.Clock,
+		TLSConfig:              tlsConfig,
+		Mux:                    mux,
+		MuxShutdownWait:        config.MuxShutdownWait,
+		LogDir:                 config.LogDir,
+		Logger:                 config.Logger,
+		APIPort:                controllerConfig.APIPort(),
+		IdleConnectionTimeout:  controllerConfig.IdleConnectionTimeout(),
+		HTTPServerReadTimeout:  controllerConfig.HTTPServerReadTimeout(),
+		HTTPServerWriteTimeout: controllerConfig.HTTPServerWriteTimeout(),
 	})
 	return w, errors.Trace(err)
 }

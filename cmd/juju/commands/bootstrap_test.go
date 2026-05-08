@@ -19,7 +19,7 @@ import (
 
 	"github.com/juju/clock/testclock"
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/tc"
 	"github.com/juju/utils/v4"
 	k8scmd "k8s.io/client-go/tools/clientcmd"
@@ -27,6 +27,8 @@ import (
 	"github.com/juju/juju/api/jujuclient"
 	"github.com/juju/juju/api/jujuclient/jujuclienttesting"
 	"github.com/juju/juju/cloud"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/arch"
 	corebase "github.com/juju/juju/core/base"
@@ -47,8 +49,6 @@ import (
 	envtesting "github.com/juju/juju/environs/testing"
 	envtools "github.com/juju/juju/environs/tools"
 	toolstesting "github.com/juju/juju/environs/tools/testing"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/provider/dummy"
 	"github.com/juju/juju/internal/provider/openstack"
 	"github.com/juju/juju/internal/storage"
@@ -145,9 +145,17 @@ func (s *BootstrapSuite) SetUpTest(c *tc.C) {
 		panic("tests must call setupAutoUploadTest or otherwise patch envtools.BundleTools")
 	})
 
-	s.PatchValue(&waitForAgentInitialisation, func(environs.BootstrapContext, *modelcmd.ModelCommandBase, bool, string) error {
-		return nil
-	})
+	s.PatchValue(
+		&waitForAgentInitialisation,
+		func(environs.BootstrapContext,
+			*modelcmd.ModelCommandBase,
+			bool,
+			string,
+			func(context.Context, *modelcmd.ModelCommandBase) error,
+		) error {
+			return nil
+		},
+	)
 
 	// TODO(wallyworld) - add test data when tests are improved
 	s.store = jujuclienttesting.MinimalStore()
@@ -182,7 +190,7 @@ func (s *BootstrapSuite) TestRunTests(c *tc.C) {
 	for i, test := range bootstrapTests {
 		c.Logf("\ntest %d: %s", i, test.info)
 		c.Run(fmt.Sprintf("Test%d", i), func(t *testing.T) {
-			c := &tc.TBC{t}
+			c := &tc.TBC{TB: t}
 			s.run(c, test)
 		})
 	}
@@ -323,7 +331,7 @@ func (s *BootstrapSuite) run(c tc.LikeC, test bootstrapTest) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(bootstrapConfig.Cloud, tc.Equals, "dummy")
 	c.Assert(bootstrapConfig.Credential, tc.Equals, "")
-	expected := map[string]interface{}{
+	expected := map[string]any{
 		"name":         bootstrap.ControllerModelName,
 		"type":         "dummy",
 		"default-base": "ubuntu@22.04",
@@ -464,11 +472,11 @@ var bootstrapTests = []bootstrapTest{{
 }, {
 	info: "missing storage pool name",
 	args: []string{"--storage-pool", "type=ebs"},
-	err:  `storage pool requires a name`,
+	err:  `storage pool requires a "name" key to be set not valid`,
 }, {
 	info: "missing storage pool type",
 	args: []string{"--storage-pool", "name=test"},
-	err:  `storage pool requires a type`,
+	err:  `storage pool requires a "type" key to be set not valid`,
 }}
 
 func (s *BootstrapSuite) TestRunCloudNameUnknown(c *tc.C) {
@@ -656,7 +664,7 @@ func checkConfigs(
 	bootstrapCmd bootstrapCommand,
 	key string,
 	ctx *cmd.Context, cloud *cloud.Cloud, provider environs.EnvironProvider,
-	expect map[string]map[string]interface{}) {
+	expect map[string]map[string]any) {
 
 	configs, err := bootstrapCmd.bootstrapConfigs(ctx, *cloud, provider)
 
@@ -672,7 +680,7 @@ func checkConfigs(
 
 // checkConfigEntryMatches tests that a keys existence and indexed value in configMap
 // matches those in expect[name].
-func checkConfigEntryMatches(c *tc.C, configMap map[string]interface{}, key, name string, expect map[string]map[string]interface{}) {
+func checkConfigEntryMatches(c *tc.C, configMap map[string]any, key, name string, expect map[string]map[string]any) {
 	v, ok := configMap[key]
 	expectedConfig, expectedConfigOk := expect[name]
 	c.Assert(expectedConfigOk, tc.IsTrue)
@@ -702,7 +710,7 @@ func (s *BootstrapSuite) TestBootstrapAttributesInheritedOverDefaults(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 
 	key := "use-default-secgroup"
-	checkConfigs(c, bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]interface{}{
+	checkConfigs(c, bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]any{
 		"bootstrapModelConfig":     {key: false},
 		"inheritedControllerAttrs": {},
 		"userConfigAttrs":          {},
@@ -713,7 +721,7 @@ func (s *BootstrapSuite) TestBootstrapAttributesInheritedOverDefaults(c *tc.C) {
 	testCloud, err = cloud.CloudByName("dummy-cloud-with-config")
 	c.Assert(err, tc.ErrorIsNil)
 
-	checkConfigs(c, bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]interface{}{
+	checkConfigs(c, bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]any{
 		"bootstrapModelConfig":     {key: true},
 		"inheritedControllerAttrs": {key: true},
 		"userConfigAttrs":          {},
@@ -751,7 +759,7 @@ func (s *BootstrapSuite) TestBootstrapRegionConfigAttributesOverCloudConfig(c *t
 	testCloud, err := cloud.CloudByName("dummy-cloud-with-region-config")
 	c.Assert(err, tc.ErrorIsNil)
 
-	checkConfigs(c, s.bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]interface{}{
+	checkConfigs(c, s.bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]any{
 		"bootstrapModelConfig":     {key: "cloud-network"},
 		"inheritedControllerAttrs": {key: "cloud-network"},
 		"userConfigAttrs":          {},
@@ -762,7 +770,7 @@ func (s *BootstrapSuite) TestBootstrapRegionConfigAttributesOverCloudConfig(c *t
 	testCloud, err = cloud.CloudByName("dummy-cloud-with-region-config")
 	c.Assert(err, tc.ErrorIsNil)
 
-	checkConfigs(c, s.bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]interface{}{
+	checkConfigs(c, s.bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]any{
 		"bootstrapModelConfig":     {key: "region-network"},
 		"inheritedControllerAttrs": {key: "region-network"},
 		"userConfigAttrs":          {},
@@ -787,7 +795,7 @@ func (s *BootstrapSuite) TestBootstrapAttributesCLIOverDefaults(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 
 	key := "use-default-secgroup"
-	checkConfigs(c, s.bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]interface{}{
+	checkConfigs(c, s.bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]any{
 		"bootstrapModelConfig":     {key: false},
 		"inheritedControllerAttrs": {},
 		"userConfigAttrs":          {},
@@ -797,7 +805,7 @@ func (s *BootstrapSuite) TestBootstrapAttributesCLIOverDefaults(c *tc.C) {
 	// provider default of false with true
 	err = s.bootstrapCmd.config.Set("use-default-secgroup=true")
 	c.Assert(err, tc.ErrorIsNil)
-	checkConfigs(c, s.bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]interface{}{
+	checkConfigs(c, s.bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]any{
 		"bootstrapModelConfig":     {key: "true"},
 		"inheritedControllerAttrs": {},
 		"userConfigAttrs":          {key: "true"},
@@ -822,7 +830,7 @@ func (s *BootstrapSuite) TestBootstrapAttributesCLIOverInherited(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 
 	key := "use-default-secgroup"
-	checkConfigs(c, s.bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]interface{}{
+	checkConfigs(c, s.bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]any{
 		"bootstrapModelConfig":     {key: false},
 		"inheritedControllerAttrs": {},
 		"userConfigAttrs":          {},
@@ -834,7 +842,7 @@ func (s *BootstrapSuite) TestBootstrapAttributesCLIOverInherited(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	err = s.bootstrapCmd.config.Set("use-default-secgroup=false")
 	c.Assert(err, tc.ErrorIsNil)
-	checkConfigs(c, s.bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]interface{}{
+	checkConfigs(c, s.bootstrapCmd, key, ctx, testCloud, provider, map[string]map[string]any{
 		"bootstrapModelConfig":     {key: "false"},
 		"inheritedControllerAttrs": {key: true},
 		"userConfigAttrs":          {key: "false"},
@@ -2138,10 +2146,18 @@ func (s *BootstrapSuite) TestBootstrapSetsControllerOnBase(c *tc.C) {
 
 	// Record the controller name seen by ModelCommandBase at the end of bootstrap.
 	var seenControllerName string
-	s.PatchValue(&waitForAgentInitialisation, func(_ environs.BootstrapContext, base *modelcmd.ModelCommandBase, _ bool, controllerName string) error {
-		seenControllerName = controllerName
-		return nil
-	})
+	s.PatchValue(
+		&waitForAgentInitialisation,
+		func(_ environs.BootstrapContext,
+			_ *modelcmd.ModelCommandBase,
+			_ bool,
+			controllerName string,
+			_ func(context.Context, *modelcmd.ModelCommandBase) error,
+		) error {
+			seenControllerName = controllerName
+			return nil
+		},
+	)
 
 	// Run the bootstrap command in another goroutine, sending the
 	// dummy provider ops to opc.

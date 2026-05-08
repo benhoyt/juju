@@ -15,15 +15,15 @@ import (
 	commoncharm "github.com/juju/juju/api/common/charm"
 	apicharms "github.com/juju/juju/api/common/charms"
 	"github.com/juju/juju/api/jujuclient"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/application/store"
 	"github.com/juju/juju/cmd/modelcmd"
 	corebase "github.com/juju/juju/core/base"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/crossmodel"
 	"github.com/juju/juju/core/model"
-	"github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	apiparams "github.com/juju/juju/rpc/params"
 )
 
@@ -46,7 +46,7 @@ type Deployer interface {
 
 type ModelAPI interface {
 	ModelUUID() (string, bool)
-	ModelGet(ctx context.Context) (map[string]interface{}, error)
+	ModelGet(ctx context.Context) (map[string]any, error)
 	Sequences(ctx context.Context) (map[string]int, error)
 	GetModelConstraints(ctx context.Context) (constraints.Value, error)
 }
@@ -103,7 +103,7 @@ type ApplicationAPI interface {
 	GetCharmURLOrigin(context.Context, string) (*charm.URL, commoncharm.Origin, error)
 	SetCharm(context.Context, application.SetCharmConfig) error
 
-	GetConfig(ctx context.Context, appNames ...string) ([]map[string]interface{}, error)
+	GetConfig(ctx context.Context, appNames ...string) ([]map[string]any, error)
 	SetConfig(ctx context.Context, application, configYAML string, config map[string]string) error
 
 	GetConstraints(ctx context.Context, appNames ...string) ([]constraints.Value, error)
@@ -126,7 +126,7 @@ type Resolver interface {
 }
 
 type ModelConfigGetter interface {
-	ModelGet(ctx context.Context) (map[string]interface{}, error)
+	ModelGet(ctx context.Context) (map[string]any, error)
 }
 
 type ModelCommand interface {
@@ -168,5 +168,5 @@ type DeployConfigFlag interface {
 	AbsoluteFileNames(ctx *cmd.Context) ([]string, error)
 
 	// ReadConfigPairs returns just the k=v attributes
-	ReadConfigPairs(ctx *cmd.Context) (map[string]interface{}, error)
+	ReadConfigPairs(ctx *cmd.Context) (map[string]any, error)
 }

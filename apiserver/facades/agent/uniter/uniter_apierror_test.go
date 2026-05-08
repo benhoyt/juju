@@ -26,7 +26,7 @@ func (s *uniterAPIErrorSuite) SetupTest(c *tc.C) {
 	domainServices := s.ControllerDomainServices(c)
 
 	cred := cloud.NewCredential(cloud.UserPassAuthType, nil)
-	err := domainServices.Credential().UpdateCloudCredential(c.Context(), testing.DefaultCredentialId, cred)
+	err := domainServices.Credential().InsertCloudCredential(c.Context(), testing.DefaultCredentialId, cred)
 	c.Assert(err, tc.ErrorIsNil)
 }
 

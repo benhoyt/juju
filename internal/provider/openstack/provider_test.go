@@ -488,13 +488,13 @@ func (s *localTests) TestSchema(c *tc.C) {
 	y := []byte(`
 auth-types: [userpass, access-key]
 endpoint: http://foo.com/openstack
-regions: 
+regions:
   one:
     endpoint: http://foo.com/bar
   two:
     endpoint: http://foo2.com/bar2
 `[1:])
-	var v interface{}
+	var v any
 	err := yaml.Unmarshal(y, &v)
 	c.Assert(err, tc.ErrorIsNil)
 	v, err = utils.ConformYAML(v)
@@ -1187,7 +1187,7 @@ func (s *providerUnitTests) TestNetworksForInstanceNoSubnetAZsStillConsidered(c 
 func envWithNetworking(net Networking, netCfg string) *Environ {
 	return &Environ{
 		ecfgUnlocked: &environConfig{
-			attrs: map[string]interface{}{NetworkKey: netCfg},
+			attrs: map[string]any{NetworkKey: netCfg},
 		},
 		networking: net,
 	}

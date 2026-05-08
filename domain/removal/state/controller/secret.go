@@ -6,12 +6,14 @@ package controller
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sort"
 
 	"github.com/canonical/sqlair"
 
 	"github.com/juju/juju/cloud"
+	"github.com/juju/juju/core/logger"
 	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/domain/credential"
 	modelerrors "github.com/juju/juju/domain/model/errors"
@@ -41,10 +43,10 @@ import (
 // for the given model.
 // It returns an error satisfying [modelerrors.NotFound] if the model provided
 // does not exist.
-func (s *State) GetActiveModelSecretBackend(
+func (st *State) GetActiveModelSecretBackend(
 	ctx context.Context, modelUUID string,
 ) (string, *provider.ModelBackendConfig, error) {
-	db, err := s.DB(ctx)
+	db, err := st.DB(ctx)
 	if err != nil {
 		return "", nil, errors.Capture(err)
 	}
@@ -53,14 +55,14 @@ func (s *State) GetActiveModelSecretBackend(
 		backend      *secretbackend.SecretBackend
 	)
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		modelBackend, err = s.getModelSecretBackendDetails(ctx, tx, modelUUID)
+		modelBackend, err = st.getModelSecretBackendDetails(ctx, tx, modelUUID)
 		if err != nil {
 			return errors.Capture(err)
 		}
 		if modelBackend.ModelType == coremodel.CAAS && modelBackend.SecretBackendName == kubernetes.BackendName {
-			backend, err = s.getK8sSecretBackendForModel(ctx, tx, modelUUID)
+			backend, err = st.getK8sSecretBackendForModel(ctx, tx, modelUUID)
 		} else {
-			backend, err = s.getSecretBackend(
+			backend, err = st.getSecretBackend(
 				ctx, tx, secretbackend.BackendIdentifier{ID: modelBackend.SecretBackendID})
 		}
 		return errors.Capture(err)
@@ -79,13 +81,56 @@ func (s *State) GetActiveModelSecretBackend(
 	}, nil
 }
 
-func (s *State) getModelSecretBackendDetails(
+// RemoveSecretBackendReference removes the reference to the secret backend
+// for the given secret revisions.
+func (st *State) RemoveSecretBackendReference(ctx context.Context, revisionIDs ...string) error {
+	if len(revisionIDs) == 0 {
+		return nil
+	}
+
+	db, err := st.DB(ctx)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err := st.removeSecretBackendReferenceForRevisions(ctx, tx, revisionIDs...)
+		return errors.Capture(err)
+	})
+	return errors.Capture(err)
+}
+
+func (st *State) removeSecretBackendReferenceForRevisions(ctx context.Context, tx *sqlair.TX, revisionIDs ...string) error {
+	if len(revisionIDs) == 0 {
+		return nil
+	}
+
+	type secretRevisionIDs []string
+
+	input := secretRevisionIDs(revisionIDs)
+	stmt, err := st.Prepare(`
+DELETE FROM secret_backend_reference
+WHERE  secret_revision_uuid IN ($secretRevisionIDs[:])`, input)
+	if err != nil {
+		return errors.Capture(err)
+	}
+	err = tx.Query(ctx, stmt, input).Run()
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return errors.Errorf("cannot remove secret backend reference for %d secret revision(s): %w", len(revisionIDs), err)
+	}
+	return nil
+}
+
+func (st *State) getModelSecretBackendDetails(
 	ctx context.Context, tx *sqlair.TX, mUUID string,
 ) (modelSecretBackend, error) {
 	input := entityUUID{UUID: mUUID}
 	var backend modelSecretBackend
 
-	stmt, err := s.Prepare(`
+	stmt, err := st.Prepare(`
 SELECT &modelSecretBackend.*
 FROM   v_model_secret_backend
 WHERE  uuid = $entityUUID.uuid`, input, backend)
@@ -102,7 +147,7 @@ WHERE  uuid = $entityUUID.uuid`, input, backend)
 	return backend, errors.Capture(err)
 }
 
-func (s *State) getK8sSecretBackendForModel(
+func (st *State) getK8sSecretBackendForModel(
 	ctx context.Context, tx *sqlair.TX, mUUID string,
 ) (*secretbackend.SecretBackend, error) {
 	modelUUID := entityUUID{UUID: mUUID}
@@ -132,7 +177,7 @@ FROM v_model vm
 WHERE vm.uuid = $entityUUID.uuid
 GROUP BY vm.name, vcca.attribute_key`
 
-	stmt, err := s.Prepare(
+	stmt, err := st.Prepare(
 		q, modelUUID, modelDetails{}, secretBackendForK8sModelRow{}, cloudRow{}, cloudCredentialRow{})
 	if err != nil {
 		return nil, errors.Capture(err)
@@ -140,7 +185,7 @@ GROUP BY vm.name, vcca.attribute_key`
 
 	// Controller name is still stored in controller config.
 	var controller controllerName
-	controllerNameStmt, err := s.Prepare(
+	controllerNameStmt, err := st.Prepare(
 		"SELECT value AS &controllerName.name FROM v_controller_config WHERE key = 'controller-name'", controller)
 	if err != nil {
 		return nil, errors.Capture(err)
@@ -181,7 +226,7 @@ GROUP BY vm.name, vcca.attribute_key`
 		return nil, errors.Capture(err)
 	}
 
-	sb, err := s.getSecretBackend(ctx, tx, secretbackend.BackendIdentifier{Name: kubernetes.BackendName})
+	sb, err := st.getSecretBackend(ctx, tx, secretbackend.BackendIdentifier{Name: kubernetes.BackendName})
 	if err != nil {
 		return nil, errors.Errorf("getting k8s secret backend for model %q: %w", mUUID, err)
 	}
@@ -203,7 +248,7 @@ func getK8sBackendConfig(
 	return k8sConfig, nil
 }
 
-func (s *State) getSecretBackend(
+func (st *State) getSecretBackend(
 	ctx context.Context, tx *sqlair.TX, identifier secretbackend.BackendIdentifier,
 ) (*secretbackend.SecretBackend, error) {
 	if identifier.ID == "" && identifier.Name == "" {
@@ -231,7 +276,7 @@ FROM secret_backend b
     JOIN secret_backend_type bt ON b.backend_type_id = bt.id
     LEFT JOIN secret_backend_config c ON b.uuid = c.backend_uuid
 WHERE b.%s = $M.identifier`, columName)
-	stmt, err := s.Prepare(q, sqlair.M{}, SecretBackendRow{})
+	stmt, err := st.Prepare(q, sqlair.M{}, SecretBackendRow{})
 	if err != nil {
 		return nil, errors.Capture(err)
 	}
@@ -244,7 +289,7 @@ WHERE b.%s = $M.identifier`, columName)
 	if err != nil {
 		return nil, errors.Errorf("querying secret backends: %w", err)
 	}
-	return rows.toSecretBackends()[0], nil
+	return rows.toSecretBackends(ctx, st.logger)[0], nil
 }
 
 type modelDetails struct {
@@ -307,7 +352,9 @@ type SecretBackendRow struct {
 // secretBackendRows represents a slice of SecretBackendRow.
 type secretBackendRows []SecretBackendRow
 
-func (rows secretBackendRows) toSecretBackends() []*secretbackend.SecretBackend {
+// toSecretBackends converts secretBackendRows to secretbackend.SecretBackend
+// slice.
+func (rows secretBackendRows) toSecretBackends(ctx context.Context, logger logger.Logger) []*secretbackend.SecretBackend {
 	// Sort the rows by backend name to ensure that we group the config.
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i].Name < rows[j].Name
@@ -331,17 +378,37 @@ func (rows secretBackendRows) toSecretBackends() []*secretbackend.SecretBackend 
 			currentBackend = &backend
 			result = append(result, currentBackend)
 		}
-		if row.ConfigName == "" || row.ConfigContent == "" {
-			// No config for this row.
+		decodedContent, err := decodeConfigValue(row.ConfigContent)
+		if err != nil {
+			// This is unexpected and shouldn't happen unless encoding changes
+			// look at `domain/secretbackend/state/encode.go`.
+			logger.Warningf(ctx, "failed to decode config value %q: %v", row.ConfigName, err)
 			continue
 		}
 
 		if currentBackend.Config == nil {
 			currentBackend.Config = make(map[string]any)
 		}
-		currentBackend.Config[row.ConfigName] = row.ConfigContent
+		currentBackend.Config[row.ConfigName] = decodedContent
 	}
 	return result
+}
+
+// decodeConfigValue decodes the stored JSON string into an any value.
+func decodeConfigValue(storedStr string) (any, error) {
+	if storedStr == "" {
+		return nil, nil
+	}
+
+	var value any
+	err := json.Unmarshal([]byte(storedStr), &value)
+	if err != nil {
+		return nil, err
+	}
+	if str, ok := value.(string); ok && str == "" {
+		return value, errors.New("empty string")
+	}
+	return value, nil
 }
 
 // secretBackendForK8sModelRow represents a single joined result from

@@ -16,7 +16,6 @@ import (
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/machine"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/network"
 	usertesting "github.com/juju/juju/core/user/testing"
 	jujuversion "github.com/juju/juju/core/version"
@@ -251,163 +250,6 @@ WHERE  name = $1`
 func (s *stateSuite) TestSetKeepInstanceNotFound(c *tc.C) {
 	err := s.state.SetKeepInstance(c.Context(), "666", true)
 	c.Assert(err, tc.ErrorIs, machineerrors.MachineNotFound)
-}
-
-func (s *stateSuite) TestSetAppliedLXDProfileNames(c *tc.C) {
-	machineUUID, _ := s.addMachine(c)
-	err := s.state.SetMachineCloudInstance(c.Context(), machineUUID.String(), instance.Id("123"), "", "nonce", nil)
-	c.Assert(err, tc.ErrorIsNil)
-	err = s.state.SetAppliedLXDProfileNames(c.Context(), machineUUID.String(), []string{"profile1", "profile2"})
-	c.Assert(err, tc.ErrorIsNil)
-
-	// Check that the profile names are in the machine_lxd_profile table.
-	var profiles []string
-	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, "SELECT name FROM machine_lxd_profile WHERE machine_uuid = ?", machineUUID.String())
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var profile string
-			err = rows.Scan(&profile)
-			if err != nil {
-				return err
-			}
-			profiles = append(profiles, profile)
-		}
-
-		return nil
-	})
-	c.Assert(err, tc.ErrorIsNil)
-	c.Check(profiles, tc.SameContents, []string{"profile1", "profile2"})
-}
-
-func (s *stateSuite) TestSetLXDProfilesPartial(c *tc.C) {
-	machineUUID, _ := s.addMachine(c)
-	err := s.state.SetMachineCloudInstance(c.Context(), machineUUID.String(), instance.Id("123"), "", "nonce", nil)
-	c.Assert(err, tc.ErrorIsNil)
-
-	// Insert a single lxd profile.
-	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO machine_lxd_profile VALUES
-(?, "profile2", 0)`, machineUUID.String())
-		return err
-	})
-	c.Assert(err, tc.ErrorIsNil)
-
-	err = s.state.SetAppliedLXDProfileNames(c.Context(), machineUUID.String(), []string{"profile1", "profile2"})
-	// This shouldn't fail, but add the missing profile to the table.
-	c.Assert(err, tc.ErrorIsNil)
-
-	// Check that the profile names are in the machine_lxd_profile table.
-	var profiles []string
-	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, "SELECT name FROM machine_lxd_profile WHERE machine_uuid = ?", machineUUID.String())
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var profile string
-			err = rows.Scan(&profile)
-			if err != nil {
-				return err
-			}
-			profiles = append(profiles, profile)
-		}
-
-		return nil
-	})
-	c.Assert(err, tc.ErrorIsNil)
-	c.Check(profiles, tc.DeepEquals, []string{"profile1", "profile2"})
-}
-
-func (s *stateSuite) TestSetLXDProfilesOverwriteAll(c *tc.C) {
-	machineUUID, _ := s.addMachine(c)
-	err := s.state.SetMachineCloudInstance(c.Context(), machineUUID.String(), instance.Id("123"), "", "nonce", nil)
-	c.Assert(err, tc.ErrorIsNil)
-
-	// Insert 3 lxd profiles.
-	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO machine_lxd_profile VALUES
-(?, "profile1", 0)`, machineUUID.String())
-		if err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO machine_lxd_profile VALUES
-(?, "profile2", 1)`, machineUUID.String())
-		if err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO machine_lxd_profile VALUES
-(?, "profile3", 2)`, machineUUID.String())
-		return err
-	})
-	c.Assert(err, tc.ErrorIsNil)
-
-	err = s.state.SetAppliedLXDProfileNames(c.Context(), machineUUID.String(), []string{"profile1", "profile4"})
-	c.Assert(err, tc.ErrorIsNil)
-
-	// Check that the profile names are in the machine_lxd_profile table.
-	var profiles []string
-	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, "SELECT name FROM machine_lxd_profile WHERE machine_uuid = ?", machineUUID.String())
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var profile string
-			err = rows.Scan(&profile)
-			if err != nil {
-				return err
-			}
-			profiles = append(profiles, profile)
-		}
-
-		return nil
-	})
-	c.Assert(err, tc.ErrorIsNil)
-	c.Check(profiles, tc.DeepEquals, []string{"profile1", "profile4"})
-}
-
-func (s *stateSuite) TestSetLXDProfilesSameOrder(c *tc.C) {
-	machineUUID, _ := s.addMachine(c)
-	err := s.state.SetMachineCloudInstance(c.Context(), machineUUID.String(), instance.Id("123"), "", "nonce", nil)
-	c.Assert(err, tc.ErrorIsNil)
-	err = s.state.SetAppliedLXDProfileNames(c.Context(), machineUUID.String(), []string{"profile3", "profile1", "profile2"})
-	c.Assert(err, tc.ErrorIsNil)
-
-	profiles, err := s.state.AppliedLXDProfileNames(c.Context(), machineUUID.String())
-	c.Assert(err, tc.ErrorIsNil)
-	c.Check(profiles, tc.DeepEquals, []string{"profile3", "profile1", "profile2"})
-}
-
-func (s *stateSuite) TestSetLXDProfilesNotFound(c *tc.C) {
-	err := s.state.SetAppliedLXDProfileNames(c.Context(), "666", []string{"profile1", "profile2"})
-	c.Assert(err, tc.ErrorIs, machineerrors.MachineNotFound)
-}
-
-func (s *stateSuite) TestSetLXDProfilesNotProvisioned(c *tc.C) {
-	machineUUID, _ := s.addMachine(c)
-	err := s.state.SetAppliedLXDProfileNames(c.Context(), machineUUID.String(), []string{"profile3", "profile1", "profile2"})
-	c.Assert(err, tc.ErrorIs, machineerrors.NotProvisioned)
-}
-
-func (s *stateSuite) TestSetLXDProfilesEmpty(c *tc.C) {
-	machineUUID, _ := s.addMachine(c)
-	err := s.state.SetMachineCloudInstance(c.Context(), machineUUID.String(), instance.Id("123"), "", "nonce", nil)
-	c.Assert(err, tc.ErrorIsNil)
-	err = s.state.SetAppliedLXDProfileNames(c.Context(), machineUUID.String(), []string{})
-	c.Assert(err, tc.ErrorIsNil)
-
-	profiles, err := s.state.AppliedLXDProfileNames(c.Context(), machineUUID.String())
-	c.Assert(err, tc.ErrorIsNil)
-	c.Check(profiles, tc.HasLen, 0)
 }
 
 func (s *stateSuite) TestAppliedLXDProfileNames(c *tc.C) {
@@ -804,24 +646,24 @@ func (s *stateSuite) TestConstraintFull(c *tc.C) {
 			Architecture: architecture.AMD64,
 		},
 		Constraints: constraints.Constraints{
-			Arch:             ptr("amd64"),
-			CpuCores:         ptr(uint64(2)),
-			CpuPower:         ptr(uint64(42)),
-			Mem:              ptr(uint64(8)),
-			RootDisk:         ptr(uint64(256)),
-			RootDiskSource:   ptr("root-disk-source"),
-			InstanceRole:     ptr("instance-role"),
-			InstanceType:     ptr("instance-type"),
-			Container:        ptr(instance.LXD),
-			VirtType:         ptr("virt-type"),
-			AllocatePublicIP: ptr(true),
-			ImageID:          ptr("image-id"),
-			Tags:             ptr([]string{"tag0", "tag1"}),
-			Spaces: ptr([]constraints.SpaceConstraint{
+			Arch:             new("amd64"),
+			CpuCores:         new(uint64(2)),
+			CpuPower:         new(uint64(42)),
+			Mem:              new(uint64(8)),
+			RootDisk:         new(uint64(256)),
+			RootDiskSource:   new("root-disk-source"),
+			InstanceRole:     new("instance-role"),
+			InstanceType:     new("instance-type"),
+			Container:        new(instance.LXD),
+			VirtType:         new("virt-type"),
+			AllocatePublicIP: new(true),
+			ImageID:          new("image-id"),
+			Tags:             new([]string{"tag0", "tag1"}),
+			Spaces: new([]constraints.SpaceConstraint{
 				{SpaceName: "space0", Exclude: false},
 				{SpaceName: "space1", Exclude: true},
 			}),
-			Zones: ptr([]string{"zone0", "zone1"}),
+			Zones: new([]string{"zone0", "zone1"}),
 		},
 	})
 	c.Assert(err, tc.ErrorIsNil)
@@ -835,18 +677,18 @@ func (s *stateSuite) TestConstraintFull(c *tc.C) {
 		{SpaceName: "space1", Exclude: true},
 	})
 	c.Check(*cons.Zones, tc.SameContents, []string{"zone0", "zone1"})
-	c.Check(cons.Arch, tc.DeepEquals, ptr("amd64"))
-	c.Check(cons.CpuCores, tc.DeepEquals, ptr(uint64(2)))
-	c.Check(cons.CpuPower, tc.DeepEquals, ptr(uint64(42)))
-	c.Check(cons.Mem, tc.DeepEquals, ptr(uint64(8)))
-	c.Check(cons.RootDisk, tc.DeepEquals, ptr(uint64(256)))
-	c.Check(cons.RootDiskSource, tc.DeepEquals, ptr("root-disk-source"))
-	c.Check(cons.InstanceRole, tc.DeepEquals, ptr("instance-role"))
-	c.Check(cons.InstanceType, tc.DeepEquals, ptr("instance-type"))
-	c.Check(cons.Container, tc.DeepEquals, ptr(instance.LXD))
-	c.Check(cons.VirtType, tc.DeepEquals, ptr("virt-type"))
-	c.Check(cons.AllocatePublicIP, tc.DeepEquals, ptr(true))
-	c.Check(cons.ImageID, tc.DeepEquals, ptr("image-id"))
+	c.Check(cons.Arch, tc.DeepEquals, new("amd64"))
+	c.Check(cons.CpuCores, tc.DeepEquals, new(uint64(2)))
+	c.Check(cons.CpuPower, tc.DeepEquals, new(uint64(42)))
+	c.Check(cons.Mem, tc.DeepEquals, new(uint64(8)))
+	c.Check(cons.RootDisk, tc.DeepEquals, new(uint64(256)))
+	c.Check(cons.RootDiskSource, tc.DeepEquals, new("root-disk-source"))
+	c.Check(cons.InstanceRole, tc.DeepEquals, new("instance-role"))
+	c.Check(cons.InstanceType, tc.DeepEquals, new("instance-type"))
+	c.Check(cons.Container, tc.DeepEquals, new(instance.LXD))
+	c.Check(cons.VirtType, tc.DeepEquals, new("virt-type"))
+	c.Check(cons.AllocatePublicIP, tc.DeepEquals, new(true))
+	c.Check(cons.ImageID, tc.DeepEquals, new("image-id"))
 }
 
 func (s *stateSuite) TestConstraintPartial(c *tc.C) {
@@ -857,10 +699,10 @@ func (s *stateSuite) TestConstraintPartial(c *tc.C) {
 			Architecture: architecture.AMD64,
 		},
 		Constraints: constraints.Constraints{
-			Arch:             ptr("amd64"),
-			CpuCores:         ptr(uint64(2)),
-			AllocatePublicIP: ptr(true),
-			ImageID:          ptr("image-id"),
+			Arch:             new("amd64"),
+			CpuCores:         new(uint64(2)),
+			AllocatePublicIP: new(true),
+			ImageID:          new("image-id"),
 		},
 	})
 	c.Assert(err, tc.ErrorIsNil)
@@ -869,10 +711,10 @@ func (s *stateSuite) TestConstraintPartial(c *tc.C) {
 	cons, err := s.state.GetMachineConstraints(c.Context(), machineName.String())
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(cons, tc.DeepEquals, constraints.Constraints{
-		Arch:             ptr("amd64"),
-		CpuCores:         ptr(uint64(2)),
-		AllocatePublicIP: ptr(true),
-		ImageID:          ptr("image-id"),
+		Arch:             new("amd64"),
+		CpuCores:         new(uint64(2)),
+		AllocatePublicIP: new(true),
+		ImageID:          new("image-id"),
 	})
 }
 
@@ -884,7 +726,7 @@ func (s *stateSuite) TestConstraintSingleValue(c *tc.C) {
 			Architecture: architecture.AMD64,
 		},
 		Constraints: constraints.Constraints{
-			CpuCores: ptr(uint64(2)),
+			CpuCores: new(uint64(2)),
 		},
 	})
 	c.Assert(err, tc.ErrorIsNil)
@@ -893,7 +735,7 @@ func (s *stateSuite) TestConstraintSingleValue(c *tc.C) {
 	cons, err := s.state.GetMachineConstraints(c.Context(), machineName.String())
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(cons, tc.DeepEquals, constraints.Constraints{
-		CpuCores: ptr(uint64(2)),
+		CpuCores: new(uint64(2)),
 	})
 }
 
@@ -953,22 +795,22 @@ INSERT INTO space (uuid, name) VALUES
 	c.Assert(err, tc.ErrorIsNil)
 
 	cons := constraints.Constraints{
-		Arch:           ptr("amd64"),
-		Container:      ptr(instance.LXD),
-		CpuCores:       ptr(uint64(4)),
-		Mem:            ptr(uint64(1024)),
-		RootDisk:       ptr(uint64(1024)),
-		RootDiskSource: ptr("root-disk-source"),
-		Tags:           ptr([]string{"tag1", "tag2"}),
-		InstanceRole:   ptr("instance-role"),
-		InstanceType:   ptr("instance-type"),
-		Spaces: ptr([]constraints.SpaceConstraint{
+		Arch:           new("amd64"),
+		Container:      new(instance.LXD),
+		CpuCores:       new(uint64(4)),
+		Mem:            new(uint64(1024)),
+		RootDisk:       new(uint64(1024)),
+		RootDiskSource: new("root-disk-source"),
+		Tags:           new([]string{"tag1", "tag2"}),
+		InstanceRole:   new("instance-role"),
+		InstanceType:   new("instance-type"),
+		Spaces: new([]constraints.SpaceConstraint{
 			{SpaceName: "space1", Exclude: false},
 		}),
-		VirtType:         ptr("virt-type"),
-		Zones:            ptr([]string{"zone1", "zone2"}),
-		AllocatePublicIP: ptr(true),
-		ImageID:          ptr("image-id"),
+		VirtType:         new("virt-type"),
+		Zones:            new([]string{"zone1", "zone2"}),
+		AllocatePublicIP: new(true),
+		ImageID:          new("image-id"),
 	}
 
 	err = state.SetModelConstraints(c.Context(), cons)
@@ -1030,7 +872,7 @@ func (s *stateSuite) TestCountMachinesInSpace(c *tc.C) {
 			Scope:            network.ScopeCloudLocal,
 			ProviderSubnetID: &subnetID,
 		}},
-	}})
+	}}, false)
 	c.Assert(err, tc.ErrorIsNil)
 
 	count, err := s.state.CountMachinesInSpace(c.Context(), spaceUUID.String())
@@ -1082,7 +924,7 @@ func (s *stateSuite) TestCountMachinesInSpaceDoubleAddressSameMachine(c *tc.C) {
 				ProviderSubnetID: &subnetID,
 			},
 		},
-	}})
+	}}, false)
 	c.Assert(err, tc.ErrorIsNil)
 
 	count, err := s.state.CountMachinesInSpace(c.Context(), spaceUUID.String())
@@ -1143,7 +985,7 @@ func (s *stateSuite) TestCountMachinesInSpaceMultipleSubnets(c *tc.C) {
 				Scope:            network.ScopeCloudLocal,
 				ProviderSubnetID: &subnetUUID0,
 			}},
-		}})
+		}}, false)
 		c.Assert(err, tc.ErrorIsNil)
 	}
 
@@ -1193,7 +1035,7 @@ func (s *stateSuite) createTestModel(c *tc.C) coremodel.UUID {
 	runner := s.TxnRunnerFactory()
 	state := statemodel.NewState(runner, loggertesting.WrapCheckLog(c))
 
-	id := modeltesting.GenModelUUID(c)
+	id := tc.Must0(c, coremodel.NewUUID)
 	args := model.ModelDetailArgs{
 		UUID:               id,
 		AgentStream:        domainagentbinary.AgentStreamReleased,

@@ -69,31 +69,3 @@ func (s *Service) InsertMigratingOperations(ctx context.Context, args internal.I
 	err = s.st.InsertMigratingOperations(ctx, args)
 	return errors.Capture(err)
 }
-
-// DeleteImportedOperations deletes all imported operations in a model during
-// an import rollback.
-func (s *Service) DeleteImportedOperations(ctx context.Context) error {
-	ctx, span := trace.Start(ctx, trace.NameFromFunc())
-	defer span.End()
-
-	storePaths, err := s.st.DeleteImportedOperations(ctx)
-	if err != nil {
-		return errors.Errorf("deleting imported operations: %w", err)
-	}
-	if len(storePaths) == 0 {
-		return nil
-	}
-
-	store, err := s.objectStoreGetter.GetObjectStore(ctx)
-	if err != nil {
-		return errors.Errorf("getting object store: %w", err)
-	}
-	for _, path := range storePaths {
-		err := store.Remove(ctx, path)
-		if err != nil {
-			s.logger.Warningf(ctx, "error deleting object store entry while rollback migration %q: %v", path, err)
-		}
-	}
-
-	return nil
-}

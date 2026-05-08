@@ -95,8 +95,8 @@ git checkout -b 3.6-new-stuff # your feature branch
 
 8. Make the desired changes. Test changes locally.
 
+---
 
-----------------
 <details>
 
 <summary>Further info: Docs</summary>
@@ -130,35 +130,38 @@ errors, try `make clean`, then `make run` again. For other checks, see `make
 
 </details>
 
-----------------
+---
 
-----------------
 <details>
 
 <summary>Further info: Code</summary>
 
-### Installing Go
+### Install prerequisites
 
-`juju` is written in [Go](https://go.dev/). To install Go see [Go
-docs](https://golang.org/doc/install#install).
+#### Install Go 
+To install Go see [Go docs](https://golang.org/doc/install#install).
 
-### Building Juju and its dependencies
+#### Install project dependencies
 
-Fork and clone the Juju repo, then navigate to the root directory and run `make
-install`:
-
+```sh
+make install-dependencies
 ```
-git clone https://github.com/<user>/juju.git
-cd juju
+
+### Build and install Juju
+To compile the Juju source code and install the resulting binaries into your `$GOBIN` directory (typically `~/go/bin`):
+
+```sh
 make install
 ```
+
+> Note: Ensure your PATH includes the Go bin directory so you can run the
+> `juju` command globally.
 
 ### Updating Go dependencies
 
 Juju uses Go modules to manage dependencies. To update a dependency, use the
 following, ensuring that the dependency is using a version where possible, or a
 commit hash if not available:
-
 
 ```
 go get -u github.com/the/dependency@v1.2.3
@@ -174,33 +177,22 @@ See the project's [coding style guide](STYLE.md), the coding style guidelines us
 Some tests may require local lxd to be installed, see
 [installing lxd via snap](https://stgraber.org/2016/10/17/lxd-snap-available/).
 
-Juju uses the `gocheck` testing framework, which is automatically installed
-as a dependency of `juju`. You can read more about `gocheck` at
-http://godoc.org/gopkg.in/check.v1. `gocheck` is integrated into the source of
-each package so the standard `go test` command is used to run `gocheck` tests.
+Juju uses the `tc` testing framework, which is automatically installed
+as a dependency of `juju`. You can read more about `tc` at
+http://godoc.org/github.com/juju/tc. `tc` is integrated into the source of
+each package so the standard `go test` command is used to run `tc` tests.
 For example:
 
 ```
 go test -v github.com/juju/juju/core/config
 ```
 
-By default `gocheck` will run all tests
-in a package, selected tests can by run by passing `-gocheck.f` to match a
+By default `tc` will run all tests
+in a package, selected tests can by run by passing `-run` to match a
 subset of test names.
 
 ```
-go test -gocheck.f '$REGEX'
-```
-
-
-### Testing and MongoDB
-
-Many tests use a standalone instance of `mongod` as part of their setup. The
-`mongod` binary found in `$PATH` is executed by these suites.  If you don't
-already have MongoDB installed, run
-
-```
-make install-mongo-dependencies
+go test -run='$REGEX'
 ```
 
 ### Other
@@ -209,9 +201,7 @@ For more information see [CODING.md](CODING.md)
 
 </details>
 
-----------------
-
-
+---
 
 9. As you make your changes, ensure that you always remain in sync with the upstream:
 

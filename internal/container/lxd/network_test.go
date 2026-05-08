@@ -243,6 +243,9 @@ func (s *networkSuite) TestVerifyNetworkDeviceNotPresentCreated(c *tc.C) {
 	defer ctrl.Finish()
 	cSvr := s.NewMockServerWithExtensions(ctrl, "network")
 
+	op := lxdtesting.NewMockOperation(ctrl)
+	op.EXPECT().Wait().Return(nil)
+
 	netConf := map[string]string{
 		"ipv4.address": "auto",
 		"ipv4.nat":     "true",
@@ -264,7 +267,7 @@ func (s *networkSuite) TestVerifyNetworkDeviceNotPresentCreated(c *tc.C) {
 		cSvr.EXPECT().GetNetwork(network.DefaultLXDBridge).Return(nil, "", errors.New("network not found")),
 		cSvr.EXPECT().CreateNetwork(netCreateReq).Return(nil),
 		cSvr.EXPECT().GetNetwork(network.DefaultLXDBridge).Return(newNet, "", nil),
-		cSvr.EXPECT().UpdateProfile("default", defaultLegacyProfileWithNIC().Writable(), lxdtesting.ETag).Return(nil),
+		cSvr.EXPECT().UpdateProfile("default", defaultLegacyProfileWithNIC().Writable(), lxdtesting.ETag).Return(op, nil),
 	)
 
 	profile := defaultLegacyProfileWithNIC()
@@ -317,6 +320,9 @@ func (s *networkSuite) TestVerifyNetworkDeviceNotPresentCreatedWithUnusedName(c 
 	defer ctrl.Finish()
 	cSvr := s.NewMockServerWithExtensions(ctrl, "network")
 
+	op := lxdtesting.NewMockOperation(ctrl)
+	op.EXPECT().Wait().Return(nil)
+
 	defaultBridge := &lxdapi.Network{
 		Name:    network.DefaultLXDBridge,
 		Type:    "bridge",
@@ -342,7 +348,7 @@ func (s *networkSuite) TestVerifyNetworkDeviceNotPresentCreatedWithUnusedName(c 
 	}
 	gomock.InOrder(
 		cSvr.EXPECT().GetNetwork(network.DefaultLXDBridge).Return(defaultBridge, "", nil),
-		cSvr.EXPECT().UpdateProfile("default", devReq, lxdtesting.ETag).Return(nil),
+		cSvr.EXPECT().UpdateProfile("default", devReq, lxdtesting.ETag).Return(op, nil),
 	)
 
 	profile := defaultLegacyProfileWithNIC()
@@ -380,7 +386,7 @@ func (s *networkSuite) TestInterfaceInfoFromDevices(c *tc.C) {
 			"hwaddr":  "00:16:3e:00:00:00",
 		},
 		"eno9": {
-			"parent":  "br1",
+			"network": "br1",
 			"type":    "nic",
 			"nictype": "macvlan",
 			"hwaddr":  "00:16:3e:00:00:3e",
@@ -419,7 +425,7 @@ func (s *networkSuite) TestEnableHTTPSListener(c *tc.C) {
 	gomock.InOrder(
 		cSvr.EXPECT().GetServer().Return(cfg, lxdtesting.ETag, nil).Times(2),
 		cSvr.EXPECT().UpdateServer(lxdapi.ServerPut{
-			Config: map[string]interface{}{
+			Config: map[string]any{
 				"core.https_address": "[::]",
 			},
 		}, lxdtesting.ETag).Return(nil),
@@ -442,13 +448,13 @@ func (s *networkSuite) TestEnableHTTPSListenerWithFallbackToIPv4(c *tc.C) {
 	gomock.InOrder(
 		cSvr.EXPECT().GetServer().Return(cfg, lxdtesting.ETag, nil).Times(2),
 		cSvr.EXPECT().UpdateServer(lxdapi.ServerPut{
-			Config: map[string]interface{}{
+			Config: map[string]any{
 				"core.https_address": "[::]",
 			},
 		}, lxdtesting.ETag).Return(errors.New(lxd.ErrIPV6NotSupported)),
 		cSvr.EXPECT().GetServer().Return(cfg, lxdtesting.ETag, nil),
 		cSvr.EXPECT().UpdateServer(lxdapi.ServerPut{
-			Config: map[string]interface{}{
+			Config: map[string]any{
 				"core.https_address": "0.0.0.0",
 			},
 		}, lxdtesting.ETag).Return(nil),
@@ -483,7 +489,7 @@ func (s *networkSuite) TestEnableHTTPSListenerWithErrors(c *tc.C) {
 	gomock.InOrder(
 		cSvr.EXPECT().GetServer().Return(cfg, lxdtesting.ETag, nil),
 		cSvr.EXPECT().UpdateServer(lxdapi.ServerPut{
-			Config: map[string]interface{}{
+			Config: map[string]any{
 				"core.https_address": "[::]",
 			},
 		}, lxdtesting.ETag).Return(errors.New(lxd.ErrIPV6NotSupported)),
@@ -497,13 +503,13 @@ func (s *networkSuite) TestEnableHTTPSListenerWithErrors(c *tc.C) {
 	gomock.InOrder(
 		cSvr.EXPECT().GetServer().Return(cfg, lxdtesting.ETag, nil),
 		cSvr.EXPECT().UpdateServer(lxdapi.ServerPut{
-			Config: map[string]interface{}{
+			Config: map[string]any{
 				"core.https_address": "[::]",
 			},
 		}, lxdtesting.ETag).Return(errors.New(lxd.ErrIPV6NotSupported)),
 		cSvr.EXPECT().GetServer().Return(cfg, lxdtesting.ETag, nil),
 		cSvr.EXPECT().UpdateServer(lxdapi.ServerPut{
-			Config: map[string]interface{}{
+			Config: map[string]any{
 				"core.https_address": "0.0.0.0",
 			},
 		}, lxdtesting.ETag).Return(errors.New("bad")),

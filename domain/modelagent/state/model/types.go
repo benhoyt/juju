@@ -39,6 +39,15 @@ type architectureMap struct {
 	Name string `db:"name"`
 }
 
+type agentBinaryStore struct {
+	Version          string `db:"version"`
+	ArchitectureName string `db:"architecture_name"`
+}
+
+type name struct {
+	Name string `db:"name"`
+}
+
 // machineAgentVersion represents a record from the reported machine agent
 // table.
 type machineAgentVersion struct {
@@ -150,9 +159,9 @@ type unitAgentBinaryMetadata struct {
 // unitAgentVersion represents a record from the reported unit agent
 // version table.
 type unitAgentVersion struct {
-	UnitUUID      string `db:"unit_uuid"`
-	Version       string `db:"version"`
-	ArchtectureID int    `db:"architecture_id"`
+	UnitUUID       string `db:"unit_uuid"`
+	Version        string `db:"version"`
+	ArchitectureID int    `db:"architecture_id"`
 }
 
 // unitAgentVersionInfo represents a record from the unit agent version table.
@@ -183,4 +192,11 @@ type unitUUID struct {
 // unitUUIDRef represents a unit uuid reference to the unit table.
 type unitUUIDRef struct {
 	UUID coreunit.UUID `db:"unit_uuid"`
+}
+
+// machineBase represents the base information for a machine.
+type machineBase struct {
+	MachineUUID string           `db:"machine_uuid"`
+	OS          string           `db:"os"`
+	Channel     sql.Null[string] `db:"channel"`
 }

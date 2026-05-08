@@ -12,9 +12,9 @@ import (
 
 	"github.com/juju/juju/api/client/application"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/block"
 	"github.com/juju/juju/cmd/modelcmd"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -44,7 +44,7 @@ type scaleApplicationCommand struct {
 const scaleApplicationDoc = `
 Scale a Kubernetes application by specifying how many units there should be.
 The new number of units can be greater or less than the current number, thus
-allowing both scale up and scale down.
+allowing both scale out and scale in.
 `
 
 const scaleApplicationExamples = `

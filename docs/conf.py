@@ -4,7 +4,7 @@ import sys
 
 import yaml
 
-sys.path.append('./')
+sys.path.append("./")
 sys.path.append(os.path.abspath("./scripts"))
 
 # Configuration for the Sphinx documentation builder.
@@ -75,7 +75,7 @@ copyright = "%s CC-BY-SA, %s" % (datetime.date.today().year, author)
 # NOTE: The Open Graph Protocol (OGP) enhances page display in a social graph
 #       and is used by social media platforms; see https://ogp.me/
 
-ogp_site_url = "https://canonical-starter-pack.readthedocs-hosted.com/"
+# ogp_site_url = "https://canonical-starter-pack.readthedocs-hosted.com/"
 
 
 # Preview name of the documentation website
@@ -89,7 +89,7 @@ ogp_site_name = project
 #
 # TODO: To customise the preview image, update as needed.
 
-ogp_image = "https://assets.ubuntu.com/v1/253da317-image-document-ubuntudocs.svg"
+# ogp_image = "https://assets.ubuntu.com/v1/cc828679-docs_illustration.svg"
 
 
 # Product favicon; shown in bookmarks, browser tabs, etc.
@@ -98,11 +98,6 @@ ogp_image = "https://assets.ubuntu.com/v1/253da317-image-document-ubuntudocs.svg
 
 # html_favicon = '.sphinx/_static/favicon.png'
 
-# Add any extra paths that contain custom files (such as robots.txt or
-# .htaccess) here, relative to this directory. These files are copied
-# directly to the root of the documentation.
-# TODO: Check if this is still needed.
-html_extra_path = ['.sphinx/_extra']
 
 # Dictionary of values to pass into the Sphinx context for all pages:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#confval-html_context
@@ -116,11 +111,11 @@ html_context = {
     # TODO: If there's no such website,
     #       remove the {{ product_page }} link from the page header template
     #       (usually .sphinx/_templates/header.html; also, see README.rst).
-    "product_page": "juju.is/docs",
+    "product_page": "canonical.com/juju/docs",
     # Product tag image; the orange part of your logo, shown in the page header
     #
     # TODO: To add a tag image, uncomment and update as needed.
-    'product_tag': '_static/logos/juju-logo-no-text.png',
+    "product_tag": "_static/logos/juju-logo-no-text.png",
     # Your Discourse instance URL
     #
     # TODO: Change to your Discourse instance URL or leave empty.
@@ -146,11 +141,9 @@ html_context = {
     # Docs branch in the repo; used in links for viewing the source files
     #
     # TODO: To customise the branch, uncomment and update as needed.
-    'repo_default_branch': 'main',
+    "repo_default_branch": "main",
     # Docs location in the repo; used in links for viewing the source files
     #
-
-
     # TODO: To customise the directory, uncomment and update as needed.
     "repo_folder": "/docs/",
     # TODO: To enable or disable the Previous / Next buttons at the bottom of pages
@@ -158,10 +151,14 @@ html_context = {
     "sequential_nav": "both",
     # TODO: To enable listing contributors on individual pages, set to True
     "display_contributors": False,
-
     # Required for feedback button
-    'github_issues': 'enabled',
+    "github_issues": "enabled",
 }
+
+# Allow opt-in build of the OpenAPI "Hello" example so docs stay clean by default.
+# if os.getenv("OPENAPI", ""):
+#     tags.add("openapi")
+#     html_extra_path.append("how-to/assets/openapi.yaml")
 
 # TODO: To enable the edit button on pages, uncomment and change the link to a
 # public repository on GitHub or Launchpad. Any of the following link domains
@@ -179,24 +176,24 @@ html_context = {
 # TODO: If your documentation is hosted on https://docs.ubuntu.com/,
 #       uncomment and update as needed.
 
-slug = 'juju'
+slug = "juju"
 
 #######################
 # Sitemap configuration: https://sphinx-sitemap.readthedocs.io/
 #######################
 
-# Base URL of RTD hosted project
+# Use RTD canonical URL to ensure duplicate pages have a specific canonical URL
 
-html_baseurl = 'https://documentation.ubuntu.com/juju/'
+html_baseurl = "https://documentation.ubuntu.com/juju/"
 
 # URL scheme. Add language and version scheme elements.
 # When configured with RTD variables, check for RTD environment so manual runs succeed:
 
-if 'READTHEDOCS_VERSION' in os.environ:
+if "READTHEDOCS_VERSION" in os.environ:
     version = os.environ["READTHEDOCS_VERSION"]
-    sitemap_url_scheme = '{version}{link}'
+    sitemap_url_scheme = "{version}{link}"
 else:
-    sitemap_url_scheme = 'MANUAL/{link}'
+    sitemap_url_scheme = "MANUAL/{link}"
 
 # Include `lastmod` dates in the sitemap:
 
@@ -205,9 +202,9 @@ sitemap_show_lastmod = True
 # Exclude generated pages from the sitemap:
 
 sitemap_excludes = [
-    '404/',
-    'genindex/',
-    'search/',
+    "404/",
+    "genindex/",
+    "search/",
 ]
 
 # TODO: Add more pages to sitemap_excludes if needed. Wildcards are supported.
@@ -219,6 +216,7 @@ sitemap_excludes = [
 
 html_static_path = [".sphinx/_static"]
 templates_path = [".sphinx/_templates"]
+html_extra_path = ["robots.txt", "sitemapindex.xml"]
 
 #############
 # Redirects #
@@ -234,8 +232,8 @@ templates_path = [".sphinx/_templates"]
 #       the sphinx_reredirects extension will be disabled.
 
 redirects = {
-'user/reference/charm/charm-naming-guidelines/': 'https://canonical-charmcraft.readthedocs-hosted.com/en/stable/',
-'reference/charm/charm-naming-guidelines/': 'https://canonical-charmcraft.readthedocs-hosted.com/en/stable/'
+    "user/reference/charm/charm-naming-guidelines/": "https://canonical-charmcraft.readthedocs-hosted.com/en/stable/",
+    "reference/charm/charm-naming-guidelines/": "https://canonical-charmcraft.readthedocs-hosted.com/en/stable/",
 }
 
 ###########################
@@ -246,11 +244,7 @@ redirects = {
 #
 # TODO: Remove or adjust the ACME entry after you update the contributing guide
 
-linkcheck_ignore = [
-    "http://127.0.0.1:8000",
-    "https://github.com/canonical/ACME/*"
-    ]
-
+linkcheck_ignore = ["http://127.0.0.1:8000", "https://github.com/canonical/ACME/*"]
 
 # A regex list of URLs where anchors are ignored by 'make linkcheck'
 
@@ -266,9 +260,6 @@ linkcheck_anchors_ignore_for_url = [
 # linkcheck_timeout = 30
 linkcheck_retries = 3
 
-
-######################## old below
-
 ########################
 # Configuration extras #
 ########################
@@ -279,60 +270,55 @@ linkcheck_retries = 3
 # NOTE: By default, the following MyST extensions are enabled:
 #       substitution, deflist, linkify
 
-myst_enable_extensions = set(["colon_fence",])
+myst_enable_extensions = set(
+    [
+        "colon_fence",
+    ]
+)
 
 # Custom Sphinx extensions; see
 # https://www.sphinx-doc.org/en/master/usage/extensions/index.html
 
 # NOTE: The canonical_sphinx extension is required for the starter pack.
-#       It automatically enables the following extensions:
-#       - custom-rst-roles
-#       - myst_parser
-#       - notfound.extension
-#       - related-links
-#       - sphinx_copybutton
-#       - sphinx_design
-#       - sphinx_reredirects
-#       - sphinx_tabs.tabs
-#       - sphinxcontrib.jquery
-#       - sphinxext.opengraph
-#       - terminal-output
-#       - youtube-links
 
 extensions = [
-    # from upstream:
     "canonical_sphinx",
+    "notfound.extension",
+    "sphinx_design",
+    "sphinx_reredirects",
+    "sphinx_tabs.tabs",
+    "sphinxcontrib.jquery",
+    "sphinxext.opengraph",
+    "sphinx_config_options",
+    "sphinx_contributor_listing",
+    "sphinx_filtered_toctree",
+    "sphinx_llm.txt",
+    "sphinx_related_links",
+    "sphinx_roles",
+    "sphinx_terminal",
+    "sphinx_ubuntu_images",
+    "sphinx_youtube_links",
     "sphinxcontrib.cairosvgconverter",
     "sphinx_last_updated_by_git",
     "sphinx.ext.intersphinx",
     "sphinx_sitemap",
-    # our own:
-    'sphinx_design',
-    # Make it possible to link to related RTD projects using their internal anchors
-    # with, e.g., {external+ops:ref}`manage-configurations`:
-    'sphinxext.rediraffe',
-    # Display an external link icon and open link in new tab:
-    # new_tab_link_show_external_link_icon must also be set to True
-    'sphinx_new_tab_link',
-    'sphinxcontrib.lightbox2',
-    'ibnote',
-    ]
+    "sphinxext.rediraffe",
+    "sphinx_new_tab_link",
+    "sphinxcontrib.lightbox2",
+    "ibnote",
+]
 
-# Extension configs:
-# - sphinx.ext.intersphinx:
-intersphinx_mapping = {
-    # 'juju': ('https://canonical-juju.readthedocs-hosted.com/en/latest/', None),
-    'tfjuju': ('https://documentation.ubuntu.com/terraform-provider-juju/latest/', None),
-    'pyjuju': ('https://pythonlibjuju.readthedocs.io/en/latest/', None),
-    'jaas': ('https://documentation.ubuntu.com/jaas/latest/', None),
-    'charmcraft': ('https://documentation.ubuntu.com/charmcraft/stable/', None),
-    'ops': ('https://documentation.ubuntu.com/ops/latest/', None),
-}
-# - sphinx_new_tab_link:
-new_tab_link_show_external_link_icon = True
-# - sphinxext.rediraffe:
-# rediraffe_branch = "3.6"
-rediraffe_redirects = "redirects.txt"
+# Customize sphinx_llm.txt
+## Add project summary:
+llms_txt_description = (
+    "Juju is an open source orchestration engine for deploying, integrating, "
+    "and managing applications across Kubernetes, VMs, and bare metal using "
+    "software operators called charms."
+)
+## Get cleaner markdown URLs (e.g., `page.md` instead of `page/index.html.md`):
+llms_txt_suffix_mode = "url-suffix"
+markdown_http_base = "https://documentation.ubuntu.com/juju/latest"
+
 
 # Excludes files or directories from processing
 
@@ -344,17 +330,15 @@ exclude_patterns = [
 
 html_css_files = [
     "css/pdf.css",
-    "css/cookie-banner.css",
+    "https://assets.ubuntu.com/v1/d86746ef-cookie_banner.css",
     "css/ibnote.css",
 ]
-
 
 # Adds custom JavaScript files, located under 'html_static_path'
 
 html_js_files = [
-    "js/bundle.js",
+    "https://assets.ubuntu.com/v1/287a5e8f-bundle.js",
 ]
-
 
 # Specifies a reST snippet to be appended to each .rst file
 
@@ -369,7 +353,6 @@ rst_epilog = """
 
 # disable_feedback_button = True
 
-
 # Your manpage URL
 #
 # TODO: To enable manpage links, uncomment and replace {codename} with required
@@ -379,13 +362,9 @@ rst_epilog = """
 # NOTE: If set, adding ':manpage:' to an .rst file
 #       adds a link to the corresponding man section at the bottom of the page.
 
-stable_distro = "plucky"
+# manpages_url = 'https://manpages.ubuntu.com/manpages/{codename}/en/' + \
+#     'man{section}/{page}.{section}.html'
 
-manpages_url = (
-    "https://manpages.ubuntu.com/manpages/"
-    + stable_distro
-    + "/en/man{section}/{page}.{section}.html"
-)
 
 # Specifies a reST snippet to be prepended to each .rst file
 # This defines a :center: role that centers table cell content.
@@ -409,7 +388,24 @@ if "discourse_prefix" not in html_context and "discourse" in html_context:
 
 # Workaround for substitutions.yaml
 
-if os.path.exists('./reuse/substitutions.yaml'):
-    with open('./reuse/substitutions.yaml', 'r') as fd:
+if os.path.exists("./reuse/substitutions.yaml"):
+    with open("./reuse/substitutions.yaml", "r") as fd:
         myst_substitutions = yaml.safe_load(fd.read())
 
+# Add configuration for intersphinx mapping
+
+intersphinx_mapping = {
+    # 'juju': ('https://canonical-juju.readthedocs-hosted.com/en/latest/', None),
+    "tfjuju": (
+        "https://documentation.ubuntu.com/terraform-provider-juju/latest/",
+        None,
+    ),
+    "pyjuju": ("https://pythonlibjuju.readthedocs.io/en/latest/", None),
+    "jaas": ("https://documentation.ubuntu.com/jaas/latest/", None),
+    "charmcraft": ("https://documentation.ubuntu.com/charmcraft/stable/", None),
+    "ops": ("https://documentation.ubuntu.com/ops/latest/", None),
+}
+
+new_tab_link_show_external_link_icon = True
+
+rediraffe_redirects = "redirects.txt"

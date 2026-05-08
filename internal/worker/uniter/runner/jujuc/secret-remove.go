@@ -8,8 +8,8 @@ import (
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/core/secrets"
-	"github.com/juju/juju/internal/cmd"
 )
 
 type secretRemoveCommand struct {
@@ -36,7 +36,7 @@ Remove a secret with the specified URI.
 	return jujucmd.Info(&cmd.Info{
 		Name:     "secret-remove",
 		Args:     "<ID>",
-		Purpose:  "Remove an existing secret.",
+		Purpose:  "Removes an existing secret.",
 		Doc:      doc,
 		Examples: examples,
 	})
@@ -44,7 +44,7 @@ Remove a secret with the specified URI.
 
 // SetFlags implements cmd.Command.
 func (c *secretRemoveCommand) SetFlags(f *gnuflag.FlagSet) {
-	f.IntVar(&c.revision, "revision", 0, "remove the specified revision")
+	f.IntVar(&c.revision, "revision", 0, "Removes the specified revision.")
 }
 
 // Init implements cmd.Command.

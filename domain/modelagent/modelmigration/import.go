@@ -6,7 +6,7 @@ package modelmigration
 import (
 	"context"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 
 	coreagentbinary "github.com/juju/juju/core/agentbinary"
 	"github.com/juju/juju/core/logger"
@@ -161,6 +161,9 @@ func (i *importUnitAgentBinaryOperation) Execute(
 	for _, application := range model.Applications() {
 		for _, unit := range application.Units() {
 			tools := unit.Tools()
+			if tools == nil {
+				continue
+			}
 
 			uName := coreunit.Name(unit.Name())
 			binVer, err := semversion.ParseBinary(tools.Version())

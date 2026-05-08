@@ -11,6 +11,7 @@ import (
 	"github.com/juju/clock"
 
 	"github.com/juju/juju/core/changestream"
+	"github.com/juju/juju/core/database"
 	"github.com/juju/juju/core/http"
 	"github.com/juju/juju/core/lease"
 	"github.com/juju/juju/core/logger"
@@ -21,7 +22,8 @@ import (
 	corestorage "github.com/juju/juju/core/storage"
 	"github.com/juju/juju/domain"
 	agentbinaryservice "github.com/juju/juju/domain/agentbinary/service"
-	agentbinarystate "github.com/juju/juju/domain/agentbinary/state"
+	agentbinarystatecontroller "github.com/juju/juju/domain/agentbinary/state/controller"
+	agentbinarystatemodel "github.com/juju/juju/domain/agentbinary/state/model"
 	agentpasswordservice "github.com/juju/juju/domain/agentpassword/service"
 	agentpasswordstate "github.com/juju/juju/domain/agentpassword/state"
 	agentprovisionerservice "github.com/juju/juju/domain/agentprovisioner/service"
@@ -47,6 +49,8 @@ import (
 	crossmodelrelationservice "github.com/juju/juju/domain/crossmodelrelation/service"
 	crossmodelrelationstatecontroller "github.com/juju/juju/domain/crossmodelrelation/state/controller"
 	crossmodelrelationstatemodel "github.com/juju/juju/domain/crossmodelrelation/state/model"
+	exportservice "github.com/juju/juju/domain/export/service"
+	exportstate "github.com/juju/juju/domain/export/state/model"
 	keymanagerservice "github.com/juju/juju/domain/keymanager/service"
 	keymanagerstate "github.com/juju/juju/domain/keymanager/state"
 	keyupdaterservice "github.com/juju/juju/domain/keyupdater/service"
@@ -64,7 +68,8 @@ import (
 	modeldefaultsservice "github.com/juju/juju/domain/modeldefaults/service"
 	modeldefaultsstate "github.com/juju/juju/domain/modeldefaults/state"
 	modelmigrationservice "github.com/juju/juju/domain/modelmigration/service"
-	modelmigrationstate "github.com/juju/juju/domain/modelmigration/state"
+	modelmigrationstatecontroller "github.com/juju/juju/domain/modelmigration/state/controller"
+	modelmigrationstatemodel "github.com/juju/juju/domain/modelmigration/state/model"
 	modelproviderservice "github.com/juju/juju/domain/modelprovider/service"
 	modelproviderstate "github.com/juju/juju/domain/modelprovider/state"
 	networkservice "github.com/juju/juju/domain/network/service"
@@ -88,7 +93,8 @@ import (
 	secretbackendservice "github.com/juju/juju/domain/secretbackend/service"
 	secretbackendstate "github.com/juju/juju/domain/secretbackend/state"
 	statusservice "github.com/juju/juju/domain/status/service"
-	statusstate "github.com/juju/juju/domain/status/state"
+	statusstatecontroller "github.com/juju/juju/domain/status/state/controller"
+	statusstatemodel "github.com/juju/juju/domain/status/state/model"
 	storageservice "github.com/juju/juju/domain/storage/service"
 	storagestate "github.com/juju/juju/domain/storage/state"
 	storageprovisioningservice "github.com/juju/juju/domain/storageprovisioning/service"
@@ -125,8 +131,9 @@ type ModelServices struct {
 	modelObjectStoreGetter      objectstore.ModelObjectStoreGetter
 	storageRegistry             corestorage.ModelStorageRegistryGetter
 	publicKeyImporter           PublicKeyImporter
-	simplestreamsClient         http.HTTPClient
 	leaseManager                lease.ModelLeaseManagerGetter
+	clusterDescriber            database.ClusterDescriber
+	simpleStreamsClient         http.HTTPClient
 	logDir                      string
 	clock                       clock.Clock
 }
@@ -143,8 +150,9 @@ func NewModelServices(
 	storageRegistry corestorage.ModelStorageRegistryGetter,
 	publicKeyImporter PublicKeyImporter,
 	leaseManager lease.ModelLeaseManagerGetter,
-	logDir string,
+	clusterDescriber database.ClusterDescriber,
 	simpleStreamsClient http.HTTPClient,
+	logDir string,
 	clock clock.Clock,
 	logger logger.Logger,
 ) *ModelServices {
@@ -162,7 +170,8 @@ func NewModelServices(
 		storageRegistry:             storageRegistry,
 		publicKeyImporter:           publicKeyImporter,
 		leaseManager:                leaseManager,
-		simplestreamsClient:         simpleStreamsClient,
+		clusterDescriber:            clusterDescriber,
+		simpleStreamsClient:         simpleStreamsClient,
 		logDir:                      logDir,
 		clock:                       clock,
 		controllerObjectStoreGetter: controllerObjectStoreGetter,
@@ -173,7 +182,7 @@ func NewModelServices(
 // for the current model.
 func (s *ModelServices) AgentBinaryStore() *agentbinaryservice.AgentBinaryStore {
 	return agentbinaryservice.NewAgentBinaryStore(
-		agentbinarystate.NewModelState(changestream.NewTxnRunnerFactory(s.modelDB)),
+		agentbinarystatemodel.NewModelState(changestream.NewTxnRunnerFactory(s.modelDB)),
 		s.logger.Child("agentbinary"),
 		s.modelObjectStoreGetter,
 	)
@@ -181,22 +190,29 @@ func (s *ModelServices) AgentBinaryStore() *agentbinaryservice.AgentBinaryStore 
 
 // AgentBinary returns the model's [agentbinaryservice.AgentBinaryService].
 func (s *ModelServices) AgentBinary() *agentbinaryservice.AgentBinaryService {
+	modelUUID := s.modelUUID.String()
+	controllerState := agentbinarystatecontroller.NewControllerState(changestream.NewTxnRunnerFactory(s.controllerDB))
+
 	return agentbinaryservice.NewAgentBinaryService(
 		providertracker.ProviderRunner[agentbinaryservice.ProviderForAgentBinaryFinder](
-			s.providerFactory, s.modelUUID.String(),
-		), envtools.PreferredStreams, envtools.FindTools,
-		agentbinarystate.NewControllerState(changestream.NewTxnRunnerFactory(s.controllerDB)),
-		agentbinarystate.NewModelState(changestream.NewTxnRunnerFactory(s.modelDB)),
+			s.providerFactory, modelUUID,
+		),
+		envtools.PreferredStreams,
+		envtools.FindTools,
+		controllerState,
+		agentbinarystatemodel.NewModelState(changestream.NewTxnRunnerFactory(s.modelDB)),
 		s.AgentBinaryStore(),
 		agentbinaryservice.NewAgentBinaryStore(
-			agentbinarystate.NewControllerState(changestream.NewTxnRunnerFactory(s.controllerDB)),
+			controllerState,
 			s.logger.Child("controlleragentbinary"),
 			s.controllerObjectStoreGetter,
 		),
 		agentbinaryservice.NewSimpleStreamAgentBinaryStore(
 			providertracker.ProviderRunner[agentbinaryservice.ProviderForAgentBinaryFinder](
-				s.providerFactory, s.modelUUID.String(),
-			), envtools.FindTools, s.simplestreamsClient,
+				s.providerFactory, modelUUID,
+			),
+			envtools.FindTools,
+			s.simpleStreamsClient,
 		))
 }
 
@@ -218,10 +234,12 @@ func (s *ModelServices) Config() *modelconfigservice.WatchableService {
 			changestream.NewTxnRunnerFactory(s.controllerDB),
 		)).ModelDefaultsProvider(s.modelUUID)
 
+	st := modelconfigstate.NewState(changestream.NewTxnRunnerFactory(s.modelDB))
 	return modelconfigservice.NewWatchableService(
 		defaultsProvider,
 		config.ModelValidator(),
-		modelconfigstate.NewState(changestream.NewTxnRunnerFactory(s.modelDB)),
+		modelconfigservice.ProviderModelConfigGetter(),
+		st,
 		s.modelWatcherFactory("modelconfig"),
 	)
 }
@@ -234,7 +252,6 @@ func (s *ModelServices) Machine() *machineservice.WatchableService {
 		machinestate.NewState(changestream.NewTxnRunnerFactory(s.modelDB), s.clock, logger),
 		s.modelWatcherFactory("machine"),
 		providertracker.ProviderRunner[machineservice.Provider](s.providerFactory, s.modelUUID.String()),
-		providertracker.ProviderRunner[machineservice.LXDProfileProvider](s.providerFactory, s.modelUUID.String()),
 		domain.NewStatusHistory(logger, s.clock),
 		s.clock,
 		logger,
@@ -254,7 +271,7 @@ func (s *ModelServices) BlockDevice() *blockdeviceservice.WatchableService {
 func (s *ModelServices) Application() *applicationservice.WatchableService {
 	logger := s.logger.Child("application")
 	state := applicationstate.NewState(
-		changestream.NewTxnRunnerFactory(s.modelDB), s.clock, logger,
+		changestream.NewTxnRunnerFactory(s.modelDB), s.modelUUID, s.clock, logger,
 	)
 
 	storageSvc := applicationstorageservice.NewService(
@@ -262,6 +279,7 @@ func (s *ModelServices) Application() *applicationservice.WatchableService {
 		applicationstorageservice.NewStoragePoolProvider(
 			s.storageRegistry, state,
 		),
+		logger,
 	)
 
 	return applicationservice.NewWatchableService(
@@ -272,8 +290,10 @@ func (s *ModelServices) Application() *applicationservice.WatchableService {
 		modelagentmodelstate.NewState(changestream.NewTxnRunnerFactory(s.modelDB)),
 		providertracker.ProviderRunner[applicationservice.Provider](s.providerFactory, s.modelUUID.String()),
 		providertracker.ProviderRunner[applicationservice.CAASProvider](s.providerFactory, s.modelUUID.String()),
+		providertracker.ProviderRunner[applicationservice.CloudInfoProvider](s.providerFactory, s.modelUUID.String()),
 		charmstore.NewCharmStore(s.modelObjectStoreGetter, logger.Child("charmstore")),
 		domain.NewStatusHistory(logger, s.clock),
+		s.modelUUID,
 		s.clock,
 		logger,
 	)
@@ -283,9 +303,10 @@ func (s *ModelServices) Application() *applicationservice.WatchableService {
 func (s *ModelServices) Status() *statusservice.LeadershipService {
 	logger := s.logger.Child("status")
 	return statusservice.NewLeadershipService(
-		statusstate.NewModelState(changestream.NewTxnRunnerFactory(s.modelDB), s.clock, logger),
-		statusstate.NewControllerState(changestream.NewTxnRunnerFactory(s.controllerDB), s.modelUUID),
+		statusstatemodel.NewModelState(changestream.NewTxnRunnerFactory(s.modelDB), s.clock, logger),
+		statusstatecontroller.NewControllerState(changestream.NewTxnRunnerFactory(s.controllerDB), s.modelUUID),
 		domain.NewLeaseService(s.leaseManager),
+		s.clusterDescriber,
 		s.modelWatcherFactory("status"),
 		s.modelUUID,
 		domain.NewStatusHistory(logger, s.clock),
@@ -365,6 +386,7 @@ func (s *ModelServices) Storage() *storageservice.Service {
 	return storageservice.NewService(
 		storagestate.NewState(changestream.NewTxnRunnerFactory(s.modelDB)),
 		s.logger.Child("storage"),
+		s.clock,
 		s.storageRegistry,
 	)
 }
@@ -394,9 +416,12 @@ func (s *ModelServices) Secret() *secretservice.WatchableService {
 // operations.
 func (s *ModelServices) ModelMigration() *modelmigrationservice.Service {
 	return modelmigrationservice.NewService(
+		modelmigrationstatecontroller.New(changestream.NewTxnRunnerFactory(s.controllerDB)),
+		modelmigrationstatemodel.New(changestream.NewTxnRunnerFactory(s.modelDB), s.modelUUID),
+		s.modelUUID.String(),
+		s.modelWatcherFactory("modelmigration"),
 		providertracker.ProviderRunner[modelmigrationservice.InstanceProvider](s.providerFactory, s.modelUUID.String()),
 		providertracker.ProviderRunner[modelmigrationservice.ResourceProvider](s.providerFactory, s.modelUUID.String()),
-		modelmigrationstate.New(changestream.NewTxnRunnerFactory(s.modelDB)),
 	)
 }
 
@@ -439,6 +464,13 @@ func (s *ModelServices) ModelInfo() *modelservice.ProviderModelService {
 	)
 }
 
+// Export returns the model export service.
+func (s *ModelServices) Export() *exportservice.Service {
+	return exportservice.NewService(
+		exportstate.NewState(changestream.NewTxnRunnerFactory(s.modelDB)),
+	)
+}
+
 // Proxy returns the proxy service.
 func (s *ModelServices) Proxy() *proxy.Service {
 	return proxy.NewService(
@@ -448,10 +480,14 @@ func (s *ModelServices) Proxy() *proxy.Service {
 
 // UnitState returns the service for persisting and retrieving remote unit
 // state. This is used to reconcile with local state to determine which
-// hooks to run, and is saved upon hook completion.
-func (s *ModelServices) UnitState() *unitstateservice.Service {
-	return unitstateservice.NewService(
-		unitstatestate.NewState(changestream.NewTxnRunnerFactory(s.modelDB)),
+// hooks to run, and is saved upon hook completion. The service also persists
+// changes made by the charm while a hook was being run.
+func (s *ModelServices) UnitState() *unitstateservice.LeadershipService {
+	log := s.logger.Child("unitstate")
+	return unitstateservice.NewLeadershipService(
+		unitstatestate.NewState(changestream.NewTxnRunnerFactory(s.modelDB), log),
+		domain.NewLeaseService(s.leaseManager),
+		log,
 	)
 }
 
@@ -507,10 +543,13 @@ func (s *ModelServices) Resource() *resourceservice.Service {
 // for the current model.
 func (s *ModelServices) Relation() *relationservice.WatchableService {
 	log := s.logger.Child("relation")
+	factory := changestream.NewTxnRunnerFactory(s.modelDB)
+	unitState := applicationstate.NewInsertIAASUnitState(factory, s.clock, log)
 	return relationservice.NewWatchableService(
-		relationstate.NewState(changestream.NewTxnRunnerFactory(s.modelDB), s.clock, log),
+		relationstate.NewState(factory, s.clock, log, unitState),
 		s.modelWatcherFactory("relation.watcher"),
 		domain.NewLeaseService(s.leaseManager),
+		domain.NewStatusHistory(log, s.clock),
 		log,
 	)
 }
@@ -590,7 +629,9 @@ func (s *ModelServices) ChangeStream() *changestreamservice.Service {
 	)
 }
 
-func (s *ModelServices) ControllerUpgraderService() *controllerupgraderservice.Service {
+// ControllerUpgrader returns the service for upgrading the controller and its
+// model.
+func (s *ModelServices) ControllerUpgrader() *controllerupgraderservice.Service {
 	controllerSt := controllerupgraderstate.NewControllerState(changestream.NewTxnRunnerFactory(s.controllerDB))
 	controllerModelSt := controllerupgraderstate.NewControllerModelState(changestream.NewTxnRunnerFactory(s.modelDB))
 	agentFinder := controllerupgraderservice.NewAgentFinder(

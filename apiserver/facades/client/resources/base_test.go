@@ -12,16 +12,17 @@ import (
 
 	coreresource "github.com/juju/juju/core/resource"
 	resourcetesting "github.com/juju/juju/core/resource/testing"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/rpc/params"
 )
 
 type BaseSuite struct {
-	applicationService *MockApplicationService
-	resourceService    *MockResourceService
-	repository         *MockNewCharmRepository
-	factory            func(context.Context, *charm.URL) (NewCharmRepository, error)
+	applicationService        *MockApplicationService
+	resourceService           *MockResourceService
+	crossModelRelationService *MockCrossModelRelationService
+	repository                *MockNewCharmRepository
+	factory                   func(context.Context, *charm.URL) (NewCharmRepository, error)
 }
 
 func (s *BaseSuite) setupMocks(c *tc.C) *gomock.Controller {
@@ -29,6 +30,7 @@ func (s *BaseSuite) setupMocks(c *tc.C) *gomock.Controller {
 
 	s.applicationService = NewMockApplicationService(ctrl)
 	s.resourceService = NewMockResourceService(ctrl)
+	s.crossModelRelationService = NewMockCrossModelRelationService(ctrl)
 	s.repository = NewMockNewCharmRepository(ctrl)
 	s.factory = func(context.Context, *charm.URL) (NewCharmRepository, error) { return s.repository, nil }
 
@@ -36,7 +38,7 @@ func (s *BaseSuite) setupMocks(c *tc.C) *gomock.Controller {
 }
 
 func (s *BaseSuite) newFacade(c *tc.C) *API {
-	facade, err := NewResourcesAPI(s.applicationService, s.resourceService, s.factory,
+	facade, err := NewResourcesAPI(s.applicationService, s.resourceService, s.crossModelRelationService, s.factory,
 		loggertesting.WrapCheckLog(c))
 	c.Assert(err, tc.ErrorIsNil)
 	return facade
@@ -61,7 +63,7 @@ func newResource(c *tc.C, name, username, data string) (coreresource.Resource, p
 			Fingerprint: res.Fingerprint.Bytes(),
 			Size:        res.Size,
 		},
-		UUID:            res.UUID.String(),
+		ID:              res.ID,
 		ApplicationName: res.ApplicationName,
 		Username:        username,
 		Timestamp:       res.Timestamp,

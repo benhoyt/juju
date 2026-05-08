@@ -61,43 +61,32 @@ type ImporterService struct {
 type State interface {
 	// AddPublicKeyForUser is responsible for adding one or more ssh public keys
 	// for a user to a given model.
-	// The following errors can be expected:
-	// - [keyerrors.PublicKeyAlreadyExists] - When one of the public keys being
-	// added for a user already exists on the model.
-	// - [github.com/juju/juju/domain/access/errors.UserNotFound] - When the user does not exist.
-	// - [modelerrors.NotFound] - When the model does not exist.
 	AddPublicKeysForUser(context.Context, model.UUID, user.UUID, []keymanager.PublicKey) error
 
 	// EnsurePublicKeysForUser will attempt to add the given set of public
 	// keys for the user to the specified model. If the user already has the
 	// public key in the model it will be skipped and no
 	// [keyerrors.PublicKeyAlreadyExists] error will be returned.
-	// The following errors can be expected:
-	// - [github.com/juju/juju/domain/access/errors.UserNotFound] - When the user does not exist.
-	// - [modelerrors.NotFound] - When the model does not exist.
 	EnsurePublicKeysForUser(context.Context, model.UUID, user.UUID, []keymanager.PublicKey) error
 
 	// GetPublicKeysForUser is responsible for returning all of the public
 	// keys for the user uuid on a model. If the user does not exist no error is
 	// returned.
-	// The following errors can be expected:
-	// - [github.com/juju/juju/domain/access/errors.UserNotFound] - If the user does not exist.
-	// - [modelerrors.NotFound] - If the model does not exist.
 	GetPublicKeysForUser(context.Context, model.UUID, user.UUID) ([]coressh.PublicKey, error)
 
 	// GetAllUsersPublicKeys returns all of the public keys that are in a model
 	// and their respective username. This is useful for building a view during
-	// model migration. The following errors can be expected:
-	// - [modelerrors.NotFound] - When no model exists for the uuid.
+	// model migration.
 	GetAllUsersPublicKeys(context.Context, model.UUID) (map[user.Name][]string, error)
 
 	// DeletePublicKeysForUser is responsible for removing the keys from the
 	// users list of public keys on the given model. keyIds represent one of the
 	// keys fingerprint, public key data or comment.
-	// The following errors can be expected:
-	// - [github.com/juju/juju/domain/access/errors.UserNotFound] - When the user does not exist.
-	// - [modelerrors.NotFound] - When the model does not exist.
 	DeletePublicKeysForUser(context.Context, model.UUID, user.UUID, []string) error
+
+	// DeletePublicKeysForModel removes all of the public keys associated with
+	// the model.
+	DeletePublicKeysForModel(context.Context, model.UUID) error
 }
 
 var (
@@ -191,7 +180,7 @@ func (s *Service) AddPublicKeysForUser(
 	return s.st.AddPublicKeysForUser(ctx, s.modelUUID, userUUID, toAdd)
 }
 
-// DeletePublicKeysForUser removes the keys associated with targets from the
+// DeleteKeysForUser removes the keys associated with targets from the
 // user's list of public keys. Targets can be an arbitrary list of a
 // public key fingerprint (sha256), comment or full key value to be
 // removed. Where a match is found the key will be removed. If no key exists for
@@ -222,7 +211,21 @@ func (s *Service) DeleteKeysForUser(
 	return s.st.DeletePublicKeysForUser(ctx, s.modelUUID, userUUID, targets)
 }
 
-// GetAllUserPublicKeys returns all of the public keys in the model for each
+// DeleteKeysForModel removes all of the public keys associated with the
+// model.
+// The following errors can be expected:
+// - [github.com/juju/juju/domain/model/errors.NotFound] - When the model does
+// not exist.
+func (s *Service) DeleteKeysForModel(
+	ctx context.Context,
+) error {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	return s.st.DeletePublicKeysForModel(ctx, s.modelUUID)
+}
+
+// GetAllUsersPublicKeys returns all of the public keys in the model for each
 // user grouped by [user.Name].
 // The following errors can be expected:
 // - [github.com/juju/juju/domain/model/errors.NotFound] - When the model does

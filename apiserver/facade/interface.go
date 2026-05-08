@@ -12,9 +12,9 @@ import (
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/bakery"
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/bakery/checkers"
 	"github.com/juju/clock"
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/names/v6"
-	"github.com/juju/worker/v4"
+	"github.com/juju/worker/v5"
 	"gopkg.in/macaroon.v2"
 
 	crossmodelbakery "github.com/juju/juju/apiserver/internal/crossmodel/bakery"
@@ -32,7 +32,7 @@ import (
 // Facade could be anything; it will be interpreted by the apiserver
 // machinery such that certain exported methods will be made available
 // as facade methods to connected clients.
-type Facade interface{}
+type Facade any
 
 // Factory is a callback used to create a Facade.
 type Factory func(stdCtx context.Context, modelCtx ModelContext) (Facade, error)
@@ -40,7 +40,8 @@ type Factory func(stdCtx context.Context, modelCtx ModelContext) (Facade, error)
 // MultiModelFactory is a callback used to create a Facade.
 type MultiModelFactory func(stdCtx context.Context, modelCtx MultiModelContext) (Facade, error)
 
-// LeadershipModelContext
+// LeadershipModelContext defines a context that provides leadership
+// capabilities for a specific model.
 type LeadershipModelContext interface {
 	// LeadershipClaimer returns a leadership.Claimer for this
 	// context's model.
@@ -175,6 +176,7 @@ type ModelExporter interface {
 
 // LegacyStateExporter describes interface on state required to export a
 // model.
+//
 // Deprecated: This is being replaced with the ModelExporter.
 type LegacyStateExporter interface {
 	// Export generates an abstract representation of a model.
@@ -190,9 +192,6 @@ type ModelImporter interface {
 
 // ModelMigrationFactory defines an interface for getting a model migrator.
 type ModelMigrationFactory interface {
-	// ModelExporter returns a model exporter for the current model.
-	ModelExporter(context.Context, model.UUID) (ModelExporter, error)
-
 	// ModelImporter returns a model importer.
 	ModelImporter() ModelImporter
 }
@@ -259,7 +258,7 @@ type Authorizer interface {
 	// AuthOwner returns true if tag == .GetAuthTag().
 	AuthOwner(tag names.Tag) bool
 
-	// AuthClient returns true if the entity is an external user.
+	// AuthClient returns true if the entity is a user.
 	AuthClient() bool
 
 	// HasPermission reports whether the given access is allowed for the given
@@ -333,11 +332,6 @@ type CrossModelAuthContext interface {
 
 	// OfferThirdPartyKey returns the key used to discharge offer macaroons.
 	OfferThirdPartyKey() *bakery.KeyPair
-}
-
-// Hub represents the central hub that the API server has.
-type Hub interface {
-	Publish(topic string, data interface{}) (func(), error)
 }
 
 // HTTPClient represents an HTTP client, for example, an *http.Client.

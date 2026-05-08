@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Complete guide to managing Juju applications: deploy, configure, scale, expose, integrate, upgrade, and remove applications with charms."
+---
+
 (manage-applications)=
 # How to manage applications
 
@@ -221,7 +227,7 @@ See also: {ref}`high-availability`
 See more: [Charmhub > `<your charm of interest`](https://charmhub.io/)
 ```
 
-2. Scale up horizontally as usual.
+2. Scale out as usual.
 
 ```{ibnote}
 See more: {ref}`scale-an-application-horizontally`

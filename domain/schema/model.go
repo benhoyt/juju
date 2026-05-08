@@ -6,14 +6,15 @@ package schema
 import (
 	"embed"
 	"fmt"
-	"sort"
 
 	"github.com/juju/juju/core/database/schema"
+	"github.com/juju/juju/core/semversion"
+	coreversion "github.com/juju/juju/core/version"
 	"github.com/juju/juju/domain/schema/model/triggers"
 )
 
 //go:generate go run ./../../generate/triggergen -db=model -destination=./model/triggers/blockdevice-triggers.gen.go -package=triggers -tables=block_device
-//go:generate go run ./../../generate/triggergen -db=model -destination=./model/triggers/model-triggers.gen.go -package=triggers -tables=model_config
+//go:generate go run ./../../generate/triggergen -db=model -destination=./model/triggers/model-triggers.gen.go -package=triggers -tables=model_config,model_migrating
 //go:generate go run ./../../generate/triggergen -db=model -destination=./model/triggers/objectstore-triggers.gen.go -package=triggers -tables=object_store_metadata_path
 //go:generate go run ./../../generate/triggergen -db=model -destination=./model/triggers/secret-triggers.gen.go -package=triggers -tables=secret_metadata,secret_rotation,secret_revision,secret_revision_expire,secret_revision_obsolete,secret_reference,secret_deleted_value_ref
 //go:generate go run ./../../generate/triggergen -db=model -destination=./model/triggers/network-triggers.gen.go -package=triggers -tables=subnet,ip_address
@@ -36,11 +37,13 @@ const (
 	customNamespaceUnitLifecycle tableNamespaceID = iota
 	customNamespaceMachineLifecycle
 	customNamespaceMachineLifeAndStartTime
-	customNamespaceMachineUnitLifecycle
+	customNamespaceMachineLifecycleWithDependants
 	customNamespaceStorageFilesystemLifeMachineProvisioning
 	customNamespaceStorageFilesystemLifeModelProvisioning
+	customNamespaceStorageFilesystemProviderIDModelProvisioning
 	customNamespaceStorageFilesystemAttachmentLifeMachineProvisioning
 	customNamespaceStorageFilesystemAttachmentLifeModelProvisioning
+	customNamespaceStorageFilesystemAttachmentProviderIDModelProvisioning
 	customNamespaceStorageVolumeLifeMachineProvisioning
 	customNamespaceStorageVolumeLifeModelProvisioning
 	customNamespaceStorageVolumeAttachmentLifeMachineProvisioning
@@ -105,37 +108,37 @@ const (
 	tableApplicationStatus
 	tableRelationNetworkIngress
 	tableRelationNetworkEgress
+	tableModelMigrating
 )
+
+// modelPostPatchFilesByVersion is used to categorise the post patch files
+// to particular versions of Juju. To include a new post patch file, it must be
+// added to the list for the version in which it is first applied.
+//
+// Also, post-patch files are only applicable for differences in patch versions
+// within the same major.minor version. So all entries should be of the same
+// major.minor version as the current version. The full version is only included
+// for readability.
+var modelPostPatchFilesByVersion = []struct {
+	version semversion.Number
+	files   []string
+}{}
 
 // ModelDDL is used to create model databases.
 func ModelDDL() *schema.Schema {
-	entries, err := modelSchemaDir.ReadDir("model/sql")
+	return ModelDDLForVersion(coreversion.Current)
+}
+
+// ModelDDLForVersion returns the model database schema for the specified version.
+// The version must match the current major.minor version.
+func ModelDDLForVersion(version semversion.Number) *schema.Schema {
+	if version.Major != coreversion.Current.Major || version.Minor != coreversion.Current.Minor {
+		panic("Cannot return the model DDL for a different major.minor version")
+	}
+
+	patches, err := readPatches(modelSchemaDir, "model/sql")
 	if err != nil {
 		panic(err)
-	}
-
-	var names []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		names = append(names, entry.Name())
-	}
-
-	sort.Slice(names, func(i, j int) bool {
-		return names[i] < names[j]
-	})
-
-	patches := make([]func() schema.Patch, len(names))
-	for i, name := range names {
-		data, err := modelSchemaDir.ReadFile(fmt.Sprintf("model/sql/%s", name))
-		if err != nil {
-			panic(err)
-		}
-
-		patches[i] = func() schema.Patch {
-			return schema.MakePatch(string(data))
-		}
 	}
 
 	// Changestream triggers.
@@ -189,6 +192,7 @@ func ModelDDL() *schema.Schema {
 		triggers.ChangeLogTriggersForApplicationStatus("application_uuid", tableApplicationStatus),
 		triggers.ChangeLogTriggersForRelationNetworkIngress("relation_uuid", tableRelationNetworkIngress),
 		triggers.ChangeLogTriggersForRelationNetworkEgress("relation_uuid", tableRelationNetworkEgress),
+		triggers.ChangeLogTriggersForModelMigrating("model_uuid", tableModelMigrating),
 	)
 
 	// Generic triggers.
@@ -225,6 +229,9 @@ func ModelDDL() *schema.Schema {
 		// Relation network egress is unmodifiable.
 		triggersForUnmodifiableTable("relation_network_egress", "relation_network_egress table is unmodifiable, only insertions and deletions are allowed"),
 
+		// Model migrating is unmodifiable.
+		triggersForUnmodifiableTable("model_migrating", "model_migrating table is unmodifiable, only insertions and deletions are allowed"),
+
 		// Secret permissions do not allow subject or scope to be updated.
 		triggerGuardForTable("secret_permission",
 			"OLD.subject_type_id <> NEW.subject_type_id OR OLD.scope_uuid <> NEW.scope_uuid OR OLD.scope_type_id <> NEW.scope_type_id",
@@ -260,7 +267,7 @@ func ModelDDL() *schema.Schema {
 		// operations for entities.
 		triggerEntityLifecycleByNameForTable("unit", customNamespaceUnitLifecycle),
 		triggerEntityLifecycleByNameForTable("machine", customNamespaceMachineLifecycle),
-		triggerMachineUnitLifecycle(customNamespaceMachineUnitLifecycle),
+		triggerMachineLifecycleWithDependants(customNamespaceMachineLifecycleWithDependants),
 
 		triggerEntityLifecycleByFieldForTable("application", "uuid", customNamespaceApplicationRemovalLifecycle),
 		triggerEntityLifecycleByFieldForTable("machine", "uuid", customNamespaceMachineRemovalLifecycle),
@@ -314,7 +321,8 @@ INSERT INTO change_log_namespace VALUES (%[1]d, 'agent_version', 'Agent version 
 CREATE TRIGGER trg_log_agent_version_update
 AFTER UPDATE ON agent_version FOR EACH ROW
 WHEN
-	NEW.target_version != OLD.target_version
+    NEW.stream_id != OLD.stream_id OR
+    NEW.target_version != OLD.target_version
 BEGIN
     INSERT INTO change_log (edit_type_id, namespace_id, changed, created_at)
     VALUES (2, %[1]d, NEW.target_version, DATETIME('now', 'utc'));
@@ -372,9 +380,25 @@ END;
 
 	patches = append(patches, customModelTriggers()...)
 
+	var postPatchFiles []string
+	for _, postPatch := range modelPostPatchFilesByVersion {
+		if postPatch.version.Compare(version) <= 0 {
+			postPatchFiles = append(postPatchFiles, postPatch.files...)
+		}
+	}
+	postPatches, err := readPostPatches(modelSchemaDir, "model/sql", postPatchFiles)
+	if err != nil {
+		panic(err)
+	}
+
 	modelSchema := schema.New()
 	for _, fn := range patches {
 		modelSchema.Add(fn())
 	}
+
+	for _, fn := range postPatches {
+		modelSchema.Add(fn())
+	}
+
 	return modelSchema
 }

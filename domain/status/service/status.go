@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/juju/collections/set"
+
 	corestatus "github.com/juju/juju/core/status"
 	"github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/status"
@@ -14,7 +16,8 @@ import (
 	"github.com/juju/juju/internal/statushistory"
 )
 
-// StatusHistory records status information into a generalized way.
+// StatusHistory records the status of a juju entity to display as its
+// status history when requested.
 type StatusHistory interface {
 	// RecordStatus records the given status information.
 	// If the status data cannot be marshalled, it will not be recorded, instead
@@ -34,23 +37,6 @@ type StatusHistoryReader interface {
 
 // StatusHistoryReaderFunc is a function that returns a StatusHistoryReader.
 type StatusHistoryReaderFunc func() (StatusHistoryReader, error)
-
-// encodeK8sPodStatusType converts a core status to a db cloud container
-// status id.
-func encodeK8sPodStatusType(s corestatus.Status) (status.K8sPodStatusType, error) {
-	switch s {
-	case corestatus.Unset:
-		return status.K8sPodStatusUnset, nil
-	case corestatus.Waiting:
-		return status.K8sPodStatusWaiting, nil
-	case corestatus.Blocked:
-		return status.K8sPodStatusBlocked, nil
-	case corestatus.Running:
-		return status.K8sPodStatusRunning, nil
-	default:
-		return -1, errors.Errorf("unknown cloud container status %q", s)
-	}
-}
 
 // encodeRelationStatusType maps a core status to corresponding db relation
 // status.
@@ -90,7 +76,7 @@ func decodeRelationStatusType(s status.RelationStatusType) (corestatus.Status, e
 	case status.RelationStatusTypeError:
 		return corestatus.Error, nil
 	default:
-		return "", errors.Errorf("unknown relation status %q", s)
+		return "", errors.Errorf("unknown relation status %v", s)
 	}
 }
 
@@ -106,8 +92,10 @@ func decodeK8sPodStatusType(s status.K8sPodStatusType) (corestatus.Status, error
 		return corestatus.Blocked, nil
 	case status.K8sPodStatusRunning:
 		return corestatus.Running, nil
+	case status.K8sPodStatusError:
+		return corestatus.Error, nil
 	default:
-		return "", errors.Errorf("unknown cloud container status %q", s)
+		return "", errors.Errorf("unknown cloud container status %v", s)
 	}
 }
 
@@ -152,7 +140,7 @@ func decodeUnitAgentStatusType(s status.UnitAgentStatusType) (corestatus.Status,
 	case status.UnitAgentStatusRebooting:
 		return corestatus.Rebooting, nil
 	default:
-		return "", errors.Errorf("unknown agent status %q", s)
+		return "", errors.Errorf("unknown agent status %v", s)
 	}
 }
 
@@ -202,32 +190,8 @@ func decodeWorkloadStatusType(s status.WorkloadStatusType) (corestatus.Status, e
 	case status.WorkloadStatusError:
 		return corestatus.Error, nil
 	default:
-		return "", errors.Errorf("unknown workload status %q", s)
+		return "", errors.Errorf("unknown workload status %v", s)
 	}
-}
-
-// encodeK8sPodStatus converts a core status info to a db status info.
-func encodeK8sPodStatus(s corestatus.StatusInfo) (status.StatusInfo[status.K8sPodStatusType], error) {
-	encodedStatus, err := encodeK8sPodStatusType(s.Status)
-	if err != nil {
-		return status.StatusInfo[status.K8sPodStatusType]{}, err
-	}
-
-	var bytes []byte
-	if len(s.Data) > 0 {
-		var err error
-		bytes, err = json.Marshal(s.Data)
-		if err != nil {
-			return status.StatusInfo[status.K8sPodStatusType]{}, errors.Errorf("marshalling status data: %w", err)
-		}
-	}
-
-	return status.StatusInfo[status.K8sPodStatusType]{
-		Status:  encodedStatus,
-		Message: s.Message,
-		Data:    bytes,
-		Since:   s.Since,
-	}, nil
 }
 
 // decodeK8sPodStatus converts a db status info to a core status info.
@@ -237,7 +201,7 @@ func decodeK8sPodStatus(s status.StatusInfo[status.K8sPodStatusType]) (corestatu
 		return corestatus.StatusInfo{}, err
 	}
 
-	var data map[string]interface{}
+	var data map[string]any
 	if len(s.Data) > 0 {
 		if err := json.Unmarshal(s.Data, &data); err != nil {
 			return corestatus.StatusInfo{}, errors.Errorf("unmarshalling status data: %w", err)
@@ -308,7 +272,7 @@ func decodeUnitAgentStatus(s status.StatusInfo[status.UnitAgentStatusType], pres
 		return corestatus.StatusInfo{}, err
 	}
 
-	var data map[string]interface{}
+	var data map[string]any
 	if len(s.Data) > 0 {
 		if err := json.Unmarshal(s.Data, &data); err != nil {
 			return corestatus.StatusInfo{}, errors.Errorf("unmarshalling status data: %w", err)
@@ -365,7 +329,7 @@ func decodeUnitWorkloadStatus(s status.StatusInfo[status.WorkloadStatusType], pr
 		return corestatus.StatusInfo{}, err
 	}
 
-	var data map[string]interface{}
+	var data map[string]any
 	if len(s.Data) > 0 {
 		if err := json.Unmarshal(s.Data, &data); err != nil {
 			return corestatus.StatusInfo{}, errors.Errorf("unmarshalling status data: %w", err)
@@ -390,14 +354,14 @@ func decodeUnitWorkloadAgentStatus(s status.UnitWorkloadAgentStatus) (bool, core
 		return false, corestatus.StatusInfo{}, corestatus.StatusInfo{}, err
 	}
 
-	var agentData map[string]interface{}
+	var agentData map[string]any
 	if len(s.AgentStatus.Data) > 0 {
 		if err := json.Unmarshal(s.AgentStatus.Data, &agentData); err != nil {
 			return false, corestatus.StatusInfo{}, corestatus.StatusInfo{}, errors.Errorf("unmarshalling agent status data: %w", err)
 		}
 	}
 
-	var workloadData map[string]interface{}
+	var workloadData map[string]any
 	if len(s.WorkloadStatus.Data) > 0 {
 		if err := json.Unmarshal(s.WorkloadStatus.Data, &workloadData); err != nil {
 			return false, corestatus.StatusInfo{}, corestatus.StatusInfo{}, errors.Errorf("unmarshalling workload status data: %w", err)
@@ -425,7 +389,7 @@ func decodeApplicationStatus(s status.StatusInfo[status.WorkloadStatusType]) (co
 		return corestatus.StatusInfo{}, err
 	}
 
-	var data map[string]interface{}
+	var data map[string]any
 	if len(s.Data) > 0 {
 		if err := json.Unmarshal(s.Data, &data); err != nil {
 			return corestatus.StatusInfo{}, errors.Errorf("unmarshalling status data: %w", err)
@@ -455,7 +419,7 @@ func decodeUnitDisplayAndAgentStatus(
 	// maintain the same behaviour. This can be disingenuous if there is a legitimate
 	// agent error and the workload is fine, but we're trying to maintain compatibility.
 	if fullUnitStatus.AgentStatus.Status == status.UnitAgentStatusError {
-		var data map[string]interface{}
+		var data map[string]any
 		if len(fullUnitStatus.AgentStatus.Data) > 0 {
 			if err := json.Unmarshal(fullUnitStatus.AgentStatus.Data, &data); err != nil {
 				return corestatus.StatusInfo{}, corestatus.StatusInfo{}, errors.Errorf("unmarshalling status data: %w", err)
@@ -544,12 +508,33 @@ func selectWorkloadOrK8sPodStatus(
 	}
 
 	if containerStatus.Status == status.K8sPodStatusRunning {
-		if workloadStatus.Status == status.WorkloadStatusWaiting {
-			return decodeK8sPodStatus(containerStatus)
+		if legacyIsStatusModified(workloadStatus) {
+			return decodeUnitWorkloadStatus(workloadStatus, present)
 		}
+		return decodeK8sPodStatus(containerStatus)
 	}
 
 	return decodeUnitWorkloadStatus(workloadStatus, present)
+}
+
+// legacyIsStatusModified returns true if workload status should be used and
+// false if the container status should be used for the unit status. This is legacy
+// behavior which users depend on.
+func legacyIsStatusModified(s status.StatusInfo[status.WorkloadStatusType]) bool {
+	if s.Status != status.WorkloadStatusUnset && s.Status != status.WorkloadStatusWaiting {
+		return true
+	}
+
+	// Replicate behaviour from Juju 3
+	if set.NewStrings(
+		corestatus.MessageWaitForContainer,
+		corestatus.MessageInitializingAgent,
+		corestatus.MessageInstallingAgent,
+	).Contains(s.Message) {
+		return false
+	}
+
+	return true
 }
 
 // statusSeverities holds status values with a severity measure.
@@ -655,13 +640,23 @@ func encodeMachineStatus(s corestatus.StatusInfo) (status.StatusInfo[status.Mach
 }
 
 // decodeMachineStatus converts a db status info into a core status info.
-func decodeMachineStatus(s status.StatusInfo[status.MachineStatusType]) (corestatus.StatusInfo, error) {
+func decodeMachineStatus(s status.StatusInfo[status.MachineStatusType], present bool) (corestatus.StatusInfo, error) {
+	// If the agent isn't present then we need to modify the status for the
+	// agent.
+	if !present && (s.Status != status.MachineStatusPending && s.Status != status.MachineStatusStopped) {
+		return corestatus.StatusInfo{
+			Status:  corestatus.Down,
+			Message: "agent is not communicating with the server",
+			Since:   s.Since,
+		}, nil
+	}
+
 	statusType, err := decodeMachineStatusType(s.Status)
 	if err != nil {
 		return corestatus.StatusInfo{}, err
 	}
 
-	var data map[string]interface{}
+	var data map[string]any
 	if len(s.Data) > 0 {
 		if err := json.Unmarshal(s.Data, &data); err != nil {
 			return corestatus.StatusInfo{}, errors.Errorf("unmarshalling status data: %w", err)
@@ -680,8 +675,6 @@ func decodeMachineStatus(s status.StatusInfo[status.MachineStatusType]) (coresta
 // status id.
 func encodeInstanceStatusType(s corestatus.Status) (status.InstanceStatusType, error) {
 	switch s {
-	case corestatus.Unset:
-		return status.InstanceStatusUnset, nil
 	case corestatus.Pending:
 		return status.InstanceStatusPending, nil
 	case corestatus.Provisioning:
@@ -690,6 +683,8 @@ func encodeInstanceStatusType(s corestatus.Status) (status.InstanceStatusType, e
 		return status.InstanceStatusRunning, nil
 	case corestatus.ProvisioningError:
 		return status.InstanceStatusProvisioningError, nil
+	case corestatus.Unknown:
+		return status.InstanceStatusUnknown, nil
 	default:
 		return -1, errors.Errorf("unknown instance status %q", s)
 	}
@@ -699,8 +694,6 @@ func encodeInstanceStatusType(s corestatus.Status) (status.InstanceStatusType, e
 // status.
 func decodeInstanceStatusType(s status.InstanceStatusType) (corestatus.Status, error) {
 	switch s {
-	case status.InstanceStatusUnset:
-		return corestatus.Unset, nil
 	case status.InstanceStatusPending:
 		return corestatus.Pending, nil
 	case status.InstanceStatusAllocating:
@@ -709,6 +702,8 @@ func decodeInstanceStatusType(s status.InstanceStatusType) (corestatus.Status, e
 		return corestatus.Running, nil
 	case status.InstanceStatusProvisioningError:
 		return corestatus.ProvisioningError, nil
+	case status.InstanceStatusUnknown:
+		return corestatus.Unknown, nil
 	default:
 		return corestatus.Unset, errors.Errorf("unknown instance status %d", s)
 	}
@@ -745,7 +740,7 @@ func decodeInstanceStatus(s status.StatusInfo[status.InstanceStatusType]) (cores
 		return corestatus.StatusInfo{}, err
 	}
 
-	var data map[string]interface{}
+	var data map[string]any
 	if len(s.Data) > 0 {
 		if err := json.Unmarshal(s.Data, &data); err != nil {
 			return corestatus.StatusInfo{}, errors.Errorf("unmarshalling status data: %w", err)

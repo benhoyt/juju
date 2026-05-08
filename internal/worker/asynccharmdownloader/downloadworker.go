@@ -6,11 +6,12 @@ package asynccharmdownloader
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/juju/clock"
 	jujuerrors "github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 
 	"github.com/juju/juju/core/application"
 	corehttp "github.com/juju/juju/core/http"
@@ -24,6 +25,8 @@ import (
 const (
 	// States which report the state of the worker.
 	stateStarted = "started"
+
+	restartDelay = 20 * time.Second
 )
 
 // ApplicationService describes the API exposed by the charm downloader facade.
@@ -112,11 +115,14 @@ func newWorker(config Config, internalState chan string) (*Worker, error) {
 		IsFatal: func(err error) bool {
 			return false
 		},
+		// Allow restarts, since it is necessary that a charm is downloaded and
+		// resolved to allow the deploy process to continue. This is unbounded
 		ShouldRestart: func(err error) bool {
-			return false
+			return true
 		},
-		Clock:  config.Clock,
-		Logger: internalworker.WrapLogger(config.Logger),
+		RestartDelay: restartDelay,
+		Clock:        config.Clock,
+		Logger:       internalworker.WrapLogger(config.Logger),
 	})
 	if err != nil {
 		return nil, errors.Capture(err)
@@ -185,14 +191,7 @@ func (w *Worker) loop() error {
 
 			logger.Debugf(ctx, "triggering asynchronous download of charms for the following applications: %v", strings.Join(changes, ", "))
 
-			// Get a new downloader, this ensures that we've got a fresh
-			// connection to the charm store.
-			httpClient, err := w.config.NewHTTPClient(ctx, w.config.HTTPClientGetter)
-			if err != nil {
-				return errors.Capture(err)
-			}
-
-			downloader := w.config.NewDownloader(httpClient, logger)
+			var downloader Downloader
 
 			// Start up a series of workers to download the charms for the
 			// applications asynchronously. We do not want to block the any
@@ -210,6 +209,18 @@ func (w *Worker) loop() error {
 				} else if cached {
 					// Already tracking this application, skip it.
 					continue
+				}
+
+				// Lazily create the downloader only when we actually need to
+				// start at least one async worker in this change batch.
+				if downloader == nil {
+					// Get a new downloader, this ensures that we've got a fresh
+					// connection to the charm store.
+					httpClient, err := w.config.NewHTTPClient(ctx, w.config.HTTPClientGetter)
+					if err != nil {
+						return errors.Capture(err)
+					}
+					downloader = w.config.NewDownloader(httpClient, logger)
 				}
 
 				// Kick off the async download worker for the application.

@@ -542,7 +542,10 @@ func encodeRelationScope(scope charm.RelationScope) (int, error) {
 
 func encodeExtraBindings(id corecharm.ID, extraBindings map[string]charm.ExtraBinding) ([]setCharmExtraBinding, error) {
 	var result []setCharmExtraBinding
-	for _, binding := range extraBindings {
+	for name, binding := range extraBindings {
+		if name != binding.Name {
+			return nil, errors.Errorf("extra binding name should match: %q and binding name %q", name, binding.Name)
+		}
 		newUUID, err := uuid.NewUUID()
 		if err != nil {
 			return nil, err

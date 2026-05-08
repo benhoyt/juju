@@ -16,7 +16,7 @@ import (
 
 	"github.com/juju/juju/cmd/juju/application/utils"
 	"github.com/juju/juju/cmd/modelcmd"
-	charmresource "github.com/juju/juju/internal/charm/resource"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/internal/docker"
 )
 
@@ -109,7 +109,7 @@ func OpenResource(resValue string, resType charmresource.Type, osOpen osOpenFunc
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
-		return noopCloser{bytes.NewReader(data)}, nil
+		return noopCloser{ReadSeeker: bytes.NewReader(data)}, nil
 	default:
 		return nil, errors.Errorf("unknown resource type %q", resType)
 	}

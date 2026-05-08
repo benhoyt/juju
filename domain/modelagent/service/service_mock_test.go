@@ -107,6 +107,123 @@ func (m *MockModelState) EXPECT() *MockModelStateMockRecorder {
 	return m.recorder
 }
 
+// GetAllMachineTargetAgentVersionByArches mocks base method.
+func (m *MockModelState) GetAllMachineTargetAgentVersionByArches(arg0 context.Context, arg1 string) ([]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetAllMachineTargetAgentVersionByArches", arg0, arg1)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetAllMachineTargetAgentVersionByArches indicates an expected call of GetAllMachineTargetAgentVersionByArches.
+func (mr *MockModelStateMockRecorder) GetAllMachineTargetAgentVersionByArches(arg0, arg1 any) *MockModelStateGetAllMachineTargetAgentVersionByArchesCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllMachineTargetAgentVersionByArches", reflect.TypeOf((*MockModelState)(nil).GetAllMachineTargetAgentVersionByArches), arg0, arg1)
+	return &MockModelStateGetAllMachineTargetAgentVersionByArchesCall{Call: call}
+}
+
+// MockModelStateGetAllMachineTargetAgentVersionByArchesCall wrap *gomock.Call
+type MockModelStateGetAllMachineTargetAgentVersionByArchesCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockModelStateGetAllMachineTargetAgentVersionByArchesCall) Return(arg0 []string, arg1 error) *MockModelStateGetAllMachineTargetAgentVersionByArchesCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockModelStateGetAllMachineTargetAgentVersionByArchesCall) Do(f func(context.Context, string) ([]string, error)) *MockModelStateGetAllMachineTargetAgentVersionByArchesCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockModelStateGetAllMachineTargetAgentVersionByArchesCall) DoAndReturn(f func(context.Context, string) ([]string, error)) *MockModelStateGetAllMachineTargetAgentVersionByArchesCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// GetAllMachinesArchitectures mocks base method.
+func (m *MockModelState) GetAllMachinesArchitectures(arg0 context.Context) ([]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetAllMachinesArchitectures", arg0)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetAllMachinesArchitectures indicates an expected call of GetAllMachinesArchitectures.
+func (mr *MockModelStateMockRecorder) GetAllMachinesArchitectures(arg0 any) *MockModelStateGetAllMachinesArchitecturesCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllMachinesArchitectures", reflect.TypeOf((*MockModelState)(nil).GetAllMachinesArchitectures), arg0)
+	return &MockModelStateGetAllMachinesArchitecturesCall{Call: call}
+}
+
+// MockModelStateGetAllMachinesArchitecturesCall wrap *gomock.Call
+type MockModelStateGetAllMachinesArchitecturesCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockModelStateGetAllMachinesArchitecturesCall) Return(arg0 []string, arg1 error) *MockModelStateGetAllMachinesArchitecturesCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockModelStateGetAllMachinesArchitecturesCall) Do(f func(context.Context) ([]string, error)) *MockModelStateGetAllMachinesArchitecturesCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockModelStateGetAllMachinesArchitecturesCall) DoAndReturn(f func(context.Context) ([]string, error)) *MockModelStateGetAllMachinesArchitecturesCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// GetAllMachinesWithBase mocks base method.
+func (m *MockModelState) GetAllMachinesWithBase(arg0 context.Context) (map[string]base.Base, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetAllMachinesWithBase", arg0)
+	ret0, _ := ret[0].(map[string]base.Base)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetAllMachinesWithBase indicates an expected call of GetAllMachinesWithBase.
+func (mr *MockModelStateMockRecorder) GetAllMachinesWithBase(arg0 any) *MockModelStateGetAllMachinesWithBaseCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllMachinesWithBase", reflect.TypeOf((*MockModelState)(nil).GetAllMachinesWithBase), arg0)
+	return &MockModelStateGetAllMachinesWithBaseCall{Call: call}
+}
+
+// MockModelStateGetAllMachinesWithBaseCall wrap *gomock.Call
+type MockModelStateGetAllMachinesWithBaseCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockModelStateGetAllMachinesWithBaseCall) Return(arg0 map[string]base.Base, arg1 error) *MockModelStateGetAllMachinesWithBaseCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockModelStateGetAllMachinesWithBaseCall) Do(f func(context.Context) (map[string]base.Base, error)) *MockModelStateGetAllMachinesWithBaseCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockModelStateGetAllMachinesWithBaseCall) DoAndReturn(f func(context.Context) (map[string]base.Base, error)) *MockModelStateGetAllMachinesWithBaseCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // GetMachineAgentBinaryMetadata mocks base method.
 func (m *MockModelState) GetMachineAgentBinaryMetadata(arg0 context.Context, arg1 string) (agentbinary.Metadata, error) {
 	m.ctrl.T.Helper()
@@ -142,45 +259,6 @@ func (c *MockModelStateGetMachineAgentBinaryMetadataCall) Do(f func(context.Cont
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockModelStateGetMachineAgentBinaryMetadataCall) DoAndReturn(f func(context.Context, string) (agentbinary.Metadata, error)) *MockModelStateGetMachineAgentBinaryMetadataCall {
-	c.Call = c.Call.DoAndReturn(f)
-	return c
-}
-
-// GetMachineCountNotUsingBase mocks base method.
-func (m *MockModelState) GetMachineCountNotUsingBase(arg0 context.Context, arg1 []base.Base) (int, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetMachineCountNotUsingBase", arg0, arg1)
-	ret0, _ := ret[0].(int)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetMachineCountNotUsingBase indicates an expected call of GetMachineCountNotUsingBase.
-func (mr *MockModelStateMockRecorder) GetMachineCountNotUsingBase(arg0, arg1 any) *MockModelStateGetMachineCountNotUsingBaseCall {
-	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMachineCountNotUsingBase", reflect.TypeOf((*MockModelState)(nil).GetMachineCountNotUsingBase), arg0, arg1)
-	return &MockModelStateGetMachineCountNotUsingBaseCall{Call: call}
-}
-
-// MockModelStateGetMachineCountNotUsingBaseCall wrap *gomock.Call
-type MockModelStateGetMachineCountNotUsingBaseCall struct {
-	*gomock.Call
-}
-
-// Return rewrite *gomock.Call.Return
-func (c *MockModelStateGetMachineCountNotUsingBaseCall) Return(arg0 int, arg1 error) *MockModelStateGetMachineCountNotUsingBaseCall {
-	c.Call = c.Call.Return(arg0, arg1)
-	return c
-}
-
-// Do rewrite *gomock.Call.Do
-func (c *MockModelStateGetMachineCountNotUsingBaseCall) Do(f func(context.Context, []base.Base) (int, error)) *MockModelStateGetMachineCountNotUsingBaseCall {
-	c.Call = c.Call.Do(f)
-	return c
-}
-
-// DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockModelStateGetMachineCountNotUsingBaseCall) DoAndReturn(f func(context.Context, []base.Base) (int, error)) *MockModelStateGetMachineCountNotUsingBaseCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -940,6 +1018,45 @@ func NewMockControllerState(ctrl *gomock.Controller) *MockControllerState {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockControllerState) EXPECT() *MockControllerStateMockRecorder {
 	return m.recorder
+}
+
+// GetAllMachineTargetAgentVersionByArches mocks base method.
+func (m *MockControllerState) GetAllMachineTargetAgentVersionByArches(arg0 context.Context, arg1 string) ([]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetAllMachineTargetAgentVersionByArches", arg0, arg1)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetAllMachineTargetAgentVersionByArches indicates an expected call of GetAllMachineTargetAgentVersionByArches.
+func (mr *MockControllerStateMockRecorder) GetAllMachineTargetAgentVersionByArches(arg0, arg1 any) *MockControllerStateGetAllMachineTargetAgentVersionByArchesCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllMachineTargetAgentVersionByArches", reflect.TypeOf((*MockControllerState)(nil).GetAllMachineTargetAgentVersionByArches), arg0, arg1)
+	return &MockControllerStateGetAllMachineTargetAgentVersionByArchesCall{Call: call}
+}
+
+// MockControllerStateGetAllMachineTargetAgentVersionByArchesCall wrap *gomock.Call
+type MockControllerStateGetAllMachineTargetAgentVersionByArchesCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockControllerStateGetAllMachineTargetAgentVersionByArchesCall) Return(arg0 []string, arg1 error) *MockControllerStateGetAllMachineTargetAgentVersionByArchesCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockControllerStateGetAllMachineTargetAgentVersionByArchesCall) Do(f func(context.Context, string) ([]string, error)) *MockControllerStateGetAllMachineTargetAgentVersionByArchesCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockControllerStateGetAllMachineTargetAgentVersionByArchesCall) DoAndReturn(f func(context.Context, string) ([]string, error)) *MockControllerStateGetAllMachineTargetAgentVersionByArchesCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
 }
 
 // GetControllerAgentVersions mocks base method.

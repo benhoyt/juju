@@ -63,71 +63,77 @@ func (s *ModelState) Create(ctx context.Context, args model.ModelDetailArgs) err
 	})
 }
 
-// Delete deletes a model.
-func (s *ModelState) Delete(ctx context.Context, uuid coremodel.UUID) error {
+// CreateImportingModel inserts all of the information about a newly created
+// model during import, and marks it as importing in a single transaction.
+func (s *ModelState) CreateImportingModel(ctx context.Context, args model.ModelDetailArgs) error {
 	db, err := s.DB(ctx)
 	if err != nil {
 		return errors.Capture(err)
 	}
 
-	mUUID := dbUUID{UUID: uuid.String()}
-
-	modelStmt, err := s.Prepare(`DELETE FROM model WHERE uuid = $dbUUID.uuid;`, mUUID)
+	migrationUUID, err := uuid.NewUUID()
 	if err != nil {
-		return errors.Capture(err)
+		return errors.Errorf("generating migration uuid for model %q: %w", args.UUID, err)
 	}
 
-	modelLife, err := s.Prepare(`DELETE FROM model_life WHERE model_uuid = $dbUUID.uuid;`, mUUID)
-	if err != nil {
-		return errors.Capture(err)
+	type dbModelMigrating struct {
+		UUID      string `db:"uuid"`
+		ModelUUID string `db:"model_uuid"`
 	}
 
-	modelAgent, err := s.Prepare(`DELETE FROM model_agent WHERE model_uuid = $dbUUID.uuid;`, mUUID)
-	if err != nil {
-		return errors.Capture(err)
+	migrationRecord := dbModelMigrating{
+		UUID:      migrationUUID.String(),
+		ModelUUID: args.UUID.String(),
 	}
 
-	// Once we get to this point, the model is hosed. We don't expect the
-	// model to be in use. The model migration will reinforce the schema once
-	// the migration is tried again. Failure to do that will result in the
-	// model being deleted unexpected scenarios.
-	modelTriggerStmt, err := s.Prepare(`DROP TRIGGER IF EXISTS trg_model_immutable_delete;`)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		if err := tx.Query(ctx, modelLife, mUUID).Run(); err != nil {
-			return errors.Errorf("deleting model life %q: %w", uuid, err)
+	return db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		// First insert the model info
+		if err := InsertModelInfo(ctx, args, s, tx); err != nil {
+			return err
 		}
 
-		if err := tx.Query(ctx, modelAgent, mUUID).Run(); err != nil {
-			return errors.Errorf("deleting model life %q: %w", uuid, err)
-		}
-
-		err := tx.Query(ctx, modelTriggerStmt).Run()
-		if err != nil && !internaldatabase.IsExtendedErrorCode(err) {
-			return errors.Errorf("deleting model trigger %w", err)
-		}
-
-		var outcome sqlair.Outcome
-		err = tx.Query(ctx, modelStmt, mUUID).Get(&outcome)
+		// Then mark it as importing in the same transaction
+		stmt, err := s.Prepare(`
+INSERT INTO model_migrating (uuid, model_uuid)
+VALUES ($dbModelMigrating.uuid, $dbModelMigrating.model_uuid)
+		`, migrationRecord)
 		if err != nil {
-			return errors.Errorf("deleting readonly model information: %w", err)
+			return errors.Capture(err)
 		}
 
-		if affected, err := outcome.Result().RowsAffected(); err != nil {
-			return errors.Errorf("getting result from removing readonly model information: %w", err)
-		} else if affected == 0 {
-			return modelerrors.NotFound
+		if err := tx.Query(ctx, stmt, migrationRecord).Run(); err != nil {
+			return errors.Errorf("marking model %q as importing in model database: %w", args.UUID, err)
 		}
 		return nil
 	})
+}
+
+// IsImportingModel returns true if the model is being imported.
+func (s *ModelState) IsImportingModel(ctx context.Context) (bool, error) {
+	db, err := s.DB(ctx)
 	if err != nil {
-		return errors.Errorf("deleting model %q from model database: %w", uuid, err)
+		return false, errors.Capture(err)
 	}
 
-	return nil
+	var count count
+	migrationStmt, err := s.Prepare(`
+SELECT COUNT(*) AS &count.count
+FROM model_migrating
+JOIN model ON model.uuid = model_migrating.model_uuid`, count)
+	if err != nil {
+		return false, errors.Capture(err)
+	}
+
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err = tx.Query(ctx, migrationStmt).Get(&count)
+		if err != nil {
+			return errors.Errorf("checking if model is importing: %w", err)
+		}
+
+		return nil
+	})
+
+	return count.Count > 0, err
 }
 
 // EnsureDefaultStoragePools is responsible for making sure that the set of
@@ -693,7 +699,7 @@ INSERT INTO model_storage_pool (*) VALUES ($dbModelStoragePool.*)
 		if !poolsExist {
 			return errors.New(
 				"one or more storage pools do not exist in the model",
-			).Add(storageerrors.PoolNotFoundError)
+			).Add(storageerrors.StoragePoolNotFound)
 		}
 
 		err = tx.Query(ctx, deleteStmt).Run()
@@ -965,7 +971,7 @@ func (s *ModelState) GetModel(ctx context.Context) (coremodel.ModelInfo, error) 
 	life, err := l.Life.Value()
 	if err != nil {
 		return coremodel.ModelInfo{}, errors.Errorf(
-			"parsing model life %q: %w", l.Life, err,
+			"parsing model life %v: %w", l.Life, err,
 		)
 	}
 

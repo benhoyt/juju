@@ -11,14 +11,13 @@ import (
 	"github.com/juju/clock"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/workertest"
 	gomock "go.uber.org/mock/gomock"
 	"gopkg.in/tomb.v2"
 
 	"github.com/juju/juju/core/logger"
-	model "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
+	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/internal/testhelpers"
 )
 
@@ -36,7 +35,7 @@ func TestWorkerSuite(t *testing.T) {
 func (s *workerSuite) TestKilledGetLogger(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	id := modeltesting.GenModelUUID(c)
+	id := tc.Must0(c, coremodel.NewUUID)
 
 	w := s.newWorker(c)
 	defer workertest.DirtyKill(c, w)
@@ -53,7 +52,7 @@ func (s *workerSuite) TestKilledGetLogger(c *tc.C) {
 func (s *workerSuite) TestKilledGetLoggerContext(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	id := modeltesting.GenModelUUID(c)
+	id := tc.Must0(c, coremodel.NewUUID)
 
 	w := s.newWorker(c)
 	defer workertest.DirtyKill(c, w)
@@ -70,7 +69,7 @@ func (s *workerSuite) TestKilledGetLoggerContext(c *tc.C) {
 func (s *workerSuite) TestGetLogWriter(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	id := modeltesting.GenModelUUID(c)
+	id := tc.Must0(c, coremodel.NewUUID)
 
 	w := s.newWorker(c)
 	defer workertest.DirtyKill(c, w)
@@ -88,7 +87,7 @@ func (s *workerSuite) TestGetLogWriter(c *tc.C) {
 func (s *workerSuite) TestGetLogWriterIsCached(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	id := modeltesting.GenModelUUID(c)
+	id := tc.Must0(c, coremodel.NewUUID)
 
 	w := s.newWorker(c)
 	defer workertest.DirtyKill(c, w)
@@ -97,7 +96,7 @@ func (s *workerSuite) TestGetLogWriterIsCached(c *tc.C) {
 
 	worker := w.(*LogSink)
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		logger, err := worker.GetLogWriter(c.Context(), id)
 		c.Assert(err, tc.ErrorIsNil)
 		c.Check(logger, tc.NotNil)
@@ -111,7 +110,7 @@ func (s *workerSuite) TestGetLogWriterIsCached(c *tc.C) {
 func (s *workerSuite) TestGetLoggerContext(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	id := modeltesting.GenModelUUID(c)
+	id := tc.Must0(c, coremodel.NewUUID)
 
 	w := s.newWorker(c)
 	defer workertest.DirtyKill(c, w)
@@ -130,7 +129,7 @@ func (s *workerSuite) TestGetLoggerContext(c *tc.C) {
 func (s *workerSuite) TestGetLoggerContextIsCached(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	id := modeltesting.GenModelUUID(c)
+	id := tc.Must0(c, coremodel.NewUUID)
 
 	w := s.newWorker(c)
 	defer workertest.DirtyKill(c, w)
@@ -139,7 +138,7 @@ func (s *workerSuite) TestGetLoggerContextIsCached(c *tc.C) {
 
 	worker := w.(*LogSink)
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		logger, err := worker.GetLoggerContext(c.Context(), id)
 		c.Assert(err, tc.ErrorIsNil)
 		c.Check(logger, tc.NotNil)
@@ -153,7 +152,7 @@ func (s *workerSuite) TestGetLoggerContextIsCached(c *tc.C) {
 func (s *workerSuite) TestGetLogWriterAndGetLoggerContextIsCachedTogether(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	id := modeltesting.GenModelUUID(c)
+	id := tc.Must0(c, coremodel.NewUUID)
 
 	w := s.newWorker(c)
 	defer workertest.DirtyKill(c, w)
@@ -164,7 +163,7 @@ func (s *workerSuite) TestGetLogWriterAndGetLoggerContextIsCachedTogether(c *tc.
 
 	// They both should use the same underlying model logger.
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if i%2 == 0 {
 			_, err := worker.GetLogWriter(c.Context(), id)
 			c.Assert(err, tc.ErrorIsNil)
@@ -193,7 +192,7 @@ func (s *workerSuite) setupMocks(c *tc.C) *gomock.Controller {
 
 func (s *workerSuite) newWorker(c *tc.C) worker.Worker {
 	w, err := newWorker(Config{
-		NewModelLogger: func(logger.LogSink, model.UUID, names.Tag) (worker.Worker, error) {
+		NewModelLogger: func(logger.LogSink, coremodel.UUID, names.Tag) (worker.Worker, error) {
 			atomic.AddInt64(&s.called, 1)
 			return newLoggerWorker(), nil
 		},

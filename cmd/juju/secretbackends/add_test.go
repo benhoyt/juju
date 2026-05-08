@@ -14,8 +14,8 @@ import (
 
 	apisecretbackends "github.com/juju/juju/api/client/secretbackends"
 	"github.com/juju/juju/api/jujuclient"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/secretbackends"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/testhelpers"
 )
 
@@ -84,8 +84,8 @@ func (s *AddSuite) TestAdd(c *tc.C) {
 		apisecretbackends.CreateSecretBackend{
 			Name:                "myvault",
 			BackendType:         "vault",
-			TokenRotateInterval: ptr(666 * time.Minute),
-			Config:              map[string]interface{}{"endpoint": "http://vault"},
+			TokenRotateInterval: new(666 * time.Minute),
+			Config:              map[string]any{"endpoint": "http://vault"},
 		}).Return(nil)
 	s.addSecretBackendsAPI.EXPECT().Close().Return(nil)
 
@@ -104,7 +104,7 @@ func (s *AddSuite) TestAddWithID(c *tc.C) {
 			ID:          "backend-id",
 			Name:        "myvault",
 			BackendType: "vault",
-			Config:      map[string]interface{}{"endpoint": "http://vault"},
+			Config:      map[string]any{"endpoint": "http://vault"},
 		}).Return(nil)
 	s.addSecretBackendsAPI.EXPECT().Close().Return(nil)
 
@@ -125,8 +125,8 @@ func (s *AddSuite) TestAddFromFile(c *tc.C) {
 		apisecretbackends.CreateSecretBackend{
 			Name:                "myvault",
 			BackendType:         "vault",
-			TokenRotateInterval: ptr(666 * time.Minute),
-			Config: map[string]interface{}{
+			TokenRotateInterval: new(666 * time.Minute),
+			Config: map[string]any{
 				"endpoint": "http://vault",
 				"token":    "s.666",
 			},

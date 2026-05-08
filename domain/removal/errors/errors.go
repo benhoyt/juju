@@ -14,6 +14,10 @@ const (
 	// a removal job using logic for an incompatible type.
 	RemovalJobTypeNotValid = errors.ConstError("removal job type not valid")
 
+	// RemovalJobArgsInvalid indicates that the arguments provided for a
+	// removal job are invalid in some way.
+	RemovalJobArgsInvalid = errors.ConstError("removal job args invalid")
+
 	// RemovalModelRemoved indicates that a model removal job was
 	// attempted, but the model was already removed. This should cause the
 	// removal worker to remove itself.
@@ -48,13 +52,13 @@ const (
 	// still hosts units
 	MachineHasUnits = errors.ConstError("machine has units")
 
+	// MachineHasStorage indicates that a machine cannot be deleted because it
+	// still has storage.
+	MachineHasStorage = errors.ConstError("machine has storage")
+
 	// OfferHasRelations indicates that an offer cannot be deleted because it
 	// still has relations
 	OfferHasRelations = errors.ConstError("offer has relations")
-
-	// ApplicationHasOfferConnections indicates that an application cannot be
-	// deleted because it still has offer connections
-	ApplicationHasOfferConnections = errors.ConstError("application has offer connections")
 
 	// ApplicationIsRemoteOfferer indicates that an application cannot be deleted
 	// because it is a remote application offerer
@@ -67,4 +71,20 @@ const (
 	// StorageFulfilmentNotMet indicates that removing a storage entity from
 	// the model the fulfilment expectation was not met.
 	StorageFulfilmentNotMet = errors.ConstError("storage fulfilment not met")
+
+	// StorageFilesystemNoTombstone indicates that the filesystem is dead but
+	// cannot be removed until it has the tombstone status.
+	StorageFilesystemNoTombstone = errors.ConstError("filesystem status is not tombstone")
+
+	// StorageVolumeNoTombstone indicates that the volume is dead but
+	// cannot be removed until it has the tombstone status.
+	StorageVolumeNoTombstone = errors.ConstError("volume status is not tombstone")
+
+	// StorageInstanceHasChildren indicates that the storage instance cannot
+	// be dead until it has no children.
+	StorageInstanceHasChildren = errors.ConstError("storage instance has children")
+
+	// StorageInstanceStillAttached indicates that the storage instance cannot
+	// be removed without force as it still has attachments.
+	StorageInstanceStillAttached = errors.ConstError("storage instance still attached")
 )

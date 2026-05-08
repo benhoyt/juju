@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Configure Juju for offline deployments using local mirrors, proxies, and cached resources for air-gapped environments."
+---
+
 (take-your-deployment-offline)=
 # Set up your Juju deployment - offline
 

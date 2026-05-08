@@ -4,12 +4,15 @@
 package schema
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/juju/collections/set"
 	"github.com/juju/tc"
 	"github.com/juju/utils/v4"
 	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/juju/juju/core/version"
 )
 
 type controllerSchemaSuite struct {
@@ -18,6 +21,59 @@ type controllerSchemaSuite struct {
 
 func TestControllerSchemaSuite(t *testing.T) {
 	tc.Run(t, &controllerSchemaSuite{})
+}
+
+func (s *controllerSchemaSuite) TestCheckNoPatchFilesForNonMatchingMajorMinor(c *tc.C) {
+	for _, postPatch := range controllerPostPatchFilesByVersion {
+		if postPatch.version.Major != version.Current.Major || postPatch.version.Minor != version.Current.Minor {
+			c.Fatalf("found post-patch file for version %v, but current version is %v", postPatch.version, version.Current)
+		}
+	}
+}
+
+func (s *controllerSchemaSuite) TestCheckNoUnusedPostPatchFiles(c *tc.C) {
+	encodedPatches := set.NewStrings()
+	for _, postPatch := range controllerPostPatchFilesByVersion {
+		encodedPatches = encodedPatches.Union(set.NewStrings(postPatch.files...))
+	}
+
+	embedded, err := controllerSchemaDir.ReadDir("controller/sql")
+	c.Assert(err, tc.ErrorIsNil)
+
+	embeddedPatches := set.NewStrings()
+	for _, entry := range embedded {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".PATCH.sql") {
+			continue
+		}
+		embeddedPatches.Add(name)
+	}
+
+	unused := embeddedPatches.Difference(encodedPatches)
+	c.Assert(unused.Size(), tc.Equals, 0, tc.Commentf("unused post-patch files: %v", unused.SortedValues()))
+}
+
+func (s *controllerSchemaSuite) TestApplyDDLIdempotent(c *tc.C) {
+	s.applyDDL(c, ControllerDDL())
+	s.reapplyDDL(c, ControllerDDL())
+}
+
+func (s *controllerSchemaSuite) TestControllerDDLForVersionsApplyCumulatively(c *tc.C) {
+	current := version.Current
+	if current.Patch == 0 || len(controllerPostPatchFilesByVersion) == 0 {
+		c.Skip("no patches to test")
+	}
+
+	version := version.Current
+	version.Patch = 0
+	initalPatches := ControllerDDLForVersion(version)
+	s.applyDDL(c, initalPatches)
+
+	for _, postPatch := range controllerPostPatchFilesByVersion {
+		ddl := ControllerDDLForVersion(postPatch.version)
+		c.Logf("Applying controller DDL for version %v", postPatch.version)
+		s.reapplyDDL(c, ddl)
+	}
 }
 
 func (s *controllerSchemaSuite) TestControllerTables(c *tc.C) {
@@ -91,6 +147,7 @@ func (s *controllerSchemaSuite) TestControllerTables(c *tc.C) {
 		"model_migration_user",
 		"model_migration_minion_sync",
 		"model_authorized_keys",
+		"model_migration_import",
 
 		// Upgrade info
 		"upgrade_info",
@@ -98,10 +155,14 @@ func (s *controllerSchemaSuite) TestControllerTables(c *tc.C) {
 		"upgrade_state_type",
 
 		// Object store metadata
-		"object_store_metadata",
-		"object_store_metadata_path",
+		"object_store_backend_s3_credential",
+		"object_store_backend_type",
+		"object_store_backend",
 		"object_store_drain_info",
 		"object_store_drain_phase_type",
+		"object_store_metadata_path",
+		"object_store_metadata",
+		"object_store_placement",
 
 		// SSH Keys
 		"ssh_fingerprint_hash_algorithm",
@@ -126,6 +187,7 @@ func (s *controllerSchemaSuite) TestControllerTables(c *tc.C) {
 		// Secret backends
 		"secret_backend",
 		"secret_backend_config",
+		"secret_backend_origin",
 		"secret_backend_rotation",
 		"secret_backend_type",
 		"secret_backend_reference",
@@ -141,6 +203,9 @@ func (s *controllerSchemaSuite) TestControllerTables(c *tc.C) {
 
 		// Agent binary metadata.
 		"agent_binary_store",
+
+		// Tracing config
+		"charm_tracing_config",
 	)
 	got := readEntityNames(c, s.DB(), "table")
 	wanted := expected.Union(internalTableNames)
@@ -279,6 +344,10 @@ func (s *controllerSchemaSuite) TestControllerTriggers(c *tc.C) {
 		"trg_log_object_store_drain_info_insert",
 		"trg_log_object_store_drain_info_update",
 		"trg_log_object_store_drain_info_delete",
+
+		"trg_log_object_store_backend_delete",
+		"trg_log_object_store_backend_insert",
+		"trg_log_object_store_backend_update",
 	)
 
 	// These are additional triggers that are not change log triggers, but
@@ -302,22 +371,22 @@ func (s *controllerSchemaSuite) TestControllerTriggersForImmutableTables(c *tc.C
 	backendUUID1 := utils.MustNewUUID().String()
 	backendUUID2 := utils.MustNewUUID().String()
 	s.assertExecSQL(c,
-		"INSERT INTO secret_backend (uuid, name, backend_type_id) VALUES (?, 'controller-sb', 0);",
+		"INSERT INTO secret_backend (uuid, name, backend_type_id, origin_id) VALUES (?, 'controller-sb', 0, 0);",
 		backendUUID1)
 	s.assertExecSQL(c,
-		"INSERT INTO secret_backend (uuid, name, backend_type_id) VALUES (?, 'kubernetes-sb', 1);",
+		"INSERT INTO secret_backend (uuid, name, backend_type_id, origin_id) VALUES (?, 'kubernetes-sb', 1, 0);",
 		backendUUID2)
 	s.assertExecSQLError(c,
 		"UPDATE secret_backend SET name = 'new-name' WHERE uuid = ?",
-		"secret backends with type controller or kubernetes are immutable", backendUUID1)
+		"built-in secret backends or secret backends with type controller or kubernetes are immutable", backendUUID1)
 	s.assertExecSQLError(c,
 		"UPDATE secret_backend SET name = 'new-name' WHERE uuid = ?",
-		"secret backends with type controller or kubernetes are immutable", backendUUID2)
+		"built-in secret backends or secret backends with type controller or kubernetes are immutable", backendUUID2)
 
 	s.assertExecSQLError(c,
 		"DELETE FROM secret_backend WHERE uuid = ?;",
-		"secret backends with type controller or kubernetes are immutable", backendUUID1)
+		"built-in secret backends or secret backends with type controller or kubernetes are immutable", backendUUID1)
 	s.assertExecSQLError(c,
 		"DELETE FROM secret_backend WHERE uuid = ?;",
-		"secret backends with type controller or kubernetes are immutable", backendUUID2)
+		"built-in secret backends or secret backends with type controller or kubernetes are immutable", backendUUID2)
 }

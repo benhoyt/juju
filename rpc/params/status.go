@@ -118,16 +118,18 @@ type MachineStatus struct {
 	// hardware specification datum.
 	Hardware string `json:"hardware"`
 
-	Jobs      []model.MachineJob `json:"jobs"`
-	HasVote   bool               `json:"has-vote"`
-	WantsVote bool               `json:"wants-vote"`
+	Jobs        []model.MachineJob `json:"jobs"`
+	HasVote     bool               `json:"has-vote"`
+	WantsVote   bool               `json:"wants-vote"`
+	ClusterRole *string            `json:"cluster-role,omitempty"`
 
 	// LXDProfiles holds all the machines current LXD profiles that have
 	// been applied to the machine
 	LXDProfiles map[string]LXDProfile `json:"lxd-profiles,omitempty"`
 
-	// PrimaryControllerMachine indicates whether this machine has a primary mongo instance in replicaset and,
-	//	// thus, can be considered a primary controller machine in HA setup.
+	// PrimaryControllerMachine indicates whether this machine has a primary
+	// instance and, thus, can be considered a primary controller machine in HA
+	// setup.
 	PrimaryControllerMachine *bool `json:"primary-controller-machine,omitempty"`
 }
 
@@ -233,14 +235,14 @@ func (epStatus *EndpointStatus) String() string {
 
 // DetailedStatus holds status info about a machine or unit agent.
 type DetailedStatus struct {
-	Status  string                 `json:"status"`
-	Info    string                 `json:"info"`
-	Data    map[string]interface{} `json:"data"`
-	Since   *time.Time             `json:"since"`
-	Kind    string                 `json:"kind"`
-	Version string                 `json:"version"`
-	Life    life.Value             `json:"life"`
-	Err     *Error                 `json:"err,omitempty"`
+	Status  string         `json:"status"`
+	Info    string         `json:"info"`
+	Data    map[string]any `json:"data"`
+	Since   *time.Time     `json:"since"`
+	Kind    string         `json:"kind"`
+	Version string         `json:"version"`
+	Life    life.Value     `json:"life"`
+	Err     *Error         `json:"err,omitempty"`
 }
 
 // History holds many DetailedStatus.
@@ -284,13 +286,13 @@ type StatusHistoryResults struct {
 // StatusResult holds an entity status, extra information, or an
 // error.
 type StatusResult struct {
-	Error  *Error                 `json:"error,omitempty"`
-	Id     string                 `json:"id"`
-	Life   life.Value             `json:"life"`
-	Status string                 `json:"status"`
-	Info   string                 `json:"info"`
-	Data   map[string]interface{} `json:"data"`
-	Since  *time.Time             `json:"since"`
+	Error  *Error         `json:"error,omitempty"`
+	Id     string         `json:"id"`
+	Life   life.Value     `json:"life"`
+	Status string         `json:"status"`
+	Info   string         `json:"info"`
+	Data   map[string]any `json:"data"`
+	Since  *time.Time     `json:"since"`
 }
 
 // StatusResults holds multiple status results.

@@ -15,7 +15,7 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/mock/gomock"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -49,6 +49,7 @@ import (
 	k8sutils "github.com/juju/juju/internal/provider/kubernetes/utils"
 	k8swatcher "github.com/juju/juju/internal/provider/kubernetes/watcher"
 	k8swatchertest "github.com/juju/juju/internal/provider/kubernetes/watcher/test"
+	"github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/internal/testing"
 )
 
@@ -69,7 +70,7 @@ func getBasicPodspec() *specs.PodSpec {
 		Command:      []string{"sh", "-c"},
 		Args:         []string{"doIt", "--debug"},
 		WorkingDir:   "/path/to/here",
-		EnvConfig: map[string]interface{}{
+		EnvConfig: map[string]any{
 			"foo":        "bar",
 			"restricted": "yes",
 			"bar":        true,
@@ -229,6 +230,31 @@ func (s *K8sBrokerSuite) TestConfig(c *tc.C) {
 	defer ctrl.Finish()
 
 	c.Assert(s.broker.Config(), tc.DeepEquals, s.cfg)
+}
+
+func (s *K8sBrokerSuite) TestSubnets(c *tc.C) {
+	ctrl := s.setupController(c)
+	defer ctrl.Finish()
+
+	s.mockNodes.EXPECT().List(gomock.Any(), v1.ListOptions{}).Return(&core.NodeList{
+		Items: []core.Node{
+			{Spec: core.NodeSpec{PodCIDR: "10.20.0.0/24"}},
+			{Spec: core.NodeSpec{PodCIDRs: []string{"fd20::/64"}}},
+		},
+	}, nil)
+
+	result, err := s.broker.Subnets(c.Context(), nil)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result, tc.DeepEquals, []network.SubnetInfo{
+		{
+			CIDR:       "10.20.0.0/24",
+			ProviderId: "10.20.0.0/24",
+		},
+		{
+			CIDR:       "fd20::/64",
+			ProviderId: "fd20::/64",
+		},
+	})
 }
 
 func (s *K8sBrokerSuite) TestSetConfig(c *tc.C) {
@@ -979,7 +1005,7 @@ func (s *K8sBrokerSuite) TestGetServiceSvcFoundWithStatefulSet(c *tc.C) {
 				network.NewMachineAddress("10.0.0.1", network.WithScope(network.ScopePublic)).AsProviderAddress(),
 				network.NewMachineAddress("host.com.au", network.WithScope(network.ScopePublic)).AsProviderAddress(),
 			},
-			Scale:      k8sutils.IntPtr(2),
+			Scale:      new(2),
 			Generation: pointer.Int64Ptr(1),
 			Status: status.StatusInfo{
 				Status: status.Active,
@@ -1045,6 +1071,7 @@ func (s *K8sBrokerSuite) TestUnits(c *tc.C) {
 
 	pvc := &core.PersistentVolumeClaim{
 		ObjectMeta: v1.ObjectMeta{
+			Name:   "pvc-name",
 			UID:    "pvc-uuid",
 			Labels: map[string]string{"juju-storage": "database"},
 		},
@@ -1100,11 +1127,11 @@ func (s *K8sBrokerSuite) TestUnits(c *tc.C) {
 			Since:   &now,
 		},
 		FilesystemInfo: []caas.FilesystemInfo{{
-			StorageName:  "database",
-			FilesystemId: "pvc-uuid",
-			Size:         uint64(podWithStorage.Spec.Volumes[0].PersistentVolumeClaim.Size()),
-			MountPoint:   "/path/to/here",
-			ReadOnly:     true,
+			StorageName:               "database",
+			PersistentVolumeClaimName: "pvc-name",
+			Size:                      uint64(podWithStorage.Spec.Volumes[0].PersistentVolumeClaim.Size()),
+			MountPoint:                "/path/to/here",
+			ReadOnly:                  true,
 			Status: status.StatusInfo{
 				Status:  "attached",
 				Message: "mounted",
@@ -1272,6 +1299,42 @@ func (s *K8sBrokerSuite) TestUpdateStrategyForStatefulSet(c *tc.C) {
 		Type: appsv1.RollingUpdateStatefulSetStrategyType,
 		RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{
 			Partition: pointer.Int32Ptr(10),
+		},
+	})
+}
+
+func (s *K8sBrokerSuite) TestGetPersistentVolumeClaimIdentifiers(c *tc.C) {
+	ctrl := s.setupController(c)
+	defer ctrl.Finish()
+
+	// Arrange
+	s.mockPersistentVolumeClaims.EXPECT().List(gomock.Any(), gomock.Any()).Return(
+		&core.PersistentVolumeClaimList{Items: []core.PersistentVolumeClaim{
+			{
+				ObjectMeta: v1.ObjectMeta{
+					Name: "postgresql-k8s-pgdata-b3dd9e-postgresql-k8s-1",
+					UID:  "9f4e9281-37f4-49b0-a289-1147deadbeef",
+				},
+			}, {
+				ObjectMeta: v1.ObjectMeta{
+					Name: "postgresql-k8s-pgdata-b3dd9e-postgresql-k8s-0",
+					UID:  "9f4e9281-37f4-49b0-a289-1147e1ba8d69",
+				},
+			},
+		}}, nil)
+
+	// Act
+	pvcIdentifers, err := s.broker.GetPersistentVolumeClaimIdentifiers(c.Context())
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(pvcIdentifers, tc.SameContents, []storage.PersistentVolumeClaimIdentifiers{
+		{
+			Name: "postgresql-k8s-pgdata-b3dd9e-postgresql-k8s-0",
+			UID:  "9f4e9281-37f4-49b0-a289-1147e1ba8d69",
+		}, {
+			Name: "postgresql-k8s-pgdata-b3dd9e-postgresql-k8s-1",
+			UID:  "9f4e9281-37f4-49b0-a289-1147deadbeef",
 		},
 	})
 }

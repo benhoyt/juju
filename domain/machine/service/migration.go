@@ -12,7 +12,10 @@ import (
 	"github.com/juju/juju/core/logger"
 	coremachine "github.com/juju/juju/core/machine"
 	"github.com/juju/juju/core/trace"
+	"github.com/juju/juju/domain/constraints"
+	"github.com/juju/juju/domain/deployment"
 	"github.com/juju/juju/domain/machine"
+	"github.com/juju/juju/domain/network"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -21,6 +24,10 @@ type MigrationState interface {
 	// InsertMigratingMachine inserts a machine which is taken from the description
 	// model during migration into the machine table.
 	InsertMigratingMachine(ctx context.Context, machineName string, args machine.CreateMachineArgs) error
+
+	// InsertMigratingSubordinateMachine inserts a subordinate machine which is taken
+	// from the description model during migration into the machine table.
+	InsertMigratingSubordinateMachine(ctx context.Context, machineName, parentUUID string, args machine.CreateMachineArgs) error
 
 	// GetMachinesForExport returns all machines in the model for export.
 	GetMachinesForExport(ctx context.Context) ([]machine.ExportMachine, error)
@@ -63,7 +70,15 @@ func NewMigrationService(
 // CreateMachine creates the specified machine.
 // It returns a MachineAlreadyExists error if a machine with the same name
 // already exists.
-func (s *MigrationService) CreateMachine(ctx context.Context, machineName coremachine.Name, nonce *string) (coremachine.UUID, error) {
+func (s *MigrationService) CreateMachine(
+	ctx context.Context,
+	machineName coremachine.Name,
+	hostname string,
+	nonce *string,
+	platform deployment.Platform,
+	placement deployment.Placement,
+	cons constraints.Constraints,
+) (coremachine.UUID, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
@@ -72,11 +87,67 @@ func (s *MigrationService) CreateMachine(ctx context.Context, machineName corema
 	// the state layer we don't keep regenerating.
 	machineUUID, err := createUUIDs()
 	if err != nil {
-		return "", errors.Errorf("creating machine %q: %w", machineName, err)
+		return "", errors.Errorf("creating UUID for machine %q: %w", machineName, err)
+	}
+	netNodeUUID, err := network.NewNetNodeUUID()
+	if err != nil {
+		return "", errors.Errorf("creating net node UUID for machine %q: %w", machineName, err)
 	}
 	err = s.st.InsertMigratingMachine(ctx, machineName.String(), machine.CreateMachineArgs{
+		Hostname:    hostname,
 		MachineUUID: machineUUID,
+		NetNodeUUID: netNodeUUID,
 		Nonce:       nonce,
+		Platform:    platform,
+		Directive:   placement,
+		Constraints: cons,
+	})
+	if err != nil {
+		return machineUUID, errors.Errorf("creating machine %q: %w", machineName, err)
+	}
+
+	if err := recordCreateMachineStatusHistory(ctx, s.statusHistory, machineName, s.clock); err != nil {
+		s.logger.Warningf(ctx, "recording machine status history: %w", err)
+	}
+
+	return machineUUID, nil
+}
+
+// CreateSubordinateMachine creates the specified subordinate machine.
+// It returns a MachineAlreadyExists error if a machine with the same name
+// already exists.
+func (s *MigrationService) CreateSubordinateMachine(
+	ctx context.Context,
+	machineName coremachine.Name,
+	parentUUID coremachine.UUID,
+	hostname string,
+	nonce *string,
+	platform deployment.Platform,
+	placement deployment.Placement,
+	cons constraints.Constraints,
+) (coremachine.UUID, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	// Make new UUIDs for the net-node and the machine.
+	// We want to do this in the service layer so that if retries are invoked at
+	// the state layer we don't keep regenerating.
+	machineUUID, err := createUUIDs()
+	if err != nil {
+		return "", errors.Errorf("creating UUID for machine %q: %w", machineName, err)
+	}
+	netNodeUUID, err := network.NewNetNodeUUID()
+	if err != nil {
+		return "", errors.Errorf("creating net node UUID for machine %q: %w", machineName, err)
+	}
+	err = s.st.InsertMigratingSubordinateMachine(ctx, machineName.String(), parentUUID.String(), machine.CreateMachineArgs{
+		Hostname:    hostname,
+		MachineUUID: machineUUID,
+		NetNodeUUID: netNodeUUID,
+		Nonce:       nonce,
+		Platform:    platform,
+		Directive:   placement,
+		Constraints: cons,
 	})
 	if err != nil {
 		return machineUUID, errors.Errorf("creating machine %q: %w", machineName, err)

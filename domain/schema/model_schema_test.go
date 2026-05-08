@@ -4,6 +4,7 @@
 package schema
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/juju/collections/set"
@@ -12,6 +13,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 
 	charmtesting "github.com/juju/juju/core/charm/testing"
+	"github.com/juju/juju/core/version"
 )
 
 type modelSchemaSuite struct {
@@ -20,6 +22,59 @@ type modelSchemaSuite struct {
 
 func TestModelSchemaSuite(t *testing.T) {
 	tc.Run(t, &modelSchemaSuite{})
+}
+
+func (s *modelSchemaSuite) TestCheckNoPatchFilesForNonMatchingMajorMinor(c *tc.C) {
+	for _, postPatch := range modelPostPatchFilesByVersion {
+		if postPatch.version.Major != version.Current.Major || postPatch.version.Minor != version.Current.Minor {
+			c.Fatalf("found post-patch file for version %v, but current version is %v", postPatch.version, version.Current)
+		}
+	}
+}
+
+func (s *modelSchemaSuite) TestCheckNoUnusedPostPatchFiles(c *tc.C) {
+	encodedPatches := set.NewStrings()
+	for _, postPatch := range modelPostPatchFilesByVersion {
+		encodedPatches = encodedPatches.Union(set.NewStrings(postPatch.files...))
+	}
+
+	embedded, err := modelSchemaDir.ReadDir("model/sql")
+	c.Assert(err, tc.ErrorIsNil)
+
+	embeddedPatches := set.NewStrings()
+	for _, entry := range embedded {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".PATCH.sql") {
+			continue
+		}
+		embeddedPatches.Add(name)
+	}
+
+	unused := embeddedPatches.Difference(encodedPatches)
+	c.Assert(unused.Size(), tc.Equals, 0, tc.Commentf("update modelPostPatchFilesByVersion, unused post-patch files: %v", unused.SortedValues()))
+}
+
+func (s *modelSchemaSuite) TestApplyDDLIdempotent(c *tc.C) {
+	s.applyDDL(c, ModelDDL())
+	s.reapplyDDL(c, ModelDDL())
+}
+
+func (s *modelSchemaSuite) TestModelDDLForVersionsApplyCumulatively(c *tc.C) {
+	current := version.Current
+	if current.Patch == 0 || len(modelPostPatchFilesByVersion) == 0 {
+		c.Skip("no patches to test")
+	}
+
+	version := version.Current
+	version.Patch = 0
+	initalPatches := ModelDDLForVersion(version)
+	s.applyDDL(c, initalPatches)
+
+	for _, postPatch := range modelPostPatchFilesByVersion {
+		ddl := ModelDDLForVersion(postPatch.version)
+		c.Logf("Applying model DDL for version %v", postPatch.version)
+		s.reapplyDDL(c, ddl)
+	}
 }
 
 func (s *modelSchemaSuite) TestModelTables(c *tc.C) {
@@ -37,15 +92,17 @@ func (s *modelSchemaSuite) TestModelTables(c *tc.C) {
 		"application_controller",
 		"application_exposed_endpoint_cidr",
 		"application_exposed_endpoint_space",
+		"application_k8s_resources_managed",
 		"application_platform",
 		"application_scale",
 		"application_setting",
 		"application_status",
 		"application_workload_version",
-		"k8s_service",
-		"workload_status_value",
-		"device_constraint",
 		"device_constraint_attribute",
+		"device_constraint",
+		"k8s_service",
+		"operator_status",
+		"workload_status_value",
 
 		// Annotations
 		"annotation_application",
@@ -83,10 +140,12 @@ func (s *modelSchemaSuite) TestModelTables(c *tc.C) {
 		// Model config
 		"model_config",
 		"model_constraint",
+		"model_migrating",
 
 		// Object store metadata
 		"object_store_metadata",
 		"object_store_metadata_path",
+		"object_store_placement",
 
 		// Node
 		"fqdn_address",
@@ -159,7 +218,6 @@ func (s *modelSchemaSuite) TestModelTables(c *tc.C) {
 		"machine_placement_scope",
 		"machine_platform",
 		"machine_placement",
-		"machine_platform",
 		"machine_requires_reboot",
 		"machine_ssh_host_key",
 		"machine_status_value",
@@ -225,6 +283,7 @@ func (s *modelSchemaSuite) TestModelTables(c *tc.C) {
 		// Block device
 		"block_device_link_device",
 		"block_device",
+		"block_device_provenance",
 
 		// Storage
 		"application_storage_directive",
@@ -343,7 +402,6 @@ func (s *modelSchemaSuite) TestModelViews(c *tc.C) {
 
 	// Ensure that each view is present.
 	expected := set.NewStrings(
-		"v_address",
 		"v_application_charm_download_info",
 		"v_application_config",
 		"v_application_constraint",
@@ -375,6 +433,7 @@ func (s *modelSchemaSuite) TestModelViews(c *tc.C) {
 		"v_machine_status",
 		"v_machine_target_agent_version",
 		"v_machine_is_controller",
+		"v_model_config",
 		"v_model_constraint_space",
 		"v_model_constraint_tag",
 		"v_model_constraint_zone",
@@ -404,6 +463,9 @@ func (s *modelSchemaSuite) TestModelViews(c *tc.C) {
 		"v_full_unit_status",
 		"v_agent_binary_store",
 		"v_all_unit_address",
+		"v_unit_relation_network",
+		"v_secret_metadata",
+		"v_secret_owner",
 	)
 	got := readEntityNames(c, s.DB(), "view")
 	c.Assert(got, tc.SameContents, expected.SortedValues(), tc.Commentf(
@@ -525,6 +587,8 @@ func (s *modelSchemaSuite) TestModelTriggers(c *tc.C) {
 		"trg_log_storage_filesystem_update_life_model_provisioning",
 		"trg_log_storage_filesystem_delete_life_model_provisioning",
 
+		"trg_log_custom_filesystem_provider_id_model_provisioning",
+
 		"trg_log_storage_filesystem_attachment_insert_life_machine_provisioning",
 		"trg_log_storage_filesystem_attachment_update_life_machine_provisioning",
 		"trg_log_storage_filesystem_attachment_delete_life_machine_provisioning",
@@ -532,6 +596,8 @@ func (s *modelSchemaSuite) TestModelTriggers(c *tc.C) {
 		"trg_log_storage_filesystem_attachment_insert_life_model_provisioning",
 		"trg_log_storage_filesystem_attachment_update_life_model_provisioning",
 		"trg_log_storage_filesystem_attachment_delete_life_model_provisioning",
+
+		"trg_log_custom_filesystem_attachment_provider_id_model_provisioning",
 
 		"trg_log_storage_volume_insert_life_machine_provisioning_on_attachment",
 		"trg_log_storage_volume_update_life_machine_provisioning",
@@ -632,9 +698,20 @@ func (s *modelSchemaSuite) TestModelTriggers(c *tc.C) {
 		"trg_log_custom_model_life_model_uuid_lifecycle_update",
 		"trg_log_custom_model_life_model_uuid_lifecycle_delete",
 
-		"trg_log_custom_machine_unit_name_lifecycle_insert",
-		"trg_log_custom_machine_unit_name_lifecycle_delete",
-		"trg_log_custom_machine_unit_name_lifecycle_update",
+		"trg_log_custom_machine_uuid_lifecycle_with_dependants_machine_insert",
+		"trg_log_custom_machine_uuid_lifecycle_with_dependants_machine_delete",
+		"trg_log_custom_machine_uuid_lifecycle_with_dependants_machine_update",
+		"trg_log_custom_machine_uuid_lifecycle_with_dependants_unit_insert",
+		"trg_log_custom_machine_uuid_lifecycle_with_dependants_unit_delete",
+		"trg_log_custom_machine_uuid_lifecycle_with_dependants_unit_update",
+		"trg_log_custom_machine_uuid_lifecycle_with_dependants_machine_filesystem_delete",
+		"trg_log_custom_machine_uuid_lifecycle_with_dependants_machine_volume_delete",
+		"trg_log_custom_machine_uuid_lifecycle_with_dependants_storage_filesystem_attachment_delete",
+		"trg_log_custom_machine_uuid_lifecycle_with_dependants_storage_volume_attachment_delete",
+		"trg_log_custom_machine_uuid_lifecycle_with_dependants_storage_volume_attachment_plan_delete",
+		"trg_log_custom_machine_uuid_lifecycle_with_dependants_machine_parent_insert",
+		"trg_log_custom_machine_uuid_lifecycle_with_dependants_machine_parent_delete",
+		"trg_log_custom_machine_uuid_lifecycle_with_dependants_machine_parent_update",
 
 		"trg_log_custom_secret_revision_delete",
 
@@ -653,6 +730,10 @@ func (s *modelSchemaSuite) TestModelTriggers(c *tc.C) {
 		"trg_log_application_remote_consumer_delete",
 		"trg_log_application_remote_consumer_insert",
 		"trg_log_application_remote_consumer_update",
+
+		"trg_log_model_migrating_insert",
+		"trg_log_model_migrating_update",
+		"trg_log_model_migrating_delete",
 
 		"trg_log_application_status_delete",
 		"trg_log_application_status_insert",
@@ -746,6 +827,8 @@ func (s *modelSchemaSuite) TestModelTriggers(c *tc.C) {
 
 		"trg_log_custom_relation_life_suspended_update",
 		"trg_log_custom_relation_life_suspended_delete",
+
+		"trg_model_migrating_immutable_update",
 	)
 
 	got := readEntityNames(c, s.DB(), "trigger")

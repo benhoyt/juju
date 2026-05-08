@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,10 +21,10 @@ import (
 	"github.com/juju/juju/api/jujuclient"
 	jujucloud "github.com/juju/juju/cloud"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/common"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/environs"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/internal/naturalsort"
 	"github.com/juju/juju/rpc/params"
 )
@@ -173,16 +174,12 @@ func (c *detectCredentialsCommand) allClouds(ctxt *cmd.Context) (map[string]juju
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	for k, v := range builtinClouds {
-		clouds[k] = v
-	}
+	maps.Copy(clouds, builtinClouds)
 	personalClouds, err := jujucloud.PersonalCloudMetadata()
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range personalClouds {
-		clouds[k] = v
-	}
+	maps.Copy(clouds, personalClouds)
 	if c.ControllerName != "" {
 		ctxt.Infof("\nLooking for cloud information on controller %q...", c.ControllerName)
 		// If there is a cloud definition for the same cloud both

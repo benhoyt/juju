@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn about best practices for writing Juju workers, including tomb usage, channel management, and goroutine lifecycle control patterns."
+---
+
 (writing-workers)=
 # Writing workers
 
@@ -74,7 +80,7 @@ func (config Config) Validate() error {
 // ValuePasser reads int values from a channel and passes them to a handler.
 type ValuePasser struct {
 
-    // You must have at least a tomb, or a catacomb if you have child 
+    // You must have at least a tomb, or a catacomb if you have child
     // workers, or doom yourself to re-implementing them badly.
     tomb tomb.Tomb
 
@@ -92,7 +98,7 @@ type ValuePasser struct {
 
 // NewValuePasser returns a ValuePasser configured as supplied.
 func NewValuePasser(config Config) (*ValuePasser, error) {
-    
+
     // This function should do three things:
     //  * Validate the configuration.
     if err := config.Validate(); err != nil {
@@ -118,7 +124,7 @@ func NewValuePasser(config Config) (*ValuePasser, error) {
     return worker, nil
 }
 
-// loop is where most of the interesting stuff happens. 
+// loop is where most of the interesting stuff happens.
 func (w *ValuePasser) loop() error {
 
     // If you've got detailed setup to do; watchers to be started, resource
@@ -137,7 +143,7 @@ func (w *ValuePasser) loop() error {
         // elsewhere, and this case needn't to worry about why it's dying.
         case <-w.tomb.Dying():
             return tomb.ErrDying
-        
+
         // Here's where you need to pay most of your attention, because it'll
         // differ with each worker you write. The common features are that you
         // will *usually* just return errors at the slightest provocation

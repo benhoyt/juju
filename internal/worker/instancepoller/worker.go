@@ -11,8 +11,8 @@ import (
 	"github.com/juju/clock"
 	"github.com/juju/collections/transform"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 
 	"github.com/juju/juju/core/instance"
 	corelife "github.com/juju/juju/core/life"
@@ -163,10 +163,7 @@ func (e *pollGroupEntry) resetShortPollInterval(clk clock.Clock) {
 }
 
 func (e *pollGroupEntry) bumpShortPollInterval(clk clock.Clock) {
-	e.shortPollInterval = time.Duration(float64(e.shortPollInterval) * ShortPollBackoff)
-	if e.shortPollInterval > ShortPollCap {
-		e.shortPollInterval = ShortPollCap
-	}
+	e.shortPollInterval = min(time.Duration(float64(e.shortPollInterval)*ShortPollBackoff), ShortPollCap)
 	e.shortPollAt = clk.Now().Add(e.shortPollInterval)
 }
 
@@ -652,15 +649,15 @@ func isPartialOrNoInstancesError(err error) bool {
 func newNetInterface(device network.InterfaceInfo) domainnetwork.NetInterface {
 	return domainnetwork.NetInterface{
 		Name:             device.InterfaceName,
-		MTU:              ptr(int64(device.MTU)),
-		MACAddress:       ptr(device.MACAddress),
-		ProviderID:       ptr(device.ProviderId),
+		MTU:              nilZeroPtr(int64(device.MTU)),
+		MACAddress:       nilZeroPtr(device.MACAddress),
+		ProviderID:       nilZeroPtr(device.ProviderId),
 		Type:             network.LinkLayerDeviceType(device.ConfigType),
 		VirtualPortType:  device.VirtualPortType,
 		IsAutoStart:      !device.NoAutoStart,
 		IsEnabled:        !device.Disabled,
 		ParentDeviceName: device.ParentInterfaceName,
-		GatewayAddress:   ptr(device.GatewayAddress.Value),
+		GatewayAddress:   nilZeroPtr(device.GatewayAddress.Value),
 		IsDefaultGateway: device.IsDefaultGateway,
 		VLANTag:          uint64(device.VLANTag),
 		DNSSearchDomains: device.DNSSearchDomains,
@@ -682,16 +679,16 @@ func newNetAddress(interfaceName string, isShadow bool) func(network.ProviderAdd
 			Scope:            providerAddr.Scope,
 			IsSecondary:      providerAddr.IsSecondary,
 			IsShadow:         isShadow,
-			ProviderID:       ptr(providerAddr.ProviderID),
-			ProviderSubnetID: ptr(providerAddr.ProviderSubnetID),
+			ProviderID:       nilZeroPtr(providerAddr.ProviderID),
+			ProviderSubnetID: nilZeroPtr(providerAddr.ProviderSubnetID),
 		}
 	}
 }
 
-func ptr[T comparable](f T) *T {
+func nilZeroPtr[T comparable](v T) *T {
 	var zero T
-	if f == zero {
+	if v == zero {
 		return nil
 	}
-	return &f
+	return new(v)
 }

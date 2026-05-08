@@ -9,7 +9,6 @@ import (
 
 	"github.com/juju/clock"
 
-	coreapplication "github.com/juju/juju/core/application"
 	corecharm "github.com/juju/juju/core/charm"
 	coreconstraints "github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/logger"
@@ -20,23 +19,14 @@ import (
 	"github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	"github.com/juju/juju/domain/constraints"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/domain/ipaddress"
 	domainnetwork "github.com/juju/juju/domain/network"
-	internalcharm "github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/errors"
 )
 
 // MigrationState is the state required for migrating applications.
 type MigrationState interface {
-	// GetApplicationsForExport returns all the applications in the model.
-	GetApplicationsForExport(ctx context.Context) ([]application.ExportApplication, error)
-
-	// GetApplicationUnitsForExport returns all the units for a given
-	// application in the model.
-	// If the application does not exist, an error satisfying
-	// [applicationerrors.ApplicationNotFound] is returned.
-	GetApplicationUnitsForExport(ctx context.Context, appID coreapplication.UUID) ([]application.ExportUnit, error)
-
 	// GetSpaceUUIDByName returns the UUID of the space with the given name.
 	// It returns an error satisfying [networkerrors.SpaceNotFound] if the provided
 	//
@@ -48,7 +38,7 @@ type MigrationState interface {
 	// application already exists. If returns as error satisfying
 	// [applicationerrors.CharmNotFound] if the charm for the application is
 	// not found.
-	InsertMigratingApplication(context.Context, string, application.InsertApplicationArgs) (coreapplication.UUID, error)
+	InsertMigratingApplication(context.Context, string, application.InsertApplicationArgs) error
 }
 
 // MigrationService provides the API for migrating applications.
@@ -167,33 +157,6 @@ func (s *MigrationService) GetCharmByApplicationName(ctx context.Context, name s
 	), locator, nil
 }
 
-// GetApplications returns all the applications in the model.
-func (s *MigrationService) GetApplications(ctx context.Context) ([]application.ExportApplication, error) {
-	ctx, span := trace.Start(ctx, trace.NameFromFunc())
-	defer span.End()
-
-	return s.st.GetApplicationsForExport(ctx)
-}
-
-// GetApplicationUnits returns all the units for the specified application.
-// If the application does not exist, an error satisfying
-// [applicationerrors.ApplicationNotFound] is returned.
-func (s *MigrationService) GetApplicationUnits(ctx context.Context, name string) ([]application.ExportUnit, error) {
-	ctx, span := trace.Start(ctx, trace.NameFromFunc())
-	defer span.End()
-
-	if !application.IsValidApplicationName(name) {
-		return nil, applicationerrors.ApplicationNameNotValid
-	}
-
-	appID, err := s.st.GetApplicationUUIDByName(ctx, name)
-	if err != nil {
-		return nil, errors.Capture(err)
-	}
-
-	return s.st.GetApplicationUnitsForExport(ctx, appID)
-}
-
 // GetApplicationCharmOrigin returns the charm origin for the specified
 // application name. If the application does not exist, an error satisfying
 // [applicationerrors.ApplicationNotFound] is returned.
@@ -306,11 +269,11 @@ func (s *MigrationService) GetApplicationScaleState(ctx context.Context, name st
 // if required, returning an error satisfying
 // [applicationerrors.ApplicationAlreadyExists] if the application already
 // exists.
-func (s *MigrationService) ImportCAASApplication(ctx context.Context, name string, args ImportApplicationArgs) error {
+func (s *MigrationService) ImportCAASApplication(ctx context.Context, name string, args ImportCAASApplicationArgs) error {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
-	appID, charmUUID, err := s.importApplication(ctx, name, args)
+	charmUUID, err := s.importCAASApplication(ctx, name, args)
 	if err != nil {
 		return errors.Errorf("importing application %q: %w", name, err)
 	}
@@ -322,73 +285,105 @@ func (s *MigrationService) ImportCAASApplication(ctx context.Context, name strin
 	if err := s.st.SetApplicationScalingState(ctx, name, args.ScaleState.ScaleTarget, args.ScaleState.Scaling); err != nil {
 		return errors.Errorf("setting scale state for application %q: %w", name, err)
 	}
-	if err := s.st.SetDesiredApplicationScale(ctx, appID, args.ScaleState.Scale); err != nil {
+	if err := s.st.SetDesiredApplicationScale(ctx, args.UUID, args.ScaleState.Scale); err != nil {
 		return errors.Errorf("setting desired scale for application %q: %w", name, err)
 	}
 
-	unitArgs, err := makeUnitArgs(args.Units, charmUUID)
+	unitArgs, err := makeCAASUnitArgs(args.Units, charmUUID)
 	if err != nil {
 		return errors.Errorf("creating unit args: %w", err)
 	}
 
-	return s.st.InsertMigratingCAASUnits(ctx, appID, unitArgs...)
+	return s.st.InsertMigratingCAASUnits(ctx, args.UUID, unitArgs...)
 }
 
 // ImportIAASApplication imports the specified IAAS application and units
 // if required, returning an error satisfying
 // [applicationerrors.ApplicationAlreadyExists] if the application already
 // exists.
-func (s *MigrationService) ImportIAASApplication(ctx context.Context, name string, args ImportApplicationArgs) error {
+func (s *MigrationService) ImportIAASApplication(ctx context.Context, name string, args ImportIAASApplicationArgs) error {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
-	appID, charmUUID, err := s.importApplication(ctx, name, args)
+	charmUUID, err := s.importIAASApplication(ctx, name, args)
 	if err != nil {
 		return errors.Errorf("importing application %q: %w", name, err)
 	}
 
-	unitArgs, err := makeUnitArgs(args.Units, charmUUID)
+	unitArgs, err := makeIAASUnitArgs(args.Units, charmUUID)
 	if err != nil {
 		return errors.Errorf("creating unit args: %w", err)
 	}
 
-	return s.st.InsertMigratingIAASUnits(ctx, appID, unitArgs...)
+	return s.st.InsertMigratingIAASUnits(ctx, args.UUID, unitArgs...)
 }
 
-func (s *MigrationService) importApplication(
+func (s *MigrationService) importIAASApplication(
 	ctx context.Context,
 	name string,
-	args ImportApplicationArgs,
-) (coreapplication.UUID, corecharm.ID, error) {
+	args ImportIAASApplicationArgs,
+) (corecharm.ID, error) {
 	if err := validateCharmAndApplicationParams(name, args.ReferenceName, args.Charm, args.CharmOrigin); err != nil {
-		return "", "", errors.Errorf("invalid application args: %w", err)
+		return "", errors.Errorf("invalid application args: %w", err)
 	}
 
-	appArg, err := makeInsertApplicationArg(args)
+	appArg, err := makeInsertApplicationArg(args.ImportApplicationArgs)
 	if err != nil {
-		return "", "", errors.Errorf("creating application args: %w", err)
+		return "", errors.Errorf("creating application args: %w", err)
 	}
 
-	appArg.Scale = len(args.Units)
-
-	appID, err := s.st.InsertMigratingApplication(ctx, name, appArg)
-	if err != nil {
-		return "", "", errors.Errorf("creating application %q: %w", name, err)
+	if err := s.st.InsertMigratingApplication(ctx, name, appArg); err != nil {
+		return "", errors.Errorf("creating application %q: %w", name, err)
 	}
 
 	charmUUID, err := s.st.GetCharmIDByApplicationName(ctx, name)
 	if err != nil {
-		return "", "", errors.Errorf("getting charm ID for application %q: %w", name, err)
+		return "", errors.Errorf("getting charm ID for application %q: %w", name, err)
 	}
 
-	if err := s.st.MergeExposeSettings(ctx, appID, args.ExposedEndpoints); err != nil {
-		return "", "", errors.Errorf("setting expose settings for application %q: %w", name, err)
+	if err := s.st.MergeExposeSettings(ctx, args.UUID, args.ExposedEndpoints); err != nil {
+		return "", errors.Errorf("setting expose settings for application %q: %w", name, err)
 	}
-	if err := s.st.SetApplicationConstraints(ctx, appID, constraints.DecodeConstraints(args.ApplicationConstraints)); err != nil {
-		return "", "", errors.Errorf("setting application constraints for application %q: %w", name, err)
+	if err := s.st.SetApplicationConstraints(ctx, args.UUID, constraints.DecodeConstraints(args.ApplicationConstraints)); err != nil {
+		return "", errors.Errorf("setting application constraints for application %q: %w", name, err)
 	}
 
-	return appID, charmUUID, nil
+	return charmUUID, nil
+}
+
+func (s *MigrationService) importCAASApplication(
+	ctx context.Context,
+	name string,
+	args ImportCAASApplicationArgs,
+) (corecharm.ID, error) {
+	if err := validateCharmAndApplicationParams(name, args.ReferenceName, args.Charm, args.CharmOrigin); err != nil {
+		return "", errors.Errorf("invalid application args: %w", err)
+	}
+
+	appArg, err := makeInsertApplicationArg(args.ImportApplicationArgs)
+	if err != nil {
+		return "", errors.Errorf("creating application args: %w", err)
+	}
+
+	appArg.Scale = len(args.Units)
+
+	if err := s.st.InsertMigratingApplication(ctx, name, appArg); err != nil {
+		return "", errors.Errorf("creating application %q: %w", name, err)
+	}
+
+	charmUUID, err := s.st.GetCharmIDByApplicationName(ctx, name)
+	if err != nil {
+		return "", errors.Errorf("getting charm ID for application %q: %w", name, err)
+	}
+
+	if err := s.st.MergeExposeSettings(ctx, args.UUID, args.ExposedEndpoints); err != nil {
+		return "", errors.Errorf("setting expose settings for application %q: %w", name, err)
+	}
+	if err := s.st.SetApplicationConstraints(ctx, args.UUID, constraints.DecodeConstraints(args.ApplicationConstraints)); err != nil {
+		return "", errors.Errorf("setting application constraints for application %q: %w", name, err)
+	}
+
+	return charmUUID, nil
 }
 
 func makeInsertApplicationArg(
@@ -429,6 +424,7 @@ func makeInsertApplicationArg(
 	}
 
 	return application.InsertApplicationArgs{
+		ApplicationUUID:  args.UUID.String(),
 		Charm:            ch,
 		Platform:         platformArg,
 		Channel:          channelArg,
@@ -436,7 +432,6 @@ func makeInsertApplicationArg(
 		Resources:        makeResourcesArgs(args.ResolvedResources),
 		Config:           applicationConfig,
 		Settings:         args.ApplicationSettings,
-		PeerRelations:    args.PeerRelations,
 	}, nil
 }
 
@@ -486,17 +481,12 @@ func (s *MigrationService) GetSpaceUUIDByName(ctx context.Context, name string) 
 	return s.st.GetSpaceUUIDByName(ctx, name)
 }
 
-func makeUnitArgs(units []ImportUnitArg, charmUUID corecharm.ID) ([]application.ImportUnitArg, error) {
-	unitArgs := make([]application.ImportUnitArg, len(units))
+func makeIAASUnitArgs(units []ImportIAASUnitArg, charmUUID corecharm.ID) ([]application.ImportIAASUnitArg, error) {
+	unitArgs := make([]application.ImportIAASUnitArg, len(units))
 	for i, u := range units {
-
 		arg := application.ImportUnitArg{
-			UnitName:  u.UnitName,
-			Machine:   u.Machine,
-			Principal: u.Principal,
-		}
-		if u.CloudContainer != nil {
-			arg.CloudContainer = makeCloudContainerArg(u.UnitName, *u.CloudContainer)
+			UnitName:        u.UnitName,
+			WorkloadVersion: u.WorkloadVersion,
 		}
 		if u.PasswordHash != nil {
 			arg.Password = &application.PasswordInfo{
@@ -504,7 +494,39 @@ func makeUnitArgs(units []ImportUnitArg, charmUUID corecharm.ID) ([]application.
 				HashAlgorithm: application.HashAlgorithmSHA256,
 			}
 		}
-		unitArgs[i] = arg
+		unitArgs[i] = application.ImportIAASUnitArg{
+			ImportUnitArg: arg,
+			Principal:     u.Principal,
+			Machine:       u.Machine,
+		}
+	}
+	return unitArgs, nil
+}
+
+func makeCAASUnitArgs(units []ImportCAASUnitArg, charmUUID corecharm.ID) ([]application.ImportCAASUnitArg, error) {
+	unitArgs := make([]application.ImportCAASUnitArg, len(units))
+	for i, u := range units {
+		arg := application.ImportUnitArg{
+			UnitName:        u.UnitName,
+			WorkloadVersion: u.WorkloadVersion,
+		}
+
+		if u.PasswordHash != nil {
+			arg.Password = &application.PasswordInfo{
+				PasswordHash:  *u.PasswordHash,
+				HashAlgorithm: application.HashAlgorithmSHA256,
+			}
+		}
+
+		var cloudContainer *application.CloudContainer
+		if u.CloudContainer != nil {
+			cloudContainer = makeCloudContainerArg(u.UnitName, *u.CloudContainer)
+		}
+
+		unitArgs[i] = application.ImportCAASUnitArg{
+			ImportUnitArg:  arg,
+			CloudContainer: cloudContainer,
+		}
 	}
 	return unitArgs, nil
 }
@@ -539,16 +561,4 @@ func makeCloudContainerArg(unitName coreunit.Name, cloudContainer application.Cl
 		}
 	}
 	return result
-}
-
-// RemoveImportedApplication removes an application that was imported. The
-// application might be in an incomplete state, so it's important to remove
-// as much of the application as possible, even on failure.
-func (s *MigrationService) RemoveImportedApplication(ctx context.Context, name string) error {
-	_, span := trace.Start(ctx, trace.NameFromFunc())
-	defer span.End()
-
-	// TODO (stickupkid): This is a placeholder for now, we need to implement
-	// this method.
-	return nil
 }

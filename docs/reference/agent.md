@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Understand Juju agents: controller, machine, unit, and model agents that manage deployments through jujud and containeragent processes."
+---
+
 (agent)=
 # Agent
 

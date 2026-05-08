@@ -6,7 +6,6 @@ package testing
 import (
 	"context"
 	"database/sql"
-	"time"
 
 	"github.com/juju/errors"
 	"github.com/juju/tc"
@@ -14,7 +13,6 @@ import (
 	"github.com/juju/juju/core/changestream"
 	coredatabase "github.com/juju/juju/core/database"
 	"github.com/juju/juju/domain/schema/testing"
-	jujutesting "github.com/juju/juju/internal/testing"
 )
 
 // ModelSuite is used to provide a sql.DB reference to tests.
@@ -61,19 +59,7 @@ func (s *ModelSuite) GetWatchableDB(ctx context.Context, namespace string) (chan
 // This is useful to ensure that the change stream is not processing any
 // events before running a test.
 func (s *ModelSuite) AssertChangeStreamIdle(c *tc.C) {
-	timeout := time.After(jujutesting.LongWait)
-	for {
-		select {
-		case states := <-s.watchableDB.states:
-			for _, state := range states {
-				if state == stateIdle {
-					return
-				}
-			}
-		case <-timeout:
-			c.Fatalf("timed out waiting for idle state")
-		}
-	}
+	assertChangeStreamIdle(c, s.watchableDB.states)
 }
 
 // PrimeChangeStream the change stream with some initial data. This ensures

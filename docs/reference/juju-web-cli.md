@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju web CLI reference: execute model-level CLI commands from the Juju Dashboard with access control and command output."
+---
+
 (juju-web-cli)=
 # `juju` web CLI
 

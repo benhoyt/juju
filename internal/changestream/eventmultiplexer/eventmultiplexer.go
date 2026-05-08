@@ -10,7 +10,7 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5/catacomb"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/juju/juju/core/changestream"
@@ -49,6 +49,7 @@ type eventFilter struct {
 type reportRequest struct {
 	data map[string]any
 	done chan struct{}
+	ctx  context.Context
 }
 
 // EventMultiplexer defines a way to receive streamed terms for changes that
@@ -59,11 +60,12 @@ type reportRequest struct {
 // ordering. The subscriptions can be associated with different subscription
 // options, which provide filtering when dispatching.
 type EventMultiplexer struct {
-	catacomb catacomb.Catacomb
-	stream   Stream
-	logger   logger.Logger
-	clock    clock.Clock
-	metrics  MetricsCollector
+	catacomb      catacomb.Catacomb
+	stream        Stream
+	logger        logger.Logger
+	clock         clock.Clock
+	metrics       MetricsCollector
+	signalTimeout time.Duration
 
 	subscriptions      map[uint64]*subscription
 	subscriptionsByNS  map[string][]*eventFilter
@@ -79,12 +81,23 @@ type EventMultiplexer struct {
 }
 
 // New creates a new EventMultiplexer that will use the Stream for events.
-func New(stream Stream, clock clock.Clock, metrics MetricsCollector, logger logger.Logger) (*EventMultiplexer, error) {
+// If [signalTimeout] is zero, then the default is used.
+func New(
+	stream Stream,
+	clock clock.Clock,
+	metrics MetricsCollector,
+	logger logger.Logger,
+	signalTimeout time.Duration,
+) (*EventMultiplexer, error) {
+	if signalTimeout == 0 {
+		signalTimeout = DefaultSignalTimeout
+	}
 	queue := &EventMultiplexer{
 		stream:             stream,
 		logger:             logger,
 		clock:              clock,
 		metrics:            metrics,
+		signalTimeout:      signalTimeout,
 		subscriptions:      make(map[uint64]*subscription),
 		subscriptionsByNS:  make(map[string][]*eventFilter),
 		subscriptionsAll:   make(map[uint64]struct{}),
@@ -141,16 +154,19 @@ func (e *EventMultiplexer) Wait() error {
 
 // Report returns the current state of the event queue.
 // This is used by the engine report.
-func (e *EventMultiplexer) Report() map[string]any {
-	ctx, cancel := e.scopedContext()
+func (e *EventMultiplexer) Report(ctx context.Context) map[string]any {
+	// we need to handle context cancellation in the case of the stream
+	// is dying to avoid blocking sub-report that might be running
+	ctx, cancel := context.WithCancel(e.catacomb.Context(ctx))
 	defer cancel()
 
 	r := reportRequest{
 		data: make(map[string]any),
 		done: make(chan struct{}),
+		ctx:  ctx,
 	}
 	select {
-	case <-e.catacomb.Dying():
+	case <-ctx.Done():
 		return nil
 	case <-e.stream.Dying():
 		return nil
@@ -160,11 +176,17 @@ func (e *EventMultiplexer) Report() map[string]any {
 	// channel is blocked.
 	case <-e.clock.After(time.Second):
 		e.logger.Errorf(ctx, "report request timed out")
-		return nil
+		return map[string]any{
+			"error": "timed out waiting for report",
+		}
 	case e.reportsCh <- r:
 	}
 
 	select {
+	// At this point we don't care if the context is done,
+	// report handling should correctly handle context cancellation.
+	// Moreover, not checking context.Done() here allows us to get the partial
+	// report.
 	case <-e.catacomb.Dying():
 		return nil
 	case <-e.stream.Dying():
@@ -252,7 +274,8 @@ func (e *EventMultiplexer) loop() error {
 			term.Done(false, e.catacomb.Dying())
 
 		case request := <-e.subscriptionCh:
-			sub := newSubscription(atomic.AddUint64(&e.subscriptionsCount, 1), request.summary)
+			subID := atomic.AddUint64(&e.subscriptionsCount, 1)
+			sub := newSubscription(subID, request.summary, e.signalTimeout)
 
 			if err := e.catacomb.Add(sub); err != nil {
 				sub.Kill()
@@ -306,7 +329,11 @@ func (e *EventMultiplexer) loop() error {
 
 			// If the stream supports reporting, then include it in the report.
 			if s, ok := e.stream.(reporter); ok {
-				r.data["stream"] = s.Report()
+				if r.ctx.Err() != nil {
+					r.data["stream"] = r.ctx.Err().Error()
+				} else {
+					r.data["stream"] = s.Report(r.ctx)
+				}
 			}
 			close(r.done)
 		}
@@ -314,7 +341,7 @@ func (e *EventMultiplexer) loop() error {
 }
 
 type reporter interface {
-	Report() map[string]interface{}
+	Report(ctx context.Context) map[string]any
 }
 
 func (e *EventMultiplexer) gatherSubscriptions(ctx context.Context, ch changestream.ChangeEvent) []*subscription {
@@ -365,7 +392,6 @@ func (e *EventMultiplexer) dispatchSet(changeSet map[*subscription]ChangeSet) er
 	grp, ctx := errgroup.WithContext(e.catacomb.Context(context.Background()))
 
 	for sub, changes := range changeSet {
-		sub, changes := sub, changes
 
 		grp.Go(func() error {
 			// Pass the context of the catacomb with the deadline to the

@@ -6,13 +6,12 @@ package modelmigration
 import (
 	"testing"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
-	coreunit "github.com/juju/juju/core/unit"
+	applicationerrors "github.com/juju/juju/domain/application/errors"
 	"github.com/juju/juju/domain/unitstate"
-	unitstateerrors "github.com/juju/juju/domain/unitstate/errors"
 )
 
 type importSuite struct {
@@ -51,15 +50,15 @@ func (s *importSuite) TestImport(c *tc.C) {
 	})
 
 	s.service.EXPECT().SetState(gomock.Any(), unitstate.UnitState{
-		Name: coreunit.Name("prometheus/0"),
+		Name: "prometheus/0",
 		CharmState: &map[string]string{
 			"charm": "state",
 		},
-		UniterState: ptr("uniter"),
+		UniterState: new("uniter"),
 		RelationState: &map[int]string{
 			0: "relation",
 		},
-		StorageState: ptr("storage"),
+		StorageState: new("storage"),
 	})
 
 	importOp := importOperation{service: s.service}
@@ -83,9 +82,9 @@ func (s *importSuite) TestImportPartial(c *tc.C) {
 	})
 
 	s.service.EXPECT().SetState(gomock.Any(), unitstate.UnitState{
-		Name:         coreunit.Name("prometheus/0"),
-		UniterState:  ptr("uniter"),
-		StorageState: ptr("storage"),
+		Name:         "prometheus/0",
+		UniterState:  new("uniter"),
+		StorageState: new("storage"),
 	})
 
 	importOp := importOperation{service: s.service}
@@ -109,16 +108,12 @@ func (s *importSuite) TestImportError(c *tc.C) {
 	})
 
 	s.service.EXPECT().SetState(gomock.Any(), unitstate.UnitState{
-		Name:         coreunit.Name("prometheus/0"),
-		UniterState:  ptr("uniter"),
-		StorageState: ptr("storage"),
-	}).Return(unitstateerrors.UnitNotFound)
+		Name:         "prometheus/0",
+		UniterState:  new("uniter"),
+		StorageState: new("storage"),
+	}).Return(applicationerrors.UnitNotFound)
 
 	importOp := importOperation{service: s.service}
 	err := importOp.Execute(c.Context(), model)
-	c.Assert(err, tc.ErrorIs, unitstateerrors.UnitNotFound)
-}
-
-func ptr[T any](v T) *T {
-	return &v
+	c.Assert(err, tc.ErrorIs, applicationerrors.UnitNotFound)
 }

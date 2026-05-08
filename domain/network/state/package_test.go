@@ -19,9 +19,9 @@ import (
 	corenetwork "github.com/juju/juju/core/network"
 	coreunit "github.com/juju/juju/core/unit"
 	unittesting "github.com/juju/juju/core/unit/testing"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/domain/life"
 	schematesting "github.com/juju/juju/domain/schema/testing"
-	"github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/uuid"
@@ -405,4 +405,12 @@ func (s *linkLayerBaseSuite) addK8sService(c *tc.C, nodeUUID, appUUID string) {
 	svcUUID := uuid.MustNewUUID().String()
 	s.query(c, `INSERT INTO k8s_service (uuid, net_node_uuid, application_uuid, provider_id) VALUES (?, ?, ?, ?)`,
 		svcUUID, nodeUUID, appUUID, "provider-id")
+}
+
+func zeroNilPtr[T comparable](v *T) T {
+	var zero T
+	if v == nil {
+		return zero
+	}
+	return *v
 }

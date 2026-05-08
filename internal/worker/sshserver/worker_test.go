@@ -4,12 +4,13 @@
 package sshserver
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 
@@ -216,6 +217,118 @@ func (s *workerSuite) TestSSHServerWrapperWorkerRestartsServerWorker(c *tc.C) {
 	c.Check(workertest.CheckKilled(c, controllerConfigWatcher), tc.ErrorIsNil)
 }
 
+func (s *workerSuite) TestSSHServerWrapperWorkerRestartsServerWorkerOnPortChange(c *tc.C) {
+	ctrl := gomock.NewController(c)
+	defer ctrl.Finish()
+
+	serverWorker := workertest.NewErrorWorker(nil)
+	defer workertest.DirtyKill(c, serverWorker)
+
+	ch := make(chan []string)
+	controllerConfigWatcher := watchertest.NewMockStringsWatcher(ch)
+	defer workertest.DirtyKill(c, controllerConfigWatcher)
+
+	controllerConfigService := NewMockControllerConfigService(ctrl)
+	controllerConfigService.EXPECT().WatchControllerConfig(gomock.Any()).Return(controllerConfigWatcher, nil)
+
+	// First call on startup.
+	controllerConfigService.EXPECT().
+		ControllerConfig(gomock.Any()).
+		Return(
+			controller.Config{
+				controller.SSHServerPort:               22,
+				controller.SSHMaxConcurrentConnections: 10,
+			},
+			nil,
+		).
+		Times(1)
+	// Second call after first watcher event: unchanged.
+	controllerConfigService.EXPECT().
+		ControllerConfig(gomock.Any()).
+		Return(
+			controller.Config{
+				controller.SSHServerPort:               22,
+				controller.SSHMaxConcurrentConnections: 10,
+			},
+			nil,
+		).
+		Times(1)
+	// Third call after second watcher event: port changed.
+	controllerConfigService.EXPECT().
+		ControllerConfig(gomock.Any()).
+		Return(
+			controller.Config{
+				controller.SSHServerPort:               23,
+				controller.SSHMaxConcurrentConnections: 10,
+			},
+			nil,
+		).
+		Times(1)
+
+	cfg := ServerWrapperWorkerConfig{
+		ControllerConfigService: controllerConfigService,
+		Logger:                  loggertesting.WrapCheckLog(c),
+		NewServerWorker: func(swc ServerWorkerConfig) (worker.Worker, error) {
+			c.Check(swc.Port, tc.Equals, 22)
+			return serverWorker, nil
+		},
+		SessionHandler: &stubSessionHandler{},
+	}
+	w, err := NewServerWrapperWorker(cfg)
+	c.Assert(err, tc.ErrorIsNil)
+	defer workertest.DirtyKill(c, w)
+
+	workertest.CheckAlive(c, w)
+	workertest.CheckAlive(c, serverWorker)
+	workertest.CheckAlive(c, controllerConfigWatcher)
+
+	// First change: no restart expected.
+	ch <- nil
+	workertest.CheckAlive(c, w)
+
+	// Second change: port changed, restart expected.
+	ch <- nil
+	err = workertest.CheckKilled(c, w)
+	c.Check(err, tc.ErrorMatches, "changes detected, stopping SSH server worker")
+}
+
+func (s *workerSuite) TestSSHServerWrapperWorkerConfigWatcherClosed(c *tc.C) {
+	ctrl := gomock.NewController(c)
+	defer ctrl.Finish()
+
+	serverWorker := workertest.NewErrorWorker(nil)
+	defer workertest.DirtyKill(c, serverWorker)
+
+	ch := make(chan []string)
+	controllerConfigWatcher := watchertest.NewMockStringsWatcher(ch)
+	defer workertest.DirtyKill(c, controllerConfigWatcher)
+
+	controllerConfigService := NewMockControllerConfigService(ctrl)
+	controllerConfigService.EXPECT().WatchControllerConfig(gomock.Any()).Return(controllerConfigWatcher, nil)
+	controllerConfigService.EXPECT().ControllerConfig(gomock.Any()).Return(controller.Config{
+		controller.SSHServerPort:               22,
+		controller.SSHMaxConcurrentConnections: 10,
+	}, nil).Times(1)
+
+	cfg := ServerWrapperWorkerConfig{
+		ControllerConfigService: controllerConfigService,
+		Logger:                  loggertesting.WrapCheckLog(c),
+		NewServerWorker: func(swc ServerWorkerConfig) (worker.Worker, error) {
+			return serverWorker, nil
+		},
+		SessionHandler: &stubSessionHandler{},
+	}
+	w, err := NewServerWrapperWorker(cfg)
+	c.Assert(err, tc.ErrorIsNil)
+	defer workertest.DirtyKill(c, w)
+
+	workertest.CheckAlive(c, w)
+	close(ch)
+
+	err = workertest.CheckKilled(c, w)
+	c.Check(err, tc.ErrorMatches, "controller config watcher closed")
+}
+
 func (s *workerSuite) TestWrapperWorkerReport(c *tc.C) {
 	ctrl := gomock.NewController(c)
 	defer ctrl.Finish()
@@ -263,7 +376,7 @@ func (s *workerSuite) TestWrapperWorkerReport(c *tc.C) {
 	reporter, ok := w.(worker.Reporter)
 	c.Assert(ok, tc.IsTrue)
 
-	c.Assert(reporter.Report(), tc.DeepEquals, map[string]interface{}{
+	c.Assert(reporter.Report(c.Context()), tc.DeepEquals, map[string]any{
 		"workers": map[string]any{
 			"ssh-server": map[string]any{
 				"test": "test",
@@ -277,8 +390,8 @@ type reportWorker struct {
 	worker.Worker
 }
 
-func (r *reportWorker) Report() map[string]interface{} {
-	return map[string]interface{}{
+func (r *reportWorker) Report(ctx context.Context) map[string]any {
+	return map[string]any{
 		"test": "test",
 	}
 }

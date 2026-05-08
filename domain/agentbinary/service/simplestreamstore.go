@@ -20,9 +20,14 @@ import (
 	coretools "github.com/juju/juju/internal/tools"
 )
 
-var (
+const (
 	headerAccept      = "Accept"
 	headerContentType = "Content-Type"
+)
+
+const (
+	gzipXContentType = "application/x-gzip"
+	gzipContentType  = "application/gzip"
 )
 
 // AgentBinaryFilter is a function that filters agent binaries based on the
@@ -87,32 +92,6 @@ func getPreferredFallbackStreams(stream agentbinary.Stream) []string {
 	return []string{}
 }
 
-// SearchSimpleStreams prepares and conducts a simplestreams search for the
-// required agent binary version in the given stream.
-func (s *SimpleStreamsAgentBinaryStore) SearchSimpleStreams(
-	ctx context.Context,
-	stream agentbinary.Stream,
-	version coreagentbinary.Version,
-) (coretools.List, error) {
-	provider, err := s.providerForAgentBinaryFinder(ctx)
-	if errors.Is(err, coreerrors.NotSupported) {
-		return nil, errors.Errorf("getting provider for agent binary finder %w", err)
-	} else if err != nil {
-		return nil, errors.Capture(err)
-	}
-
-	major := version.Number.Major
-	minor := version.Number.Minor
-	filter := coretools.Filter{
-		Arch:   version.Arch,
-		Number: version.Number,
-	}
-
-	streams := getPreferredFallbackStreams(stream)
-	ssFetcher := simplestreams.NewSimpleStreams(simplestreams.DefaultDataSourceFactory())
-	return s.agentBinaryFilter(ctx, ssFetcher, provider, major, minor, streams, filter)
-}
-
 // GetAgentBinaryWithSHA256 retrieves the agent binary corresponding to the given version
 // and stream from simple stream.
 // The caller is responsible for closing the returned reader.
@@ -124,7 +103,7 @@ func (s *SimpleStreamsAgentBinaryStore) GetAgentBinaryWithSHA256(
 	ver coreagentbinary.Version,
 	stream agentbinary.Stream,
 ) (io.ReadCloser, int64, string, error) {
-	foundToolsList, err := s.SearchSimpleStreams(ctx, stream, ver)
+	foundToolsList, err := s.searchSimpleStreams(ctx, stream, ver)
 	if err != nil {
 		return nil, 0, "", errors.Errorf(
 			"searching simple streams for %q in stream %q: %w",
@@ -150,8 +129,8 @@ func (s *SimpleStreamsAgentBinaryStore) GetAgentBinaryWithSHA256(
 	}
 
 	// We only accept gzip content types back.
-	const gzipContentType = "application/gzip"
-	req.Header.Set(headerAccept, gzipContentType)
+
+	req.Header.Set(headerAccept, gzipXContentType+","+gzipContentType)
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
@@ -175,7 +154,7 @@ func (s *SimpleStreamsAgentBinaryStore) GetAgentBinaryWithSHA256(
 		closeOnErr()
 		return nil, 0, "", errors.Errorf(
 			"simplestreams url %q does not support expected content type %q",
-			toolURL, gzipContentType,
+			toolURL, gzipXContentType,
 		)
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -186,7 +165,8 @@ func (s *SimpleStreamsAgentBinaryStore) GetAgentBinaryWithSHA256(
 		)
 	}
 
-	if resp.Header.Get(headerContentType) != gzipContentType {
+	if resp.Header.Get(headerContentType) != gzipXContentType &&
+		resp.Header.Get(headerContentType) != gzipContentType {
 		return nil, 0, "", errors.Errorf(
 			"simplestreams url %q returned unexpected content type %q",
 			toolURL, resp.Header.Get(headerContentType),
@@ -194,4 +174,30 @@ func (s *SimpleStreamsAgentBinaryStore) GetAgentBinaryWithSHA256(
 	}
 
 	return resp.Body, tool.Size, tool.SHA256, nil
+}
+
+// searchSimpleStreams prepares and conducts a simplestreams search for the
+// required agent binary version in the given stream.
+func (s *SimpleStreamsAgentBinaryStore) searchSimpleStreams(
+	ctx context.Context,
+	stream agentbinary.Stream,
+	version coreagentbinary.Version,
+) (coretools.List, error) {
+	provider, err := s.providerForAgentBinaryFinder(ctx)
+	if errors.Is(err, coreerrors.NotSupported) {
+		return nil, errors.Errorf("getting provider for agent binary finder %w", err)
+	} else if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	major := version.Number.Major
+	minor := version.Number.Minor
+	filter := coretools.Filter{
+		Arch:   version.Arch,
+		Number: version.Number,
+	}
+
+	streams := getPreferredFallbackStreams(stream)
+	ssFetcher := simplestreams.NewSimpleStreams(simplestreams.DefaultDataSourceFactory())
+	return s.agentBinaryFilter(ctx, ssFetcher, provider, major, minor, streams, filter)
 }

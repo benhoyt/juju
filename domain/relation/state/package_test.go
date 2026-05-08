@@ -23,14 +23,16 @@ import (
 	corestatus "github.com/juju/juju/core/status"
 	coreunit "github.com/juju/juju/core/unit"
 	coreunittesting "github.com/juju/juju/core/unit/testing"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/domain/life"
 	domainrelation "github.com/juju/juju/domain/relation"
 	schematesting "github.com/juju/juju/domain/schema/testing"
-	"github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/uuid"
 )
+
+//go:generate go run go.uber.org/mock/mockgen -typed -package state -destination package_mock_test.go github.com/juju/juju/domain/relation/state InsertIAASUnitState
 
 // baseRelationSuite is a struct embedding ModelSuite for testing relation
 // between application. It provides a set of builder function to create all
@@ -45,7 +47,12 @@ type baseRelationSuite struct {
 
 func (s *baseRelationSuite) SetUpTest(c *tc.C) {
 	s.ModelSuite.SetUpTest(c)
-	s.state = NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	s.state = NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c), nil)
+}
+
+func (s *baseRelationSuite) TearDownTest(c *tc.C) {
+	s.relationCount = 0
+	s.ModelSuite.TearDownTest(c)
 }
 
 // Txn executes a transactional function within a database context,
@@ -59,7 +66,6 @@ func (s *baseRelationSuite) Txn(c *tc.C, fn func(ctx context.Context, tx *sqlair
 // query executes a given SQL query with optional arguments within a
 // transactional context using the test database.
 func (s *baseRelationSuite) query(c *tc.C, query string, args ...any) {
-
 	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, query, args...)
 		if err != nil {
@@ -86,7 +92,8 @@ VALUES (?, ?, ?, ?, ?)
 // with the specified UUIDs. Returns the endpoint uuid.
 func (s *baseRelationSuite) addApplicationEndpoint(c *tc.C, applicationUUID coreapplication.UUID,
 	charmRelationUUID string) string {
-	// TODO(gfouillet): introduce proper UUID for this one, from corerelation & corerelationtesting
+	// TODO(gfouillet): introduce proper UUID for this one, from corerelation &
+	// corerelationtesting
 	applicationEndpointUUID := uuid.MustNewUUID().String()
 	s.query(c, `
 INSERT INTO application_endpoint (uuid, application_uuid, charm_relation_uuid,space_uuid)
@@ -363,8 +370,8 @@ WHERE value = ?
 	return unitUUID
 }
 
-func (s *baseRelationSuite) fetchRelationUUIDByRelationID(c *tc.C, id uint64) corerelation.UUID {
-	var relationUUID corerelation.UUID
+func (s *baseRelationSuite) fetchRelationUUIDByRelationID(c *tc.C, id uint64) string {
+	var relationUUID string
 	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		err := tx.QueryRow(`
 SELECT r.uuid

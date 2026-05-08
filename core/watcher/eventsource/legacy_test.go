@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 
 	"github.com/juju/juju/core/watcher/watchertest"
@@ -46,44 +46,6 @@ func (*multiWatcherSuite) TestNotifyMultiWatcher(c *tc.C) {
 
 	ch0 <- struct{}{}
 	ch1 <- struct{}{}
-	wc.AssertAtLeastOneChange()
-
-	workertest.CleanKill(c, w)
-}
-
-func (*multiWatcherSuite) TestStringsMultiWatcher(c *tc.C) {
-	ch0 := make(chan []string, 1)
-	w0 := watchertest.NewMockStringsWatcher(ch0)
-	defer workertest.DirtyKill(c, w0)
-
-	ch1 := make(chan []string, 1)
-	w1 := watchertest.NewMockStringsWatcher(ch1)
-	defer workertest.DirtyKill(c, w1)
-
-	// Initial events are consumed by the multiwatcher.
-	ch0 <- []string{}
-	ch1 <- []string{}
-
-	w, err := NewMultiStringsWatcher(c.Context(), w0, w1)
-	c.Assert(err, tc.ErrorIsNil)
-
-	wc := watchertest.NewStringsWatcherC(c, w)
-	defer workertest.DirtyKill(c, w)
-
-	wc.AssertChange()
-
-	ch0 <- []string{"a", "b"}
-	ch1 <- []string{"c", "d"}
-
-	wc.AssertChange("a", "b", "c", "d")
-
-	ch0 <- []string{"e"}
-	wc.AssertChange("e")
-	ch1 <- []string{"f"}
-	wc.AssertChange("f")
-
-	ch0 <- []string{"g"}
-	ch1 <- []string{"h"}
 	wc.AssertAtLeastOneChange()
 
 	workertest.CleanKill(c, w)

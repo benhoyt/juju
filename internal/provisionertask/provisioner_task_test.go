@@ -7,8 +7,10 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,8 +21,8 @@ import (
 	"github.com/juju/names/v6"
 	"github.com/juju/retry"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/workertest"
 	"github.com/kr/pretty"
 	"go.uber.org/mock/gomock"
 
@@ -35,6 +37,7 @@ import (
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/core/status"
+	coretesting "github.com/juju/juju/core/testing"
 	jujuversion "github.com/juju/juju/core/version"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/core/watcher/watchertest"
@@ -48,7 +51,7 @@ import (
 	"github.com/juju/juju/internal/provisionertask"
 	"github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/internal/testhelpers"
-	coretesting "github.com/juju/juju/internal/testing"
+	internaltesting "github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/internal/tools"
 	"github.com/juju/juju/rpc/params"
 )
@@ -59,9 +62,13 @@ const (
 
 func machineInstanceInfoSetter(machineProvisionerAPI apiprovisioner.MachineProvisioner) func(
 	ctx context.Context,
-	id instance.Id, displayName string, nonce string, characteristics *instance.HardwareCharacteristics,
-	networkConfig []params.NetworkConfig, volumes []params.Volume,
-	volumeAttachments map[string]params.VolumeAttachmentInfo, charmProfiles []string,
+	id instance.Id,
+	displayName string,
+	nonce string,
+	characteristics *instance.HardwareCharacteristics,
+	networkConfig []params.NetworkConfig,
+	volumes []params.Volume,
+	volumeAttachments map[string]params.VolumeAttachmentInfo,
 ) error {
 	return machineProvisionerAPI.SetInstanceInfo
 }
@@ -172,7 +179,7 @@ func (s *ProvisionerTaskSuite) TestStopInstancesIgnoresMachinesWithKeep(c *tc.C)
 	close(s.instanceBroker.callsChan)
 	s.instanceBroker.CheckCalls(c, []testhelpers.StubCall{
 		{FuncName: "AllRunningInstances"},
-		{FuncName: "StopInstances", Args: []interface{}{[]instance.Id{"zero"}}},
+		{FuncName: "StopInstances", Args: []any{[]instance.Id{"zero"}}},
 	})
 	c.Assert(m0.markForRemoval, tc.IsTrue)
 	c.Assert(m1.markForRemoval, tc.IsTrue)
@@ -212,7 +219,8 @@ func (s *ProvisionerTaskSuite) TestProvisionerRetries(c *tc.C) {
 }
 
 func (s *ProvisionerTaskSuite) waitForProvisioned(c *tc.C, m *testMachine) {
-	for attempt := coretesting.LongAttempt.Start(); attempt.Next(); {
+	c.Log("waiting for machine to be provisioned")
+	for {
 		_, err := m.InstanceId(c.Context())
 		if err == nil {
 			if m.GetPassword() == "" {
@@ -220,36 +228,37 @@ func (s *ProvisionerTaskSuite) waitForProvisioned(c *tc.C, m *testMachine) {
 			}
 			return
 		}
+		time.Sleep(coretesting.ShortWait)
 	}
-	c.Fatalf("machine %q not started", m.id)
 }
 
 func (s *ProvisionerTaskSuite) waitForRemovalMark(c *tc.C, m *testMachine) {
-	for attempt := coretesting.LongAttempt.Start(); attempt.Next(); {
+	c.Log("waiting for removal mark")
+	for {
 		if m.GetMarkForRemoval() {
 			return
 		}
+		time.Sleep(coretesting.ShortWait)
 	}
-	c.Fatalf("machine %q not marked for removal", m.id)
 }
 
 func (s *ProvisionerTaskSuite) waitForInstanceStatus(c *tc.C, m *testMachine, status status.Status) string {
-	for attempt := coretesting.LongAttempt.Start(); attempt.Next(); {
+	c.Logf("waiting for instance status %v", status)
+	for {
 		instStatus, info, err := m.InstanceStatus(c.Context())
 		c.Assert(err, tc.ErrorIsNil)
 		if instStatus == status {
 			return info
 		}
+		time.Sleep(coretesting.ShortWait)
 	}
-	c.Fatalf("machine %q did not have expected status, instead: %v", m.id, m.instStatus)
-	return ""
 }
 
 var (
-	validCloudInitUserData = map[string]interface{}{
-		"packages":        []interface{}{"python-keystoneclient", "python-glanceclient"},
-		"preruncmd":       []interface{}{"mkdir /tmp/preruncmd", "mkdir /tmp/preruncmd2"},
-		"postruncmd":      []interface{}{"mkdir /tmp/postruncmd", "mkdir /tmp/postruncmd2"},
+	validCloudInitUserData = map[string]any{
+		"packages":        []any{"python-keystoneclient", "python-glanceclient"},
+		"preruncmd":       []any{"mkdir /tmp/preruncmd", "mkdir /tmp/preruncmd2"},
+		"postruncmd":      []any{"mkdir /tmp/postruncmd", "mkdir /tmp/postruncmd2"},
 		"package_upgrade": false,
 	}
 	possibleImageMetadata = []*imagemetadata.ImageMetadata{{
@@ -288,9 +297,8 @@ func (s *ProvisionerTaskSuite) TestSetUpToStartMachine(c *tc.C) {
 				Version: "6.6.6",
 			}},
 			EndpointBindings:            map[string]string{"endpoint": "space"},
-			ControllerConfig:            coretesting.FakeControllerConfig(),
+			ControllerConfig:            internaltesting.FakeControllerConfig(),
 			CloudInitUserData:           validCloudInitUserData,
-			CharmLXDProfiles:            []string{"p1", "p2"},
 			ProvisioningNetworkTopology: params.ProvisioningNetworkTopology{},
 		},
 	}
@@ -314,7 +322,6 @@ func (s *ProvisionerTaskSuite) TestSetUpToStartMachine(c *tc.C) {
 	want.InstanceConfig.CloudInitUserData = validCloudInitUserData
 	want.ImageMetadata = possibleImageMetadata
 	want.EndpointBindings = map[string]network.Id{"endpoint": "space"}
-	want.CharmLXDProfiles = []string{"p1", "p2"}
 	c.Assert(startInstanceParams, tc.DeepEquals, *want)
 }
 
@@ -585,6 +592,7 @@ func (s *ProvisionerTaskSuite) TestZoneConstraintsNoDistributionGroupRetry(c *tc
 	case <-time.After(coretesting.LongWait):
 		c.Fatalf("timed out waiting for StartInstance to be called")
 	}
+	s.waitForInstanceStatus(c, m0, status.ProvisioningError)
 	s.sendMachineErrorRetryChange(c)
 	s.waitForProvisioned(c, m0)
 	workertest.CleanKill(c, task)
@@ -672,9 +680,10 @@ func (s *ProvisionerTaskSuite) TestZoneConstraintsWithDistributionGroupRetry(c *
 	s.sendMachineErrorRetryChange(c)
 	select {
 	case <-failedStartInstanceCh:
-	case <-time.After(coretesting.LongWait):
+	case <-c.Context().Done():
 		c.Fatalf("timed out waiting for StartInstance to be called")
 	}
+	s.waitForInstanceStatus(c, m0, status.ProvisioningError)
 	s.sendMachineErrorRetryChange(c)
 	s.waitForProvisioned(c, m0)
 	workertest.CleanKill(c, task)
@@ -724,9 +733,10 @@ func (s *ProvisionerTaskSuite) TestZoneRestrictiveConstraintsWithDistributionGro
 	s.sendMachineErrorRetryChange(c)
 	select {
 	case <-failedStartInstanceCh:
-	case <-time.After(coretesting.LongWait):
+	case <-c.Context().Done():
 		c.Fatalf("timed out waiting for StartInstance to be called")
 	}
+	s.waitForInstanceStatus(c, m0, status.ProvisioningError)
 	s.sendMachineErrorRetryChange(c)
 	s.waitForProvisioned(c, m0)
 	workertest.CleanKill(c, task)
@@ -987,7 +997,7 @@ func (s *ProvisionerTaskSuite) TestDedupStartInstance(c *tc.C) {
 	// Wait until StartInstance is in progress.
 	select {
 	case <-startedCh:
-	case <-time.After(coretesting.LongWait):
+	case <-c.Context().Done():
 		c.Fatalf("timed out waiting for StartInstance to begin")
 	}
 
@@ -1006,7 +1016,7 @@ func (s *ProvisionerTaskSuite) TestDedupStartInstance(c *tc.C) {
 	// Wait for StopInstances to be called.
 	select {
 	case <-doneCh:
-	case <-time.After(3 * coretesting.LongWait):
+	case <-c.Context().Done():
 		c.Fatalf("timed out waiting for StopInstances to complete")
 	}
 
@@ -1228,11 +1238,11 @@ func (s *ProvisionerTaskSuite) TestProvisioningMachinesWithRequestedRootDisk(c *
 	s.machinesAPI.EXPECT().ProvisioningInfo(gomock.Any(), []names.MachineTag{names.NewMachineTag("0")}).Return(
 		params.ProvisioningInfoResults{Results: []params.ProvisioningInfoResult{{
 			Result: &params.ProvisioningInfo{
-				ControllerConfig: coretesting.FakeControllerConfig(),
+				ControllerConfig: internaltesting.FakeControllerConfig(),
 				Base:             params.Base{Name: "ubuntu", Channel: "22.04"},
 				RootDisk: &params.VolumeParams{
 					Provider:   "static",
-					Attributes: map[string]interface{}{"persistent": true},
+					Attributes: map[string]any{"persistent": true},
 				},
 			},
 		}}}, nil)
@@ -1245,7 +1255,7 @@ func (s *ProvisionerTaskSuite) TestProvisioningMachinesWithRequestedRootDisk(c *
 	startArg := machineStartInstanceArg("0")
 	startArg.RootDisk = &storage.VolumeParams{
 		Provider:   "static",
-		Attributes: map[string]interface{}{"persistent": true},
+		Attributes: map[string]any{"persistent": true},
 	}
 	exp.StartInstance(gomock.Any(), newDefaultStartInstanceParamsMatcher(c, startArg)).Return(&environs.StartInstanceResult{
 		Instance: &testInstance{id: "instance-0"},
@@ -1268,7 +1278,7 @@ func (s *ProvisionerTaskSuite) TestProvisioningMachinesWithRequestedVolumes(c *t
 	s.machinesAPI.EXPECT().ProvisioningInfo(gomock.Any(), []names.MachineTag{names.NewMachineTag("0")}).Return(
 		params.ProvisioningInfoResults{Results: []params.ProvisioningInfoResult{{
 			Result: &params.ProvisioningInfo{
-				ControllerConfig: coretesting.FakeControllerConfig(),
+				ControllerConfig: internaltesting.FakeControllerConfig(),
 				Base:             params.Base{Name: "ubuntu", Channel: "22.04"},
 				Volumes: []params.VolumeParams{{
 					VolumeTag: "volume-0",
@@ -1282,7 +1292,7 @@ func (s *ProvisionerTaskSuite) TestProvisioningMachinesWithRequestedVolumes(c *t
 					VolumeTag:  "volume-1",
 					SizeMiB:    2048,
 					Provider:   "persistent-pool",
-					Attributes: map[string]interface{}{"persistent": true},
+					Attributes: map[string]any{"persistent": true},
 					Attachment: &params.VolumeAttachmentParams{
 						MachineTag: "machine-0",
 					},
@@ -1319,7 +1329,7 @@ func (s *ProvisionerTaskSuite) TestProvisioningMachinesWithRequestedVolumes(c *t
 		Tag:        names.NewVolumeTag("1"),
 		Size:       2048,
 		Provider:   "persistent-pool",
-		Attributes: map[string]interface{}{"persistent": true},
+		Attributes: map[string]any{"persistent": true},
 		Attachment: &storage.VolumeAttachmentParams{
 			AttachmentParams: storage.AttachmentParams{
 				Machine: mTag,
@@ -1379,7 +1389,7 @@ func (s *ProvisionerTaskSuite) TestProvisioningDoesNotProvisionTheSameMachineAft
 
 	select {
 	case <-done:
-	case <-time.After(coretesting.LongWait):
+	case <-c.Context().Done():
 		c.Fatalf("timeout waiting for provisioner")
 	}
 }
@@ -1464,6 +1474,56 @@ func (s *ProvisionerTaskSuite) TestMachineAndDeadNotProvisionedMachineAreRemoved
 	s.waitForRemovalMark(c, m1)
 }
 
+// TestDeadMachineWithNotFoundInstanceIDIsIgnored ensures that a dead machine
+// with an instance ID lookup that returns NotFound is ignored.
+func (s *ProvisionerTaskSuite) TestDeadMachineWithNotFoundInstanceIDIsIgnored(c *tc.C) {
+	ctrl := s.setUpMocks(c)
+	defer ctrl.Finish()
+
+	m0 := &testMachine{
+		c:    c,
+		id:   "0",
+		life: life.Dead,
+		instanceIdErr: &params.Error{
+			Code: params.CodeNotFound,
+		},
+	}
+
+	broker := environmocks.NewMockEnviron(ctrl)
+	exp := broker.EXPECT()
+	exp.AllRunningInstances(gomock.Any()).Return(nil, nil).MinTimes(1)
+
+	s.machinesAPI.EXPECT().Machines(
+		gomock.Any(),
+		names.NewMachineTag("0"),
+	).Return([]apiprovisioner.MachineResult{{
+		Machine: m0,
+	}}, nil).MinTimes(1)
+
+	var queuedStopInstances atomic.Int32
+	callbackCh := make(chan struct{})
+	task := s.newProvisionerTaskWithBrokerAndEventCb(c, broker, nil, numProvisionWorkersForTesting, func(evt string) {
+		switch evt {
+		case "processed-machines":
+			close(callbackCh)
+		case "queued-stop-instances":
+			queuedStopInstances.Add(1)
+		}
+	})
+	defer workertest.CleanKill(c, task)
+
+	s.sendModelMachinesChange(c, "0")
+
+	select {
+	case <-callbackCh:
+	case <-c.Context().Done():
+		c.Fatalf("timed out waiting for processed-machines event")
+	}
+
+	c.Check(queuedStopInstances.Load(), tc.Equals, int32(0))
+	c.Check(m0.GetMarkForRemoval(), tc.IsFalse)
+}
+
 // setUpZonedEnviron creates a mock broker with instances based on those set
 // on the test suite, and 3 availability zones.
 func (s *ProvisionerTaskSuite) setUpZonedEnviron(ctrl *gomock.Controller, machines ...*testMachine) *providermocks.MockZonedEnviron {
@@ -1482,7 +1542,7 @@ func (s *ProvisionerTaskSuite) setUpZonedEnviron(ctrl *gomock.Controller, machin
 
 	// Environ has 3 availability zones: az1, az2, az3.
 	zones := make(network.AvailabilityZones, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		az := providermocks.NewMockAvailabilityZone(ctrl)
 		az.EXPECT().Name().Return(fmt.Sprintf("az%d", i+1)).MinTimes(1)
 		az.EXPECT().Available().Return(true).MinTimes(1)
@@ -1503,7 +1563,7 @@ func (s *ProvisionerTaskSuite) setUpZonedEnviron(ctrl *gomock.Controller, machin
 func (s *ProvisionerTaskSuite) waitForWorkerSetup(c *tc.C) {
 	select {
 	case <-s.setupDone:
-	case <-time.After(coretesting.LongWait):
+	case <-c.Context().Done():
 		c.Fatalf("worker not set up")
 	}
 }
@@ -1514,7 +1574,7 @@ func (s *ProvisionerTaskSuite) waitForTask(c *tc.C, expectedCalls []string) {
 		select {
 		case call := <-s.instanceBroker.callsChan:
 			calls = append(calls, call)
-		case <-time.After(coretesting.LongWait):
+		case <-c.Context().Done():
 			c.Fatalf("stopping worker chan didn't stop")
 		}
 		if reflect.DeepEqual(expectedCalls, calls) {
@@ -1527,7 +1587,7 @@ func (s *ProvisionerTaskSuite) waitForTask(c *tc.C, expectedCalls []string) {
 func (s *ProvisionerTaskSuite) sendModelMachinesChange(c *tc.C, ids ...string) {
 	select {
 	case s.modelMachinesChanges <- ids:
-	case <-time.After(coretesting.LongWait):
+	case <-c.Context().Done():
 		c.Fatal("timed out sending model machines change")
 	}
 }
@@ -1535,7 +1595,7 @@ func (s *ProvisionerTaskSuite) sendModelMachinesChange(c *tc.C, ids ...string) {
 func (s *ProvisionerTaskSuite) sendMachineErrorRetryChange(c *tc.C) {
 	select {
 	case s.machineErrorRetryChanges <- struct{}{}:
-	case <-time.After(coretesting.LongWait):
+	case <-c.Context().Done():
 		c.Fatal("timed out sending machine error retry change")
 	}
 }
@@ -1565,7 +1625,7 @@ func (s *ProvisionerTaskSuite) newProvisionerTaskWithRetry(
 	numProvisionWorkers int,
 ) provisionertask.ProvisionerTask {
 	w, err := provisionertask.NewProvisionerTask(provisionertask.TaskConfig{
-		ControllerUUID:               coretesting.ControllerTag.Id(),
+		ControllerUUID:               internaltesting.ControllerTag.Id(),
 		HostTag:                      names.NewMachineTag("0"),
 		Logger:                       loggertesting.WrapCheckLog(c),
 		ControllerAPI:                s.controllerAPI,
@@ -1601,7 +1661,7 @@ func (s *ProvisionerTaskSuite) newProvisionerTaskWithBrokerAndEventCb(
 	evtCb func(string),
 ) provisionertask.ProvisionerTask {
 	task, err := provisionertask.NewProvisionerTask(provisionertask.TaskConfig{
-		ControllerUUID:          coretesting.ControllerTag.Id(),
+		ControllerUUID:          internaltesting.ControllerTag.Id(),
 		HostTag:                 names.NewMachineTag("0"),
 		Logger:                  loggertesting.WrapCheckLog(c),
 		ControllerAPI:           s.controllerAPI,
@@ -1634,8 +1694,8 @@ func (s *ProvisionerTaskSuite) setUpMocks(c *tc.C) *gomock.Controller {
 
 func (s *ProvisionerTaskSuite) expectAuth() {
 	s.controllerAPI.EXPECT().APIAddresses(gomock.Any()).Return([]string{"10.0.0.1"}, nil).AnyTimes()
-	s.controllerAPI.EXPECT().ModelUUID(gomock.Any()).Return(coretesting.ModelTag.Id(), nil).AnyTimes()
-	s.controllerAPI.EXPECT().CACert(gomock.Any()).Return(coretesting.CACert, nil).AnyTimes()
+	s.controllerAPI.EXPECT().ModelUUID(gomock.Any()).Return(internaltesting.ModelTag.Id(), nil).AnyTimes()
+	s.controllerAPI.EXPECT().CACert(gomock.Any()).Return(internaltesting.CACert, nil).AnyTimes()
 }
 
 func (s *ProvisionerTaskSuite) expectMachines(machines ...*testMachine) {
@@ -1660,7 +1720,7 @@ func (s *ProvisionerTaskSuite) expectProvisioningInfo(machines ...*testMachine) 
 	piResults := transform.Slice(machines, func(m *testMachine) params.ProvisioningInfoResult {
 		return params.ProvisioningInfoResult{
 			Result: &params.ProvisioningInfo{
-				ControllerConfig:            coretesting.FakeControllerConfig(),
+				ControllerConfig:            internaltesting.FakeControllerConfig(),
 				Base:                        params.Base{Name: base.OS, Channel: base.Channel.String()},
 				Constraints:                 constraints.MustParse(m.constraints),
 				ProvisioningNetworkTopology: m.topology,
@@ -1684,7 +1744,7 @@ type machineClassificationTest struct {
 	description    string
 	life           life.Value
 	status         status.Status
-	idErr          string
+	instanceIdErr  string
 	ensureDeadErr  string
 	expectErrCode  string
 	expectErrFmt   string
@@ -1717,7 +1777,7 @@ func (s *MachineClassifySuite) TestMachineClassification(c *tc.C) {
 			instStatus:    t.status,
 			machineStatus: t.status,
 			id:            id,
-			idErr:         s2e(t.idErr),
+			instanceIdErr: s2e(t.instanceIdErr),
 			ensureDeadErr: s2e(t.ensureDeadErr),
 			statusErr:     s2e(t.statusErr),
 		}
@@ -1790,13 +1850,12 @@ type testMachine struct {
 	machineStatus  status.Status
 	instStatus     status.Status
 	instStatusMsg  string
-	modStatusMsg   string
 	password       string
 	topology       params.ProvisioningNetworkTopology
 
 	containersCh chan []string
 
-	idErr         error
+	instanceIdErr error
 	ensureDeadErr error
 	statusErr     error
 
@@ -1834,6 +1893,9 @@ func (m *testMachine) WatchContainers(_ context.Context, cType instance.Containe
 func (m *testMachine) InstanceId(context.Context) (instance.Id, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.instanceIdErr != nil {
+		return "", m.instanceIdErr
+	}
 	if m.instance == nil {
 		return "", params.Error{Code: "not provisioned"}
 	}
@@ -1870,7 +1932,7 @@ func (m *testMachine) MachineTag() names.MachineTag {
 	return names.NewMachineTag(m.id)
 }
 
-func (m *testMachine) SetInstanceStatus(ctx context.Context, status status.Status, message string, _ map[string]interface{}) error {
+func (m *testMachine) SetInstanceStatus(ctx context.Context, status status.Status, message string, _ map[string]any) error {
 	m.mu.Lock()
 	m.instStatus = status
 	m.instStatusMsg = message
@@ -1887,20 +1949,7 @@ func (m *testMachine) InstanceStatus(context.Context) (status.Status, string, er
 	return m.instStatus, m.instStatusMsg, nil
 }
 
-func (m *testMachine) SetModificationStatus(_ context.Context, _ status.Status, message string, _ map[string]interface{}) error {
-	m.mu.Lock()
-	m.modStatusMsg = message
-	m.mu.Unlock()
-	return nil
-}
-
-func (m *testMachine) ModificationStatus() (status.Status, string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return "", m.modStatusMsg, nil
-}
-
-func (m *testMachine) SetStatus(_ context.Context, status status.Status, _ string, _ map[string]interface{}) error {
+func (m *testMachine) SetStatus(_ context.Context, status status.Status, _ string, _ map[string]any) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.machineStatus = status
@@ -1918,7 +1967,7 @@ func (m *testMachine) Status(context.Context) (status.Status, string, error) {
 
 func (m *testMachine) ModelAgentVersion(context.Context) (*semversion.Number, error) {
 	if m.agentVersion == semversion.Zero {
-		return &coretesting.FakeVersionNumber, nil
+		return &internaltesting.FakeVersionNumber, nil
 	}
 	return &m.agentVersion, nil
 }
@@ -1932,7 +1981,7 @@ func (m *testMachine) SetUnprovisioned() {
 func (m *testMachine) SetInstanceInfo(
 	_ context.Context,
 	instId instance.Id, _ string, _ string, _ *instance.HardwareCharacteristics, _ []params.NetworkConfig, _ []params.Volume,
-	_ map[string]params.VolumeAttachmentInfo, _ []string,
+	_ map[string]params.VolumeAttachmentInfo,
 ) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1975,7 +2024,7 @@ type startInstanceParamsMatcher struct {
 	failMsg  string
 }
 
-func (m *startInstanceParamsMatcher) Matches(params interface{}) bool {
+func (m *startInstanceParamsMatcher) Matches(params any) bool {
 	siParams := params.(environs.StartInstanceParams)
 	for msg, match := range m.matchers {
 		if !match(siParams) {
@@ -1996,17 +2045,17 @@ func (m *startInstanceParamsMatcher) addMatch(msg string, match func(environs.St
 
 var (
 	startInstanceArgTemplate = environs.StartInstanceParams{
-		ControllerUUID: coretesting.ControllerTag.Id(),
+		ControllerUUID: internaltesting.ControllerTag.Id(),
 		Tools:          tools.List{{Version: semversion.MustParseBinary("2.99.0-ubuntu-amd64")}},
 	}
 	instanceConfigTemplate = instancecfg.InstanceConfig{
-		ControllerTag:    coretesting.ControllerTag,
-		ControllerConfig: coretesting.FakeControllerConfig(),
+		ControllerTag:    internaltesting.ControllerTag,
+		ControllerConfig: internaltesting.FakeControllerConfig(),
 		Jobs:             []model.MachineJob{model.JobHostUnits},
 		APIInfo: &api.Info{
-			ModelTag: coretesting.ModelTag,
+			ModelTag: internaltesting.ModelTag,
 			Addrs:    []string{"10.0.0.1"},
-			CACert:   coretesting.CACert,
+			CACert:   internaltesting.CACert,
 		},
 		Base:               corebase.MustParseBaseFromString("ubuntu@22.04"),
 		TransientDataDir:   "/var/run/juju",
@@ -2087,13 +2136,7 @@ func newAZConstraintStartInstanceParamsMatcher(zones ...string) *startInstancePa
 			return false
 		}
 		for _, z := range zones {
-			found := false
-			for _, cz := range cZones {
-				if z == cz {
-					found = true
-					break
-				}
-			}
+			found := slices.Contains(cZones, z)
 			if !found {
 				return false
 			}
@@ -2115,13 +2158,7 @@ func newSpaceConstraintStartInstanceParamsMatcher(spaces ...string) *startInstan
 			return false
 		}
 		for _, s := range spaces {
-			found := false
-			for _, cs := range spaces {
-				if s == cs {
-					found = true
-					break
-				}
-			}
+			found := slices.Contains(spaces, s)
 			if !found {
 				return false
 			}

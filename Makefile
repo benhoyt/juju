@@ -19,8 +19,8 @@ GOARCH=$(shell go env GOARCH)
 GOHOSTOS=$(shell go env GOHOSTOS)
 GOHOSTARCH=$(shell go env GOHOSTARCH)
 GO_MOD_VERSION=$(shell grep "^go" go.mod | awk '{print $$2}')
-GO_INSTALLED_VERSION=$(shell go version | awk '{print $$3}' | sed -e /.*go/s///)
-GO_INSTALL_PATH=$(if $(value GOBIN),$(value GOBIN),$(shell go env GOPATH)/bin)
+GO_INSTALLED_VERSION=$(shell GOARCH=$(uname -m) go version | awk '{print $$3}' | sed -e /.*go/s///)
+GO_INSTALL_PATH=$(if $(value GOBIN),$(value GOBIN),$(shell GOARCH=$(uname -m) go env GOPATH)/bin)
 
 # Build number passed in must be a monotonic int representing
 # the build.
@@ -28,7 +28,7 @@ JUJU_BUILD_NUMBER ?=
 
 # JUJU_VERSION is the JUJU version currently being represented in this
 # repository.
-JUJU_VERSION=$(shell go run -ldflags "-X $(PROJECT)/version.build=$(JUJU_BUILD_NUMBER)" scripts/version/main.go)
+JUJU_VERSION=$(shell GOARCH=$(uname -m) go run -ldflags "-X $(PROJECT)/version.build=$(JUJU_BUILD_NUMBER)" scripts/version/main.go)
 
 # BUILD_DIR is the directory relative to this project where we place build
 # artifacts created by this Makefile.
@@ -82,10 +82,6 @@ BUILD_TAGS ?=
 
 # EXTRA_BUILD_TAGS is not passed in, but built up from context.
 EXTRA_BUILD_TAGS =
-ifeq (,$(findstring no-dqlite,$(BUILD_TAGS)))
-    EXTRA_BUILD_TAGS += libsqlite3
-    EXTRA_BUILD_TAGS += dqlite
-endif
 
 # Enable coverage collection.
 ifneq ($(COVERAGE_COLLECT_URL),)
@@ -120,7 +116,6 @@ GIT_TREE_STATE = $(if $(shell git -C $(PROJECT_DIR) rev-parse --is-inside-work-t
 #   compile for at the moment.
 define BUILD_AGENT_TARGETS
 	$(call tool_platform_paths,jujuc,$(filter-out windows%,${AGENT_PACKAGE_PLATFORMS})) \
-	$(call tool_platform_paths,jujud,$(filter linux%,${AGENT_PACKAGE_PLATFORMS})) \
 	$(call tool_platform_paths,containeragent,$(filter-out windows%,${AGENT_PACKAGE_PLATFORMS})) \
 	$(call tool_platform_paths,pebble,$(filter linux%,${AGENT_PACKAGE_PLATFORMS}))
 endef
@@ -129,7 +124,7 @@ endef
 # under the category of Juju agents, that are CGO. These targets are also the
 # ones we are more then likely wanting to cross compile.
 define BUILD_CGO_AGENT_TARGETS
-	$(call tool_platform_paths,jujud-controller,$(filter linux%,${AGENT_PACKAGE_PLATFORMS}))
+	$(call tool_platform_paths,jujud,$(filter linux%,${AGENT_PACKAGE_PLATFORMS}))
 endef
 
 define BUILD_CGO_BENCH_TARGETS
@@ -157,7 +152,6 @@ endef
 define INSTALL_TARGETS
 	juju \
 	jujuc \
-	jujud \
 	containeragent \
 	juju-metadata
 endef
@@ -170,7 +164,7 @@ endif
 
 # We only add pebble to the list of install targets if we are building for linux
 ifeq ($(GOOS), linux)
-    INSTALL_TARGETS += jujud-controller
+    INSTALL_TARGETS += jujud
     INSTALL_TARGETS += pebble
 endif
 
@@ -192,7 +186,8 @@ define link_flags_version
 -X $(PROJECT)/core/version.build=$(JUJU_BUILD_NUMBER) \
 -X $(PROJECT)/core/version.Grade=$(JUJU_GRADE) \
 -X $(PROJECT)/core/version.GoBuildTags=$(FINAL_BUILD_TAGS) \
--X $(PROJECT)/internal/debug/coveruploader.putURL=$(COVERAGE_COLLECT_URL)
+-X $(PROJECT)/internal/debug/coveruploader.putURL=$(COVERAGE_COLLECT_URL) \
+-X $(PROJECT)/internal/cloudconfig/podcfg.JujudOCINamespace=$(PULL_OCI_REGISTRY)
 endef
 
 # Enable coverage collection.
@@ -232,6 +227,7 @@ define run_go_build
 	@echo "Building ${PACKAGE} for ${OS}/${ARCH}"
 	@env GOOS=${OS} \
 		GOARCH=${BUILD_ARCH} \
+		CGO_ENABLED=0 \
 		go build \
 			-mod=$(JUJU_GOMOD_MODE) \
 			-tags=$(FINAL_BUILD_TAGS) \
@@ -268,7 +264,8 @@ endef
 
 define run_go_install
 	@echo "Installing ${PACKAGE}"
-	@go install \
+	@env CGO_ENABLED=0 \
+		go install \
 		-mod=$(JUJU_GOMOD_MODE) \
 		-tags=$(FINAL_BUILD_TAGS) \
 		$(COMPILE_FLAGS) \
@@ -314,20 +311,14 @@ jujuc:
 
 .PHONY: jujud
 jujud: PACKAGE = github.com/juju/juju/cmd/jujud
-jujud:
-## jujud: Install jujud without updating dependencies
-	${run_go_install}
-	mv $(GO_INSTALL_PATH)/jujud $(GO_INSTALL_PATH)/jujud-junk
-
-.PHONY: jujud-controller
-jujud-controller: PACKAGE = github.com/juju/juju/cmd/jujud-controller
-jujud-controller: musl-install-if-missing dqlite-install-if-missing
+jujud: EXTRA_BUILD_TAGS += dqlite libsqlite3
+jujud: musl-install-if-missing dqlite-install-if-missing
 ## jujud: Install jujud without updating dependencies
 	${run_cgo_install}
-	mv $(GO_INSTALL_PATH)/jujud-controller $(GO_INSTALL_PATH)/jujud
 
 .PHONY: dqlite-repl
 dqlite-repl: PACKAGE = github.com/juju/juju/scripts/dqlite/cmd
+dqlite-repl: EXTRA_BUILD_TAGS += dqlite libsqlite3
 dqlite-repl: musl-install-if-missing dqlite-install-if-missing
 ## jujud: Install jujud without updating dependencies
 	${run_cgo_install}
@@ -356,6 +347,7 @@ phony_explicit:
 # phone_explicit: is a dummy target that can be added to pattern targets to phony make.
 
 ${BUILD_DIR}/%/bin/dqlite-bench: PACKAGE = github.com/juju/juju/scripts/dqlite-bench
+${BUILD_DIR}/%/bin/dqlite-bench: EXTRA_BUILD_TAGS += dqlite libsqlite3
 ${BUILD_DIR}/%/bin/dqlite-bench: phony_explicit musl-install-if-missing dqlite-install-if-missing
 # build for dqlite-bench
 	$(run_cgo_build)
@@ -371,22 +363,13 @@ ${BUILD_DIR}/%/bin/jujuc: phony_explicit
 	$(run_go_build)
 
 ${BUILD_DIR}/%/bin/jujud: PACKAGE = github.com/juju/juju/cmd/jujud
-${BUILD_DIR}/%/bin/jujud: phony_explicit
+${BUILD_DIR}/%/bin/jujud: EXTRA_BUILD_TAGS += dqlite libsqlite3
+${BUILD_DIR}/%/bin/jujud: phony_explicit musl-install-if-missing dqlite-install-if-missing
 # build for jujud
-	$(run_go_build)
-	$(eval OS = $(word 1,$(subst _, ,$*)))
-	$(eval ARCH = $(word 2,$(subst _, ,$*)))
-	$(eval BBIN_DIR = ${BUILD_DIR}/${OS}_${ARCH}/bin)
-	mv ${BBIN_DIR}/jujud ${BBIN_DIR}/jujud-junk
-
-${BUILD_DIR}/%/bin/jujud-controller: PACKAGE = github.com/juju/juju/cmd/jujud-controller
-${BUILD_DIR}/%/bin/jujud-controller: phony_explicit musl-install-if-missing dqlite-install-if-missing
-# build for jujud-controller
 	$(run_cgo_build)
 	$(eval OS = $(word 1,$(subst _, ,$*)))
 	$(eval ARCH = $(word 2,$(subst _, ,$*)))
 	$(eval BBIN_DIR = ${BUILD_DIR}/${OS}_${ARCH}/bin)
-	mv ${BBIN_DIR}/jujud-controller ${BBIN_DIR}/jujud
 
 ${BUILD_DIR}/%/bin/containeragent: PACKAGE = github.com/juju/juju/cmd/containeragent
 ${BUILD_DIR}/%/bin/containeragent: phony_explicit
@@ -412,6 +395,17 @@ ${JUJU_METADATA_SOURCE}/tools/${JUJU_PUBLISH_STREAM}/juju-${JUJU_VERSION}-%.tgz:
 simplestreams: juju juju-metadata ${SIMPLESTREAMS_TARGETS}
 	@juju metadata generate-agent-binaries -d ${JUJU_METADATA_SOURCE} --clean --prevent-fallback --stream ${JUJU_PUBLISH_STREAM} ;
 	@echo "\nRun export JUJU_METADATA_SOURCE=\"${JUJU_METADATA_SOURCE}\" if not defined in your env"
+
+.PHONY: simplestreams-hostarch
+simplestreams-hostarch: juju juju-metadata ${SIMPLESTREAMS_TARGETS}
+## simplestreams-hostarch: Allows cross compilation, but forces metadata building using host arch.
+	@GOARCH=$(uname -m) juju metadata generate-agent-binaries --debug -d ${JUJU_METADATA_SOURCE} --clean --prevent-fallback --stream ${JUJU_PUBLISH_STREAM} ;
+	@echo "\nRun export JUJU_METADATA_SOURCE=\"${JUJU_METADATA_SOURCE}\" if not defined in your env"
+
+.PHONY: serve-simplestreams
+serve-simplestreams:
+## serve-simplestreams: Serve the simplestreams metadata over HTTP for testing.
+	@python3 $(PROJECT_DIR)/scripts/simplestreams/server.py ${JUJU_SIMPLESTREAMS_SOURCE}
 
 .PHONY: build
 build: rebuild-schema go-build
@@ -505,6 +499,8 @@ test-packages:
 # 8. Filter out all mocks.
 	@go list -json $(PROJECT)/... | jq -s -r '[.[] | if (.TestGoFiles | length) + (.XTestGoFiles | length) > 0 then .ImportPath else null end]|del(..|nulls).[]' | sort | ([ -f "$(TEST_PACKAGE_LIST)" ] && comm -12 "$(TEST_PACKAGE_LIST)" - || cat) | grep -v $(PROJECT)$$ | grep -v $(PROJECT)/vendor/ | grep -v $(PROJECT)/generate/ | grep -v $(PROJECT)/mocks/ | grep -v mocks
 
+.PHONY: run-go-tests
+run-go-tests: EXTRA_BUILD_TAGS += dqlite libsqlite3
 run-go-tests: musl-install-if-missing dqlite-install-if-missing
 ## run-go-tests: Run the unit tests
 	$(eval OS = $(shell go env GOOS))
@@ -522,10 +518,11 @@ run-go-tests: musl-install-if-missing dqlite-install-if-missing
 		CGO_ENABLED=1 \
 		go test -mod=$(JUJU_GOMOD_MODE) -tags=$(TEST_BUILD_TAGS) $(TEST_ARGS) -ldflags ${CGO_LINK_FLAGS} ${TEST_PACKAGES} -test.run $(TEST_FILTER) $(TEST_EXTRA_ARGS)
 
+.PHONY: go-test-alias
+go-test-alias: EXTRA_BUILD_TAGS += dqlite libsqlite3
 go-test-alias: musl-install-if-missing dqlite-install-if-missing
 ## go-test-alias: Prints out an alias command for easy running of tests.
-	$(eval PPATH := "PATH")
-	@echo alias jt=\'PATH=\"${MUSL_BIN_PATH}:$$${PPATH}\" \
+	@echo alias jt=\'PATH=\"${MUSL_BIN_PATH}:\$$PATH\" \
 		CC=\"musl-gcc\" \
 		CGO_CFLAGS=\"-I${DQLITE_EXTRACTED_DEPS_ARCHIVE_PATH}/include\" \
 		CGO_LDFLAGS=\"-L${DQLITE_EXTRACTED_DEPS_ARCHIVE_PATH} -luv -ldqlite -llz4 -lsqlite3 -Wl,-z,stack-size=1048576\" \
@@ -562,6 +559,18 @@ rebuild-triggers:
 ## rebuild-triggers: Rebuild the SQL trigger schema
 	@echo "Generating trigger schema..."
 	@env GOOS= GOARCH= CGO_ENABLED=1 go generate -tags="libsqlite3" $(COMPILE_FLAGS) -x ./domain/schema
+
+.PHONY: rebuild-ddl
+rebuild-ddl:
+## rebuild-ddl: Rebuild the SQL DDL schema
+	@echo "Generating DDL schema..."
+	@env GOOS= GOARCH= CGO_ENABLED=1 go run -tags="libsqlite3" $(PROJECT)/generate/ddlgen
+
+.PHONY: rebuild-export
+rebuild-export:
+## rebuild-export: Rebuild the exported schema
+	@echo "Generating exported schema..."
+	@env GOOS= GOARCH= CGO_ENABLED=1 go run -tags="libsqlite3" $(PROJECT)/generate/export
 
 .PHONY: install-snap-dependencies
 # Install packages required to develop Juju and run tests. The stable
@@ -620,7 +629,7 @@ vendor-dependencies:
 ## vendor-dependencies: updates vendored dependencies
 	@go mod vendor
 
-GOCHECK_COUNT="$(shell go list -f '{{join .Deps "\n"}}' ${PROJECT}/... | grep -c "gopkg.in/check.v*")"
+GOCHECK_COUNT="$(shell go list -f '{{join .Deps "\n"}}' ${PROJECT}/... | grep -c "github.com/juju/tc*")"
 .PHONY: check-deps
 check-deps:
 ## check-deps: Check dependencies are correct versions
@@ -629,7 +638,10 @@ check-deps:
 
 # CAAS related targets
 export OCI_BUILDER         ?= $(shell (which podman 2>&1 > /dev/null && echo podman) || echo docker )
-OCI_REGISTRY_USERNAME      ?= ghcr.io/juju
+
+# PULL_OCI_REGISTRY is the registry Juju will pull its operator OCI images
+# from by default.
+PULL_OCI_REGISTRY          ?= ghcr.io/juju
 DOCKER_BUILDX_CONTEXT      ?= juju-make
 DOCKER_STAGING_DIR         ?= ${BUILD_DIR}/docker-staging
 JUJUD_STAGING_DIR          ?= ${DOCKER_STAGING_DIR}/jujud-operator
@@ -697,7 +709,7 @@ push-release-operator-image: operator-image
 .PHONY: seed-repository
 seed-repository:
 ## seed-repository: Copy required juju images from oci repository
-	JUJU_DB_VERSION=$(JUJU_DB_VERSION) $(SEED_REPOSITORY)
+	$(SEED_REPOSITORY)
 
 
 .PHONY: host-install

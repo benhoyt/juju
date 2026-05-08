@@ -12,7 +12,7 @@ import (
 
 	resourcecmd "github.com/juju/juju/cmd/juju/resource"
 	"github.com/juju/juju/core/resource"
-	charmresource "github.com/juju/juju/internal/charm/resource"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/internal/testhelpers"
 )
 
@@ -24,7 +24,7 @@ type CharmTabularSuite struct {
 	testhelpers.IsolationSuite
 }
 
-func (s *CharmTabularSuite) formatTabular(c *tc.C, value interface{}) string {
+func (s *CharmTabularSuite) formatTabular(c *tc.C, value any) string {
 	out := &bytes.Buffer{}
 	err := resourcecmd.FormatCharmTabular(out, value)
 	c.Assert(err, tc.ErrorIsNil)
@@ -99,7 +99,7 @@ type AppTabularSuite struct {
 	testhelpers.IsolationSuite
 }
 
-func (s *AppTabularSuite) formatTabular(c *tc.C, value interface{}) string {
+func (s *AppTabularSuite) formatTabular(c *tc.C, value any) string {
 	out := &bytes.Buffer{}
 	err := resourcecmd.FormatAppTabular(out, value)
 	c.Assert(err, tc.ErrorIsNil)

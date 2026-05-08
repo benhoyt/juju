@@ -9,7 +9,7 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
+	"github.com/juju/worker/v5"
 
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/apiserver"
@@ -18,11 +18,11 @@ import (
 	"github.com/juju/juju/apiserver/authentication/macaroon"
 	"github.com/juju/juju/core/auditlog"
 	"github.com/juju/juju/core/changestream"
-	"github.com/juju/juju/core/database"
 	"github.com/juju/juju/core/flightrecorder"
 	"github.com/juju/juju/core/lease"
 	corelogger "github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/objectstore"
+	"github.com/juju/juju/core/providertracker"
 	"github.com/juju/juju/internal/jwtparser"
 	"github.com/juju/juju/internal/services"
 	"github.com/juju/juju/internal/worker/trace"
@@ -48,10 +48,10 @@ type Config struct {
 	CharmhubHTTPClient                HTTPClient
 	MacaroonHTTPClient                HTTPClient
 	WatcherRegistryGetter             watcherregistry.WatcherRegistryGetter
+	EphemeralProviderFactory          providertracker.EphemeralProviderFactory
 
 	// DBGetter supplies WatchableDB implementations by namespace.
 	DBGetter                changestream.WatchableDBGetter
-	DBDeleter               database.DBDeleter
 	DomainServicesGetter    services.DomainServicesGetter
 	TracerGetter            trace.TracerGetter
 	ObjectStoreGetter       objectstore.ObjectStoreGetter
@@ -114,9 +114,6 @@ func (config Config) Validate() error {
 	if config.DBGetter == nil {
 		return errors.NotValidf("nil DBGetter")
 	}
-	if config.DBDeleter == nil {
-		return errors.NotValidf("nil DBDeleter")
-	}
 	if config.TracerGetter == nil {
 		return errors.NotValidf("nil TracerGetter")
 	}
@@ -134,6 +131,9 @@ func (config Config) Validate() error {
 	}
 	if config.WatcherRegistryGetter == nil {
 		return errors.NotValidf("nil WatcherRegistryGetter")
+	}
+	if config.EphemeralProviderFactory == nil {
+		return errors.NotValidf("nil EphemeralProviderFactory")
 	}
 	return nil
 }
@@ -194,12 +194,12 @@ func NewWorker(ctx context.Context, config Config) (worker.Worker, error) {
 		CharmhubHTTPClient:            config.CharmhubHTTPClient,
 		MacaroonHTTPClient:            config.MacaroonHTTPClient,
 		DBGetter:                      config.DBGetter,
-		DBDeleter:                     config.DBDeleter,
 		DomainServicesGetter:          config.DomainServicesGetter,
 		ControllerConfigService:       config.ControllerConfigService,
 		TracerGetter:                  config.TracerGetter,
 		ObjectStoreGetter:             config.ObjectStoreGetter,
 		WatcherRegistryGetter:         config.WatcherRegistryGetter,
+		EphemeralProviderFactory:      config.EphemeralProviderFactory,
 	}
 	return config.NewServer(ctx, serverConfig)
 }

@@ -5,14 +5,16 @@ package modelmanager_test
 
 import (
 	"context"
+	"maps"
 	"testing"
 	"time"
 
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
+	"gopkg.in/yaml.v2"
 
 	"github.com/juju/juju/apiserver/common"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
@@ -22,8 +24,8 @@ import (
 	coreagentbinary "github.com/juju/juju/core/agentbinary"
 	"github.com/juju/juju/core/assumes"
 	"github.com/juju/juju/core/credential"
+	coredatabase "github.com/juju/juju/core/database"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/semversion"
@@ -35,6 +37,8 @@ import (
 	accesserrors "github.com/juju/juju/domain/access/errors"
 	"github.com/juju/juju/domain/blockcommand"
 	blockcommanderrors "github.com/juju/juju/domain/blockcommand/errors"
+	domainexport "github.com/juju/juju/domain/export"
+	"github.com/juju/juju/domain/export/types/v4_0_4"
 	domainmodel "github.com/juju/juju/domain/model"
 	modelerrors "github.com/juju/juju/domain/model/errors"
 	"github.com/juju/juju/domain/modeldefaults"
@@ -60,6 +64,7 @@ type modelManagerSuite struct {
 	domainServicesGetter *MockDomainServicesGetter
 	domainServices       *MockModelDomainServices
 	applicationService   *MockApplicationService
+	secretBackendService *MockSecretBackendService
 	blockCommandService  *MockBlockCommandService
 	modelInfoService     *MockModelInfoService
 	authoriser           apiservertesting.FakeAuthorizer
@@ -75,6 +80,15 @@ func TestModelManagerSuite(t *testing.T) {
 	tc.Run(t, &modelManagerSuite{})
 }
 
+type stubExportService struct {
+	modelExport *domainexport.ModelExport
+	err         error
+}
+
+func (s stubExportService) Export(context.Context) (*domainexport.ModelExport, error) {
+	return s.modelExport, s.err
+}
+
 func (s *modelManagerSuite) setUpMocks(c *tc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 
@@ -83,6 +97,7 @@ func (s *modelManagerSuite) setUpMocks(c *tc.C) *gomock.Controller {
 	s.accessService = NewMockAccessService(ctrl)
 	s.domainServicesGetter = NewMockDomainServicesGetter(ctrl)
 	s.applicationService = NewMockApplicationService(ctrl)
+	s.secretBackendService = NewMockSecretBackendService(ctrl)
 	s.blockCommandService = NewMockBlockCommandService(ctrl)
 	s.machineService = NewMockMachineService(ctrl)
 	s.domainServices = NewMockModelDomainServices(ctrl)
@@ -94,6 +109,7 @@ func (s *modelManagerSuite) setUpMocks(c *tc.C) *gomock.Controller {
 		s.accessService = nil
 		s.domainServicesGetter = nil
 		s.applicationService = nil
+		s.secretBackendService = nil
 		s.blockCommandService = nil
 		s.machineService = nil
 		s.domainServices = nil
@@ -128,17 +144,17 @@ func (s *modelManagerSuite) setUpAPIWithUser(c *tc.C, user names.UserTag) *gomoc
 
 	cred := cloud.NewEmptyCredential()
 	s.api = modelmanager.NewModelManagerAPI(
-		c.Context(),
 		user.Name() == "admin",
 		user,
 		s.modelStatusAPI,
 		s.controllerUUID,
-		modeltesting.GenModelUUID(c),
+		tc.Must0(c, coremodel.NewUUID),
 		modelmanager.Services{
 			DomainServicesGetter: s.domainServicesGetter,
 			CredentialService:    apiservertesting.ConstCredentialGetter(&cred),
 			ModelService:         s.modelService,
 			ModelDefaultsService: s.modelDefaultService,
+			SecretBackendService: s.secretBackendService,
 			ApplicationService:   s.applicationService,
 			AccessService:        s.accessService,
 			ObjectStore:          &mockObjectStore{},
@@ -161,7 +177,7 @@ func (s *modelManagerSuite) setUpAPIWithUser(c *tc.C, user names.UserTag) *gomoc
 // then cast it into a tag. This function does not setup any preconditions in
 // testing states.
 func generateModelUUIDAndTag(c *tc.C) (coremodel.UUID, names.ModelTag) {
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	return modelUUID, names.NewModelTag(modelUUID.String())
 }
 
@@ -175,7 +191,7 @@ func (s *modelManagerSuite) expectCreateModel(
 	expectedCloudName string,
 	expectedCloudRegion string,
 ) coremodel.UUID {
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	adminName := usertesting.GenNewName(c, "admin")
 	adminUUID := usertesting.GenUserUUID(c)
 
@@ -225,9 +241,7 @@ func (s *modelManagerSuite) expectCreateModel(
 	s.expectCreateModelOnModelDB(ctrl, modelCreateArgs.Config)
 
 	modelConfig := map[string]any{}
-	for k, v := range modelCreateArgs.Config {
-		modelConfig[k] = v
-	}
+	maps.Copy(modelConfig, modelCreateArgs.Config)
 
 	modelConfig["uuid"] = modelUUID
 	modelConfig["name"] = modelCreateArgs.Name
@@ -294,7 +308,7 @@ func (s *modelManagerSuite) TestCreateModelQualifierMismatch(c *tc.C) {
 	args := params.ModelCreateArgs{
 		Name:      "foo",
 		Qualifier: "prod",
-		Config: map[string]interface{}{
+		Config: map[string]any{
 			"bar": "baz",
 		},
 		CloudTag:           "cloud-dummy",
@@ -318,7 +332,7 @@ func (s *modelManagerSuite) TestCreateModelArgsWithCloud(c *tc.C) {
 	args := params.ModelCreateArgs{
 		Name:      "foo",
 		Qualifier: "admin",
-		Config: map[string]interface{}{
+		Config: map[string]any{
 			"bar": "baz",
 		},
 		CloudTag:           "cloud-dummy",
@@ -379,7 +393,7 @@ func (s *modelManagerSuite) TestCreateModelArgsWithAgentVersion(c *tc.C) {
 	args := params.ModelCreateArgs{
 		Name:      "foo",
 		Qualifier: "admin",
-		Config: map[string]interface{}{
+		Config: map[string]any{
 			"bar":                  "baz",
 			config.AgentVersionKey: jujuversion.Current.String(),
 		},
@@ -395,6 +409,18 @@ func (s *modelManagerSuite) TestCreateModelArgsWithAgentVersion(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 }
 
+func (s *modelManagerSuite) TestCreateModelWithTargetControllerSet(c *tc.C) {
+	args := params.ModelCreateArgs{
+		Name:               "foo",
+		CloudTag:           "cloud-some-cloud",
+		CloudRegion:        "qux",
+		CloudCredentialTag: "cloudcred-some-cloud_admin_some-credential",
+		TargetController:   "some-controller",
+	}
+	_, err := s.api.CreateModel(c.Context(), args)
+	c.Assert(err, tc.ErrorMatches, `target-controller parameter is only supported on JAAS`)
+}
+
 func (s *modelManagerSuite) TestCreateModelArgsWithAgentVersionAndStream(c *tc.C) {
 	ctrl := s.setUpAPI(c)
 	defer ctrl.Finish()
@@ -407,7 +433,7 @@ func (s *modelManagerSuite) TestCreateModelArgsWithAgentVersionAndStream(c *tc.C
 	args := params.ModelCreateArgs{
 		Name:      "foo",
 		Qualifier: "admin",
-		Config: map[string]interface{}{
+		Config: map[string]any{
 			"bar":                  "baz",
 			config.AgentVersionKey: jujuversion.Current.String(),
 			config.AgentStreamKey:  "released",
@@ -472,7 +498,7 @@ func (s *modelManagerSuite) TestSetModelCloudDefaults(c *tc.C) {
 	s.blockCommandService.EXPECT().GetBlockSwitchedOn(gomock.Any(), blockcommand.ChangeBlock).
 		Return("", blockcommanderrors.NotFound).AnyTimes()
 
-	defaults := map[string]interface{}{
+	defaults := map[string]any{
 		"attr3": "val3",
 		"attr4": "val4",
 	}
@@ -490,7 +516,7 @@ func (s *modelManagerSuite) TestSetModelRegionDefaults(c *tc.C) {
 	s.blockCommandService.EXPECT().GetBlockSwitchedOn(gomock.Any(), blockcommand.ChangeBlock).
 		Return("", blockcommanderrors.NotFound).AnyTimes()
 
-	defaults := map[string]interface{}{
+	defaults := map[string]any{
 		"attr3": "val3",
 		"attr4": "val4",
 	}
@@ -583,7 +609,7 @@ func (s *modelManagerSuite) TestSetModelDefaultsAsNormalUser(c *tc.C) {
 
 	got, err := s.api.SetModelDefaults(c.Context(), params.SetModelDefaults{
 		Config: []params.ModelDefaultValues{{
-			Config: map[string]interface{}{
+			Config: map[string]any{
 				"ftp-proxy": "http://charlie",
 			}}}})
 	c.Assert(err, tc.ErrorMatches, "permission denied")
@@ -605,15 +631,88 @@ func (s *modelManagerSuite) TestUnsetModelDefaultsAsNormalUser(c *tc.C) {
 }
 
 func (s *modelManagerSuite) TestDumpModel(c *tc.C) {
-	c.Skip("re-implement dump model")
+	defer s.setUpAPI(c).Finish()
+
+	modelUUID, modelTag := generateModelUUIDAndTag(c)
+	expected := &domainexport.ModelExport{
+		Version: "4.0.4",
+		Payload: &v4_0_4.ModelExport{
+			AgentBinaryStore: []v4_0_4.AgentBinaryStore{{
+				Version:         "4.0.4",
+				ArchitectureID:  1,
+				ObjectStoreUUID: "object-store-uuid",
+			}},
+		},
+	}
+
+	s.domainServicesGetter.EXPECT().DomainServicesForModel(
+		gomock.Any(), modelUUID,
+	).Return(s.domainServices, nil)
+	s.domainServices.EXPECT().Export().Return(stubExportService{
+		modelExport: expected,
+	})
+
+	results := s.api.DumpModels(c.Context(), params.DumpModelRequest{
+		Entities: []params.Entity{{Tag: modelTag.String()}},
+	})
+
+	c.Assert(results.Results, tc.HasLen, 1)
+	c.Assert(results.Results[0].Error, tc.IsNil)
+
+	var wireExport struct {
+		Version string             `yaml:"version"`
+		Payload v4_0_4.ModelExport `yaml:"payload"`
+	}
+	err := yaml.Unmarshal([]byte(results.Results[0].Result), &wireExport)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(wireExport.Version, tc.Equals, "4.0.4")
+
+	expectedPayload, ok := expected.Payload.(*v4_0_4.ModelExport)
+	c.Assert(ok, tc.IsTrue)
+	c.Check(&wireExport.Payload, tc.DeepEquals, expectedPayload)
 }
 
 func (s *modelManagerSuite) TestDumpModelMissingModel(c *tc.C) {
-	c.Skip("re-implement dump model")
+	defer s.setUpAPI(c).Finish()
+
+	modelUUID, modelTag := generateModelUUIDAndTag(c)
+	s.domainServicesGetter.EXPECT().DomainServicesForModel(
+		gomock.Any(), modelUUID,
+	).Return(nil, modelerrors.NotFound)
+
+	results := s.api.DumpModels(c.Context(), params.DumpModelRequest{
+		Entities: []params.Entity{{Tag: modelTag.String()}},
+	})
+
+	c.Assert(results.Results, tc.HasLen, 1)
+	c.Assert(results.Results[0].Error, tc.NotNil)
+	c.Check(results.Results[0].Error.Message, tc.Matches, ".*not found.*")
 }
 
 func (s *modelManagerSuite) TestDumpModelUsers(c *tc.C) {
-	c.Skip("re-implement dump model")
+	modelUUID, modelTag := generateModelUUIDAndTag(c)
+	user := names.NewUserTag("admin-" + modelTag.String())
+	defer s.setUpAPIWithUser(c, user).Finish()
+
+	expected := &domainexport.ModelExport{
+		Version: "4.0.4",
+		Payload: &v4_0_4.ModelExport{},
+	}
+
+	s.domainServicesGetter.EXPECT().DomainServicesForModel(
+		gomock.Any(), modelUUID,
+	).Return(s.domainServices, nil)
+	s.domainServices.EXPECT().Export().Return(stubExportService{
+		modelExport: expected,
+	})
+
+	results := s.api.DumpModels(c.Context(), params.DumpModelRequest{
+		Entities: []params.Entity{{Tag: modelTag.String()}},
+	})
+
+	c.Assert(results.Results, tc.HasLen, 1)
+	c.Check(results.Results[0].Error, tc.IsNil)
+	c.Check(results.Results[0].Result, tc.Matches, "(?s).*version: 4.0.4.*")
 }
 
 func (s *modelManagerSuite) TestUpdatedModel(c *tc.C) {
@@ -679,6 +778,112 @@ func (s *modelManagerSuite) TestModelStatus(c *tc.C) {
 			{ModelTag: modelTag.String()},
 		},
 	})
+}
+
+func (s *modelManagerSuite) TestModelInfoUsesSingleDomainServicesLookup(c *tc.C) {
+	ctrl := s.setUpAPI(c)
+	defer ctrl.Finish()
+
+	modelUUID, modelTag := generateModelUUIDAndTag(c)
+	modelDomainServices := NewMockModelDomainServices(ctrl)
+	modelInfoService := NewMockModelInfoService(ctrl)
+	modelAgentService := NewMockModelAgentService(ctrl)
+	statusService := NewMockStatusService(ctrl)
+
+	s.domainServicesGetter.EXPECT().DomainServicesForModel(
+		gomock.Any(), modelUUID,
+	).Return(modelDomainServices, nil).Times(1)
+	modelDomainServices.EXPECT().ModelInfo().Return(modelInfoService)
+	modelInfoService.EXPECT().GetModelInfo(gomock.Any()).Return(coremodel.ModelInfo{
+		ControllerUUID: s.controllerUUID,
+		Cloud:          "dummy",
+		CloudType:      "dummy",
+	}, nil)
+	s.modelService.EXPECT().Model(gomock.Any(), modelUUID).Return(coremodel.Model{
+		Name:      "test-model",
+		UUID:      modelUUID,
+		Qualifier: coremodel.Qualifier("admin"),
+		ModelType: coremodel.IAAS,
+		Cloud:     "dummy",
+		CloudType: "dummy",
+	}, nil)
+	modelDomainServices.EXPECT().Agent().Return(modelAgentService)
+	modelAgentService.EXPECT().GetModelTargetAgentVersion(gomock.Any()).Return(
+		jujuversion.Current, nil,
+	)
+	modelDomainServices.EXPECT().Status().Return(statusService).Times(2)
+	now := time.Now()
+	statusService.EXPECT().GetModelStatus(gomock.Any()).Return(corestatus.StatusInfo{
+		Status: corestatus.Available,
+		Since:  &now,
+	}, nil)
+	s.modelService.EXPECT().GetModelUsers(gomock.Any(), modelUUID).Return(nil, nil)
+	modelDomainServices.EXPECT().Machine().Return(s.machineService)
+	s.machineService.EXPECT().AllMachineNames(gomock.Any()).Return(nil, nil)
+	statusService.EXPECT().GetAllMachineStatuses(gomock.Any()).Return(nil, nil)
+	s.secretBackendService.EXPECT().BackendSummaryInfoForModel(
+		gomock.Any(), modelUUID,
+	).Return(nil, nil)
+
+	results, err := s.api.ModelInfo(c.Context(), params.Entities{
+		Entities: []params.Entity{{Tag: modelTag.String()}},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(results.Results, tc.HasLen, 1)
+	c.Check(results.Results[0].Error, tc.IsNil)
+	c.Assert(results.Results[0].Result, tc.NotNil)
+}
+
+func (s *modelManagerSuite) TestModelInfoDBNotFoundTranslated(c *tc.C) {
+	ctrl := s.setUpAPI(c)
+	defer ctrl.Finish()
+
+	modelUUID, modelTag := generateModelUUIDAndTag(c)
+	modelDomainServices := NewMockModelDomainServices(ctrl)
+	modelInfoService := NewMockModelInfoService(ctrl)
+
+	s.domainServicesGetter.EXPECT().DomainServicesForModel(
+		gomock.Any(), modelUUID,
+	).Return(modelDomainServices, nil)
+	modelDomainServices.EXPECT().ModelInfo().Return(modelInfoService)
+	modelInfoService.EXPECT().GetModelInfo(gomock.Any()).Return(
+		coremodel.ModelInfo{}, coredatabase.ErrDBNotFound,
+	)
+
+	results, err := s.api.ModelInfo(c.Context(), params.Entities{
+		Entities: []params.Entity{{Tag: modelTag.String()}},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(results.Results, tc.HasLen, 1)
+	c.Assert(results.Results[0].Result, tc.IsNil)
+	c.Assert(results.Results[0].Error, tc.NotNil)
+	c.Check(results.Results[0].Error.Code, tc.Equals, params.CodeNotFound)
+}
+
+func (s *modelManagerSuite) TestModelInfoDBDeadTranslated(c *tc.C) {
+	ctrl := s.setUpAPI(c)
+	defer ctrl.Finish()
+
+	modelUUID, modelTag := generateModelUUIDAndTag(c)
+	modelDomainServices := NewMockModelDomainServices(ctrl)
+	modelInfoService := NewMockModelInfoService(ctrl)
+
+	s.domainServicesGetter.EXPECT().DomainServicesForModel(
+		gomock.Any(), modelUUID,
+	).Return(modelDomainServices, nil)
+	modelDomainServices.EXPECT().ModelInfo().Return(modelInfoService)
+	modelInfoService.EXPECT().GetModelInfo(gomock.Any()).Return(
+		coremodel.ModelInfo{}, coredatabase.ErrDBDead,
+	)
+
+	results, err := s.api.ModelInfo(c.Context(), params.Entities{
+		Entities: []params.Entity{{Tag: modelTag.String()}},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(results.Results, tc.HasLen, 1)
+	c.Assert(results.Results[0].Result, tc.IsNil)
+	c.Assert(results.Results[0].Error, tc.NotNil)
+	c.Check(results.Results[0].Error.Code, tc.Equals, params.CodeNotFound)
 }
 
 func (s *modelManagerSuite) TestChangeModelCredential(c *tc.C) {
@@ -768,13 +973,13 @@ func (s *modelManagerSuite) TestListModelsAdminSelf(c *tc.C) {
 	userUUID := usertesting.GenUserUUID(c)
 	userTag := names.NewUserTag("non-admin")
 
-	modelUUID := modeltesting.GenModelUUID(c)
-	modelUUIDNeverAccessed := modeltesting.GenModelUUID(c)
-	modelUUIDNotExist := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
+	modelUUIDNeverAccessed := tc.Must0(c, coremodel.NewUUID)
+	modelUUIDNotExist := tc.Must0(c, coremodel.NewUUID)
 
 	now := time.Now()
 	s.accessService.EXPECT().GetUserUUIDByName(gomock.Any(), coreuser.NameFromTag(userTag)).Return(userUUID, nil)
-	s.modelService.EXPECT().ListAllModels(gomock.Any()).Return([]coremodel.Model{
+	s.modelService.EXPECT().GetAllModels(gomock.Any()).Return([]coremodel.Model{
 		{UUID: modelUUID, Qualifier: "prod"},
 		{UUID: modelUUIDNeverAccessed, Qualifier: "prod"},
 		{UUID: modelUUIDNotExist},
@@ -817,9 +1022,9 @@ func (s *modelManagerSuite) TestListModelsNonAdminSelf(c *tc.C) {
 
 	defer s.setUpAPIWithUser(c, userTag).Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
-	modelUUIDNeverAccessed := modeltesting.GenModelUUID(c)
-	modelUUIDNotExist := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
+	modelUUIDNeverAccessed := tc.Must0(c, coremodel.NewUUID)
+	modelUUIDNotExist := tc.Must0(c, coremodel.NewUUID)
 
 	now := time.Now()
 	s.accessService.EXPECT().GetUserUUIDByName(gomock.Any(), coreuser.NameFromTag(userTag)).Return(userUUID, nil)
@@ -908,7 +1113,7 @@ func (s *modelManagerStateSuite) SetUpSuite(c *tc.C) {
 func (s *modelManagerStateSuite) SetUpTest(c *tc.C) {
 	s.controllerUUID = uuid.MustNewUUID()
 
-	s.ControllerModelConfigAttrs = map[string]interface{}{
+	s.ControllerModelConfigAttrs = map[string]any{
 		"agent-version": jujuversion.Current.String(),
 	}
 	s.ApiServerSuite.SetUpTest(c)
@@ -945,7 +1150,6 @@ func (s *modelManagerStateSuite) setAPIUser(c *tc.C, user names.UserTag) {
 	domainServices := s.ControllerDomainServices(c)
 
 	s.modelmanager = modelmanager.NewModelManagerAPI(
-		c.Context(),
 		user.Name() == "admin",
 		user,
 		s.modelStatusAPI,
@@ -1015,7 +1219,7 @@ func (s *modelManagerStateSuite) TestModifyModelAccessFailedPermissionDenied(c *
 
 	userTag := names.NewUserTag("non-admin@remote")
 	s.setAPIUser(c, userTag)
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	modelTag := names.NewModelTag(modelUUID.String())
 
 	args := params.ModifyModelAccessRequest{Changes: []params.ModifyModelAccess{

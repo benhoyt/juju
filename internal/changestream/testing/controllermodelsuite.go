@@ -80,16 +80,5 @@ type Idler struct {
 // This is useful to ensure that the change stream is not processing any
 // events before running a test.
 func (idler *Idler) AssertChangeStreamIdle(c *tc.C) {
-	for {
-		select {
-		case states := <-idler.watchableDB.states:
-			for _, state := range states {
-				if state == stateIdle {
-					return
-				}
-			}
-		case <-c.Context().Done():
-			c.Fatalf("timed out waiting for idle state")
-		}
-	}
+	assertChangeStreamIdle(c, idler.watchableDB.states)
 }

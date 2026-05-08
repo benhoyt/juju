@@ -9,14 +9,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/canonical/lxd/shared/api"
 	"github.com/juju/errors"
 
 	jujuarch "github.com/juju/juju/core/arch"
 	corebase "github.com/juju/juju/core/base"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/instance"
-	"github.com/juju/juju/core/lxdprofile"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/config"
@@ -50,7 +48,6 @@ type containerManager struct {
 	imageMutex                    sync.Mutex
 
 	serverInitMutex sync.Mutex
-	profileMutex    sync.Mutex
 }
 
 // containerManager implements container.Manager.
@@ -361,109 +358,4 @@ func (m *containerManager) networkDevicesFromConfig(netConfig *container.Network
 	// avoid patching the host_name ourselves.
 	nics, err := m.server.GetNICsFromProfile(lxdDefaultProfileName)
 	return nics, nil, errors.Trace(err)
-}
-
-// MaybeWriteLXDProfile implements container.LXDProfileManager.
-// TODO: HML 2-apr-2019
-// When provisioner_task processProfileChanges() is removed,
-// maybe change to take an lxdprofile.ProfilePost as an arg.
-func (m *containerManager) MaybeWriteLXDProfile(pName string, put lxdprofile.Profile) error {
-	if err := m.ensureInitialized(); err != nil {
-		return errors.Trace(err)
-	}
-
-	m.profileMutex.Lock()
-	defer m.profileMutex.Unlock()
-	hasProfile, err := m.server.HasProfile(pName)
-	if err != nil {
-		return errors.Trace(err)
-	}
-	if hasProfile {
-		logger.Debugf(context.TODO(), "lxd profile %q already exists, not written again", pName)
-		return nil
-	}
-	logger.Debugf(context.TODO(), "attempting to write lxd profile %q %+v", pName, put)
-	post := api.ProfilesPost{
-		Name: pName,
-		ProfilePut: api.ProfilePut{
-			Description: put.Description,
-			Config:      put.Config,
-			Devices:     put.Devices,
-		},
-	}
-	if err = m.server.CreateProfile(post); err != nil {
-		return errors.Trace(err)
-	}
-	logger.Debugf(context.TODO(), "wrote lxd profile %q", pName)
-	if err := m.verifyProfile(pName); err != nil {
-		return errors.Trace(err)
-	}
-	return nil
-}
-
-// verifyProfile gets the actual profile from lxd for the name provided
-// and logs the result. For informational purposes only. Returns an error
-// if the call to GetProfile fails.
-func (m *containerManager) verifyProfile(pName string) error {
-	// As there are configs where we do not have the option of looking at
-	// the profile on the machine to verify, verify here that what we thought
-	// was written, is what was written.
-	profile, _, err := m.server.GetProfile(pName)
-	if err != nil {
-		return err
-	}
-	logger.Debugf(context.TODO(), "lxd profile %q: received %+v ", pName, profile)
-	return nil
-}
-
-// LXDProfileNames implements container.LXDProfileManager
-func (m *containerManager) LXDProfileNames(containerName string) ([]string, error) {
-	if err := m.ensureInitialized(); err != nil {
-		return nil, errors.Trace(err)
-	}
-
-	return m.server.GetContainerProfiles(containerName)
-}
-
-// AssignLXDProfiles implements environs.LXDProfiler.
-func (m *containerManager) AssignLXDProfiles(
-	instID string, profilesNames []string, profilePosts []lxdprofile.ProfilePost,
-) (current []string, err error) {
-	if err := m.ensureInitialized(); err != nil {
-		return nil, errors.Trace(err)
-	}
-
-	report := func(err error) ([]string, error) {
-		// Always return the current profiles assigned to the instance.
-		currentProfiles, err2 := m.LXDProfileNames(instID)
-		if err != nil && err2 != nil {
-			logger.Errorf(context.TODO(), "secondary error, retrieving profile names: %s", err2)
-		}
-		return currentProfiles, err
-	}
-
-	// Write any new profilePosts and gather a slice of profile
-	// names to be deleted, after removal.
-	var deleteProfiles []string
-	for _, p := range profilePosts {
-		if p.Profile != nil {
-			if err := m.MaybeWriteLXDProfile(p.Name, *p.Profile); err != nil {
-				return report(err)
-			}
-		} else {
-			deleteProfiles = append(deleteProfiles, p.Name)
-		}
-	}
-
-	if err := m.server.UpdateContainerProfiles(instID, profilesNames); err != nil {
-		return report(errors.Trace(err))
-	}
-	logger.Debugf(context.TODO(), "profiles to delete %+v", deleteProfiles)
-	for _, name := range deleteProfiles {
-		if err := m.server.DeleteProfile(name); err != nil {
-			// Most likely the failure is because the profile is already in use.
-			logger.Debugf(context.TODO(), "failed to delete profile %q: %s", name, err)
-		}
-	}
-	return report(nil)
 }

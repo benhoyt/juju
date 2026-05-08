@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/juju/collections/set"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/tc"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -105,7 +105,7 @@ func (s *cloudSuite) TestFinalizeCloudMicrok8s(c *tc.C) {
 		SkipTLSVerify:   true,
 		Endpoint:        "http://1.1.1.1:8080",
 		HostCloudRegion: fmt.Sprintf("%s/%s", k8s.K8sCloudMicrok8s, k8s.Microk8sRegion),
-		Config:          map[string]interface{}{},
+		Config:          map[string]any{},
 		Regions:         []jujucloud.Region{{Name: k8s.Microk8sRegion, Endpoint: "http://1.1.1.1:8080"}},
 	})
 }
@@ -187,7 +187,7 @@ type mockContext struct {
 	testhelpers.Stub
 }
 
-func (c *mockContext) Verbosef(f string, args ...interface{}) {
+func (c *mockContext) Verbosef(f string, args ...any) {
 	c.MethodCall(c, "Verbosef", f, args)
 }
 

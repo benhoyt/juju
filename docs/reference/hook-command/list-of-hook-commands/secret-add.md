@@ -1,20 +1,20 @@
 (hook-command-secret-add)=
 # `secret-add`
 ## Summary
-Add a new secret.
+Adds a new secret.
 
 ## Usage
-``` secret-add [options] [key[#base64|#file]=value...]```
+``` secret-add [options] <key>[#base64]=<value> ...```
 
 ### Options
 | Flag | Default | Usage |
 | --- | --- | --- |
-| `--description` |  | the secret description |
-| `--expire` |  | either a duration or time when the secret should expire |
-| `--file` |  | a YAML file containing secret key values |
-| `--label` |  | a label used to identify the secret in hooks |
-| `--owner` | application | the owner of the secret, either the application or unit |
-| `--rotate` |  | the secret rotation policy |
+| `--description` |  | Specifies the secret description. |
+| `--expire` |  | Specifies either a duration or time when the secret should expire. |
+| `--file` |  | Specifies a YAML file containing secret key values. |
+| `--label` |  | Specifies a label used to identify the secret in hooks. |
+| `--owner` | application | Specifies the owner of the secret, either the application or unit. |
+| `--rotate` |  | Specifies the secret rotation policy. |
 
 ## Examples
 
@@ -37,12 +37,12 @@ Add a new secret.
 
 Add a secret with a list of key values.
 
-If a key has the '#base64' suffix, the value is already in base64 format and no
+If a key has the `#base64` suffix, the value is already in base64 format and no
 encoding will be performed, otherwise the value will be base64 encoded
 prior to being stored.
 
-If a key has the '#file' suffix, the value is read from the corresponding file.
+If a key has the `#file` suffix, the value is read from the corresponding file.
 
 By default, a secret is owned by the application, meaning only the unit
-leader can manage it. Use "--owner unit" to create a secret owned by the
+leader can manage it. Use `--owner unit` to create a secret owned by the
 specific unit which created it.

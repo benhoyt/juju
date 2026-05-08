@@ -68,7 +68,7 @@ func (c *Client) createModelCompat(
 // a model owner into a model qualifier.
 func (c *Client) listModelsCompat(ctx context.Context, user string) ([]base.UserModel, error) {
 	var models params.UserModelListLegacy
-	entity := params.Entity{names.NewUserTag(user).String()}
+	entity := params.Entity{Tag: names.NewUserTag(user).String()}
 	err := c.facade.FacadeCall(ctx, "ListModels", entity, &models)
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -171,6 +171,11 @@ func (c *Client) modelInfoCompat(ctx context.Context, tags []names.ModelTag) ([]
 	}
 	info := make([]params.ModelInfoResult, len(results.Results))
 	for i, r := range results.Results {
+		if r.Error != nil {
+			info[i].Error = r.Error
+			continue
+		}
+
 		result := r.Result
 		ownerTag, err := names.ParseUserTag(result.OwnerTag)
 		if err != nil {

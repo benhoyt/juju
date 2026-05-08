@@ -6,23 +6,15 @@ package uniter
 import (
 	"context"
 
-	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 
 	"github.com/juju/juju/apiserver/common"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/apiserver/facade"
 	"github.com/juju/juju/apiserver/internal"
-	"github.com/juju/juju/apiserver/internal/charms"
 	"github.com/juju/juju/core/instance"
 	corelogger "github.com/juju/juju/core/logger"
-	"github.com/juju/juju/core/lxdprofile"
-	coremachine "github.com/juju/juju/core/machine"
-	"github.com/juju/juju/core/model"
-	"github.com/juju/juju/core/unit"
-	applicationerrors "github.com/juju/juju/domain/application/errors"
-	machineerrors "github.com/juju/juju/domain/machine/errors"
-	internalerrors "github.com/juju/juju/internal/errors"
+	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -88,13 +80,11 @@ func NewExternalLXDProfileAPI(
 // WatchInstanceData returns a NotifyWatcher for observing
 // changes to the lxd profile for one unit.
 func (u *LXDProfileAPI) WatchInstanceData(ctx context.Context, args params.Entities) (params.NotifyWatchResults, error) {
-	u.logger.Tracef(ctx, "Starting WatchInstanceData with %+v", args)
 	result := params.NotifyWatchResults{
 		Results: make([]params.NotifyWatchResult, len(args.Entities)),
 	}
 	canAccess, err := u.accessUnit(ctx)
 	if err != nil {
-		u.logger.Tracef(ctx, "WatchInstanceData error %+v", err)
 		return params.NotifyWatchResults{}, err
 	}
 	for i, entity := range args.Entities {
@@ -107,210 +97,39 @@ func (u *LXDProfileAPI) WatchInstanceData(ctx context.Context, args params.Entit
 			result.Results[i].Error = apiservererrors.ServerError(apiservererrors.ErrPerm)
 			continue
 		}
-		unitName, err := unit.NewName(tag.Id())
-		if err != nil {
-			result.Results[i].Error = apiservererrors.ServerError(err)
-			continue
-		}
-		// TODO(nvinuesa): we could save this call if we move the lxd profile
-		// watcher to the unit domain. Then, the watcher would be already
-		// notifying for changes on the unit directly.
-		machineUUID, err := u.applicationService.GetUnitMachineUUID(ctx, unitName)
-		if err != nil {
-			result.Results[i].Error = apiservererrors.ServerError(err)
-			continue
-		}
-		watcherId, err := u.watchOneInstanceData(ctx, machineUUID)
-		if err != nil {
-			result.Results[i].Error = apiservererrors.ServerError(err)
-			continue
-		}
 
-		result.Results[i].NotifyWatcherId = watcherId
+		watcher := watcher.TODO[struct{}]()
+		id, _, err := internal.EnsureRegisterWatcher(ctx, u.watcherRegistry, watcher)
+		if err != nil {
+			result.Results[i].Error = apiservererrors.ServerError(err)
+			continue
+		}
+		result.Results[i].NotifyWatcherId = id
 
 	}
-	u.logger.Tracef(ctx, "WatchInstanceData returning %+v", result)
 	return result, nil
-}
-
-func (u *LXDProfileAPI) watchOneInstanceData(ctx context.Context, machineUUID coremachine.UUID) (string, error) {
-	watcher, err := u.machineService.WatchLXDProfiles(ctx, machineUUID)
-	if err != nil {
-		return "", errors.Trace(err)
-	}
-	watcherID, _, err := internal.EnsureRegisterWatcher[struct{}](ctx, u.watcherRegistry, watcher)
-	return watcherID, err
 }
 
 // LXDProfileName returns the name of the lxd profile applied to the unit's
 // machine for the current charm version.
 func (u *LXDProfileAPI) LXDProfileName(ctx context.Context, args params.Entities) (params.StringResults, error) {
-	u.logger.Tracef(ctx, "Starting LXDProfileName with %+v", args)
-	result := params.StringResults{
+	return params.StringResults{
 		Results: make([]params.StringResult, len(args.Entities)),
-	}
-	canAccess, err := u.accessUnit(ctx)
-	if err != nil {
-		return params.StringResults{}, err
-	}
-	for i, entity := range args.Entities {
-		tag, err := names.ParseTag(entity.Tag)
-		if err != nil {
-			result.Results[i].Error = apiservererrors.ServerError(apiservererrors.ErrPerm)
-			continue
-		}
-
-		if !canAccess(tag) {
-			result.Results[i].Error = apiservererrors.ServerError(apiservererrors.ErrPerm)
-			continue
-		}
-		unitName, err := unit.NewName(tag.Id())
-		if err != nil {
-			result.Results[i].Error = apiservererrors.ServerError(err)
-			continue
-		}
-		machineUUID, err := u.applicationService.GetUnitMachineUUID(ctx, unitName)
-		if err != nil {
-			result.Results[i].Error = apiservererrors.ServerError(err)
-			continue
-		}
-		name, err := u.getOneLXDProfileName(ctx, unitName.Application(), machineUUID)
-		if errors.Is(err, machineerrors.NotProvisioned) {
-			result.Results[i].Error = apiservererrors.ServerError(errors.NotProvisionedf("machine %q", machineUUID))
-		} else if err != nil {
-			result.Results[i].Error = apiservererrors.ServerError(err)
-			continue
-		}
-
-		result.Results[i].Result = name
-
-	}
-	return result, nil
+	}, nil
 }
 
-func (u *LXDProfileAPI) getOneLXDProfileName(ctx context.Context, appName string, machineUUID coremachine.UUID) (string, error) {
-	profileNames, err := u.machineService.AppliedLXDProfileNames(ctx, machineUUID)
-	if err != nil {
-		u.logger.Errorf(ctx, "unable to retrieve LXD profiles for machine %q: %v", machineUUID, err)
-		return "", err
-	}
-	return lxdprofile.MatchProfileNameByAppName(profileNames, appName)
-}
-
-// CanApplyLXDProfile returns true if
-//   - this is an IAAS model,
-//   - the unit is not on a manual machine,
-//   - the provider type is "lxd" or it's an lxd container.
+// CanApplyLXDProfile returns false results. LXD Profiles are not supported.
 func (u *LXDProfileAPI) CanApplyLXDProfile(ctx context.Context, args params.Entities) (params.BoolResults, error) {
-	u.logger.Tracef(ctx, "Starting CanApplyLXDProfile with %+v", args)
 	result := params.BoolResults{
 		Results: make([]params.BoolResult, len(args.Entities)),
 	}
-	canAccess, err := u.accessUnit(ctx)
-	if err != nil {
-		return params.BoolResults{}, errors.Trace(err)
-	}
-	modelInfo, err := u.modelInfoService.GetModelInfo(ctx)
-	if err != nil {
-		return params.BoolResults{}, errors.Trace(err)
-	}
-	if modelInfo.Type != model.IAAS {
-		return result, nil
-	}
-	for i, entity := range args.Entities {
-		tag, err := names.ParseTag(entity.Tag)
-		if err != nil {
-			result.Results[i].Error = apiservererrors.ServerError(apiservererrors.ErrPerm)
-			continue
-		}
-
-		if !canAccess(tag) {
-			result.Results[i].Error = apiservererrors.ServerError(apiservererrors.ErrPerm)
-			continue
-		}
-
-		name, err := u.getOneCanApplyLXDProfile(ctx, tag, modelInfo.CloudType)
-		if err != nil {
-			result.Results[i].Error = apiservererrors.ServerError(err)
-			continue
-		}
-
-		result.Results[i].Result = name
-	}
 	return result, nil
 }
 
-func (u *LXDProfileAPI) getOneCanApplyLXDProfile(ctx context.Context, tag names.Tag, providerType string) (bool, error) {
-	unitName, err := unit.NewName(tag.Id())
-	if err != nil {
-		return false, internalerrors.Capture(err)
-	}
-
-	machineName, err := u.applicationService.GetUnitMachineName(ctx, unitName)
-	if errors.Is(err, applicationerrors.UnitNotFound) {
-		return false, errors.NotFoundf("unit %q", unitName)
-	} else if err != nil {
-		return false, internalerrors.Capture(err)
-	}
-	if manual, err := u.machineService.IsMachineManuallyProvisioned(ctx, machineName); errors.Is(err, machineerrors.MachineNotFound) {
-		return false, errors.NotFoundf("machine %q", machineName)
-	} else if err != nil {
-		return false, errors.Trace(err)
-	} else if manual {
-		return false, nil
-	}
-
-	if providerType == "lxd" {
-		return true, nil
-	}
-
-	machineUUID, err := u.machineService.GetMachineUUID(ctx, machineName)
-	if errors.Is(err, machineerrors.MachineNotFound) {
-		return false, errors.NotFoundf("machine %q", machineName)
-	} else if err != nil {
-		return false, errors.Trace(err)
-	}
-
-	containerTypes, err := u.machineService.GetSupportedContainersTypes(ctx, machineUUID)
-	if errors.Is(err, machineerrors.MachineNotFound) {
-		return false, errors.NotFoundf("machine %q", machineName)
-	} else if err != nil {
-		return false, err
-	}
-	for _, containerType := range containerTypes {
-		if containerType == instance.LXD {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// LXDProfileRequired returns true if charm has an lxd profile in it.
+// LXDProfileRequired returns false results. LXD profiles are not supported.
 func (u *LXDProfileAPI) LXDProfileRequired(ctx context.Context, args params.CharmURLs) (params.BoolResults, error) {
-	u.logger.Tracef(ctx, "Starting LXDProfileRequired with %+v", args)
 	result := params.BoolResults{
 		Results: make([]params.BoolResult, len(args.URLs)),
 	}
-	for i, arg := range args.URLs {
-		required, err := u.getOneLXDProfileRequired(ctx, arg.URL)
-		if err != nil {
-			result.Results[i].Error = apiservererrors.ServerError(err)
-			continue
-		}
-
-		result.Results[i].Result = required
-	}
 	return result, nil
-}
-
-func (u *LXDProfileAPI) getOneLXDProfileRequired(ctx context.Context, curl string) (bool, error) {
-	locator, err := charms.CharmLocatorFromURL(curl)
-	if err != nil {
-		return false, errors.Trace(err)
-	}
-	lxdProfile, _, err := u.applicationService.GetCharmLXDProfile(ctx, locator)
-	if err != nil {
-		return false, err
-	}
-	return !lxdProfile.Empty(), nil
 }

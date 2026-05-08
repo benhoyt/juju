@@ -6,6 +6,7 @@ package client
 import (
 	"context"
 
+	"github.com/juju/juju/controller"
 	"github.com/juju/juju/core/blockdevice"
 	"github.com/juju/juju/core/machine"
 	"github.com/juju/juju/core/model"
@@ -45,6 +46,10 @@ type ApplicationService interface {
 	// [applicationerrors.ApplicationNotFound] is returned.
 	GetExposedEndpoints(ctx context.Context, appName string) (map[string]application.ExposedEndpoint, error)
 
+	// GetAllExposedEndpoints returns all exposed endpoints in the model,
+	// grouped by application name and endpoint name.
+	GetAllExposedEndpoints(ctx context.Context) (map[string]map[string]application.ExposedEndpoint, error)
+
 	// GetAllEndpointBindings returns the all endpoint bindings for the model, where
 	// endpoints are indexed by the application name for the application which they
 	// belong to.
@@ -78,15 +83,21 @@ type StatusService interface {
 	// by machine name.
 	GetMachineFullStatuses(ctx context.Context) (map[machine.Name]statusservice.Machine, error)
 
-	// GetStorageInstanceStatuses returns all the storage instance statuses for
+	// GetAllStorageInstanceStatuses returns all the storage instance statuses for
 	// the model.
-	GetStorageInstanceStatuses(ctx context.Context) ([]statusservice.StorageInstance, error)
+	GetAllStorageInstanceStatuses(ctx context.Context) ([]statusservice.StorageInstance, error)
 
-	// GetFilesystemStatuses returns all the filesystem statuses for the model.
-	GetFilesystemStatuses(ctx context.Context) ([]statusservice.Filesystem, error)
+	// GetAllFilesystemStatuses returns all the filesystem statuses for the model.
+	GetAllFilesystemStatuses(ctx context.Context) ([]statusservice.Filesystem, error)
 
-	// GetVolumeStatuses returns all the volume statuses for the model.
-	GetVolumeStatuses(ctx context.Context) ([]statusservice.Volume, error)
+	// GetAllVolumeStatuses returns all the volume statuses for the model.
+	GetAllVolumeStatuses(ctx context.Context) ([]statusservice.Volume, error)
+}
+
+// ControllerConfigService is used to retrieve API port and SSH port.
+type ControllerConfigService interface {
+	// ControllerConfig returns the current controller configuration.
+	ControllerConfig(context.Context) (controller.Config, error)
 }
 
 // BlockDeviceService instances can fetch block devices for a machine.

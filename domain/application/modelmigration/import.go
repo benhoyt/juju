@@ -11,13 +11,11 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/collections/set"
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 
 	coreapplication "github.com/juju/juju/core/application"
 	corecharm "github.com/juju/juju/core/charm"
-	"github.com/juju/juju/core/constraints"
 	coreerrors "github.com/juju/juju/core/errors"
-	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/logger"
 	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/modelmigration"
@@ -26,9 +24,11 @@ import (
 	"github.com/juju/juju/domain/application"
 	"github.com/juju/juju/domain/application/service"
 	"github.com/juju/juju/domain/application/state"
-	internalcharm "github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/charm/assumes"
-	"github.com/juju/juju/internal/charm/resource"
+	constraintsmigration "github.com/juju/juju/domain/constraints/modelmigration"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
+	"github.com/juju/juju/domain/deployment/charm/assumes"
+	"github.com/juju/juju/domain/deployment/charm/resource"
+	domainmodelmigration "github.com/juju/juju/domain/modelmigration/modelmigration"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -63,15 +63,10 @@ type importOperation struct {
 // from another controller model to this controller.
 type ImportService interface {
 	// ImportApplication registers the existence of an CAAS application in the model.
-	ImportCAASApplication(context.Context, string, service.ImportApplicationArgs) error
+	ImportCAASApplication(context.Context, string, service.ImportCAASApplicationArgs) error
 
 	// ImportIAASApplication registers the existence of an IAAS application in the model.
-	ImportIAASApplication(context.Context, string, service.ImportApplicationArgs) error
-
-	// RemoveImportedApplication removes an application that was imported. The
-	// application might be in an incomplete state, so it's important to remove
-	// as much of the application as possible, even on failure.
-	RemoveImportedApplication(context.Context, string) error
+	ImportIAASApplication(context.Context, string, service.ImportIAASApplicationArgs) error
 
 	// GetSpaceUUIDByName returns the UUID of the space with the given name.
 	//
@@ -88,7 +83,7 @@ func (i *importOperation) Name() string {
 // Setup creates the service that is used to import applications.
 func (i *importOperation) Setup(scope modelmigration.Scope) error {
 	i.service = service.NewMigrationService(
-		state.NewState(scope.ModelDB(), i.clock, i.logger),
+		state.NewState(scope.ModelDB(), scope.ModelUUID(), i.clock, i.logger),
 		i.clock,
 		i.logger,
 	)
@@ -102,6 +97,10 @@ func (i *importOperation) Execute(ctx context.Context, model description.Model) 
 	// subordinate units can refer to the principal ones.
 	var principals, subordinates []description.Application
 	for _, app := range model.Applications() {
+		if coreapplication.IsRemoteApplication(app.Name()) {
+			continue
+		}
+
 		if app.Subordinate() {
 			subordinates = append(subordinates, app)
 		} else {
@@ -114,27 +113,12 @@ func (i *importOperation) Execute(ctx context.Context, model description.Model) 
 		return errors.Errorf("parsing model type %q: %w", model.Type(), err)
 	}
 
-	for _, app := range append(principals, subordinates...) {
-		unitArgs := make([]service.ImportUnitArg, 0, len(app.Units()))
-		for _, unit := range app.Units() {
-			var (
-				unitArg service.ImportUnitArg
-				err     error
-			)
-			switch modelType {
-			case coremodel.CAAS:
-				unitArg, err = i.importCAASUnit(ctx, unit)
-			case coremodel.IAAS:
-				unitArg, err = i.importIAASUnit(ctx, unit)
-			default:
-				return errors.Errorf("unknown model type %q", modelType)
-			}
-			if err != nil {
-				return errors.Errorf("importing unit %q: %w", unit.Name(), err)
-			}
-			unitArgs = append(unitArgs, unitArg)
-		}
+	remoteAppUUIDs, err := domainmodelmigration.ExtractApplicationUUIDFromRemoteEntities(model)
+	if err != nil {
+		return errors.Errorf("extracting application UUID from remote entities: %w", err)
+	}
 
+	for _, app := range append(principals, subordinates...) {
 		chURL, err := internalcharm.ParseURL(app.CharmURL())
 		if err != nil {
 			return errors.Errorf("parsing charm URL %q: %w", app.CharmURL(), err)
@@ -184,7 +168,19 @@ func (i *importOperation) Execute(ctx context.Context, model description.Model) 
 			return errors.Errorf("importing exposed endpoints: %w", err)
 		}
 
-		peerRelations := i.importPeerRelations(app.Name(), model.Relations())
+		// If the application is an application that has an associated remote
+		// entity application UUID, use that, otherwise generate a new UUID for
+		// the application. This ensures that if the application is a remote
+		// application, then we maintain RI with the remote entity and any cross
+		// model relations that refer to it.
+		var appUUID coreapplication.UUID
+		if uuid, ok := remoteAppUUIDs[app.Name()]; ok {
+			appUUID = coreapplication.UUID(uuid)
+		} else {
+			if appUUID, err = coreapplication.NewUUID(); err != nil {
+				return errors.Errorf("generating application UUID for application %q: %w", app.Name(), err)
+			}
+		}
 
 		// TODO hml 04-30-2024
 		// Investigate how device constraints for an application are
@@ -194,13 +190,12 @@ func (i *importOperation) Execute(ctx context.Context, model description.Model) 
 		// Investigate how storage directives for an application are
 		// migrated and implemented if necessary.
 		args := service.ImportApplicationArgs{
+			UUID:                   appUUID,
 			Charm:                  charm,
 			CharmOrigin:            origin,
-			Units:                  unitArgs,
 			ApplicationConfig:      applicationConfig,
 			ApplicationSettings:    applicationSettings,
-			ApplicationConstraints: i.importApplicationConstraints(app),
-			ScaleState:             scaleState,
+			ApplicationConstraints: constraintsmigration.DecodeConstraints(app.Constraints()),
 			EndpointBindings:       endpointBindings,
 			ExposedEndpoints:       exposedEndpoints,
 
@@ -208,18 +203,44 @@ func (i *importOperation) Execute(ctx context.Context, model description.Model) 
 			// name and not the charm name in the metadata, but the name of
 			// the charm from the store if it's a charm from the store.
 			ReferenceName: chURL.Name,
-
-			PeerRelations: peerRelations,
 		}
 
 		switch modelType {
 		case coremodel.CAAS:
-			err = i.service.ImportCAASApplication(ctx, app.Name(), args)
+			unitArgs := make([]service.ImportCAASUnitArg, 0, len(app.Units()))
+			for _, unit := range app.Units() {
+				unitArg, err := i.importCAASUnit(ctx, unit)
+				if err != nil {
+					return errors.Errorf("importing unit %q: %w", unit.Name(), err)
+				}
+				unitArgs = append(unitArgs, unitArg)
+			}
+
+			err = i.service.ImportCAASApplication(ctx, app.Name(), service.ImportCAASApplicationArgs{
+				ImportApplicationArgs: args,
+				Units:                 unitArgs,
+				ScaleState:            scaleState,
+			})
+
 		case coremodel.IAAS:
-			err = i.service.ImportIAASApplication(ctx, app.Name(), args)
+			unitArgs := make([]service.ImportIAASUnitArg, 0, len(app.Units()))
+			for _, unit := range app.Units() {
+				unitArg, err := i.importIAASUnit(ctx, unit)
+				if err != nil {
+					return errors.Errorf("importing unit %q: %w", unit.Name(), err)
+				}
+				unitArgs = append(unitArgs, unitArg)
+			}
+
+			err = i.service.ImportIAASApplication(ctx, app.Name(), service.ImportIAASApplicationArgs{
+				ImportApplicationArgs: args,
+				Units:                 unitArgs,
+			})
+
 		default:
 			return errors.Errorf("unknown model type %q for import application", modelType)
 		}
+
 		if err != nil {
 			return errors.Errorf(
 				"import model application %q with %d units: %w",
@@ -229,23 +250,6 @@ func (i *importOperation) Execute(ctx context.Context, model description.Model) 
 	}
 
 	return nil
-}
-
-// Rollback the import operation. This is required to remove any applications
-// that were added during the import operation.
-// For instance, if multiple applications are add, each with their own
-// transaction, then if one fails, the others should be rolled back.
-func (i *importOperation) Rollback(ctx context.Context, model description.Model) error {
-	var errs []error
-	for _, app := range model.Applications() {
-		if err := i.service.RemoveImportedApplication(ctx, app.Name()); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if len(errs) == 0 {
-		return nil
-	}
-	return errors.Errorf("rollback failed: %w", errors.Join(errs...))
 }
 
 func (i *importOperation) importApplicationConfig(app description.Application) (internalcharm.Config, error) {
@@ -308,60 +312,6 @@ func (i *importOperation) importApplicationSettings(app description.Application)
 	return application.ApplicationSettings{
 		Trust: trust,
 	}, nil
-}
-
-func (i *importOperation) importApplicationConstraints(app description.Application) constraints.Value {
-	result := constraints.Value{}
-
-	cons := app.Constraints()
-	if cons == nil {
-		return result
-	}
-
-	if allocate := cons.AllocatePublicIP(); allocate {
-		result.AllocatePublicIP = &allocate
-	}
-	if arch := cons.Architecture(); arch != "" {
-		result.Arch = &arch
-	}
-	if container := instance.ContainerType(cons.Container()); container != "" {
-		result.Container = &container
-	}
-	if cores := cons.CpuCores(); cores != 0 {
-		result.CpuCores = &cores
-	}
-	if power := cons.CpuPower(); power != 0 {
-		result.CpuPower = &power
-	}
-	if inst := cons.InstanceType(); inst != "" {
-		result.InstanceType = &inst
-	}
-	if mem := cons.Memory(); mem != 0 {
-		result.Mem = &mem
-	}
-	if imageID := cons.ImageID(); imageID != "" {
-		result.ImageID = &imageID
-	}
-	if disk := cons.RootDisk(); disk != 0 {
-		result.RootDisk = &disk
-	}
-	if source := cons.RootDiskSource(); source != "" {
-		result.RootDiskSource = &source
-	}
-	if spaces := cons.Spaces(); len(spaces) > 0 {
-		result.Spaces = &spaces
-	}
-	if tags := cons.Tags(); len(tags) > 0 {
-		result.Tags = &tags
-	}
-	if virt := cons.VirtType(); virt != "" {
-		result.VirtType = &virt
-	}
-	if zones := cons.Zones(); len(zones) > 0 {
-		result.Zones = &zones
-	}
-
-	return result
 }
 
 // importCharmOrigin returns the charm origin for an application
@@ -453,7 +403,7 @@ func (i *importOperation) makeAddress(addr description.Address) (*network.SpaceA
 		result.SpaceID = network.AlphaSpaceId
 	}
 
-	return result, ptr(network.Origin(addr.Origin()))
+	return result, new(network.Origin(addr.Origin()))
 }
 
 type charmData struct {
@@ -589,8 +539,11 @@ func (i *importOperation) importCharmMetadata(data description.CharmMetadata) (*
 }
 
 func (i *importOperation) importCharmManifest(data description.CharmManifest) (*internalcharm.Manifest, error) {
+	if data == nil {
+		return nil, errors.Errorf("import charm manifest: %w", coreerrors.NotValid)
+	}
 	charmBases := data.Bases()
-	if data == nil || len(charmBases) == 0 {
+	if len(charmBases) == 0 {
 		return nil, errors.Errorf("manifest empty")
 	}
 
@@ -776,17 +729,17 @@ func (i *importOperation) importExposedEndpoints(ctx context.Context, app descri
 	return exposedEndpoints, nil
 }
 
-func (i *importOperation) importPeerRelations(appName string, modelRelations []description.Relation) map[string]int {
-	result := make(map[string]int)
-	for _, rel := range modelRelations {
-		endpoints := rel.Endpoints()
-		if len(endpoints) != 1 || endpoints[0].ApplicationName() != appName {
-			continue
-		}
-		result[endpoints[0].Name()] = rel.Id()
-	}
-	return result
-}
+const (
+	// Convert the charm-user to a string representation. This is a string
+	// representation of the internalcharm.RunAs type. This is done to ensure
+	// that if any changes to the on the wire protocol are made, we can easily
+	// adapt and convert to them, without breaking migrations to older versions.
+	// The strings ARE the API when it comes to migrations.
+	runAsRoot    = "root"
+	runAsDefault = "default"
+	runAsNonRoot = "non-root"
+	runAsSudoer  = "sudoer"
+)
 
 func importCharmUser(data description.CharmMetadata) (internalcharm.RunAs, error) {
 	switch data.RunAs() {
@@ -860,6 +813,17 @@ func importRelations(data map[string]description.CharmMetadataRelation) (map[str
 	return relations, nil
 }
 
+const (
+	// Convert the charm role to a string representation. This is a string
+	// representation of the internalcharm.RelationRole type. This is done to
+	// ensure that if any changes to the on the wire protocol are made, we can
+	// easily adapt and convert to them, without breaking migrations to older
+	// versions. The strings ARE the API when it comes to migrations.
+	roleProvider = "provider"
+	roleRequirer = "requirer"
+	rolePeer     = "peer"
+)
+
 func importRelationRole(data string) (internalcharm.RelationRole, error) {
 	switch data {
 	case rolePeer:
@@ -872,6 +836,16 @@ func importRelationRole(data string) (internalcharm.RelationRole, error) {
 		return "", errors.Errorf("unknown relation role %q: %w", data, coreerrors.NotValid)
 	}
 }
+
+const (
+	// Convert the charm scope to a string representation. This is a string
+	// representation of the internalcharm.RelationScope type. This is done to
+	// ensure that if any changes to the on the wire protocol are made, we can
+	// easily adapt and convert to them, without breaking migrations to older
+	// versions. The strings ARE the API when it comes to migrations.
+	scopeGlobal    = "global"
+	scopeContainer = "container"
+)
 
 func importRelationScope(data string) (internalcharm.RelationScope, error) {
 	switch data {
@@ -917,6 +891,16 @@ func importStorage(data map[string]description.CharmMetadataStorage) (map[string
 	}
 	return storage, nil
 }
+
+const (
+	// Convert the charm storage type to a string representation. This is a string
+	// representation of the internalcharm.StorageType type. This is done to
+	// ensure that if any changes to the on the wire protocol are made, we can
+	// easily adapt and convert to them, without breaking migrations to older
+	// versions. The strings ARE the API when it comes to migrations.
+	storageBlock      = "block"
+	storageFilesystem = "filesystem"
+)
 
 func importStorageType(data string) (internalcharm.StorageType, error) {
 	switch data {
@@ -983,6 +967,16 @@ func importResources(data map[string]description.CharmMetadataResource) (map[str
 	return resources, nil
 }
 
+const (
+	// Convert the charm resource type to a string representation. This is a
+	// string representation of the resource.Type type. This is done to ensure
+	// that if any changes to the on the wire protocol are made, we can easily
+	// adapt and convert to them, without breaking migrations to older versions.
+	// The strings ARE the API when it comes to migrations.
+	resourceFile      = "file"
+	resourceContainer = "oci-image"
+)
+
 func importResourceType(data string) (resource.Type, error) {
 	switch data {
 	case resourceFile:
@@ -1022,10 +1016,6 @@ func importBaseChannel(data string) (internalcharm.Channel, error) {
 	// not valid error if it is empty. This might be a bit too strict, but
 	// it's better to be strict than to be lenient.
 	return internalcharm.ParseChannel(data)
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }
 
 func importCharmParameters(parameters map[string]any) (map[string]any, error) {

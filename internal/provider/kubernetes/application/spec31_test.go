@@ -205,8 +205,8 @@ func getPodSpec31() corev1.PodSpec {
 				},
 			},
 			SecurityContext: &corev1.SecurityContext{
-				RunAsUser:  int64Ptr(0),
-				RunAsGroup: int64Ptr(0),
+				RunAsUser:  new(int64(0)),
+				RunAsGroup: new(int64(0)),
 			},
 		}, {
 			Name:            "gitlab",
@@ -272,12 +272,12 @@ func getPodSpec31() corev1.PodSpec {
 				},
 				{
 					Name:      "gitlab-database-uniqid",
-					MountPath: "path/to/here",
+					MountPath: "path/in/workload-container",
 				},
 			},
 			SecurityContext: &corev1.SecurityContext{
-				RunAsUser:  int64Ptr(0),
-				RunAsGroup: int64Ptr(0),
+				RunAsUser:  new(int64(0)),
+				RunAsGroup: new(int64(0)),
 			},
 		}, {
 			Name:            "nginx",
@@ -343,8 +343,8 @@ func getPodSpec31() corev1.PodSpec {
 				},
 			},
 			SecurityContext: &corev1.SecurityContext{
-				RunAsUser:  int64Ptr(0),
-				RunAsGroup: int64Ptr(0),
+				RunAsUser:  new(int64(0)),
+				RunAsGroup: new(int64(0)),
 			},
 		}},
 		Volumes: []corev1.Volume{

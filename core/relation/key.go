@@ -9,7 +9,7 @@ import (
 	"github.com/juju/names/v6"
 
 	coreerrors "github.com/juju/juju/core/errors"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -42,31 +42,6 @@ func (ei EndpointIdentifier) String() string {
 // Peer endpoint or, a Requirer and Provider endpoint. This was not required by
 // the relationKey method in 3.6.
 type Key []EndpointIdentifier
-
-// NewKey generates a Key representation of relation endpoints.
-func NewKey(eids []EndpointIdentifier) (Key, error) {
-	switch len(eids) {
-	case 1:
-		if eids[0].Role != charm.RolePeer {
-			return Key{}, errors.Errorf(`one endpoint provided, expected role "peer", got: %q`, eids[0].Role)
-		}
-		return eids, nil
-	case 2:
-		switch {
-		case eids[0].Role == charm.RoleRequirer && eids[1].Role == charm.RoleProvider:
-			return []EndpointIdentifier{eids[0], eids[1]}, nil
-		case eids[0].Role == charm.RoleProvider && eids[1].Role == charm.RoleRequirer:
-			return []EndpointIdentifier{eids[1], eids[0]}, nil
-		default:
-			return Key{}, errors.Errorf(
-				`two endpoints provided, expected roles "provider" and "requirer", got: %q and %q`,
-				eids[0].Role, eids[1].Role,
-			)
-		}
-	default:
-		return Key{}, errors.Errorf("expected 1 or 2 endpoint identifiers, got %d", len(eids))
-	}
-}
 
 // NewKeyFromString parses a relation key string and returns a relation Key. It
 // expects a string of one of the following forms:

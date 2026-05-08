@@ -4,8 +4,7 @@
 package crossmodelrelation
 
 import (
-	"maps"
-	"slices"
+	"time"
 
 	"gopkg.in/macaroon.v2"
 
@@ -96,6 +95,19 @@ type OfferDetail struct {
 	TotalActiveConnections int
 }
 
+// ConsumeDetails contains details about a offer which is being consumed.
+type ConsumeDetails struct {
+	OfferUUID string
+	Endpoints []OfferEndpoint
+}
+
+// OfferDetailWithConnections contains details about an offer and its
+// connections.
+type OfferDetailWithConnections struct {
+	OfferDetail
+	OfferConnections []OfferConnectionDetail
+}
+
 // OfferEndpoint contains details of charm endpoints as needed for offer
 // details.
 type OfferEndpoint struct {
@@ -112,12 +124,123 @@ type OfferUser struct {
 	Access      permission.Access
 }
 
+// OfferConnectionDetail contains details about a connection to an offer.
+type OfferConnectionDetail struct {
+	// OfferUUID is the UUID of the offer this connection belongs to.
+	OfferUUID string
+
+	// SourceModelUUID is the UUID of the consuming model.
+	SourceModelUUID string
+
+	// RelationID is the integer id of the relation for this connection.
+	RelationID int
+
+	// Username is the name of the user who created the offer connection.
+	Username string
+
+	// Endpoint is the name of the endpoint on the offering side.
+	Endpoint string
+
+	// Status is the status of the relation (e.g. "joining", "joined").
+	Status string
+
+	// Message is the status message.
+	Message string
+
+	// StatusSince is the time the status was last updated.
+	StatusSince *time.Time
+
+	// IngressSubnets is the list of subnets from which traffic will originate.
+	IngressSubnets []string
+}
+
 // OfferImport contains details to import an offer during migration.
 type OfferImport struct {
 	UUID            uuid.UUID
 	Name            string
 	ApplicationName string
 	Endpoints       []string
+}
+
+// RemoteApplicationEndpoint contains details about an endpoint on a remote
+// application. This is used during migration to reconstruct the synthetic
+// charm.
+type RemoteApplicationEndpoint struct {
+	Name      string
+	Role      charm.RelationRole
+	Interface string
+}
+
+// RemoteApplicationImport contains details to import a remote application
+// during migration.
+type RemoteApplicationImport struct {
+	// Name is the name of the remote application in this model.
+	Name string
+
+	// OfferUUID is the UUID of the offer being consumed.
+	OfferUUID string
+
+	// URL is the offer URL.
+	URL string
+
+	// SourceModelUUID is the UUID of the model offering the application.
+	SourceModelUUID string
+
+	// Macaroon is the authentication macaroon for the offer.
+	Macaroon string
+
+	// SyntheticCharm is the synthetic charm built from the remote endpoints.
+	// This is created in the service layer from the Endpoints field.
+	SyntheticCharm charm.Charm
+
+	// OffererApplicationUUID is the UUID of the offering application.
+	OffererApplicationUUID string
+
+	// Units are the unit names for the remote application that need to be
+	// created as synthetic units. These are extracted from relation endpoints
+	// during migration import.
+	Units []string
+}
+
+// RemoteApplicationOffererImport contains details to import a remote
+// application offerer during migration. This represents a remote application
+// that this model is consuming from another model.
+type RemoteApplicationOffererImport struct {
+	RemoteApplicationImport
+}
+
+// RemoteApplicationConsumerImport contains details to import a remote
+// application consumer during migration. This represents a remote application
+// that this model is offering from another model.
+type RemoteApplicationConsumerImport struct {
+	RemoteApplicationImport
+
+	// RelationUUID is the UUID of the relation created for this remote
+	// application consumer.
+	RelationUUID string
+
+	// ConsumerModelUUID is the UUID of the model consuming the application.
+	ConsumerModelUUID string
+
+	// ConsumerApplicationUUID is the UUID of the consuming application UUID.
+	ConsumerApplicationUUID string
+
+	// ConsumerApplicationEndpoint is the relation endpoint name of the
+	// consuming application.
+	ConsumerApplicationEndpoint string
+
+	// OffererApplicationEndpoint is the relation endpoint name of the
+	// offering application.
+	OffererApplicationEndpoint string
+
+	// UserName is the name of the user who made the original offer connection
+	// request.
+	UserName string
+
+	// SyntheticCharmUUID is the UUID to assign to the synthetic charm
+	// representing the remote application, on the consuming model. This is used
+	// to link the synthetic charm to the remote application consumer.
+	SyntheticCharmUUID string
 }
 
 // RemoteApplicationConsumer represents a remote application
@@ -258,28 +381,15 @@ type CreateOfferArgs struct {
 	// UUID is the unique identifier of the new offer.
 	UUID offer.UUID
 
-	// ApplicationName is the name of the application to which the offer pertains.
-	ApplicationName string
+	// ApplicationUUID is the UUID of the application to which the offer
+	// pertains.
+	ApplicationUUID string
 
 	// Endpoints is the collection of endpoint names offered.
 	Endpoints []string
 
 	// OfferName is the name of the offer.
 	OfferName string
-}
-
-// MakeCreateOfferArgs returns a CreateOfferArgs from the given
-// ApplicationOfferArgs and uuid.
-func MakeCreateOfferArgs(in ApplicationOfferArgs, offerUUID offer.UUID) CreateOfferArgs {
-	return CreateOfferArgs{
-		UUID:            offerUUID,
-		ApplicationName: in.ApplicationName,
-		// There was an original intention to allow for endpoint aliases,
-		// however it was never implemented. Just use the maps keys from
-		// here.
-		Endpoints: slices.Collect(maps.Keys(in.Endpoints)),
-		OfferName: in.OfferName,
-	}
 }
 
 // OfferFilter is used to query applications offered

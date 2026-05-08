@@ -11,7 +11,7 @@ import (
 	"github.com/juju/names/v6"
 
 	"github.com/juju/juju/core/devices"
-	"github.com/juju/juju/internal/storage"
+	"github.com/juju/juju/core/storage"
 )
 
 type storageFlag struct {
@@ -151,7 +151,7 @@ func (f attachStorageFlag) Set(s string) error {
 	if s == "" {
 		return nil
 	}
-	for _, id := range strings.Split(s, ",") {
+	for id := range strings.SplitSeq(s, ",") {
 		if !names.IsValidStorage(id) {
 			return errors.NotValidf("storage ID %q", id)
 		}

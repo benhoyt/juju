@@ -5,9 +5,7 @@ package secretbackends
 
 import (
 	"context"
-	"fmt"
 
-	"github.com/juju/collections/transform"
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 
@@ -16,6 +14,7 @@ import (
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/secrets"
 	"github.com/juju/juju/domain/secretbackend"
+	secretbackenderrors "github.com/juju/juju/domain/secretbackend/errors"
 	secretbackendservice "github.com/juju/juju/domain/secretbackend/service"
 	_ "github.com/juju/juju/internal/secrets/provider/all"
 	"github.com/juju/juju/internal/uuid"
@@ -83,9 +82,7 @@ func (s *SecretBackendsAPI) UpdateSecretBackends(ctx context.Context, args param
 			Reset:    arg.Reset,
 		}
 		if len(arg.Config) > 0 {
-			params.Config = transform.Map(arg.Config, func(k string, v interface{}) (string, string) {
-				return k, fmt.Sprintf("%v", v)
-			})
+			params.Config = arg.Config
 		}
 		err := s.backendService.UpdateSecretBackend(ctx, params)
 		result.Results[i].Error = apiservererrors.ServerError(err)
@@ -139,6 +136,12 @@ func (s *SecretBackendsAPI) RemoveSecretBackends(ctx context.Context, args param
 				BackendIdentifier: secretbackend.BackendIdentifier{Name: arg.Name},
 				DeleteInUse:       arg.Force,
 			})
+		if errors.Is(err, secretbackenderrors.Forbidden) {
+			err = apiservererrors.ParamsErrorf(
+				params.CodeNotSupported,
+				"deleting in use secret backend not supported",
+			)
+		}
 		result.Results[i].Error = apiservererrors.ServerError(err)
 	}
 	return result, nil

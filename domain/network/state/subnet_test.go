@@ -6,11 +6,11 @@ package state
 import (
 	"context"
 	"database/sql"
-	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/juju/tc"
 
+	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/network"
 	networktesting "github.com/juju/juju/core/network/testing"
 	networkerrors "github.com/juju/juju/domain/network/errors"
@@ -127,62 +127,130 @@ func (s *stateSuite) TestAddSubnet(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 
 	// Check the subnet entity.
-	row := db.QueryRow("SELECT cidr,vlan_tag,space_uuid FROM subnet WHERE uuid = ?", uuid.String())
-	c.Assert(row.Err(), tc.ErrorIsNil)
-	var (
-		cidr, spaceUUID string
-		VLANTag         int
-	)
-	err = row.Scan(&cidr, &VLANTag, &spaceUUID)
-	c.Assert(err, tc.ErrorIsNil)
-	c.Check(cidr, tc.Equals, "10.0.0.0/24")
-	c.Check(VLANTag, tc.Equals, 0)
-	c.Check(spaceUUID, tc.Equals, spUUID.String())
+	s.assertSubnet(c, db, uuid.String(), "10.0.0.0/24", 0, spUUID.String())
 
 	// Check the provider network entity.
-	row = db.QueryRow("SELECT uuid,provider_network_id FROM provider_network WHERE provider_network_id = ?", "provider-network-id")
-	c.Assert(row.Err(), tc.ErrorIsNil)
-	var (
-		retrievedProviderNetworkUUID, retrievedProviderNetworkID string
-	)
-	err = row.Scan(&retrievedProviderNetworkUUID, &retrievedProviderNetworkID)
-	c.Assert(err, tc.ErrorIsNil)
-	c.Check(retrievedProviderNetworkID, tc.Equals, "provider-network-id")
-	row = db.QueryRow("SELECT subnet_uuid FROM provider_network_subnet WHERE provider_network_uuid = ?", retrievedProviderNetworkUUID)
-	c.Assert(row.Err(), tc.ErrorIsNil)
-	var retrievedSubnetUUID string
-	err = row.Scan(&retrievedSubnetUUID)
-	c.Assert(err, tc.ErrorIsNil)
-	c.Check(retrievedSubnetUUID, tc.Equals, uuid.String())
-	// Check the provider subnet entity.
-	row = db.QueryRow("SELECT provider_id FROM provider_subnet WHERE subnet_uuid = ?", uuid.String())
-	c.Assert(row.Err(), tc.ErrorIsNil)
-	var retrievedProviderSubnetID string
-	err = row.Scan(&retrievedProviderSubnetID)
-	c.Assert(err, tc.ErrorIsNil)
-	c.Check(retrievedProviderSubnetID, tc.Equals, "provider-id")
-	// Check the az entity.
-	rows, err := db.Query(`
-	SELECT name 
-	FROM   availability_zone_subnet 
-	JOIN   availability_zone
-	ON     availability_zone_uuid = availability_zone.uuid
-	WHERE  subnet_uuid = ?`, uuid.String())
-	c.Assert(err, tc.ErrorIsNil)
-	defer rows.Close()
+	s.assertProviderNetworkID(c, db, uuid.String(), "provider-network-id")
 
-	var retrievedAZs []string
-	for rows.Next() {
-		var retrievedAZ string
-		err = rows.Scan(&retrievedAZ)
-		c.Assert(err, tc.ErrorIsNil)
-		retrievedAZs = append(retrievedAZs, retrievedAZ)
-	}
-	c.Check(retrievedAZs, tc.SameContents, []string{"az0", "az1"})
+	// Check the provider subnet entity.
+	s.assertProviderSubnetProviderID(c, db, uuid.String(), "provider-id")
+
+	// Check the az entity.
+	s.assertSubnetAZs(c, db, uuid.String(), []string{"az0", "az1"})
 }
 
-func (s *stateSuite) TestAddTwoSubnetsSameNetworkID(c *tc.C) {
+func (s *stateSuite) TestAddSubnetNoProviderID(c *tc.C) {
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+	db := s.DB()
+
+	spUUID := networktesting.GenSpaceUUID(c)
+	err := st.AddSpace(c.Context(), spUUID, "space0", "foo", []string{})
+	c.Assert(err, tc.ErrorIsNil)
+
+	uuid, err := uuid.NewV7()
+	c.Assert(err, tc.ErrorIsNil)
+	err = st.AddSubnet(
+		c.Context(),
+		network.SubnetInfo{
+			ID:                network.Id(uuid.String()),
+			CIDR:              "10.0.0.0/24",
+			ProviderNetworkId: "provider-network-id",
+			VLANTag:           0,
+			AvailabilityZones: []string{"az0", "az1"},
+			SpaceID:           spUUID,
+		},
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Check the subnet entity.
+	s.assertSubnet(c, db, uuid.String(), "10.0.0.0/24", 0, spUUID.String())
+
+	// Check the provider network entity.
+	s.assertProviderNetworkID(c, db, uuid.String(), "provider-network-id")
+
+	// Check the provider subnet entity.
+	s.assertNumProviderSubnets(c, db, uuid.String(), 0)
+
+	// Check the az entity.
+	s.assertSubnetAZs(c, db, uuid.String(), []string{"az0", "az1"})
+}
+
+func (s *stateSuite) TestAddSubnetNoProviderNetworkID(c *tc.C) {
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+	db := s.DB()
+
+	spUUID := networktesting.GenSpaceUUID(c)
+	err := st.AddSpace(c.Context(), spUUID, "space0", "foo", []string{})
+	c.Assert(err, tc.ErrorIsNil)
+
+	uuid, err := uuid.NewV7()
+	c.Assert(err, tc.ErrorIsNil)
+	err = st.AddSubnet(
+		c.Context(),
+		network.SubnetInfo{
+			ID:                network.Id(uuid.String()),
+			CIDR:              "10.0.0.0/24",
+			ProviderId:        "provider-id",
+			VLANTag:           0,
+			AvailabilityZones: []string{"az0", "az1"},
+			SpaceID:           spUUID,
+		},
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Check the subnet entity.
+	s.assertSubnet(c, db, uuid.String(), "10.0.0.0/24", 0, spUUID.String())
+
+	// Check the provider network entity.
+	s.assertNumProviderNetworkID(c, db, uuid.String(), 0)
+	s.assertNumProviderNetworkSubnets(c, db, uuid.String(), 0)
+
+	// Check the provider subnet entity.
+	s.assertProviderSubnetProviderID(c, db, uuid.String(), "provider-id")
+
+	// Check the az entity.
+	s.assertSubnetAZs(c, db, uuid.String(), []string{"az0", "az1"})
+}
+
+func (s *stateSuite) TestAddSubnetNoProviderIDs(c *tc.C) {
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+	db := s.DB()
+
+	spUUID := networktesting.GenSpaceUUID(c)
+	err := st.AddSpace(c.Context(), spUUID, "space0", "foo", []string{})
+	c.Assert(err, tc.ErrorIsNil)
+
+	uuid, err := uuid.NewV7()
+	c.Assert(err, tc.ErrorIsNil)
+	err = st.AddSubnet(
+		c.Context(),
+		network.SubnetInfo{
+			ID:                network.Id(uuid.String()),
+			CIDR:              "10.0.0.0/24",
+			VLANTag:           0,
+			AvailabilityZones: []string{"az0", "az1"},
+			SpaceID:           spUUID,
+		},
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Check the subnet entity.
+	s.assertSubnet(c, db, uuid.String(), "10.0.0.0/24", 0, spUUID.String())
+
+	// Check the provider network entity.
+	s.assertNumProviderNetworkID(c, db, uuid.String(), 0)
+	s.assertNumProviderNetworkSubnets(c, db, uuid.String(), 0)
+
+	// Check the provider subnet entity.
+	s.assertNumProviderSubnets(c, db, uuid.String(), 0)
+
+	// Check the az entity.
+	s.assertSubnetAZs(c, db, uuid.String(), []string{"az0", "az1"})
+}
+
+func (s *stateSuite) TestAddSubnetsSameNetworkID(c *tc.C) {
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+	db := s.DB()
 
 	spUUID := networktesting.GenSpaceUUID(c)
 	err := st.AddSpace(c.Context(), spUUID, "space0", "foo", []string{})
@@ -203,6 +271,7 @@ func (s *stateSuite) TestAddTwoSubnetsSameNetworkID(c *tc.C) {
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
+
 	subnetUUID1, err := uuid.NewV7()
 	c.Assert(err, tc.ErrorIsNil)
 	err = st.AddSubnet(
@@ -218,6 +287,9 @@ func (s *stateSuite) TestAddTwoSubnetsSameNetworkID(c *tc.C) {
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
+
+	s.assertSubnet(c, db, subnetUUID0.String(), "10.0.0.0/24", 0, spUUID.String())
+	s.assertSubnet(c, db, subnetUUID1.String(), "10.0.1.0/24", 0, spUUID.String())
 }
 
 func (s *stateSuite) TestFailAddTwoSubnetsSameProviderID(c *tc.C) {
@@ -242,6 +314,7 @@ func (s *stateSuite) TestFailAddTwoSubnetsSameProviderID(c *tc.C) {
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
+
 	subnetUUID1, err := uuid.NewV7()
 	c.Assert(err, tc.ErrorIsNil)
 	err = st.AddSubnet(
@@ -256,7 +329,7 @@ func (s *stateSuite) TestFailAddTwoSubnetsSameProviderID(c *tc.C) {
 			SpaceID:           spUUID,
 		},
 	)
-	c.Assert(err, tc.ErrorMatches, fmt.Sprintf("provider id %q for subnet %q already exists", "provider-id", subnetUUID1.String()))
+	c.Assert(err, tc.ErrorIs, coreerrors.AlreadyExists)
 }
 
 func (s *stateSuite) TestRetrieveFanSubnet(c *tc.C) {
@@ -278,6 +351,7 @@ func (s *stateSuite) TestRetrieveFanSubnet(c *tc.C) {
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
+
 	// Add a subnet of type fan.
 	subnetUUID1, err := uuid.NewV7()
 	c.Assert(err, tc.ErrorIsNil)
@@ -310,11 +384,13 @@ func (s *stateSuite) TestRetrieveFanSubnet(c *tc.C) {
 	sn1, err := st.GetSubnet(c.Context(), subnetUUID1.String())
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(sn1, tc.DeepEquals, &expected)
+
 	// Get the fan subnet by cidr.
 	subnetsByCIDR, err := st.GetSubnetsByCIDR(c.Context(), "10.0.0.0/12")
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(subnetsByCIDR, tc.HasLen, 1)
 	c.Check(subnetsByCIDR[0], tc.DeepEquals, expected)
+
 	// Get all subnets.
 	allExpected := network.SubnetInfos{
 		expected,
@@ -341,6 +417,7 @@ func (s *stateSuite) TestRetrieveSubnetByUUID(c *tc.C) {
 	// Add a subnet of type base.
 	subnetUUID0, err := uuid.NewV7()
 	c.Assert(err, tc.ErrorIsNil)
+
 	err = st.AddSubnet(
 		c.Context(),
 		network.SubnetInfo{
@@ -354,6 +431,7 @@ func (s *stateSuite) TestRetrieveSubnetByUUID(c *tc.C) {
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
+
 	// Add a space with subnet base.
 	spUUID := networktesting.GenSpaceUUID(c)
 	err = st.AddSpace(c.Context(), spUUID, "space0", "provider-space-id", []string{subnetUUID0.String()})
@@ -381,6 +459,7 @@ func (s *stateSuite) TestRetrieveAllSubnets(c *tc.C) {
 	// Add 3 subnets of type base.
 	subnetUUID0, err := uuid.NewV7()
 	c.Assert(err, tc.ErrorIsNil)
+
 	err = st.AddSubnet(
 		c.Context(),
 		network.SubnetInfo{
@@ -394,8 +473,10 @@ func (s *stateSuite) TestRetrieveAllSubnets(c *tc.C) {
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
+
 	subnetUUID1, err := uuid.NewV7()
 	c.Assert(err, tc.ErrorIsNil)
+
 	err = st.AddSubnet(
 		c.Context(),
 		network.SubnetInfo{
@@ -409,8 +490,10 @@ func (s *stateSuite) TestRetrieveAllSubnets(c *tc.C) {
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
+
 	subnetUUID2, err := uuid.NewV7()
 	c.Assert(err, tc.ErrorIsNil)
+
 	err = st.AddSubnet(
 		c.Context(),
 		network.SubnetInfo{
@@ -436,6 +519,7 @@ func (s *stateSuite) TestRetrieveAllSubnet(c *tc.C) {
 	// Add 3 subnets of type base.
 	subnetUUID0, err := uuid.NewV7()
 	c.Assert(err, tc.ErrorIsNil)
+
 	err = st.AddSubnet(
 		c.Context(),
 		network.SubnetInfo{
@@ -449,8 +533,10 @@ func (s *stateSuite) TestRetrieveAllSubnet(c *tc.C) {
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
+
 	subnetUUID1, err := uuid.NewV7()
 	c.Assert(err, tc.ErrorIsNil)
+
 	err = st.AddSubnet(
 		c.Context(),
 		network.SubnetInfo{
@@ -464,8 +550,10 @@ func (s *stateSuite) TestRetrieveAllSubnet(c *tc.C) {
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
+
 	subnetUUID2, err := uuid.NewV7()
 	c.Assert(err, tc.ErrorIsNil)
+
 	err = st.AddSubnet(
 		c.Context(),
 		network.SubnetInfo{
@@ -495,6 +583,7 @@ func (s *stateSuite) TestUpdateSubnet(c *tc.C) {
 
 	subnetUUID, err := uuid.NewV7()
 	c.Assert(err, tc.ErrorIsNil)
+
 	err = st.AddSubnet(
 		c.Context(),
 		network.SubnetInfo{
@@ -625,4 +714,111 @@ func (s *stateSuite) TestCannotAddEmptyProviderSubnet(c *tc.C) {
 
 	// Assert
 	c.Assert(err, tc.ErrorMatches, "CHECK constraint failed: chk_provider_id_empty")
+}
+
+func (s *stateSuite) assertSubnet(c *tc.C, db *sql.DB, subnetUUID, expectedCIDR string, expectedVLANTag int, expectedSpaceUUID string) {
+	row := db.QueryRow("SELECT cidr, vlan_tag, space_uuid FROM subnet WHERE uuid = ?", subnetUUID)
+	c.Assert(row.Err(), tc.ErrorIsNil)
+	var (
+		cidr, spaceUUID string
+		VLANTag         int
+	)
+	err := row.Scan(&cidr, &VLANTag, &spaceUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(cidr, tc.Equals, expectedCIDR)
+	c.Check(VLANTag, tc.Equals, expectedVLANTag)
+	c.Check(spaceUUID, tc.Equals, expectedSpaceUUID)
+}
+
+func (s *stateSuite) assertProviderNetworkID(c *tc.C, db *sql.DB, subnetUUID, expectedProviderNetworkID string) {
+	row := db.QueryRow(`
+SELECT uuid, provider_network_id
+FROM provider_network
+WHERE provider_network_id = ?`,
+		"provider-network-id",
+	)
+	c.Assert(row.Err(), tc.ErrorIsNil)
+
+	var retrievedProviderNetworkUUID, retrievedProviderNetworkID string
+	err := row.Scan(&retrievedProviderNetworkUUID, &retrievedProviderNetworkID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(retrievedProviderNetworkID, tc.Equals, expectedProviderNetworkID)
+
+	row = db.QueryRow(`
+SELECT subnet_uuid
+FROM provider_network_subnet
+WHERE provider_network_uuid = ?`,
+		retrievedProviderNetworkUUID,
+	)
+	c.Assert(row.Err(), tc.ErrorIsNil)
+
+	var retrievedSubnetUUID string
+	err = row.Scan(&retrievedSubnetUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(retrievedSubnetUUID, tc.Equals, subnetUUID)
+}
+
+func (s *stateSuite) assertNumProviderNetworkID(c *tc.C, db *sql.DB, subnetUUID string, num int) {
+	row := db.QueryRow(`
+SELECT COUNT(*)
+FROM provider_network_subnet
+WHERE subnet_uuid = ?`,
+		subnetUUID,
+	)
+	c.Assert(row.Err(), tc.ErrorIsNil)
+
+	var numProviderNetworkID int
+	err := row.Scan(&numProviderNetworkID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(numProviderNetworkID, tc.Equals, num)
+}
+
+func (s *stateSuite) assertNumProviderNetworkSubnets(c *tc.C, db *sql.DB, subnetUUID string, num int) {
+	row := db.QueryRow("SELECT COUNT(*) FROM provider_network_subnet WHERE subnet_uuid = ?", subnetUUID)
+	c.Assert(row.Err(), tc.ErrorIsNil)
+
+	var numProviderNetworkSubnetID int
+	err := row.Scan(&numProviderNetworkSubnetID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(numProviderNetworkSubnetID, tc.Equals, num)
+}
+
+func (s *stateSuite) assertProviderSubnetProviderID(c *tc.C, db *sql.DB, subnetUUID, expectedProviderID string) {
+	row := db.QueryRow("SELECT provider_id FROM provider_subnet WHERE subnet_uuid = ?", subnetUUID)
+	c.Assert(row.Err(), tc.ErrorIsNil)
+
+	var retrievedProviderSubnetID string
+	err := row.Scan(&retrievedProviderSubnetID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(retrievedProviderSubnetID, tc.Equals, expectedProviderID)
+}
+
+func (s *stateSuite) assertNumProviderSubnets(c *tc.C, db *sql.DB, subnetUUID string, num int) {
+	row := db.QueryRow("SELECT COUNT(*) FROM provider_subnet WHERE subnet_uuid = ?", subnetUUID)
+	c.Assert(row.Err(), tc.ErrorIsNil)
+	var numProviderSubnetID int
+	err := row.Scan(&numProviderSubnetID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(numProviderSubnetID, tc.Equals, num)
+}
+
+func (s *stateSuite) assertSubnetAZs(c *tc.C, db *sql.DB, subnetUUID string, expectedAZs []string) {
+	rows, err := db.Query(`
+SELECT name 
+FROM   availability_zone_subnet 
+JOIN   availability_zone
+ON     availability_zone_uuid = availability_zone.uuid
+WHERE  subnet_uuid = ?`, subnetUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	defer rows.Close()
+
+	var retrievedAZs []string
+	for rows.Next() {
+		var retrievedAZ string
+		err = rows.Scan(&retrievedAZ)
+		c.Assert(err, tc.ErrorIsNil)
+
+		retrievedAZs = append(retrievedAZs, retrievedAZ)
+	}
+	c.Check(retrievedAZs, tc.SameContents, expectedAZs)
 }

@@ -15,10 +15,14 @@ import (
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	"github.com/juju/juju/domain/crossmodelrelation"
 	crossmodelrelationerrors "github.com/juju/juju/domain/crossmodelrelation/errors"
+	domainlife "github.com/juju/juju/domain/life"
 	"github.com/juju/juju/internal/errors"
 )
 
-// CreateOffer creates an offer and links the endpoints to it.
+// CreateOffer creates an offer and links the endpoints to it. Returns an error
+// if the offer already exists, if the application does not exist or is dead, if
+// any of the endpoints do not exist or are not valid for offering, or if there
+// was an error creating the offer.
 func (st *State) CreateOffer(
 	ctx context.Context,
 	args crossmodelrelation.CreateOfferArgs,
@@ -26,6 +30,15 @@ func (st *State) CreateOffer(
 	db, err := st.DB(ctx)
 	if err != nil {
 		return errors.Capture(err)
+	}
+
+	applicationLifeStmt, err := st.Prepare(`
+SELECT life_id AS &lifeID.life_id
+FROM   application
+WHERE  uuid = $uuid.uuid
+`, uuid{}, lifeID{})
+	if err != nil {
+		return errors.Errorf("preparing application life query: %w", err)
 	}
 
 	createOfferStmt, err := st.Prepare(`
@@ -36,20 +49,23 @@ INSERT INTO offer (*) VALUES ($nameAndUUID.*)`, nameAndUUID{})
 	offer := nameAndUUID{Name: args.OfferName, UUID: args.UUID.String()}
 
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		applicationUUID, err := st.getApplicationUUID(ctx, tx, args.ApplicationName)
-		if err != nil {
+		var life lifeID
+		err := tx.Query(ctx, applicationLifeStmt, uuid{UUID: args.ApplicationUUID}).Get(&life)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return applicationerrors.ApplicationNotFound
+		} else if err != nil {
 			return errors.Capture(err)
 		}
 
-		if err := st.checkApplicationAlive(ctx, tx, applicationUUID); err != nil {
-			return errors.Capture(err)
+		if life.Life == int(domainlife.Dead) {
+			return applicationerrors.ApplicationIsDead
 		}
 
 		if err := tx.Query(ctx, createOfferStmt, offer).Run(); err != nil {
 			return errors.Errorf("inserting offer row for %q: %w", args.OfferName, err)
 		}
 
-		if err := st.createOfferEndpoints(ctx, tx, args.UUID.String(), applicationUUID, args.Endpoints); err != nil {
+		if err := st.createOfferEndpoints(ctx, tx, args.UUID.String(), args.ApplicationUUID, args.Endpoints); err != nil {
 			return errors.Errorf("offer %q: %w", args.OfferName, err)
 		}
 
@@ -57,6 +73,71 @@ INSERT INTO offer (*) VALUES ($nameAndUUID.*)`, nameAndUUID{})
 	})
 
 	return errors.Capture(err)
+}
+
+// ValidateApplicationAndEndpointsForOffer checks that the application exists
+// and is not dead, and that the endpoints are valid.
+func (st *State) ValidateApplicationAndEndpointsForOffer(
+	ctx context.Context,
+	applicationName string,
+	endpoints []string,
+) (string, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	type uuids []string
+
+	// Check that there is a valid application with no endpoints with container
+	// types. scope_id is container scope, which is not allowed to be offered.
+	stmt, err := st.Prepare(`
+SELECT COUNT(*) AS &countResult.count
+FROM   application_endpoint AS ae
+JOIN   charm_relation AS cr ON ae.charm_relation_uuid = cr.uuid
+AND    ae.uuid IN ($uuids[:])
+AND    cr.scope_id == 1
+`, uuids{}, countResult{})
+	if err != nil {
+		return "", errors.Errorf("preparing application and endpoint validation query: %w", err)
+	}
+
+	var (
+		count           countResult
+		applicationUUID string
+	)
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		var applicationLife int
+		var err error
+		applicationUUID, applicationLife, err = st.getApplicationUUIDAndLife(ctx, tx, applicationName)
+		if err != nil {
+			return errors.Capture(err)
+		} else if applicationLife == int(domainlife.Dead) {
+			return applicationerrors.ApplicationIsDead
+		}
+
+		endpointUUIDs, err := st.getEndpointUUIDs(ctx, tx, applicationUUID, endpoints)
+		if err != nil {
+			return errors.Capture(err)
+		}
+
+		err = tx.Query(ctx, stmt, uuids(endpointUUIDs)).Get(&count)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			// No endpoints with container types, validation successful.
+			return nil
+		} else if err != nil {
+			return errors.Errorf("validating application %q and endpoints: %w", applicationName, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	if count.Count > 0 {
+		return "", errors.Errorf(`can only offer endpoints with global scope, provided scope "container"`)
+	}
+	return applicationUUID, nil
 }
 
 // DeleteFailedOffer deletes the provided offer, when adding permissions
@@ -148,6 +229,59 @@ func (st *State) GetOfferUUID(ctx context.Context, name string) (string, error) 
 	return offerUUID, err
 }
 
+// GetConsumeDetails returns the offer uuid and endpoints necessary to
+// consume the offer.
+// Returns crossmodelrelationerrors.OfferNotFound of the offer is not found.
+func (st *State) GetConsumeDetails(
+	ctx context.Context,
+	offerName string,
+) (crossmodelrelation.ConsumeDetails, error) {
+	var empty crossmodelrelation.ConsumeDetails
+	db, err := st.DB(ctx)
+	if err != nil {
+		return empty, errors.Capture(err)
+	}
+
+	stmt, err := st.Prepare(`
+SELECT (o.uuid, cr.name, cr.interface, cr.capacity) AS (&consumeDetail.*),
+       crr.name AS &consumeDetail.role
+FROM   offer AS o
+JOIN   offer_endpoint AS oe ON o.uuid = oe.offer_uuid
+JOIN   application_endpoint AS ae ON oe.endpoint_uuid = ae.uuid
+JOIN   application AS a ON ae.application_uuid = a.uuid
+JOIN   charm_relation AS cr ON ae.charm_relation_uuid = cr.uuid
+JOIN   charm_relation_role AS crr ON cr.role_id = crr.id
+WHERE  o.name = $name.name
+`, consumeDetail{}, name{})
+	if err != nil {
+		return empty, errors.Errorf("preparing consume detail query: %w", err)
+	}
+
+	var details []consumeDetail
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err = tx.Query(ctx, stmt, name{Name: offerName}).GetAll(&details)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return crossmodelrelationerrors.OfferNotFound
+		}
+		return err
+	})
+	if err != nil {
+		return empty, errors.Errorf("fetching consume details for %q: %w", offerName, err)
+	}
+	endpoints := transform.Slice(details, func(in consumeDetail) crossmodelrelation.OfferEndpoint {
+		return crossmodelrelation.OfferEndpoint{
+			Name:      in.EndpointName,
+			Role:      in.EndpointRole,
+			Interface: in.EndpointInterface,
+			Limit:     in.EndpointLimit,
+		}
+	})
+	return crossmodelrelation.ConsumeDetails{
+		OfferUUID: details[0].OfferUUID,
+		Endpoints: endpoints,
+	}, nil
+}
+
 // GetOfferDetails returns the OfferDetail of every offer in the model.
 // No error is returned if offers are found.
 func (st *State) GetOfferDetails(
@@ -210,7 +344,6 @@ FROM   v_offer_detail
 }
 
 func (st *State) getOfferDetailsForUUIDs(ctx context.Context, tx *sqlair.TX, offerUUIDs []string) (offerDetails, error) {
-	type uuids []string
 	stmt, err := st.Prepare(`
 SELECT &offerDetail.*
 FROM   v_offer_detail
@@ -235,12 +368,12 @@ func (st *State) getFilteredOfferDetails(ctx context.Context, tx *sqlair.TX, inp
 	stmt, err := st.Prepare(`
 SELECT &offerDetail.*
 FROM   v_offer_detail
-WHERE  offer_name = $offerFilter.offer_name
-OR     application_name LIKE $offerFilter.application_name
-OR     application_description LIKE $offerFilter.application_description
-OR     endpoint_name = $offerFilter.endpoint_name
-OR     endpoint_role = $offerFilter.endpoint_role
-OR     endpoint_interface = $offerFilter.endpoint_interface
+WHERE  (offer_name LIKE $offerFilter.offer_name OR $offerFilter.offer_name = '')
+AND    (application_name = $offerFilter.application_name OR $offerFilter.application_name = '')
+AND    (application_description LIKE $offerFilter.application_description OR $offerFilter.application_description = '')
+AND    (endpoint_name = $offerFilter.endpoint_name OR $offerFilter.endpoint_name = '')
+AND    (endpoint_role = $offerFilter.endpoint_role OR $offerFilter.endpoint_role = '')
+AND    (endpoint_interface = $offerFilter.endpoint_interface OR $offerFilter.endpoint_interface = '')
 `, offerDetail{}, offerFilter{})
 	if err != nil {
 		return nil, errors.Errorf("preparing filtered offer detail query: %w", err)
@@ -272,24 +405,23 @@ OR     endpoint_interface = $offerFilter.endpoint_interface
 // together to find offers. Thus, the input can be split into multiple
 // output.
 //
-// Application name and description filter values should be contained with
-// the actual result. Setup their values to use the LIKE operator by adding
-// an `%` before and after the word if provided.
+// ApplicatioName is matched exactly, while ApplicationDescription
+// and OfferName are matched with a "contains" match.
 func encodeOfferFilter(in crossmodelrelation.OfferFilter) ([]offerFilter, error) {
 	result := make([]offerFilter, 0)
 	if !in.EmptyModuloEndpoints() {
 		var (
-			applicationName, applicationDescription string
+			offerName, applicationDescription string
 		)
-		if in.ApplicationName != "" {
-			applicationName = fmt.Sprintf("%%%s%%", in.ApplicationName)
-		}
 		if in.ApplicationDescription != "" {
 			applicationDescription = fmt.Sprintf("%%%s%%", in.ApplicationDescription)
 		}
+		if in.OfferName != "" {
+			offerName = fmt.Sprintf("%%%s%%", in.OfferName)
+		}
 		result = append(result, offerFilter{
-			OfferName:              in.OfferName,
-			ApplicationName:        applicationName,
+			OfferName:              offerName,
+			ApplicationName:        in.ApplicationName,
 			ApplicationDescription: applicationDescription,
 		})
 	}
@@ -303,23 +435,23 @@ func encodeOfferFilter(in crossmodelrelation.OfferFilter) ([]offerFilter, error)
 	return result, nil
 }
 
-func (st *State) getApplicationUUID(ctx context.Context, tx *sqlair.TX, appName string) (string, error) {
+func (st *State) getApplicationUUIDAndLife(ctx context.Context, tx *sqlair.TX, appName string) (string, int, error) {
 	stmt, err := st.Prepare(`
-SELECT uuid AS &uuid.uuid
+SELECT &uuidAndLife.*
 FROM   application
 WHERE  name = $name.name
-`, name{}, uuid{})
+`, name{}, uuidAndLife{})
 	if err != nil {
-		return "", errors.Errorf("preparing application uuid query: %w", err)
+		return "", -1, errors.Errorf("preparing application uuid and life query: %w", err)
 	}
 
-	var result uuid
+	var result uuidAndLife
 	if err := tx.Query(ctx, stmt, name{Name: appName}).Get(&result); errors.Is(err, sqlair.ErrNoRows) {
-		return "", applicationerrors.ApplicationNotFound
+		return "", -1, applicationerrors.ApplicationNotFound
 	} else if err != nil {
-		return "", errors.Capture(err)
+		return "", -1, errors.Capture(err)
 	}
-	return result.UUID, nil
+	return result.UUID, result.Life, nil
 }
 
 func (st *State) getApplicationUUIDs(ctx context.Context, tx *sqlair.TX, appNames []string) (map[string]string, error) {
@@ -431,6 +563,119 @@ WHERE  offer_uuid = $uuid.uuid`, uuid{})
 	}
 
 	return nil
+}
+
+// GetOfferConnections returns the connection details for all offers with the
+// given UUIDs. An empty result is returned if no connections are found.
+func (st *State) GetOfferConnections(
+	ctx context.Context,
+	offerUUIDs []string,
+) ([]crossmodelrelation.OfferConnectionDetail, error) {
+	if len(offerUUIDs) == 0 {
+		return nil, nil
+	}
+	db, err := st.DB(ctx)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	// Query connection details: relation id, username, consumer model UUID,
+	// endpoint name, and relation status.
+	connStmt, err := st.Prepare(`
+SELECT oc.offer_uuid            AS &offerConnectionDetail.offer_uuid,
+       r.relation_id            AS &offerConnectionDetail.relation_id,
+       oc.username              AS &offerConnectionDetail.username,
+       arc.consumer_model_uuid  AS &offerConnectionDetail.consumer_model_uuid,
+       cr.name                  AS &offerConnectionDetail.endpoint_name,
+       rst.name                 AS &offerConnectionDetail.status,
+       rs.message               AS &offerConnectionDetail.message,
+       rs.updated_at            AS &offerConnectionDetail.updated_at
+FROM   offer_connection AS oc
+JOIN   relation AS r ON oc.remote_relation_uuid = r.uuid
+JOIN   application_remote_consumer AS arc ON oc.uuid = arc.offer_connection_uuid
+JOIN   relation_endpoint AS re ON r.uuid = re.relation_uuid
+JOIN   application_endpoint AS ae
+       ON re.endpoint_uuid = ae.uuid
+       AND ae.application_uuid = arc.offerer_application_uuid
+JOIN   charm_relation AS cr ON ae.charm_relation_uuid = cr.uuid
+JOIN   relation_status AS rs ON r.uuid = rs.relation_uuid
+JOIN   relation_status_type AS rst ON rs.relation_status_type_id = rst.id
+WHERE  oc.offer_uuid IN ($uuids[:])
+`, offerConnectionDetail{}, uuids{})
+	if err != nil {
+		return nil, errors.Errorf("preparing offer connection detail query: %w", err)
+	}
+
+	// Query ingress subnets separately to avoid row multiplication.
+	ingressStmt, err := st.Prepare(`
+SELECT oc.offer_uuid   AS &offerConnectionIngress.offer_uuid,
+       r.relation_id   AS &offerConnectionIngress.relation_id,
+       rni.cidr         AS &offerConnectionIngress.cidr
+FROM   offer_connection AS oc
+JOIN   relation AS r ON oc.remote_relation_uuid = r.uuid
+JOIN   relation_network_ingress AS rni ON oc.remote_relation_uuid = rni.relation_uuid
+WHERE  oc.offer_uuid IN ($uuids[:])
+`, offerConnectionIngress{}, uuids{})
+	if err != nil {
+		return nil, errors.Errorf("preparing offer connection ingress query: %w", err)
+	}
+
+	var connDetails []offerConnectionDetail
+	var ingressRows []offerConnectionIngress
+
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		// Fetch connection details.
+		err = tx.Query(ctx, connStmt, uuids(offerUUIDs)).GetAll(&connDetails)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return errors.Errorf("fetching offer connection details: %w", err)
+		}
+
+		// Fetch ingress subnets.
+		err = tx.Query(ctx, ingressStmt, uuids(offerUUIDs)).GetAll(&ingressRows)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return errors.Errorf("fetching offer connection ingress: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	// Build a map of (offerUUID, relationID) → ingress CIDRs.
+	type connKey struct {
+		OfferUUID  string
+		RelationID int
+	}
+	ingressMap := make(map[connKey][]string)
+	for _, row := range ingressRows {
+		key := connKey{OfferUUID: row.OfferUUID, RelationID: row.RelationID}
+		ingressMap[key] = append(ingressMap[key], row.CIDR)
+	}
+
+	// Convert to domain types.
+	return transform.Slice(connDetails, func(detail offerConnectionDetail) crossmodelrelation.OfferConnectionDetail {
+		key := connKey{OfferUUID: detail.OfferUUID, RelationID: detail.RelationID}
+		res := crossmodelrelation.OfferConnectionDetail{
+			OfferUUID:       detail.OfferUUID,
+			SourceModelUUID: detail.ConsumerModelUUID,
+			RelationID:      detail.RelationID,
+			Username:        detail.Username,
+			Endpoint:        detail.EndpointName,
+			Status:          detail.Status,
+			StatusSince:     detail.StatusSince,
+			IngressSubnets:  ingressMap[key],
+		}
+		if detail.Message.Valid {
+			res.Message = detail.Message.String
+		}
+		return res
+	}), nil
 }
 
 func (st *State) createOfferEndpoints(ctx context.Context, tx *sqlair.TX, offerUUID, applicationUUID string, endpoints []string) error {

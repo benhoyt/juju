@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Stop a unit agent running within a single Juju process using juju_stop_unit introspect function on deployed machines."
+---
+
 (juju_stop_unit)=
 # `juju_stop_unit`
 

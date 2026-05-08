@@ -11,11 +11,11 @@ import (
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/api/jujuclient"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/application"
 	"github.com/juju/juju/core/crossmodel"
 	"github.com/juju/juju/core/model"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/testhelpers"
 	coretesting "github.com/juju/juju/internal/testing"
 	jujutesting "github.com/juju/juju/juju/testing"
@@ -111,8 +111,8 @@ func (s *ConsumeSuite) assertSuccessModelDotApplication(c *tc.C, alias string) {
 	mac, err := jujutesting.NewMacaroon("id")
 	c.Assert(err, tc.ErrorIsNil)
 	s.mockAPI.CheckCalls(c, []testhelpers.StubCall{
-		{"GetConsumeDetails", []interface{}{"bob/booster.uke"}},
-		{"Consume", []interface{}{crossmodel.ConsumeApplicationArgs{
+		{"GetConsumeDetails", []any{"bob/booster.uke"}},
+		{"Consume", []any{crossmodel.ConsumeApplicationArgs{
 			Offer:            params.ApplicationOfferDetailsV5{OfferName: "an offer", OfferURL: "ctrl:bob/booster.uke"},
 			ApplicationAlias: alias,
 			Macaroon:         mac,

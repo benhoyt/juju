@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Profile MongoDB state instance creation using juju_statetracker_report diagnostic tool on Juju controller machines."
+---
+
 (juju_statetracker_report)=
 # `juju_statetracker_report`
 

@@ -17,7 +17,6 @@ import (
 	coreerrors "github.com/juju/juju/core/errors"
 	coremachine "github.com/juju/juju/core/machine"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/core/semversion"
 	coreunit "github.com/juju/juju/core/unit"
@@ -57,8 +56,8 @@ func TestUpgraderSuite(t *testing.T) {
 }
 
 func (s *upgraderSuite) SetUpTest(c *tc.C) {
-	s.mockModelUUID = modeltesting.GenModelUUID(c)
-	s.ControllerModelConfigAttrs = map[string]interface{}{
+	s.mockModelUUID = tc.Must0(c, coremodel.NewUUID)
+	s.ControllerModelConfigAttrs = map[string]any{
 		"agent-version": coretesting.CurrentVersion().Number.String(),
 	}
 	s.ApiServerSuite.SetUpTest(c)

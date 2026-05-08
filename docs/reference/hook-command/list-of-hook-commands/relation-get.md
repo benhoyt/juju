@@ -33,38 +33,38 @@ Get relation settings.
 
 ## Details
 
-relation-get prints the value of a unit's relation setting, specified by key.
-If no key is given, or if the key is "-", all keys and values will be printed.
+`relation-get` prints the value of a unit's relation setting, specified by key.
+If no key is given, or if the key is `"-"`, all keys and values will be printed.
 
-A unit can see its own settings by calling "relation-get - MYUNIT", this will include
-any changes that have been made with "relation-set".
+A unit can see its own settings by calling `relation-get - MYUNIT`, this will include
+any changes that have been made with `relation-set`.
 
-When reading remote relation data, a charm can call relation-get --app - to get
+When reading remote relation data, a charm can call `relation-get --app -` to get
 the data for the application data bag that is set by the remote applications
 leader.
 
 Further details:
-relation-get reads the settings of the local unit, or of any remote unit, in a given
-relation (set with -r, defaulting to the current relation identifier, as in relation-set).
+`relation-get` reads the settings of the local unit, or of any remote unit, in a given
+relation (set with `-r`, defaulting to the current relation identifier, as in `relation-set`).
 The first argument specifies the settings key, and the second the remote unit, which may
 be omitted if a default is available (that is, when running a relation hook other
-than -relation-broken).
+than `-relation-broken`).
 
 If the first argument is omitted, a dictionary of all current keys and values will be
 printed; all values are always plain strings without any interpretation. If you need to
-specify a remote unit but want to see all settings, use - for the first argument.
+specify a remote unit but want to see all settings, use `"-"` for the first argument.
 
-The environment variable JUJU_REMOTE_UNIT stores the default remote unit.
+The environment variable `JUJU_REMOTE_UNIT` stores the default remote unit.
 
-You should never depend upon the presence of any given key in relation-get output.
-Processing that depends on specific values (other than private-address) should be
-restricted to -relation-changed hooks for the relevant unit, and the absence of a
+You should never depend upon the presence of any given key in `relation-get` output.
+Processing that depends on specific values (other than `private-address`) should be
+restricted to `-relation-changed` hooks for the relevant unit, and the absence of a
 remote unit’s value should never be treated as an error in the local unit.
 
-In practice, it is common and encouraged for -relation-changed hooks to exit early,
-without error, after inspecting relation-get output and determining the data is
+In practice, it is common and encouraged for `-relation-changed` hooks to exit early,
+without error, after inspecting `relation-get` output and determining the data is
 inadequate; and for all other hooks to be resilient in the face of missing keys,
-such that -relation-changed hooks will be sufficient to complete all configuration
+such that `-relation-changed` hooks will be sufficient to complete all configuration
 that depends on remote unit settings.
 
 Key value pairs for remote units that have departed remain accessible for the lifetime

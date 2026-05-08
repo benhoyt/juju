@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -28,7 +29,7 @@ import (
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/network/firewall"
 	"github.com/juju/juju/core/status"
-	domainstorage "github.com/juju/juju/domain/storage"
+	corestorage "github.com/juju/juju/core/storage"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/bootstrap"
 	"github.com/juju/juju/environs/config"
@@ -171,7 +172,7 @@ func BootstrapInstance(
 	// line of stderr, not a new line.
 	lastLength := 0
 	statusCleanedUp := false
-	instanceStatus := func(ctx context.Context, settableStatus status.Status, info string, data map[string]interface{}) error {
+	instanceStatus := func(ctx context.Context, settableStatus status.Status, info string, data map[string]any) error {
 		// The data arg is not expected to be used in this case, but
 		// print it, rather than ignore it, if we get something.
 		dataString := ""
@@ -220,7 +221,7 @@ func BootstrapInstance(
 	if args.BootstrapConstraints.HasRootDiskSource() {
 		sp, ok := args.StoragePools[*args.BootstrapConstraints.RootDiskSource]
 		if ok {
-			pType, _ := sp[domainstorage.StorageProviderType].(string)
+			pType, _ := sp[corestorage.BootstrapStoragePoolTypeKey].(string)
 			startInstanceArgs.RootDisk = &storage.VolumeParams{
 				Provider:   storage.ProviderType(pType),
 				Attributes: sp,
@@ -243,11 +244,8 @@ func BootstrapInstance(
 		// from the same logic regarding placement.
 		var filteredZones []string
 		for _, zone := range zones {
-			for _, zoneConstraint := range *args.BootstrapConstraints.Zones {
-				if zone == zoneConstraint {
-					filteredZones = append(filteredZones, zone)
-					break
-				}
+			if slices.Contains(*args.BootstrapConstraints.Zones, zone) {
+				filteredZones = append(filteredZones, zone)
 			}
 		}
 		if len(filteredZones) == 0 {
@@ -846,7 +844,7 @@ func WaitSSH(
 			checker.Close()
 			lastErr := checker.Wait()
 			format := "waited for %v "
-			args := []interface{}{opts.Timeout}
+			args := []any{opts.Timeout}
 			if len(checker.active) == 0 {
 				format += "without getting any addresses"
 			} else {

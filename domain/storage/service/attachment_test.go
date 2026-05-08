@@ -6,6 +6,7 @@ package service
 import (
 	"testing"
 
+	"github.com/juju/clock"
 	"github.com/juju/tc"
 	gomock "go.uber.org/mock/gomock"
 
@@ -14,7 +15,6 @@ import (
 	domainapplicationerrors "github.com/juju/juju/domain/application/errors"
 	domainstorage "github.com/juju/juju/domain/storage"
 	domainstorageerrors "github.com/juju/juju/domain/storage/errors"
-	domainstorageprovisioning "github.com/juju/juju/domain/storageprovisioning"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 )
 
@@ -48,7 +48,7 @@ func (s *attachmentSuite) setupMocks(c *tc.C) *gomock.Controller {
 func (s *attachmentSuite) TestGetStorageAttachmentUUIDForStorageInstanceAndUnitInvalidUUIDs(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	svc := NewService(
-		s.state, loggertesting.WrapCheckLog(c), s.storageRegistryGetter,
+		s.state, loggertesting.WrapCheckLog(c), clock.WallClock, s.storageRegistryGetter,
 	)
 
 	c.Run("storage instance uuid", func(t *testing.T) {
@@ -93,7 +93,7 @@ func (s *attachmentSuite) TestGetStorageAttachmentUUIDForStorageInstanceAndUnitS
 	).Return("", domainstorageerrors.StorageInstanceNotFound)
 
 	svc := NewService(
-		s.state, loggertesting.WrapCheckLog(c), s.storageRegistryGetter,
+		s.state, loggertesting.WrapCheckLog(c), clock.WallClock, s.storageRegistryGetter,
 	)
 	_, err := svc.GetStorageAttachmentUUIDForStorageInstanceAndUnit(
 		c.Context(),
@@ -117,7 +117,7 @@ func (s *attachmentSuite) TestGetStorageAttachmentUUIDForStorageInstanceAndUnitN
 	).Return("", domainapplicationerrors.UnitNotFound)
 
 	svc := NewService(
-		s.state, loggertesting.WrapCheckLog(c), s.storageRegistryGetter,
+		s.state, loggertesting.WrapCheckLog(c), clock.WallClock, s.storageRegistryGetter,
 	)
 	_, err := svc.GetStorageAttachmentUUIDForStorageInstanceAndUnit(
 		c.Context(),
@@ -132,7 +132,7 @@ func (s *attachmentSuite) TestGetStorageAttachmentUUIDForStorageInstanceAndUnitN
 func (s *attachmentSuite) TestGetStorageAttachmentUUIDForStorageInstanceAndUnit(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	storageAttachmentUUID := tc.Must(c, domainstorageprovisioning.NewStorageAttachmentUUID)
+	storageAttachmentUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
 	storageInstanceUUID := tc.Must(c, domainstorage.NewStorageInstanceUUID)
 	unitUUID := tc.Must(c, coreunit.NewUUID)
 	stateExp := s.state.EXPECT()
@@ -141,7 +141,7 @@ func (s *attachmentSuite) TestGetStorageAttachmentUUIDForStorageInstanceAndUnit(
 	).Return(storageAttachmentUUID, nil)
 
 	svc := NewService(
-		s.state, loggertesting.WrapCheckLog(c), s.storageRegistryGetter,
+		s.state, loggertesting.WrapCheckLog(c), clock.WallClock, s.storageRegistryGetter,
 	)
 	uuid, err := svc.GetStorageAttachmentUUIDForStorageInstanceAndUnit(
 		c.Context(),
@@ -159,7 +159,7 @@ func (s *attachmentSuite) TestGetStorageInstanceAttachmentsInvalidUUID(c *tc.C) 
 
 	badStorageUUID := domainstorage.StorageInstanceUUID("invalid-uuid")
 	svc := NewService(
-		s.state, loggertesting.WrapCheckLog(c), s.storageRegistryGetter,
+		s.state, loggertesting.WrapCheckLog(c), clock.WallClock, s.storageRegistryGetter,
 	)
 	_, err := svc.GetStorageInstanceAttachments(c.Context(), badStorageUUID)
 	c.Check(err, tc.ErrorIs, coreerrors.NotValid)
@@ -178,7 +178,7 @@ func (s *attachmentSuite) TestGetStorageInstanceAttachmentsNotFound(c *tc.C) {
 	)
 
 	svc := NewService(
-		s.state, loggertesting.WrapCheckLog(c), s.storageRegistryGetter,
+		s.state, loggertesting.WrapCheckLog(c), clock.WallClock, s.storageRegistryGetter,
 	)
 	_, err := svc.GetStorageInstanceAttachments(c.Context(), siUUID)
 	c.Check(err, tc.ErrorIs, domainstorageerrors.StorageInstanceNotFound)
@@ -188,22 +188,22 @@ func (s *attachmentSuite) TestGetStorageInstanceAttachments(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	siUUID := tc.Must(c, domainstorage.NewStorageInstanceUUID)
-	saUUID1 := tc.Must(c, domainstorageprovisioning.NewStorageAttachmentUUID)
-	saUUID2 := tc.Must(c, domainstorageprovisioning.NewStorageAttachmentUUID)
+	saUUID1 := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
+	saUUID2 := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
 
 	stExp := s.state.EXPECT()
 	stExp.GetStorageInstanceAttachments(gomock.Any(), siUUID).Return(
-		[]domainstorageprovisioning.StorageAttachmentUUID{
+		[]domainstorage.StorageAttachmentUUID{
 			saUUID1, saUUID2,
 		}, nil,
 	)
 
 	svc := NewService(
-		s.state, loggertesting.WrapCheckLog(c), s.storageRegistryGetter,
+		s.state, loggertesting.WrapCheckLog(c), clock.WallClock, s.storageRegistryGetter,
 	)
 	attachments, err := svc.GetStorageInstanceAttachments(c.Context(), siUUID)
 	c.Check(err, tc.ErrorIsNil)
-	c.Check(attachments, tc.SameContents, []domainstorageprovisioning.StorageAttachmentUUID{
+	c.Check(attachments, tc.SameContents, []domainstorage.StorageAttachmentUUID{
 		saUUID2, saUUID1,
 	})
 }

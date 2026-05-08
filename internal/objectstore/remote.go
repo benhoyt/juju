@@ -7,8 +7,8 @@ import (
 	"context"
 	"io"
 
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 
 	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/internal/errors"
@@ -21,7 +21,7 @@ import (
 type ReportableWorker interface {
 	worker.Worker
 	// Report returns a map of internal state for the worker.
-	Report() map[string]any
+	Report(ctx context.Context) map[string]any
 }
 
 // remoteFileObjectStore is a facade for the object store that uses a remote
@@ -70,7 +70,7 @@ func (c *remoteFileObjectStore) Wait() error {
 //
 // If the object does not exist, an [objectstore.ObjectNotFound] error is
 // returned.
-func (c *remoteFileObjectStore) Get(ctx context.Context, path string) (io.ReadCloser, int64, error) {
+func (c *remoteFileObjectStore) Get(ctx context.Context, path string) (io.ReadCloser, objectstore.Digest, error) {
 	return c.objectStore.Get(ctx, path)
 }
 
@@ -78,7 +78,7 @@ func (c *remoteFileObjectStore) Get(ctx context.Context, path string) (io.ReadCl
 // hash, namespaced to the model.
 //
 // If no object is found, an [objectstore.ObjectNotFound] error is returned.
-func (c *remoteFileObjectStore) GetBySHA256(ctx context.Context, sha256 string) (io.ReadCloser, int64, error) {
+func (c *remoteFileObjectStore) GetBySHA256(ctx context.Context, sha256 string) (io.ReadCloser, objectstore.Digest, error) {
 	return c.objectStore.GetBySHA256(ctx, sha256)
 }
 
@@ -86,7 +86,7 @@ func (c *remoteFileObjectStore) GetBySHA256(ctx context.Context, sha256 string) 
 // hash starting with a given prefix, namespaced to the model.
 //
 // If no object is found, an [objectstore.ObjectNotFound] error is returned.
-func (c *remoteFileObjectStore) GetBySHA256Prefix(ctx context.Context, sha256Prefix string) (io.ReadCloser, int64, error) {
+func (c *remoteFileObjectStore) GetBySHA256Prefix(ctx context.Context, sha256Prefix string) (io.ReadCloser, objectstore.Digest, error) {
 	return c.objectStore.GetBySHA256Prefix(ctx, sha256Prefix)
 }
 
@@ -115,10 +115,10 @@ func (c *remoteFileObjectStore) RemoveAll(ctx context.Context) error {
 }
 
 // Report returns a map of internal state for the remoteFileObjectStore.
-func (c *remoteFileObjectStore) Report() map[string]any {
+func (c *remoteFileObjectStore) Report(ctx context.Context) map[string]any {
 	report := make(map[string]any)
-	report["object-store"] = c.objectStore.Report()
-	report["remote-worker"] = c.remoteWorker.Report()
+	report["object-store"] = c.objectStore.Report(ctx)
+	report["remote-worker"] = c.remoteWorker.Report(ctx)
 	return report
 }
 

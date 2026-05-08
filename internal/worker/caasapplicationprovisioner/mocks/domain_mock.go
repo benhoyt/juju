@@ -21,8 +21,8 @@ import (
 	watcher "github.com/juju/juju/core/watcher"
 	charm "github.com/juju/juju/domain/application/charm"
 	service "github.com/juju/juju/domain/application/service"
+	charm0 "github.com/juju/juju/domain/deployment/charm"
 	storageprovisioning "github.com/juju/juju/domain/storageprovisioning"
-	charm0 "github.com/juju/juju/internal/charm"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -47,6 +47,44 @@ func NewMockApplicationService(ctrl *gomock.Controller) *MockApplicationService 
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockApplicationService) EXPECT() *MockApplicationServiceMockRecorder {
 	return m.recorder
+}
+
+// ClearApplicationHasK8sResources mocks base method.
+func (m *MockApplicationService) ClearApplicationHasK8sResources(arg0 context.Context, arg1 application.UUID) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ClearApplicationHasK8sResources", arg0, arg1)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ClearApplicationHasK8sResources indicates an expected call of ClearApplicationHasK8sResources.
+func (mr *MockApplicationServiceMockRecorder) ClearApplicationHasK8sResources(arg0, arg1 any) *MockApplicationServiceClearApplicationHasK8sResourcesCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClearApplicationHasK8sResources", reflect.TypeOf((*MockApplicationService)(nil).ClearApplicationHasK8sResources), arg0, arg1)
+	return &MockApplicationServiceClearApplicationHasK8sResourcesCall{Call: call}
+}
+
+// MockApplicationServiceClearApplicationHasK8sResourcesCall wrap *gomock.Call
+type MockApplicationServiceClearApplicationHasK8sResourcesCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockApplicationServiceClearApplicationHasK8sResourcesCall) Return(arg0 error) *MockApplicationServiceClearApplicationHasK8sResourcesCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockApplicationServiceClearApplicationHasK8sResourcesCall) Do(f func(context.Context, application.UUID) error) *MockApplicationServiceClearApplicationHasK8sResourcesCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockApplicationServiceClearApplicationHasK8sResourcesCall) DoAndReturn(f func(context.Context, application.UUID) error) *MockApplicationServiceClearApplicationHasK8sResourcesCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
 }
 
 // GetAllUnitCloudContainerIDsForApplication mocks base method.
@@ -440,6 +478,44 @@ func (c *MockApplicationServiceIsControllerApplicationCall) DoAndReturn(f func(c
 	return c
 }
 
+// SetApplicationHasK8sResources mocks base method.
+func (m *MockApplicationService) SetApplicationHasK8sResources(arg0 context.Context, arg1 application.UUID) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetApplicationHasK8sResources", arg0, arg1)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetApplicationHasK8sResources indicates an expected call of SetApplicationHasK8sResources.
+func (mr *MockApplicationServiceMockRecorder) SetApplicationHasK8sResources(arg0, arg1 any) *MockApplicationServiceSetApplicationHasK8sResourcesCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetApplicationHasK8sResources", reflect.TypeOf((*MockApplicationService)(nil).SetApplicationHasK8sResources), arg0, arg1)
+	return &MockApplicationServiceSetApplicationHasK8sResourcesCall{Call: call}
+}
+
+// MockApplicationServiceSetApplicationHasK8sResourcesCall wrap *gomock.Call
+type MockApplicationServiceSetApplicationHasK8sResourcesCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockApplicationServiceSetApplicationHasK8sResourcesCall) Return(arg0 error) *MockApplicationServiceSetApplicationHasK8sResourcesCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockApplicationServiceSetApplicationHasK8sResourcesCall) Do(f func(context.Context, application.UUID) error) *MockApplicationServiceSetApplicationHasK8sResourcesCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockApplicationServiceSetApplicationHasK8sResourcesCall) DoAndReturn(f func(context.Context, application.UUID) error) *MockApplicationServiceSetApplicationHasK8sResourcesCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // SetApplicationScalingState mocks base method.
 func (m *MockApplicationService) SetApplicationScalingState(arg0 context.Context, arg1 string, arg2 int, arg3 bool) error {
 	m.ctrl.T.Helper()
@@ -516,40 +592,40 @@ func (c *MockApplicationServiceUpdateCAASUnitCall) DoAndReturn(f func(context.Co
 	return c
 }
 
-// UpdateCloudService mocks base method.
-func (m *MockApplicationService) UpdateCloudService(arg0 context.Context, arg1, arg2 string, arg3 network.ProviderAddresses) error {
+// UpdateK8sService mocks base method.
+func (m *MockApplicationService) UpdateK8sService(arg0 context.Context, arg1, arg2 string, arg3 network.ProviderAddresses) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateCloudService", arg0, arg1, arg2, arg3)
+	ret := m.ctrl.Call(m, "UpdateK8sService", arg0, arg1, arg2, arg3)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// UpdateCloudService indicates an expected call of UpdateCloudService.
-func (mr *MockApplicationServiceMockRecorder) UpdateCloudService(arg0, arg1, arg2, arg3 any) *MockApplicationServiceUpdateCloudServiceCall {
+// UpdateK8sService indicates an expected call of UpdateK8sService.
+func (mr *MockApplicationServiceMockRecorder) UpdateK8sService(arg0, arg1, arg2, arg3 any) *MockApplicationServiceUpdateK8sServiceCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateCloudService", reflect.TypeOf((*MockApplicationService)(nil).UpdateCloudService), arg0, arg1, arg2, arg3)
-	return &MockApplicationServiceUpdateCloudServiceCall{Call: call}
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateK8sService", reflect.TypeOf((*MockApplicationService)(nil).UpdateK8sService), arg0, arg1, arg2, arg3)
+	return &MockApplicationServiceUpdateK8sServiceCall{Call: call}
 }
 
-// MockApplicationServiceUpdateCloudServiceCall wrap *gomock.Call
-type MockApplicationServiceUpdateCloudServiceCall struct {
+// MockApplicationServiceUpdateK8sServiceCall wrap *gomock.Call
+type MockApplicationServiceUpdateK8sServiceCall struct {
 	*gomock.Call
 }
 
 // Return rewrite *gomock.Call.Return
-func (c *MockApplicationServiceUpdateCloudServiceCall) Return(arg0 error) *MockApplicationServiceUpdateCloudServiceCall {
+func (c *MockApplicationServiceUpdateK8sServiceCall) Return(arg0 error) *MockApplicationServiceUpdateK8sServiceCall {
 	c.Call = c.Call.Return(arg0)
 	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockApplicationServiceUpdateCloudServiceCall) Do(f func(context.Context, string, string, network.ProviderAddresses) error) *MockApplicationServiceUpdateCloudServiceCall {
+func (c *MockApplicationServiceUpdateK8sServiceCall) Do(f func(context.Context, string, string, network.ProviderAddresses) error) *MockApplicationServiceUpdateK8sServiceCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockApplicationServiceUpdateCloudServiceCall) DoAndReturn(f func(context.Context, string, string, network.ProviderAddresses) error) *MockApplicationServiceUpdateCloudServiceCall {
+func (c *MockApplicationServiceUpdateK8sServiceCall) DoAndReturn(f func(context.Context, string, string, network.ProviderAddresses) error) *MockApplicationServiceUpdateK8sServiceCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -772,40 +848,40 @@ func (c *MockStatusServiceGetUnitAgentStatusesForApplicationCall) DoAndReturn(f 
 	return c
 }
 
-// SetApplicationStatus mocks base method.
-func (m *MockStatusService) SetApplicationStatus(arg0 context.Context, arg1 string, arg2 status.StatusInfo) error {
+// SetOperatorStatus mocks base method.
+func (m *MockStatusService) SetOperatorStatus(arg0 context.Context, arg1 string, arg2 status.StatusInfo) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetApplicationStatus", arg0, arg1, arg2)
+	ret := m.ctrl.Call(m, "SetOperatorStatus", arg0, arg1, arg2)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// SetApplicationStatus indicates an expected call of SetApplicationStatus.
-func (mr *MockStatusServiceMockRecorder) SetApplicationStatus(arg0, arg1, arg2 any) *MockStatusServiceSetApplicationStatusCall {
+// SetOperatorStatus indicates an expected call of SetOperatorStatus.
+func (mr *MockStatusServiceMockRecorder) SetOperatorStatus(arg0, arg1, arg2 any) *MockStatusServiceSetOperatorStatusCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetApplicationStatus", reflect.TypeOf((*MockStatusService)(nil).SetApplicationStatus), arg0, arg1, arg2)
-	return &MockStatusServiceSetApplicationStatusCall{Call: call}
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetOperatorStatus", reflect.TypeOf((*MockStatusService)(nil).SetOperatorStatus), arg0, arg1, arg2)
+	return &MockStatusServiceSetOperatorStatusCall{Call: call}
 }
 
-// MockStatusServiceSetApplicationStatusCall wrap *gomock.Call
-type MockStatusServiceSetApplicationStatusCall struct {
+// MockStatusServiceSetOperatorStatusCall wrap *gomock.Call
+type MockStatusServiceSetOperatorStatusCall struct {
 	*gomock.Call
 }
 
 // Return rewrite *gomock.Call.Return
-func (c *MockStatusServiceSetApplicationStatusCall) Return(arg0 error) *MockStatusServiceSetApplicationStatusCall {
+func (c *MockStatusServiceSetOperatorStatusCall) Return(arg0 error) *MockStatusServiceSetOperatorStatusCall {
 	c.Call = c.Call.Return(arg0)
 	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockStatusServiceSetApplicationStatusCall) Do(f func(context.Context, string, status.StatusInfo) error) *MockStatusServiceSetApplicationStatusCall {
+func (c *MockStatusServiceSetOperatorStatusCall) Do(f func(context.Context, string, status.StatusInfo) error) *MockStatusServiceSetOperatorStatusCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockStatusServiceSetApplicationStatusCall) DoAndReturn(f func(context.Context, string, status.StatusInfo) error) *MockStatusServiceSetApplicationStatusCall {
+func (c *MockStatusServiceSetOperatorStatusCall) DoAndReturn(f func(context.Context, string, status.StatusInfo) error) *MockStatusServiceSetOperatorStatusCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

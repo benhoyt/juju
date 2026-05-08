@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Manage cloud credentials in Juju: add, update, validate, and remove credentials for machine clouds and Kubernetes clusters."
+---
+
 (manage-credentials)=
 # How to manage credentials
 

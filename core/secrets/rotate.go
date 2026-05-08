@@ -73,3 +73,16 @@ func (p RotatePolicy) NextRotateTime(lastRotated time.Time) *time.Time {
 	}
 	return &result
 }
+
+// LessThan returns true if the policy is more frequent than other.
+func (p *RotatePolicy) LessThan(other RotatePolicy) bool {
+	if !p.WillRotate() && !other.WillRotate() {
+		return false // those are basically equal
+	} else if !p.WillRotate() {
+		return false // current won't rotate make it less frequent
+	} else if !other.WillRotate() {
+		return true // if the other doesn't rotate, current will be more frequent
+	}
+	now := time.Now()
+	return p.NextRotateTime(now).Before(*other.NextRotateTime(now))
+}

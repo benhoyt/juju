@@ -190,7 +190,9 @@ func (s *stateSuite) TestSetRunningAgentBinaryVersionSuccess(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(obtainedControllerID, tc.Equals, controllerID)
 	c.Check(obtainedVersion, tc.Equals, updatedVer.Number.String())
-	c.Check(obtainedArchName, tc.Equals, updatedVer.Arch)
+	// A controller's node cannot change its architecture so the architecture
+	// value still refers to the one during insertion.
+	c.Check(obtainedArchName, tc.Equals, ver.Arch)
 }
 
 func (s *stateSuite) TestSetRunningAgentBinaryVersionControllerNodeNotFound(c *tc.C) {
@@ -589,7 +591,7 @@ func (s *stateSuite) TestSetAPIAddressControllerNodeNotFound(c *tc.C) {
 }
 
 func (s *stateSuite) TestGetControllerIDs(c *tc.C) {
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		controllerID := strconv.Itoa(i)
 		nodeID := uint64(1523785546583723502 + i)
 

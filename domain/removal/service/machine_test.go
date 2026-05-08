@@ -17,6 +17,7 @@ import (
 	removal "github.com/juju/juju/domain/removal"
 	removalerrors "github.com/juju/juju/domain/removal/errors"
 	"github.com/juju/juju/domain/removal/internal"
+	"github.com/juju/juju/domain/storage"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -42,7 +43,9 @@ func (s *machineSuite) TestRemoveMachineNoForceSuccess(c *tc.C) {
 		MachineUUIDs: []string{"some-container-id"},
 		UnitUUIDs:    []string{"some-unit-id"},
 		CascadedStorageLives: internal.CascadedStorageLives{
-			StorageAttachmentUUIDs: []string{"some-attachment-id"},
+			CascadedStorageAttachmentLives: internal.CascadedStorageAttachmentLives{
+				StorageAttachmentUUIDs: []string{"some-attachment-id"},
+			},
 		},
 	}, nil)
 	exp.MachineScheduleRemoval(gomock.Any(), gomock.Any(), mUUID.String(), false, when.UTC()).Return(nil)
@@ -96,6 +99,180 @@ func (s *machineSuite) TestRemoveMachineForceWaitSuccess(c *tc.C) {
 	c.Assert(jobUUID.Validate(), tc.ErrorIsNil)
 }
 
+func (s *machineSuite) TestRemoveMachineRetrySchedulesRemovalJobs(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	mUUID := machinetesting.GenUUID(c)
+	when := time.Now()
+	s.clock.EXPECT().Now().Return(when).AnyTimes()
+
+	cascaded := internal.CascadedMachineLives{
+		MachineUUIDs: []string{"machine-child-1"},
+		UnitUUIDs:    []string{"unit-1"},
+		CascadedStorageLives: internal.CascadedStorageLives{
+			CascadedStorageAttachmentLives: internal.CascadedStorageAttachmentLives{
+				StorageAttachmentUUIDs:    []string{"storage-attachment-1"},
+				FileSystemAttachmentUUIDs: []string{"filesystem-attachment-1"},
+				VolumeAttachmentUUIDs:     []string{"volume-attachment-1"},
+				VolumeAttachmentPlanUUIDs: []string{"volume-attachment-plan-1"},
+			},
+			CascadedStorageInstanceLives: internal.CascadedStorageInstanceLives{
+				StorageInstanceUUIDs: []string{"storage-instance-1"},
+				FileSystemUUIDs:      []string{"filesystem-1"},
+				VolumeUUIDs:          []string{"volume-1"},
+			},
+		},
+	}
+
+	exp := s.modelState.EXPECT()
+	exp.MachineExists(gomock.Any(), mUUID.String()).Return(true, nil).Times(2)
+	exp.EnsureMachineNotAliveCascade(gomock.Any(), mUUID.String(), false).Return(cascaded, nil).Times(2)
+	exp.MachineScheduleRemoval(gomock.Any(), gomock.Any(), mUUID.String(), false, when.UTC()).Return(nil).Times(2)
+	exp.MachineScheduleRemoval(gomock.Any(), gomock.Any(), "machine-child-1", false, when.UTC()).Return(nil).Times(2)
+	exp.UnitScheduleRemoval(gomock.Any(), gomock.Any(), "unit-1", false, when.UTC()).Return(nil).Times(2)
+	exp.StorageAttachmentScheduleRemoval(gomock.Any(), gomock.Any(), "storage-attachment-1", false, when.UTC()).Return(nil).Times(2)
+	exp.FilesystemAttachmentScheduleRemoval(gomock.Any(), gomock.Any(), "filesystem-attachment-1", false, when.UTC()).Return(nil).Times(2)
+	exp.VolumeAttachmentScheduleRemoval(gomock.Any(), gomock.Any(), "volume-attachment-1", false, when.UTC()).Return(nil).Times(2)
+	exp.VolumeAttachmentPlanScheduleRemoval(gomock.Any(), gomock.Any(), "volume-attachment-plan-1", false, when.UTC()).Return(nil).Times(2)
+	exp.FilesystemScheduleRemoval(gomock.Any(), gomock.Any(), "filesystem-1", false, when.UTC()).Return(nil).Times(2)
+	exp.VolumeScheduleRemoval(gomock.Any(), gomock.Any(), "volume-1", false, when.UTC()).Return(nil).Times(2)
+	exp.StorageInstanceScheduleRemoval(gomock.Any(), gomock.Any(), "storage-instance-1", false, when.UTC()).Return(nil).Times(2)
+
+	jobUUID1, err := s.newService(c).RemoveMachine(c.Context(), mUUID, false, 0)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(jobUUID1.Validate(), tc.ErrorIsNil)
+
+	jobUUID2, err := s.newService(c).RemoveMachine(c.Context(), mUUID, false, 0)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(jobUUID2.Validate(), tc.ErrorIsNil)
+}
+
+func (s *machineSuite) TestRemoveMachineRetryWithForceSchedulesRemovalJobs(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	mUUID := machinetesting.GenUUID(c)
+	when := time.Now()
+	s.clock.EXPECT().Now().Return(when).AnyTimes()
+
+	cascaded := internal.CascadedMachineLives{
+		MachineUUIDs: []string{"machine-child-1"},
+		UnitUUIDs:    []string{"unit-1"},
+		CascadedStorageLives: internal.CascadedStorageLives{
+			CascadedStorageAttachmentLives: internal.CascadedStorageAttachmentLives{
+				StorageAttachmentUUIDs:    []string{"storage-attachment-1"},
+				FileSystemAttachmentUUIDs: []string{"filesystem-attachment-1"},
+				VolumeAttachmentUUIDs:     []string{"volume-attachment-1"},
+				VolumeAttachmentPlanUUIDs: []string{"volume-attachment-plan-1"},
+			},
+			CascadedStorageInstanceLives: internal.CascadedStorageInstanceLives{
+				StorageInstanceUUIDs: []string{"storage-instance-1"},
+				FileSystemUUIDs:      []string{"filesystem-1"},
+				VolumeUUIDs:          []string{"volume-1"},
+			},
+		},
+	}
+
+	exp := s.modelState.EXPECT()
+	exp.MachineExists(gomock.Any(), mUUID.String()).Return(true, nil).Times(2)
+	exp.EnsureMachineNotAliveCascade(gomock.Any(), mUUID.String(), false).Return(cascaded, nil)
+	exp.EnsureMachineNotAliveCascade(gomock.Any(), mUUID.String(), true).Return(cascaded, nil)
+	exp.MachineScheduleRemoval(gomock.Any(), gomock.Any(), mUUID.String(), false, when.UTC()).Return(nil)
+	exp.MachineScheduleRemoval(gomock.Any(), gomock.Any(), mUUID.String(), true, when.UTC()).Return(nil)
+	exp.MachineScheduleRemoval(gomock.Any(), gomock.Any(), "machine-child-1", false, when.UTC()).Return(nil)
+	exp.MachineScheduleRemoval(gomock.Any(), gomock.Any(), "machine-child-1", true, when.UTC()).Return(nil)
+	exp.UnitScheduleRemoval(gomock.Any(), gomock.Any(), "unit-1", false, when.UTC()).Return(nil)
+	exp.UnitScheduleRemoval(gomock.Any(), gomock.Any(), "unit-1", true, when.UTC()).Return(nil)
+	exp.StorageAttachmentScheduleRemoval(gomock.Any(), gomock.Any(), "storage-attachment-1", false, when.UTC()).Return(nil)
+	exp.StorageAttachmentScheduleRemoval(gomock.Any(), gomock.Any(), "storage-attachment-1", true, when.UTC()).Return(nil)
+	exp.FilesystemAttachmentScheduleRemoval(gomock.Any(), gomock.Any(), "filesystem-attachment-1", false, when.UTC()).Return(nil)
+	exp.FilesystemAttachmentScheduleRemoval(gomock.Any(), gomock.Any(), "filesystem-attachment-1", true, when.UTC()).Return(nil)
+	exp.VolumeAttachmentScheduleRemoval(gomock.Any(), gomock.Any(), "volume-attachment-1", false, when.UTC()).Return(nil)
+	exp.VolumeAttachmentScheduleRemoval(gomock.Any(), gomock.Any(), "volume-attachment-1", true, when.UTC()).Return(nil)
+	exp.VolumeAttachmentPlanScheduleRemoval(gomock.Any(), gomock.Any(), "volume-attachment-plan-1", false, when.UTC()).Return(nil)
+	exp.VolumeAttachmentPlanScheduleRemoval(gomock.Any(), gomock.Any(), "volume-attachment-plan-1", true, when.UTC()).Return(nil)
+	exp.FilesystemScheduleRemoval(gomock.Any(), gomock.Any(), "filesystem-1", false, when.UTC()).Return(nil)
+	exp.FilesystemScheduleRemoval(gomock.Any(), gomock.Any(), "filesystem-1", true, when.UTC()).Return(nil)
+	exp.VolumeScheduleRemoval(gomock.Any(), gomock.Any(), "volume-1", false, when.UTC()).Return(nil)
+	exp.VolumeScheduleRemoval(gomock.Any(), gomock.Any(), "volume-1", true, when.UTC()).Return(nil)
+	exp.StorageInstanceScheduleRemoval(gomock.Any(), gomock.Any(), "storage-instance-1", false, when.UTC()).Return(nil)
+	exp.StorageInstanceScheduleRemoval(gomock.Any(), gomock.Any(), "storage-instance-1", true, when.UTC()).Return(nil)
+
+	jobUUID1, err := s.newService(c).RemoveMachine(c.Context(), mUUID, false, 0)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(jobUUID1.Validate(), tc.ErrorIsNil)
+
+	jobUUID2, err := s.newService(c).RemoveMachine(c.Context(), mUUID, true, 0)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(jobUUID2.Validate(), tc.ErrorIsNil)
+}
+
+func (s *machineSuite) TestRemoveMachineCascadeStorage(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	mUUID := machinetesting.GenUUID(c)
+	siUUID := tc.Must(c, storage.NewStorageInstanceUUID)
+	saUUID := tc.Must(c, storage.NewStorageAttachmentUUID)
+	fsUUID := tc.Must(c, storage.NewFilesystemUUID)
+	fsaUUID := tc.Must(c, storage.NewFilesystemAttachmentUUID)
+	volUUID := tc.Must(c, storage.NewVolumeUUID)
+	vaUUID := tc.Must(c, storage.NewVolumeAttachmentUUID)
+	vapUUID := tc.Must(c, storage.NewVolumeAttachmentPlanUUID)
+
+	when := time.Now().UTC()
+	s.clock.EXPECT().Now().Return(when).AnyTimes()
+
+	cascaded := internal.CascadedMachineLives{
+		CascadedStorageLives: internal.CascadedStorageLives{
+			CascadedStorageInstanceLives: internal.CascadedStorageInstanceLives{
+				StorageInstanceUUIDs: []string{siUUID.String()},
+				FileSystemUUIDs:      []string{fsUUID.String()},
+				VolumeUUIDs:          []string{volUUID.String()},
+			},
+			CascadedStorageAttachmentLives: internal.CascadedStorageAttachmentLives{
+				StorageAttachmentUUIDs:    []string{saUUID.String()},
+				FileSystemAttachmentUUIDs: []string{fsaUUID.String()},
+				VolumeAttachmentUUIDs:     []string{vaUUID.String()},
+				VolumeAttachmentPlanUUIDs: []string{vapUUID.String()},
+			},
+		},
+	}
+
+	exp := s.modelState.EXPECT()
+	exp.MachineExists(gomock.Any(), mUUID.String()).Return(true, nil)
+	exp.EnsureMachineNotAliveCascade(
+		gomock.Any(), mUUID.String(), false,
+	).Return(cascaded, nil)
+	exp.MachineScheduleRemoval(
+		gomock.Any(), tc.Bind(tc.IsNonZeroUUID), mUUID.String(), false, when,
+	).Return(nil)
+	exp.StorageInstanceScheduleRemoval(
+		gomock.Any(), tc.Bind(tc.IsNonZeroUUID), siUUID.String(), false, when,
+	).Return(nil)
+	exp.StorageAttachmentScheduleRemoval(
+		gomock.Any(), tc.Bind(tc.IsNonZeroUUID), saUUID.String(), false, when,
+	).Return(nil)
+	exp.FilesystemScheduleRemoval(
+		gomock.Any(), tc.Bind(tc.IsNonZeroUUID), fsUUID.String(), false, when,
+	).Return(nil)
+	exp.FilesystemAttachmentScheduleRemoval(
+		gomock.Any(), tc.Bind(tc.IsNonZeroUUID), fsaUUID.String(), false, when,
+	).Return(nil)
+	exp.VolumeScheduleRemoval(
+		gomock.Any(), tc.Bind(tc.IsNonZeroUUID), volUUID.String(), false, when,
+	).Return(nil)
+	exp.VolumeAttachmentScheduleRemoval(
+		gomock.Any(), tc.Bind(tc.IsNonZeroUUID), vaUUID.String(), false, when,
+	).Return(nil)
+	exp.VolumeAttachmentPlanScheduleRemoval(
+		gomock.Any(), tc.Bind(tc.IsNonZeroUUID), vapUUID.String(), false, when,
+	).Return(nil)
+
+	svc := s.newService(c)
+	jobUUID, err := svc.RemoveMachine(c.Context(), mUUID, false, 0)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(jobUUID.Validate(), tc.ErrorIsNil)
+}
+
 func (s *machineSuite) TestRemoveMachineNotFound(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
@@ -141,43 +318,6 @@ func (s *machineSuite) TestMarkMachineAsDeadError(c *tc.C) {
 	exp.MachineExists(gomock.Any(), mUUID.String()).Return(false, errors.Errorf("the front fell off"))
 
 	err := s.newService(c).MarkMachineAsDead(c.Context(), mUUID)
-	c.Assert(err, tc.ErrorMatches, ".*the front fell off")
-}
-
-func (s *machineSuite) TestDeleteMachine(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	mUUID := machinetesting.GenUUID(c)
-
-	exp := s.modelState.EXPECT()
-	exp.MachineExists(gomock.Any(), mUUID.String()).Return(true, nil)
-	exp.DeleteMachine(gomock.Any(), mUUID.String()).Return(nil)
-
-	err := s.newService(c).DeleteMachine(c.Context(), mUUID)
-	c.Assert(err, tc.ErrorIsNil)
-}
-
-func (s *machineSuite) TestDeleteMachineMachineDoesNotExist(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	mUUID := machinetesting.GenUUID(c)
-
-	exp := s.modelState.EXPECT()
-	exp.MachineExists(gomock.Any(), mUUID.String()).Return(false, nil)
-
-	err := s.newService(c).DeleteMachine(c.Context(), mUUID)
-	c.Assert(err, tc.ErrorIs, machineerrors.MachineNotFound)
-}
-
-func (s *machineSuite) TestDeleteMachineError(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	mUUID := machinetesting.GenUUID(c)
-
-	exp := s.modelState.EXPECT()
-	exp.MachineExists(gomock.Any(), mUUID.String()).Return(false, errors.Errorf("the front fell off"))
-
-	err := s.newService(c).DeleteMachine(c.Context(), mUUID)
 	c.Assert(err, tc.ErrorMatches, ".*the front fell off")
 }
 
@@ -276,7 +416,20 @@ func (s *machineSuite) TestExecuteJobForMachineInstanceDying(c *tc.C) {
 	exp.GetInstanceLife(gomock.Any(), j.EntityUUID).Return(life.Dying, nil)
 
 	err := s.newService(c).ExecuteJob(c.Context(), j)
-	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(err, tc.ErrorIs, removalerrors.EntityNotDead)
+}
+
+func (s *machineSuite) TestExecuteJobForMachineInstanceStillAlive(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	j := newMachineJob(c)
+
+	exp := s.modelState.EXPECT()
+	exp.GetMachineLife(gomock.Any(), j.EntityUUID).Return(life.Dead, nil)
+	exp.GetInstanceLife(gomock.Any(), j.EntityUUID).Return(life.Alive, nil)
+
+	err := s.newService(c).ExecuteJob(c.Context(), j)
+	c.Assert(err, tc.ErrorIs, removalerrors.EntityStillAlive)
 }
 
 func (s *machineSuite) TestExecuteJobForMachineDyingReleaseAddresses(c *tc.C) {
@@ -288,7 +441,7 @@ func (s *machineSuite) TestExecuteJobForMachineDyingReleaseAddresses(c *tc.C) {
 	exp.GetMachineLife(gomock.Any(), j.EntityUUID).Return(life.Dying, nil)
 	exp.GetInstanceLife(gomock.Any(), j.EntityUUID).Return(life.Dead, nil)
 	exp.GetMachineNetworkInterfaces(gomock.Any(), j.EntityUUID).Return(nil, machineerrors.MachineNotFound)
-	exp.DeleteMachine(gomock.Any(), j.EntityUUID).Return(nil)
+	exp.DeleteMachine(gomock.Any(), j.EntityUUID, false).Return(nil)
 	exp.DeleteJob(gomock.Any(), j.UUID.String()).Return(nil)
 
 	err := s.newService(c).ExecuteJob(c.Context(), j)
@@ -304,10 +457,26 @@ func (s *machineSuite) TestExecuteJobForMachineDyingReleaseAddressesNotSupported
 	exp.GetMachineLife(gomock.Any(), j.EntityUUID).Return(life.Dying, nil)
 	exp.GetInstanceLife(gomock.Any(), j.EntityUUID).Return(life.Dead, nil)
 	exp.GetMachineNetworkInterfaces(gomock.Any(), j.EntityUUID).Return([]string{"foo"}, nil)
-	exp.DeleteMachine(gomock.Any(), j.EntityUUID).Return(nil)
+	exp.DeleteMachine(gomock.Any(), j.EntityUUID, false).Return(nil)
 	exp.DeleteJob(gomock.Any(), j.UUID.String()).Return(nil)
 
 	s.provider.EXPECT().ReleaseContainerAddresses(gomock.Any(), []string{"foo"}).Return(coreerrors.NotSupported)
+
+	err := s.newService(c).ExecuteJob(c.Context(), j)
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *machineSuite) TestExecuteJobForMachineDyingReleaseAddressesNoAddresses(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	j := newMachineJob(c)
+
+	exp := s.modelState.EXPECT()
+	exp.GetMachineLife(gomock.Any(), j.EntityUUID).Return(life.Dying, nil)
+	exp.GetInstanceLife(gomock.Any(), j.EntityUUID).Return(life.Dead, nil)
+	exp.GetMachineNetworkInterfaces(gomock.Any(), j.EntityUUID).Return([]string{}, nil)
+	exp.DeleteMachine(gomock.Any(), j.EntityUUID, false).Return(nil)
+	exp.DeleteJob(gomock.Any(), j.UUID.String()).Return(nil)
 
 	err := s.newService(c).ExecuteJob(c.Context(), j)
 	c.Assert(err, tc.ErrorIsNil)
@@ -322,13 +491,48 @@ func (s *machineSuite) TestExecuteJobForMachineDyingDeleteMachine(c *tc.C) {
 	exp.GetMachineLife(gomock.Any(), j.EntityUUID).Return(life.Dying, nil)
 	exp.GetInstanceLife(gomock.Any(), j.EntityUUID).Return(life.Dead, nil)
 	exp.GetMachineNetworkInterfaces(gomock.Any(), j.EntityUUID).Return([]string{"foo"}, nil)
-	exp.DeleteMachine(gomock.Any(), j.EntityUUID).Return(nil)
+	exp.DeleteMachine(gomock.Any(), j.EntityUUID, false).Return(nil)
 	exp.DeleteJob(gomock.Any(), j.UUID.String()).Return(nil)
 
 	s.provider.EXPECT().ReleaseContainerAddresses(gomock.Any(), []string{"foo"}).Return(nil)
 
 	err := s.newService(c).ExecuteJob(c.Context(), j)
 	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *machineSuite) TestExecuteJobForMachineAlreadyRemoved(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	j := newMachineJob(c)
+
+	exp := s.modelState.EXPECT()
+	exp.GetMachineLife(gomock.Any(), j.EntityUUID).Return(life.Dying, nil)
+	exp.GetInstanceLife(gomock.Any(), j.EntityUUID).Return(life.Dead, nil)
+	exp.GetMachineNetworkInterfaces(gomock.Any(), j.EntityUUID).Return([]string{"foo"}, nil)
+	exp.DeleteMachine(gomock.Any(), j.EntityUUID, false).Return(machineerrors.MachineNotFound)
+	exp.DeleteJob(gomock.Any(), j.UUID.String()).Return(nil)
+
+	s.provider.EXPECT().ReleaseContainerAddresses(gomock.Any(), []string{"foo"}).Return(nil)
+
+	err := s.newService(c).ExecuteJob(c.Context(), j)
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *machineSuite) TestExecuteJobForMachineFailedRemoval(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	j := newMachineJob(c)
+
+	exp := s.modelState.EXPECT()
+	exp.GetMachineLife(gomock.Any(), j.EntityUUID).Return(life.Dying, nil)
+	exp.GetInstanceLife(gomock.Any(), j.EntityUUID).Return(life.Dead, nil)
+	exp.GetMachineNetworkInterfaces(gomock.Any(), j.EntityUUID).Return([]string{"foo"}, nil)
+	exp.DeleteMachine(gomock.Any(), j.EntityUUID, false).Return(errors.Errorf("the front fell off"))
+
+	s.provider.EXPECT().ReleaseContainerAddresses(gomock.Any(), []string{"foo"}).Return(nil)
+
+	err := s.newService(c).ExecuteJob(c.Context(), j)
+	c.Assert(err, tc.ErrorMatches, ".*the front fell off")
 }
 
 func newMachineJob(c *tc.C) removal.Job {

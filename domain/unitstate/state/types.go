@@ -3,19 +3,163 @@
 
 package state
 
-import "github.com/juju/juju/core/unit"
+import (
+	"database/sql"
 
-// unitUUID identifies a unit.
-type unitUUID struct {
-	// UUID is the universally unique identifier for a unit.
-	UUID unit.UUID `db:"uuid"`
+	"github.com/juju/juju/core/network"
+)
+
+// entityUUID identifies an entity.
+type entityUUID struct {
+	// UUID is the universally unique identifier for an entity.
+	UUID string `db:"uuid"`
 }
+
+// entityLife identifies a unit.
+type entityLife struct {
+	// Life is the life of an entity.
+	Life int `db:"life_id"`
+}
+
+type uuids []string
 
 // unitName identifies a unit.
 type unitName struct {
 	// Name uniquely identifies a unit and indicates its application.
 	// For example, postgresql/3.
-	Name unit.Name `db:"name"`
+	Name string `db:"name"`
+}
+
+// portRange represents a range of ports for a given protocol.
+type portRange struct {
+	Protocol string `db:"protocol"`
+	FromPort int    `db:"from_port"`
+	ToPort   int    `db:"to_port"`
+}
+
+// decode returns the network.PortRange representation of the portRange.
+func (pr portRange) decode() network.PortRange {
+	return network.PortRange{
+		Protocol: pr.Protocol,
+		FromPort: pr.FromPort,
+		ToPort:   pr.ToPort,
+	}
+}
+
+type relationUUIDAndRole struct {
+	// UUID is the unique identifier of the relation.
+	UUID string `db:"relation_uuid"`
+	// Role is the name of the endpoints role, e.g. provider/requirer/peer.
+	Role string `db:"role"`
+}
+
+// endpointIdentifier is an identifier for a relation endpoint.
+type endpointIdentifier struct {
+	// ApplicationName is the name of the application the endpoint belongs to.
+	ApplicationName string `db:"application_name"`
+	// EndpointName is the name of the endpoint.
+	EndpointName string `db:"endpoint_name"`
+}
+
+// endpoint represents a network endpoint and its UUID.
+type endpoint struct {
+	UUID     string `db:"uuid"`
+	Endpoint string `db:"endpoint"`
+}
+
+// endpointName represents a network endpoint's name.
+type endpointName struct {
+	Endpoint string `db:"endpoint"`
+}
+
+// endpoints represents a list of network endpoints.
+type endpoints []string
+
+type getUnitRelAndApp struct {
+	UnitUUID     string `db:"unit_uuid"`
+	RelationUUID string `db:"relation_uuid"`
+}
+
+type relationUnitAndApp struct {
+	RelationUnitUUID string `db:"relation_unit_uuid"`
+	ApplicationUUID  string `db:"application_uuid"`
+}
+
+type applicationSettingsHash struct {
+	RelationEndpointUUID string `db:"relation_endpoint_uuid"`
+	Hash                 string `db:"sha256"`
+}
+
+type relationSetting struct {
+	Key   string `db:"key"`
+	Value string `db:"value"`
+}
+
+type unitSettingsHash struct {
+	RelationUnitUUID string `db:"relation_unit_uuid"`
+	Hash             string `db:"sha256"`
+}
+
+type relationAndApplicationUUID struct {
+	RelationUUID  string `db:"relation_uuid"`
+	ApplicationID string `db:"application_uuid"`
+}
+
+type relationApplicationSetting struct {
+	UUID  string `db:"relation_endpoint_uuid"`
+	Key   string `db:"key"`
+	Value string `db:"value"`
+}
+
+type keys []string
+
+type relationUnitSetting struct {
+	UUID  string `db:"relation_unit_uuid"`
+	Key   string `db:"key"`
+	Value string `db:"value"`
+}
+
+type portRangeUUIDs []string
+
+// endpointPortRangeUUID represents an endpointPortRange with the port range
+// UUID.
+type endpointPortRangeUUID struct {
+	UUID     string `db:"uuid"`
+	Protocol string `db:"protocol"`
+	FromPort int    `db:"from_port"`
+	ToPort   int    `db:"to_port"`
+	Endpoint string `db:"endpoint"`
+}
+
+// decode returns the network.PortRange representation of the endpointPortRangeUUID.
+func (p endpointPortRangeUUID) decode() network.PortRange {
+	return network.PortRange{
+		Protocol: p.Protocol,
+		FromPort: p.FromPort,
+		ToPort:   p.ToPort,
+	}
+}
+
+// protocol represents a network protocol type and its ID in DQLite.
+type protocol struct {
+	ID   int    `db:"id"`
+	Name string `db:"protocol"`
+}
+
+// unitPortRange represents a range of ports for a given protocol by id for a
+// given unit's endpoint by uuid.
+type unitPortRange struct {
+	UUID         string `db:"uuid"`
+	ProtocolID   int    `db:"protocol_id"`
+	FromPort     int    `db:"from_port"`
+	ToPort       int    `db:"to_port"`
+	RelationUUID string `db:"relation_uuid,omitempty"`
+	UnitUUID     string `db:"unit_uuid"`
+}
+
+// countResult holds the result of a COUNT query.
+type countResult struct {
+	Count int `db:"count"`
 }
 
 // unitState contains a YAML string representing the
@@ -29,18 +173,29 @@ type unitState struct {
 	SecretState string `db:"secret_state"`
 }
 
+// commitHookUnitInfo is data needed for a unit that does not change,
+// allowing us to fetch it up front, outside the write transaction.
+type commitHookUnitInfo struct {
+	// UnitUUID identifies a unit
+	UnitUUID string `db:"unit_uuid"`
+	// UnitLife is the life of a unit.
+	UnitLife int `db:"unit_life_id"`
+	// MachineUUID identifies the unit's machine if it is assigned to one.
+	MachineUUID sql.NullString `db:"machine_uuid"`
+}
+
 // unitStateVal is a type for holding a key/value pair that is
 // a constituent in unit state for charm and relation.
 type unitStateKeyVal[T comparable] struct {
-	UUID  unit.UUID `db:"unit_uuid"`
-	Key   T         `db:"key"`
-	Value string    `db:"value"`
+	UUID  string `db:"unit_uuid"`
+	Key   T      `db:"key"`
+	Value string `db:"value"`
 }
 
 type unitCharmStateKeyVal unitStateKeyVal[string]
 type unitRelationStateKeyVal unitStateKeyVal[int]
 
-func makeUnitCharmStateKeyVals(unitUUID unitUUID, kv map[string]string) []unitCharmStateKeyVal {
+func makeUnitCharmStateKeyVals(unitUUID entityUUID, kv map[string]string) []unitCharmStateKeyVal {
 	keyVals := make([]unitCharmStateKeyVal, 0, len(kv))
 	for k, v := range kv {
 		keyVals = append(keyVals, unitCharmStateKeyVal{
@@ -52,7 +207,7 @@ func makeUnitCharmStateKeyVals(unitUUID unitUUID, kv map[string]string) []unitCh
 	return keyVals
 }
 
-func makeUnitRelationStateKeyVals(unitUUID unitUUID, kv map[int]string) []unitRelationStateKeyVal {
+func makeUnitRelationStateKeyVals(unitUUID entityUUID, kv map[int]string) []unitRelationStateKeyVal {
 	keyVals := make([]unitRelationStateKeyVal, 0, len(kv))
 	for k, v := range kv {
 		keyVals = append(keyVals, unitRelationStateKeyVal{

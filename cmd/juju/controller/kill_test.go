@@ -18,11 +18,12 @@ import (
 	"github.com/juju/juju/api/base"
 	apicontroller "github.com/juju/juju/api/controller/controller"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/controller"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/environs"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
+	environscloudspec "github.com/juju/juju/environs/cloudspec"
 	coretesting "github.com/juju/juju/internal/testing"
 )
 
@@ -283,7 +284,7 @@ func (s *KillSuite) TestKillWaitForModels_TimeoutWithNoChange(c *tc.C) {
 		result <- err
 	}()
 
-	for i := 0; i < 12; i++ {
+	for range 12 {
 		s.syncClockAlarm(c)
 		s.clock.Advance(5 * time.Second)
 	}
@@ -368,7 +369,7 @@ func (s *KillSuite) TestKillCannotConnectToAPISucceeds(c *tc.C) {
 	ctx, err := s.runKillCommand(c, "test1", "--no-prompt")
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(cmdtesting.Stderr(ctx), tc.Contains, "Unable to open API: connection refused")
-	checkControllerRemovedFromStore(c, "test1", s.store)
+	assertControllerRemovedFromStore(c, "test1", s.store)
 }
 
 func (s *KillSuite) TestKillWithAPIConnection(c *tc.C) {
@@ -380,7 +381,32 @@ func (s *KillSuite) TestKillWithAPIConnection(c *tc.C) {
 		DestroyModels:  true,
 		DestroyStorage: &destroyStorage,
 	})
-	checkControllerRemovedFromStore(c, "test1", s.store)
+	assertControllerRemovedFromStore(c, "test1", s.store)
+}
+
+func (s *KillSuite) TestKillWithNoCloudCredential(c *tc.C) {
+	s.api.cloud.Credential = nil
+	s.api.hostedConfig = []apicontroller.HostedConfig{{
+		Name:      "test",
+		Qualifier: "prod",
+		Config:    coretesting.FakeConfig(),
+		CloudSpec: environscloudspec.CloudSpec{
+			Type: "ec2",
+			Name: "test",
+		},
+	}}
+	m1 := s.api.modelStatus[test1UUID]
+	m1.HostedMachineCount = 666
+	s.api.modelStatus[test1UUID] = m1
+	_, err := s.runKillCommand(c, "test1", "--no-prompt", "-t", "0")
+	c.Assert(err, tc.ErrorIsNil)
+	s.api.CheckCallNames(c, "DestroyController", "AllModels", "ModelStatus", "HostedModelConfigs", "ControllerConfig", "Close")
+	destroyStorage := true
+	s.api.CheckCall(c, 0, "DestroyController", apicontroller.DestroyControllerParams{
+		DestroyModels:  true,
+		DestroyStorage: &destroyStorage,
+	})
+	assertControllerRemovedFromStore(c, "test1", s.store)
 }
 
 func (s *KillSuite) TestKillEnvironmentGetFailsWithoutAPIConnection(c *tc.C) {
@@ -406,7 +432,7 @@ func (s *KillSuite) TestKillDestroysControllerWithAPIError(c *tc.C) {
 	ctx, err := s.runKillCommand(c, "test1", "--no-prompt")
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(cmdtesting.Stderr(ctx), tc.Contains, "Unable to destroy controller through the API: some destroy error\nDestroying through provider")
-	checkControllerRemovedFromStore(c, "test1", s.store)
+	assertControllerRemovedFromStore(c, "test1", s.store)
 }
 
 func (s *KillSuite) TestKillCommandConfirmation(c *tc.C) {
@@ -434,7 +460,7 @@ func (s *KillSuite) TestKillCommandConfirmation(c *tc.C) {
 func (s *KillSuite) TestKillCommandControllerAlias(c *tc.C) {
 	_, err := cmdtesting.RunCommand(c, s.newKillCommand(), "test1", "--no-prompt")
 	c.Assert(err, tc.ErrorIsNil)
-	checkControllerRemovedFromStore(c, "test1:test1", s.store)
+	assertControllerRemovedFromStore(c, "test1:test1", s.store)
 }
 
 func (s *KillSuite) TestKillAPIPermErrFails(c *tc.C) {
@@ -467,7 +493,7 @@ func (s *KillSuite) TestKillEarlyAPIConnectionTimeout(c *tc.C) {
 	ctx, err := cmdtesting.RunCommand(c, cmd, "test1", "--no-prompt")
 	c.Check(err, tc.ErrorIsNil)
 	c.Check(cmdtesting.Stderr(ctx), tc.Contains, "Unable to open API: open connection timed out")
-	checkControllerRemovedFromStore(c, "test1", s.store)
+	assertControllerRemovedFromStore(c, "test1", s.store)
 	// Check that we were actually told to wait for 10s.
 	c.Assert(clock.wait, tc.Equals, 10*time.Second)
 }

@@ -16,6 +16,7 @@ import (
 	model "github.com/juju/juju/core/model"
 	secrets "github.com/juju/juju/core/secrets"
 	watcher "github.com/juju/juju/core/watcher"
+	secret "github.com/juju/juju/domain/secret"
 	service "github.com/juju/juju/domain/secret/service"
 	service0 "github.com/juju/juju/domain/secretbackend/service"
 	gomock "go.uber.org/mock/gomock"
@@ -83,7 +84,7 @@ func (c *MockSecretServiceChangeSecretBackendCall) DoAndReturn(f func(context.Co
 }
 
 // ListCharmSecretsToDrain mocks base method.
-func (m *MockSecretService) ListCharmSecretsToDrain(arg0 context.Context, arg1 ...service.CharmSecretOwner) ([]*secrets.SecretMetadataForDrain, error) {
+func (m *MockSecretService) ListCharmSecretsToDrain(arg0 context.Context, arg1 ...secret.CharmSecretOwner) ([]*secrets.SecretMetadataForDrain, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0}
 	for _, a := range arg1 {
@@ -115,13 +116,13 @@ func (c *MockSecretServiceListCharmSecretsToDrainCall) Return(arg0 []*secrets.Se
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretServiceListCharmSecretsToDrainCall) Do(f func(context.Context, ...service.CharmSecretOwner) ([]*secrets.SecretMetadataForDrain, error)) *MockSecretServiceListCharmSecretsToDrainCall {
+func (c *MockSecretServiceListCharmSecretsToDrainCall) Do(f func(context.Context, ...secret.CharmSecretOwner) ([]*secrets.SecretMetadataForDrain, error)) *MockSecretServiceListCharmSecretsToDrainCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretServiceListCharmSecretsToDrainCall) DoAndReturn(f func(context.Context, ...service.CharmSecretOwner) ([]*secrets.SecretMetadataForDrain, error)) *MockSecretServiceListCharmSecretsToDrainCall {
+func (c *MockSecretServiceListCharmSecretsToDrainCall) DoAndReturn(f func(context.Context, ...secret.CharmSecretOwner) ([]*secrets.SecretMetadataForDrain, error)) *MockSecretServiceListCharmSecretsToDrainCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

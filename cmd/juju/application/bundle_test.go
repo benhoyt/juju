@@ -17,15 +17,15 @@ import (
 	apiclient "github.com/juju/juju/api/client/client"
 	commoncharm "github.com/juju/juju/api/common/charm"
 	apicommoncharms "github.com/juju/juju/api/common/charms"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/application/deployer"
 	apputils "github.com/juju/juju/cmd/juju/application/utils"
 	"github.com/juju/juju/core/arch"
 	"github.com/juju/juju/core/base"
 	corecharm "github.com/juju/juju/core/charm"
 	"github.com/juju/juju/core/crossmodel"
-	"github.com/juju/juju/internal/charm"
-	charmtesting "github.com/juju/juju/internal/charm/testing"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
+	"github.com/juju/juju/domain/deployment/charm"
+	charmtesting "github.com/juju/juju/domain/deployment/charm/testing"
 	coretesting "github.com/juju/juju/internal/testing"
 	jujutesting "github.com/juju/juju/juju/testing"
 	"github.com/juju/juju/rpc/params"
@@ -43,7 +43,7 @@ func TestBundleDeploySuite(t *testing.T) {
 }
 
 func (s *BundleDeploySuite) SetUpTest(c *tc.C) {
-	cfg := map[string]interface{}{
+	cfg := map[string]any{
 		"name":           "name",
 		"uuid":           "deadbeef-0bad-400d-8000-4b1d0d06f00d",
 		"type":           "foo",
@@ -360,79 +360,6 @@ func (s *BundleDeploySuite) TestDeployBundleLocalDeploymentBadConfig(c *tc.C) {
 	c.Assert(err, tc.ErrorMatches, `cannot deploy bundle: unable to process overlays: "missing-file" not found`)
 }
 
-func (s *BundleDeploySuite) TestDeployBundleLocalDeploymentLXDProfile(c *tc.C) {
-	charmsPath := c.MkDir()
-	charmDir := testcharms.RepoWithSeries("bionic").CharmArchive(charmsPath, "lxd-profile")
-
-	curl := charm.MustParseURL("local:lxd-profile-0")
-	withLocalCharmDeployable(s.fakeAPI, curl, charmDir, false)
-	withLocalBundleCharmDeployable(
-		s.fakeAPI, curl, base.MustParseBaseFromString("ubuntu@20.04"),
-		charmDir.Meta(), charmDir.Manifest(), false,
-	)
-
-	var args *apiclient.StatusArgs
-	s.fakeAPI.Call("Status", args).Returns(&params.FullStatus{}, nil)
-
-	err := s.DeployBundleYAML(c, fmt.Sprintf(`
-       default-base: ubuntu@20.04
-       applications:
-           lxd-profile:
-               charm: %s
-               num_units: 1
-   `, charmDir.Path))
-	c.Assert(err, tc.ErrorIsNil)
-}
-
-func (s *BundleDeploySuite) TestDeployBundleLocalDeploymentBadLXDProfile(c *tc.C) {
-	charmsPath := c.MkDir()
-	charmDir := testcharms.RepoWithSeries("bionic").CharmArchive(charmsPath, "lxd-profile-fail")
-
-	curl := charm.MustParseURL("local:lxd-profile-fail-0")
-	withLocalCharmDeployable(s.fakeAPI, curl, charmDir, false)
-	withCharmDeployable(
-		s.fakeAPI, curl, defaultBase,
-		&charm.Meta{Name: "lxd-profile"},
-		false, 0, nil, nil,
-	)
-
-	var args *apiclient.StatusArgs
-	s.fakeAPI.Call("Status", args).Returns(&params.FullStatus{}, nil)
-
-	err := s.DeployBundleYAML(c, fmt.Sprintf(`
-       default-base: ubuntu@22.04
-       applications:
-           lxd-profile-fail:
-               charm: %s
-               num_units: 1
-   `, charmDir.Path))
-	c.Assert(err, tc.ErrorMatches, "cannot deploy bundle: cannot deploy local charm at .*: invalid lxd-profile.yaml: contains device type \"unix-disk\"")
-}
-
-func (s *BundleDeploySuite) TestDeployBundleLocalDeploymentBadLXDProfileWithForce(c *tc.C) {
-	charmsPath := c.MkDir()
-	charmDir := testcharms.RepoWithSeries("bionic").CharmArchive(charmsPath, "lxd-profile-fail")
-
-	curl := charm.MustParseURL("local:lxd-profile-fail-0")
-	withLocalCharmDeployable(s.fakeAPI, curl, charmDir, true)
-	withLocalBundleCharmDeployable(
-		s.fakeAPI, curl, base.MustParseBaseFromString("ubuntu@20.04"),
-		charmDir.Meta(), charmDir.Manifest(), true,
-	)
-
-	var args *apiclient.StatusArgs
-	s.fakeAPI.Call("Status", args).Returns(&params.FullStatus{}, nil)
-
-	err := s.DeployBundleYAML(c, fmt.Sprintf(`
-       default-base: ubuntu@20.04
-       applications:
-           lxd-profile-fail:
-               charm: %s
-               num_units: 1
-   `, charmDir.Path), "--force")
-	c.Assert(err, tc.ErrorIsNil)
-}
-
 func (s *BundleDeploySuite) TestDeployBundleLocalDeploymentWithBundleOverlay(c *tc.C) {
 	configDir := c.MkDir()
 	configFile := filepath.Join(configDir, "config.yaml")
@@ -478,7 +405,7 @@ func (s *BundleDeploySuite) TestDeployBundleLocalDeploymentWithBundleOverlay(c *
 	}
 	s.fakeAPI.Call("Deploy", deployArgs).Returns(error(nil))
 	s.fakeAPI.Call("AddRelation",
-		[]interface{}{"wordpress:db", "mysql:server"}, []interface{}{},
+		[]any{"wordpress:db", "mysql:server"}, []any{},
 	).Returns(
 		&params.AddRelationResults{},
 		error(nil),
@@ -568,7 +495,7 @@ func (s *BundleDeploySuite) TestDeployBundleLocalAndCharmhubCharms(c *tc.C) {
 		NumUnits:        1,
 	}).Returns([]string{"wordpress/0"}, error(nil))
 	s.fakeAPI.Call("AddRelation",
-		[]interface{}{"wordpress:db", "mysql:server"}, []interface{}{},
+		[]any{"wordpress:db", "mysql:server"}, []any{},
 	).Returns(
 		&params.AddRelationResults{},
 		error(nil),
@@ -845,7 +772,7 @@ func (s *BundleDeploySuite) TestDeployBundleWithSAAS(c *tc.C) {
 	).Returns("mysql", nil)
 
 	s.fakeAPI.Call("AddRelation",
-		[]interface{}{"wordpress:db", "mysql:db"}, []interface{}{},
+		[]any{"wordpress:db", "mysql:db"}, []any{},
 	).Returns(
 		&params.AddRelationResults{},
 		error(nil),

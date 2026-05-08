@@ -10,6 +10,7 @@ import (
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/httpbakery"
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
+	"github.com/juju/gnuflag"
 	"github.com/juju/names/v6"
 	"gopkg.in/macaroon.v2"
 
@@ -19,8 +20,8 @@ import (
 	"github.com/juju/juju/api/controller/controller"
 	"github.com/juju/juju/api/jujuclient"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/modelcmd"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -35,6 +36,8 @@ func newMigrateCommand() modelcmd.ModelCommand {
 // migrateCommand initiates a model migration.
 type migrateCommand struct {
 	modelcmd.ModelCommandBase
+	DryRun bool
+
 	targetController string
 
 	// Overridden by tests
@@ -45,7 +48,7 @@ type migrateCommand struct {
 }
 
 type migrateAPI interface {
-	InitiateMigration(ctx context.Context, spec controller.MigrationSpec) (string, error)
+	InitiateMigration(ctx context.Context, spec controller.MigrationSpec, dryRun bool) (string, error)
 	IdentityProviderURL(ctx context.Context) (string, error)
 	Close() error
 }
@@ -99,6 +102,12 @@ func (c *migrateCommand) Info() *cmd.Info {
 	})
 }
 
+func (c *migrateCommand) SetFlags(f *gnuflag.FlagSet) {
+	c.ModelCommandBase.SetFlags(f)
+
+	f.BoolVar(&c.DryRun, "dry-run", false, "Runs the migration prechecks, but does not start the migration. Returns nothing if the migration can proceed.")
+}
+
 // Init implements cmd.Command.
 func (c *migrateCommand) Init(args []string) error {
 	if len(args) < 1 {
@@ -146,10 +155,16 @@ func (c *migrateCommand) Run(ctx *cmd.Context) error {
 		return err
 	}
 	defer func() { _ = api.Close() }()
-	id, err := api.InitiateMigration(ctx, *spec)
+	id, err := api.InitiateMigration(ctx, *spec, c.DryRun)
 	if err != nil {
 		return err
 	}
+
+	if id == "" {
+		ctx.Infof("Dry run successful: migration can proceed")
+		return nil
+	}
+
 	ctx.Infof("Migration started with ID %q", id)
 	return nil
 }

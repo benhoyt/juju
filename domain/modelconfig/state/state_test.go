@@ -4,12 +4,13 @@
 package state_test
 
 import (
+	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/juju/tc"
 
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	usertesting "github.com/juju/juju/core/user/testing"
 	jujuversion "github.com/juju/juju/core/version"
 	domainagentbinary "github.com/juju/juju/domain/agentbinary"
@@ -88,8 +89,60 @@ func (s *stateSuite) TestModelConfigUpdate(c *tc.C) {
 
 		config, err := st.ModelConfig(c.Context())
 		c.Assert(err, tc.ErrorIsNil)
-		c.Assert(config, tc.DeepEquals, test.Expected)
+		c.Check(config, tc.DeepEquals, test.Expected)
 	}
+}
+
+func (s *stateSuite) TestModelConfigEmpty(c *tc.C) {
+	st := state.NewState(s.TxnRunnerFactory())
+	modelConfig, err := st.ModelConfig(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(modelConfig, tc.DeepEquals, map[string]string{})
+}
+
+func (s *stateSuite) TestModelConfigAgentStream(c *tc.C) {
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO agent_version (stream_id, target_version, latest_version) 
+                   VALUES (1, ?, ?)`,
+			jujuversion.Current.String(), jujuversion.Current.String())
+		return err
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	st := state.NewState(s.TxnRunnerFactory())
+	modelConfig, err := st.ModelConfig(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(modelConfig, tc.DeepEquals, map[string]string{
+		"agent-stream":  "proposed",
+		"agent-version": jujuversion.Current.String(),
+	})
+}
+
+func (s *stateSuite) TestModelConfigAgentStreamWithValueInConfig(c *tc.C) {
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO agent_version (stream_id, target_version, latest_version) 
+                   VALUES (1, ?, ?)`,
+			jujuversion.Current.String(), jujuversion.Current.String())
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO model_config (key, value) 
+				   VALUES ('agent-stream', 'devel')`,
+		)
+		return err
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	st := state.NewState(s.TxnRunnerFactory())
+	modelConfig, err := st.ModelConfig(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(modelConfig, tc.DeepEquals, map[string]string{
+		"agent-stream":  "proposed",
+		"agent-version": jujuversion.Current.String(),
+	})
 }
 
 func (s *stateSuite) TestModelConfigHasAttributesNil(c *tc.C) {
@@ -103,7 +156,7 @@ func (s *stateSuite) TestModelConfigHasAttributesEmpty(c *tc.C) {
 	st := state.NewState(s.TxnRunnerFactory())
 	rval, err := st.ModelConfigHasAttributes(c.Context(), []string{})
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(len(rval), tc.Equals, 0)
+	c.Check(len(rval), tc.Equals, 0)
 }
 
 func (s *stateSuite) TestModelConfigHasAttributes(c *tc.C) {
@@ -116,7 +169,7 @@ func (s *stateSuite) TestModelConfigHasAttributes(c *tc.C) {
 
 	rval, err := st.ModelConfigHasAttributes(c.Context(), []string{"wallyworld", "doesnotexist"})
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(rval, tc.DeepEquals, []string{"wallyworld"})
+	c.Check(rval, tc.DeepEquals, []string{"wallyworld"})
 }
 
 func (s *stateSuite) TestSetModelConfig(c *tc.C) {
@@ -146,7 +199,7 @@ func (s *stateSuite) TestSetModelConfig(c *tc.C) {
 
 		config, err := st.ModelConfig(c.Context())
 		c.Assert(err, tc.ErrorIsNil)
-		c.Assert(config, tc.DeepEquals, test.Config)
+		c.Check(config, tc.DeepEquals, test.Config)
 	}
 }
 
@@ -156,7 +209,7 @@ func (s *stateSuite) TestSetModelConfig(c *tc.C) {
 func (s *stateSuite) TestGetModelAgentVersionAndStreamNotFound(c *tc.C) {
 	st := state.NewState(s.TxnRunnerFactory())
 	_, _, err := st.GetModelAgentVersionAndStream(c.Context())
-	c.Check(err, tc.ErrorIs, modelerrors.NotFound)
+	c.Assert(err, tc.ErrorIs, modelerrors.NotFound)
 }
 
 // TestGetModelAgentVersionAndStream is testing the happy path that when agent
@@ -166,7 +219,7 @@ func (s *stateSuite) TestGetModelAgentVersionAndStream(c *tc.C) {
 
 	st := state.NewState(s.TxnRunnerFactory())
 	version, stream, err := st.GetModelAgentVersionAndStream(c.Context())
-	c.Check(err, tc.ErrorIsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Check(version, tc.Equals, jujuversion.Current.String())
 	c.Check(stream, tc.Equals, "released")
 }
@@ -191,7 +244,7 @@ func (s *stateSuite) createTestModel(c *tc.C) coremodel.UUID {
 	runner := s.TxnRunnerFactory()
 	state := statemodel.NewState(runner, loggertesting.WrapCheckLog(c))
 
-	id := modeltesting.GenModelUUID(c)
+	id := tc.Must0(c, coremodel.NewUUID)
 	cid := uuid.MustNewUUID()
 	args := model.ModelDetailArgs{
 		UUID:               id,

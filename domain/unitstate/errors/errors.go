@@ -1,12 +1,14 @@
-// Copyright 2024 Canonical Ltd.
+// Copyright 2026 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
 package errors
 
-import "github.com/juju/juju/internal/errors"
+import (
+	"github.com/juju/juju/internal/errors"
+)
 
 const (
-	// UnitNotFound describes an error that occurs when
-	// the unit being operated on does not exist.
-	UnitNotFound = errors.ConstError("unit not found")
+	// UnitLifePreconditionFailed indicates that a comparison of unit life did
+	// not match the expected life.
+	UnitLifePreconditionFailed = errors.ConstError("unit life predicate failed")
 )

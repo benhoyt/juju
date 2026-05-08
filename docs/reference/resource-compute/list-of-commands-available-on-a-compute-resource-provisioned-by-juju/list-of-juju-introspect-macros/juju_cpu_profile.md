@@ -1,10 +1,16 @@
+---
+myst:
+  html_meta:
+    description: "Profile CPU performance of Juju agent processes using juju_cpu_profile macro with pprof for debugging performance issues."
+---
+
 (juju_cpu_profile)=
 # `juju_cpu_profile`
 
-The `juju_cpu_profile` introspection function provides a CPU profile of the 
-current Juju agent process.  This is useful for debugging performance issues and 
+The `juju_cpu_profile` introspection function provides a CPU profile of the
+current Juju agent process.  This is useful for debugging performance issues and
 it is primarily intended for use by Juju developers.
-Under the hood this uses the [pprof](https://golang.org/pkg/net/http/pprof/) 
+Under the hood this uses the [pprof](https://golang.org/pkg/net/http/pprof/)
 package.
 
 This function is equivalent to `juju_heap_profile` but for CPU profiling.

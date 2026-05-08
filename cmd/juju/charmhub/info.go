@@ -12,10 +12,10 @@ import (
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	corebase "github.com/juju/juju/core/base"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/internal/charmhub"
-	"github.com/juju/juju/internal/cmd"
 )
 
 const (
@@ -209,7 +209,7 @@ func (c *infoCommand) Run(cmdContext *cmd.Context) error {
 	return c.out.Write(cmdContext, &view)
 }
 
-func (c *infoCommand) formatter(writer io.Writer, value interface{}) error {
+func (c *infoCommand) formatter(writer io.Writer, value any) error {
 	results, ok := value.(*InfoResponse)
 	if !ok {
 		return errors.Errorf("unexpected results")

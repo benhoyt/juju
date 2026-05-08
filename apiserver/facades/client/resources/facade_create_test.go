@@ -21,24 +21,30 @@ type FacadeSuite struct {
 
 func (s *FacadeSuite) TestNewFacadeOkay(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	_, err := NewResourcesAPI(s.applicationService, s.resourceService, s.factory, loggertesting.WrapCheckLog(c))
+	_, err := NewResourcesAPI(s.applicationService, s.resourceService, s.crossModelRelationService, s.factory, loggertesting.WrapCheckLog(c))
 	c.Check(err, tc.ErrorIsNil)
 }
 
 func (s *FacadeSuite) TestNewFacadeMissingApplicationService(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	_, err := NewResourcesAPI(nil, s.resourceService, s.factory, loggertesting.WrapCheckLog(c))
+	_, err := NewResourcesAPI(nil, s.resourceService, s.crossModelRelationService, s.factory, loggertesting.WrapCheckLog(c))
 	c.Check(err, tc.ErrorMatches, ".*missing application service.*")
 }
 
 func (s *FacadeSuite) TestNewFacadeMissingResourceService(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	_, err := NewResourcesAPI(s.applicationService, nil, s.factory, loggertesting.WrapCheckLog(c))
+	_, err := NewResourcesAPI(s.applicationService, nil, s.crossModelRelationService, s.factory, loggertesting.WrapCheckLog(c))
 	c.Check(err, tc.ErrorMatches, ".*missing resource service.*")
+}
+
+func (s *FacadeSuite) TestNewFacadeMissingCrossModelRelationService(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+	_, err := NewResourcesAPI(s.applicationService, s.resourceService, nil, s.factory, loggertesting.WrapCheckLog(c))
+	c.Check(err, tc.ErrorMatches, ".*missing cross model relation service.*")
 }
 
 func (s *FacadeSuite) TestNewFacadeMissingFactory(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	_, err := NewResourcesAPI(s.applicationService, s.resourceService, nil, loggertesting.WrapCheckLog(c))
+	_, err := NewResourcesAPI(s.applicationService, s.resourceService, s.crossModelRelationService, nil, loggertesting.WrapCheckLog(c))
 	c.Check(err, tc.ErrorMatches, ".*missing factory for new repository.*")
 }

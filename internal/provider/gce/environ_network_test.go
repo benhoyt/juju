@@ -35,63 +35,63 @@ func TestEnvironNetSuite(t *testing.T) {
 func (s *environNetSuite) SetUpTest(c *tc.C) {
 	s.BaseSuite.SetUpTest(c)
 	s.zones = []*computepb.Zone{{
-		Name:   ptr("home-zone"),
-		Status: ptr("UP"),
+		Name:   new("home-zone"),
+		Status: new("UP"),
 	}, {
-		Name:   ptr("away-zone"),
-		Status: ptr("UP"),
+		Name:   new("away-zone"),
+		Status: new("UP"),
 	}}
 	s.instances = []*computepb.Instance{{
-		Name: ptr("inst-0"),
-		Zone: ptr("home-zone"),
+		Name: new("inst-0"),
+		Zone: new("home-zone"),
 		NetworkInterfaces: []*computepb.NetworkInterface{{
-			Name:       ptr("netif-0"),
-			NetworkIP:  ptr("10.0.20.3"),
-			Subnetwork: ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network2"),
+			Name:       new("netif-0"),
+			NetworkIP:  new("10.0.20.3"),
+			Subnetwork: new("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network2"),
 		}},
 	}, {
-		Name: ptr("inst-1"),
-		Zone: ptr("away-zone"),
+		Name: new("inst-1"),
+		Zone: new("away-zone"),
 		NetworkInterfaces: []*computepb.NetworkInterface{{
-			Name:       ptr("netif-0"),
-			NetworkIP:  ptr("10.0.10.42"),
-			Subnetwork: ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network1"),
+			Name:       new("netif-0"),
+			NetworkIP:  new("10.0.10.42"),
+			Subnetwork: new("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network1"),
 		}},
 	}}
 	s.networks = []*computepb.Network{{
-		Name:     ptr("default"),
-		SelfLink: ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/default"),
+		Name:     new("default"),
+		SelfLink: new("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/default"),
 		Subnetworks: []string{
 			"https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network1",
 			"https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network2",
 			"https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network3",
 		},
 	}, {
-		Name:     ptr("another"),
-		SelfLink: ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/another"),
+		Name:     new("another"),
+		SelfLink: new("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/another"),
 		Subnetworks: []string{
 			"https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network4",
 		},
 	}, {
-		Name:      ptr("legacy"),
-		IPv4Range: ptr("10.240.0.0/16"),
-		SelfLink:  ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/legacy"),
+		Name:      new("legacy"),
+		IPv4Range: new("10.240.0.0/16"),
+		SelfLink:  new("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/legacy"),
 	}}
 	s.subnets = []*computepb.Subnetwork{{
-		Name:        ptr("sub-network1"),
-		IpCidrRange: ptr("10.0.10.0/24"),
-		SelfLink:    ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network1"),
-		Network:     ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/default"),
+		Name:        new("sub-network1"),
+		IpCidrRange: new("10.0.10.0/24"),
+		SelfLink:    new("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network1"),
+		Network:     new("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/default"),
 	}, {
-		Name:        ptr("sub-network2"),
-		IpCidrRange: ptr("10.0.20.0/24"),
-		SelfLink:    ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network2"),
-		Network:     ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/default"),
+		Name:        new("sub-network2"),
+		IpCidrRange: new("10.0.20.0/24"),
+		SelfLink:    new("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network2"),
+		Network:     new("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/default"),
 	}, {
-		Name:        ptr("sub-network4"),
-		IpCidrRange: ptr("10.0.40.0/24"),
-		SelfLink:    ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network4"),
-		Network:     ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/another"),
+		Name:        new("sub-network4"),
+		IpCidrRange: new("10.0.40.0/24"),
+		SelfLink:    new("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network4"),
+		Network:     new("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/another"),
 	}}
 }
 
@@ -141,7 +141,7 @@ func (s *environNetSuite) TestGettingAllSubnetsLegacy(c *tc.C) {
 	defer ctrl.Finish()
 
 	env := s.SetupEnv(c, s.MockService)
-	s.SetVpcID(env, ptr("legacy"))
+	s.SetVpcID(env, new("legacy"))
 
 	s.MockService.EXPECT().AvailabilityZones(gomock.Any(), "us-east1").Return(s.zones, nil)
 	s.MockService.EXPECT().Network(gomock.Any(), "legacy").Return(s.networks[2], nil)
@@ -241,12 +241,12 @@ func (s *environNetSuite) TestInterfaces(c *tc.C) {
 	c.Assert(infos, tc.DeepEquals, corenetwork.InterfaceInfos{{
 		DeviceIndex:   0,
 		ProviderId:    "inst-0/netif-0",
-		InterfaceName: "netif-0",
+		InterfaceName: "ens4",
 		InterfaceType: corenetwork.EthernetDevice,
 		Disabled:      false,
 		NoAutoStart:   false,
 		Addresses: corenetwork.ProviderAddresses{corenetwork.NewMachineAddress(
-			"10.0.20.3",
+			"10.0.20.3/32",
 			corenetwork.WithScope(corenetwork.ScopeCloudLocal),
 			corenetwork.WithCIDR("10.0.20.0/24"),
 			corenetwork.WithConfigType(corenetwork.ConfigDHCP),
@@ -286,14 +286,14 @@ func (s *environNetSuite) TestInterfacesForMultipleInstances(c *tc.C) {
 		Return(s.subnets, nil)
 
 	s.instances[1].NetworkInterfaces = append(s.instances[1].NetworkInterfaces, &computepb.NetworkInterface{
-		Name:       ptr("netif-1"),
-		NetworkIP:  ptr("10.0.20.44"),
-		Network:    ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/default"),
-		Subnetwork: ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network1"),
+		Name:       new("netif-1"),
+		NetworkIP:  new("10.0.20.44"),
+		Network:    new("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/default"),
+		Subnetwork: new("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network1"),
 		AccessConfigs: []*computepb.AccessConfig{{
-			Type:  ptr("ONE_TO_ONE_NAT"),
-			Name:  ptr("External NAT"),
-			NatIP: ptr("25.185.142.227"),
+			Type:  new("ONE_TO_ONE_NAT"),
+			Name:  new("External NAT"),
+			NatIP: new("25.185.142.227"),
 		}},
 	})
 
@@ -306,12 +306,12 @@ func (s *environNetSuite) TestInterfacesForMultipleInstances(c *tc.C) {
 	c.Assert(infos, tc.DeepEquals, corenetwork.InterfaceInfos{{
 		DeviceIndex:   0,
 		ProviderId:    "inst-0/netif-0",
-		InterfaceName: "netif-0",
+		InterfaceName: "ens4",
 		InterfaceType: corenetwork.EthernetDevice,
 		Disabled:      false,
 		NoAutoStart:   false,
 		Addresses: corenetwork.ProviderAddresses{corenetwork.NewMachineAddress(
-			"10.0.20.3",
+			"10.0.20.3/32",
 			corenetwork.WithScope(corenetwork.ScopeCloudLocal),
 			corenetwork.WithCIDR("10.0.20.0/24"),
 			corenetwork.WithConfigType(corenetwork.ConfigDHCP),
@@ -326,12 +326,12 @@ func (s *environNetSuite) TestInterfacesForMultipleInstances(c *tc.C) {
 	c.Assert(infos, tc.DeepEquals, corenetwork.InterfaceInfos{{
 		DeviceIndex:   0,
 		ProviderId:    "inst-1/netif-0",
-		InterfaceName: "netif-0",
+		InterfaceName: "ens4",
 		InterfaceType: corenetwork.EthernetDevice,
 		Disabled:      false,
 		NoAutoStart:   false,
 		Addresses: corenetwork.ProviderAddresses{corenetwork.NewMachineAddress(
-			"10.0.10.42",
+			"10.0.10.42/32",
 			corenetwork.WithScope(corenetwork.ScopeCloudLocal),
 			corenetwork.WithCIDR("10.0.10.0/24"),
 			corenetwork.WithConfigType(corenetwork.ConfigDHCP),
@@ -342,12 +342,12 @@ func (s *environNetSuite) TestInterfacesForMultipleInstances(c *tc.C) {
 	}, {
 		DeviceIndex:   1,
 		ProviderId:    "inst-1/netif-1",
-		InterfaceName: "netif-1",
+		InterfaceName: "ens5",
 		InterfaceType: corenetwork.EthernetDevice,
 		Disabled:      false,
 		NoAutoStart:   false,
 		Addresses: corenetwork.ProviderAddresses{corenetwork.NewMachineAddress(
-			"10.0.20.44",
+			"10.0.20.44/32",
 			corenetwork.WithScope(corenetwork.ScopeCloudLocal),
 			corenetwork.WithCIDR("10.0.10.0/24"),
 			corenetwork.WithConfigType(corenetwork.ConfigDHCP),
@@ -355,7 +355,7 @@ func (s *environNetSuite) TestInterfacesForMultipleInstances(c *tc.C) {
 			corenetwork.WithProviderSubnetID("sub-network1"),
 		)},
 		ShadowAddresses: corenetwork.ProviderAddresses{corenetwork.NewMachineAddress(
-			"25.185.142.227",
+			"25.185.142.227/32",
 			corenetwork.WithScope(corenetwork.ScopePublic),
 		).AsProviderAddress()},
 		Origin: corenetwork.OriginProvider,
@@ -384,12 +384,12 @@ func (s *environNetSuite) TestPartialInterfacesForMultipleInstances(c *tc.C) {
 	c.Assert(infos, tc.DeepEquals, corenetwork.InterfaceInfos{{
 		DeviceIndex:   0,
 		ProviderId:    "inst-0/netif-0",
-		InterfaceName: "netif-0",
+		InterfaceName: "ens4",
 		InterfaceType: corenetwork.EthernetDevice,
 		Disabled:      false,
 		NoAutoStart:   false,
 		Addresses: corenetwork.ProviderAddresses{corenetwork.NewMachineAddress(
-			"10.0.20.3",
+			"10.0.20.3/32",
 			corenetwork.WithScope(corenetwork.ScopeCloudLocal),
 			corenetwork.WithCIDR("10.0.20.0/24"),
 			corenetwork.WithConfigType(corenetwork.ConfigDHCP),
@@ -410,14 +410,14 @@ func (s *environNetSuite) TestInterfacesMulti(c *tc.C) {
 	env := s.SetupEnv(c, s.MockService)
 
 	s.instances[0].NetworkInterfaces = append(s.instances[0].NetworkInterfaces, &computepb.NetworkInterface{
-		Name:       ptr("othernetif"),
-		NetworkIP:  ptr("10.0.10.4"),
-		Network:    ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/default"),
-		Subnetwork: ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network1"),
+		Name:       new("othernetif"),
+		NetworkIP:  new("10.0.10.4"),
+		Network:    new("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/default"),
+		Subnetwork: new("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network1"),
 		AccessConfigs: []*computepb.AccessConfig{{
-			Type:  ptr("ONE_TO_ONE_NAT"),
-			Name:  ptr("External NAT"),
-			NatIP: ptr("25.185.142.227"),
+			Type:  new("ONE_TO_ONE_NAT"),
+			Name:  new("External NAT"),
+			NatIP: new("25.185.142.227"),
 		}},
 	})
 
@@ -437,12 +437,12 @@ func (s *environNetSuite) TestInterfacesMulti(c *tc.C) {
 	c.Assert(infos, tc.DeepEquals, corenetwork.InterfaceInfos{{
 		DeviceIndex:   0,
 		ProviderId:    "inst-0/netif-0",
-		InterfaceName: "netif-0",
+		InterfaceName: "ens4",
 		InterfaceType: corenetwork.EthernetDevice,
 		Disabled:      false,
 		NoAutoStart:   false,
 		Addresses: corenetwork.ProviderAddresses{corenetwork.NewMachineAddress(
-			"10.0.20.3",
+			"10.0.20.3/32",
 			corenetwork.WithScope(corenetwork.ScopeCloudLocal),
 			corenetwork.WithCIDR("10.0.20.0/24"),
 			corenetwork.WithConfigType(corenetwork.ConfigDHCP),
@@ -453,12 +453,12 @@ func (s *environNetSuite) TestInterfacesMulti(c *tc.C) {
 	}, {
 		DeviceIndex:   1,
 		ProviderId:    "inst-0/othernetif",
-		InterfaceName: "othernetif",
+		InterfaceName: "ens5",
 		InterfaceType: corenetwork.EthernetDevice,
 		Disabled:      false,
 		NoAutoStart:   false,
 		Addresses: corenetwork.ProviderAddresses{corenetwork.NewMachineAddress(
-			"10.0.10.4",
+			"10.0.10.4/32",
 			corenetwork.WithScope(corenetwork.ScopeCloudLocal),
 			corenetwork.WithCIDR("10.0.10.0/24"),
 			corenetwork.WithConfigType(corenetwork.ConfigDHCP),
@@ -466,7 +466,7 @@ func (s *environNetSuite) TestInterfacesMulti(c *tc.C) {
 			corenetwork.WithProviderSubnetID("sub-network1"),
 		)},
 		ShadowAddresses: corenetwork.ProviderAddresses{
-			corenetwork.NewMachineAddress("25.185.142.227", corenetwork.WithScope(corenetwork.ScopePublic)).AsProviderAddress(),
+			corenetwork.NewMachineAddress("25.185.142.227/32", corenetwork.WithScope(corenetwork.ScopePublic)).AsProviderAddress(),
 		},
 		Origin: corenetwork.OriginProvider,
 	}})
@@ -479,13 +479,13 @@ func (s *environNetSuite) TestInterfacesLegacy(c *tc.C) {
 	env := s.SetupEnv(c, s.MockService) // When we're using a legacy network there'll be no subnet.
 
 	s.instances[0].NetworkInterfaces = []*computepb.NetworkInterface{{
-		Name:      ptr("somenetif"),
-		NetworkIP: ptr("10.240.0.2"),
-		Network:   ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/legacy"),
+		Name:      new("somenetif"),
+		NetworkIP: new("10.240.0.2"),
+		Network:   new("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/legacy"),
 		AccessConfigs: []*computepb.AccessConfig{{
-			Type:  ptr("ONE_TO_ONE_NAT"),
-			Name:  ptr("External NAT"),
-			NatIP: ptr("25.185.142.227"),
+			Type:  new("ONE_TO_ONE_NAT"),
+			Name:  new("External NAT"),
+			NatIP: new("25.185.142.227"),
 		}},
 	}}
 
@@ -502,18 +502,18 @@ func (s *environNetSuite) TestInterfacesLegacy(c *tc.C) {
 	c.Assert(infos, tc.DeepEquals, corenetwork.InterfaceInfos{{
 		DeviceIndex:   0,
 		ProviderId:    "inst-0/somenetif",
-		InterfaceName: "somenetif",
+		InterfaceName: "ens4",
 		InterfaceType: corenetwork.EthernetDevice,
 		Disabled:      false,
 		NoAutoStart:   false,
 		Addresses: corenetwork.ProviderAddresses{corenetwork.NewMachineAddress(
-			"10.240.0.2",
+			"10.240.0.2/32",
 			corenetwork.WithScope(corenetwork.ScopeCloudLocal),
 			corenetwork.WithCIDR("10.240.0.0/16"),
 			corenetwork.WithConfigType(corenetwork.ConfigDHCP),
 		).AsProviderAddress()},
 		ShadowAddresses: corenetwork.ProviderAddresses{
-			corenetwork.NewMachineAddress("25.185.142.227", corenetwork.WithScope(corenetwork.ScopePublic)).AsProviderAddress(),
+			corenetwork.NewMachineAddress("25.185.142.227/32", corenetwork.WithScope(corenetwork.ScopePublic)).AsProviderAddress(),
 		},
 		Origin: corenetwork.OriginProvider,
 	}})
@@ -526,14 +526,14 @@ func (s *environNetSuite) TestInterfacesSameSubnetwork(c *tc.C) {
 	env := s.SetupEnv(c, s.MockService)
 
 	s.instances[0].NetworkInterfaces = append(s.instances[0].NetworkInterfaces, &computepb.NetworkInterface{
-		Name:       ptr("othernetif"),
-		NetworkIP:  ptr("10.0.10.4"),
-		Network:    ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/default"),
-		Subnetwork: ptr("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network1"),
+		Name:       new("othernetif"),
+		NetworkIP:  new("10.0.10.4"),
+		Network:    new("https://www.googleapis.com/compute/v1/projects/sonic-youth/global/networks/default"),
+		Subnetwork: new("https://www.googleapis.com/compute/v1/projects/sonic-youth/regions/us-east1/subnetworks/sub-network1"),
 		AccessConfigs: []*computepb.AccessConfig{{
-			Type:  ptr("ONE_TO_ONE_NAT"),
-			Name:  ptr("External NAT"),
-			NatIP: ptr("25.185.142.227"),
+			Type:  new("ONE_TO_ONE_NAT"),
+			Name:  new("External NAT"),
+			NatIP: new("25.185.142.227"),
 		}},
 	})
 
@@ -553,12 +553,12 @@ func (s *environNetSuite) TestInterfacesSameSubnetwork(c *tc.C) {
 	c.Assert(infos, tc.DeepEquals, corenetwork.InterfaceInfos{{
 		DeviceIndex:   0,
 		ProviderId:    "inst-0/netif-0",
-		InterfaceName: "netif-0",
+		InterfaceName: "ens4",
 		InterfaceType: corenetwork.EthernetDevice,
 		Disabled:      false,
 		NoAutoStart:   false,
 		Addresses: corenetwork.ProviderAddresses{corenetwork.NewMachineAddress(
-			"10.0.20.3",
+			"10.0.20.3/32",
 			corenetwork.WithScope(corenetwork.ScopeCloudLocal),
 			corenetwork.WithCIDR("10.0.20.0/24"),
 			corenetwork.WithConfigType(corenetwork.ConfigDHCP),
@@ -569,12 +569,12 @@ func (s *environNetSuite) TestInterfacesSameSubnetwork(c *tc.C) {
 	}, {
 		DeviceIndex:   1,
 		ProviderId:    "inst-0/othernetif",
-		InterfaceName: "othernetif",
+		InterfaceName: "ens5",
 		InterfaceType: corenetwork.EthernetDevice,
 		Disabled:      false,
 		NoAutoStart:   false,
 		Addresses: corenetwork.ProviderAddresses{corenetwork.NewMachineAddress(
-			"10.0.10.4",
+			"10.0.10.4/32",
 			corenetwork.WithScope(corenetwork.ScopeCloudLocal),
 			corenetwork.WithCIDR("10.0.10.0/24"),
 			corenetwork.WithConfigType(corenetwork.ConfigDHCP),
@@ -582,7 +582,7 @@ func (s *environNetSuite) TestInterfacesSameSubnetwork(c *tc.C) {
 			corenetwork.WithProviderSubnetID("sub-network1"),
 		)},
 		ShadowAddresses: corenetwork.ProviderAddresses{
-			corenetwork.NewMachineAddress("25.185.142.227", corenetwork.WithScope(corenetwork.ScopePublic)).AsProviderAddress(),
+			corenetwork.NewMachineAddress("25.185.142.227/32", corenetwork.WithScope(corenetwork.ScopePublic)).AsProviderAddress(),
 		},
 		Origin: corenetwork.OriginProvider,
 	}})
@@ -606,7 +606,7 @@ func (s *environNetSuite) TestSubnetsForInstanceNoSubnetsAuto(c *tc.C) {
 	defer ctrl.Finish()
 
 	env := s.SetupEnv(c, s.MockService)
-	s.SetVpcInfo(env, ptr("/path/to/vpc"), true)
+	s.SetVpcInfo(env, new("/path/to/vpc"), true)
 
 	s.MockService.EXPECT().NetworkSubnetworks(gomock.Any(), "us-east1", "/path/to/vpc").Return(nil, nil)
 
@@ -622,7 +622,7 @@ func (s *environNetSuite) TestSubnetsForInstancePlacementNoSubnetsAuto(c *tc.C) 
 	defer ctrl.Finish()
 
 	env := s.SetupEnv(c, s.MockService)
-	s.SetVpcInfo(env, ptr("/path/to/vpc"), true)
+	s.SetVpcInfo(env, new("/path/to/vpc"), true)
 
 	s.MockService.EXPECT().NetworkSubnetworks(gomock.Any(), "us-east1", "/path/to/vpc").Return(nil, nil)
 
@@ -638,7 +638,7 @@ func (s *environNetSuite) TestSubnetsForInstanceSpacesNoSubnetsAuto(c *tc.C) {
 	defer ctrl.Finish()
 
 	env := s.SetupEnv(c, s.MockService)
-	s.SetVpcInfo(env, ptr("/path/to/vpc"), true)
+	s.SetVpcInfo(env, new("/path/to/vpc"), true)
 
 	s.MockService.EXPECT().NetworkSubnetworks(gomock.Any(), "us-east1", "/path/to/vpc").Return(nil, nil)
 
@@ -654,17 +654,17 @@ func (s *environNetSuite) TestSubnetsForInstanceNoSpacesOrPlacement(c *tc.C) {
 	defer ctrl.Finish()
 
 	env := s.SetupEnv(c, s.MockService)
-	s.SetVpcInfo(env, ptr("/path/to/vpc"), true)
+	s.SetVpcInfo(env, new("/path/to/vpc"), true)
 
 	s.MockService.EXPECT().NetworkSubnetworks(gomock.Any(), "us-east1", "/path/to/vpc").
 		Return([]*computepb.Subnetwork{{
-			Name: ptr("subnet1"),
+			Name: new("subnet1"),
 		}, {
-			Name: ptr("subnet2"),
+			Name: new("subnet2"),
 		}, {
-			Name: ptr("subnet3"),
+			Name: new("subnet3"),
 		}, {
-			Name: ptr("subnet4"),
+			Name: new("subnet4"),
 		}}, nil)
 
 	vpcLink, subnets, err := gce.SubnetsForInstance(env, c.Context(), environs.StartInstanceParams{})
@@ -682,17 +682,17 @@ func (s *environNetSuite) TestSubnetsForInstanceSpaces(c *tc.C) {
 	defer ctrl.Finish()
 
 	env := s.SetupEnv(c, s.MockService)
-	s.SetVpcInfo(env, ptr("/path/to/vpc"), true)
+	s.SetVpcInfo(env, new("/path/to/vpc"), true)
 
 	s.MockService.EXPECT().NetworkSubnetworks(gomock.Any(), "us-east1", "/path/to/vpc").
 		Return([]*computepb.Subnetwork{{
-			Name: ptr("subnet1"),
+			Name: new("subnet1"),
 		}, {
-			Name: ptr("subnet2"),
+			Name: new("subnet2"),
 		}, {
-			Name: ptr("subnet3"),
+			Name: new("subnet3"),
 		}, {
-			Name: ptr("subnet4"),
+			Name: new("subnet4"),
 		}}, nil)
 
 	vpcLink, subnets, err := gce.SubnetsForInstance(env, c.Context(), environs.StartInstanceParams{
@@ -717,11 +717,11 @@ func (s *environNetSuite) TestSubnetsForInstanceSpacesFiltersFan(c *tc.C) {
 	defer ctrl.Finish()
 
 	env := s.SetupEnv(c, s.MockService)
-	s.SetVpcInfo(env, ptr("/path/to/vpc"), true)
+	s.SetVpcInfo(env, new("/path/to/vpc"), true)
 
 	s.MockService.EXPECT().NetworkSubnetworks(gomock.Any(), "us-east1", "/path/to/vpc").
 		Return([]*computepb.Subnetwork{{
-			Name: ptr("subnet1"),
+			Name: new("subnet1"),
 		}}, nil)
 
 	vpcLink, subnets, err := gce.SubnetsForInstance(env, c.Context(), environs.StartInstanceParams{
@@ -743,17 +743,17 @@ func (s *environNetSuite) TestSubnetsForInstancePlacement(c *tc.C) {
 	defer ctrl.Finish()
 
 	env := s.SetupEnv(c, s.MockService)
-	s.SetVpcInfo(env, ptr("/path/to/vpc"), true)
+	s.SetVpcInfo(env, new("/path/to/vpc"), true)
 
 	s.MockService.EXPECT().NetworkSubnetworks(gomock.Any(), "us-east1", "/path/to/vpc").
 		Return([]*computepb.Subnetwork{{
-			Name: ptr("subnet1"),
+			Name: new("subnet1"),
 		}, {
-			Name: ptr("subnet2"),
+			Name: new("subnet2"),
 		}, {
-			Name: ptr("subnet3"),
+			Name: new("subnet3"),
 		}, {
-			Name: ptr("subnet4"),
+			Name: new("subnet4"),
 		}}, nil)
 
 	vpcLink, subnets, err := gce.SubnetsForInstance(env, c.Context(), environs.StartInstanceParams{
@@ -772,21 +772,21 @@ func (s *environNetSuite) TestSubnetsForInstancePlacementCIDR(c *tc.C) {
 	defer ctrl.Finish()
 
 	env := s.SetupEnv(c, s.MockService)
-	s.SetVpcInfo(env, ptr("/path/to/vpc"), true)
+	s.SetVpcInfo(env, new("/path/to/vpc"), true)
 
 	s.MockService.EXPECT().NetworkSubnetworks(gomock.Any(), "us-east1", "/path/to/vpc").
 		Return([]*computepb.Subnetwork{{
-			Name:        ptr("subnet1"),
-			IpCidrRange: ptr("10.0.10.0/24"),
+			Name:        new("subnet1"),
+			IpCidrRange: new("10.0.10.0/24"),
 		}, {
-			Name:        ptr("subnet2"),
-			IpCidrRange: ptr("10.0.20.0/24"),
+			Name:        new("subnet2"),
+			IpCidrRange: new("10.0.20.0/24"),
 		}, {
-			Name:        ptr("subnet3"),
-			IpCidrRange: ptr("10.0.30.0/24"),
+			Name:        new("subnet3"),
+			IpCidrRange: new("10.0.30.0/24"),
 		}, {
-			Name:        ptr("subnet4"),
-			IpCidrRange: ptr("10.0.40.0/24"),
+			Name:        new("subnet4"),
+			IpCidrRange: new("10.0.40.0/24"),
 		}}, nil)
 
 	vpcLink, subnets, err := gce.SubnetsForInstance(env, c.Context(), environs.StartInstanceParams{
@@ -805,17 +805,17 @@ func (s *environNetSuite) TestSubnetsForInstancePlacementWithSpaces(c *tc.C) {
 	defer ctrl.Finish()
 
 	env := s.SetupEnv(c, s.MockService)
-	s.SetVpcInfo(env, ptr("/path/to/vpc"), true)
+	s.SetVpcInfo(env, new("/path/to/vpc"), true)
 
 	s.MockService.EXPECT().NetworkSubnetworks(gomock.Any(), "us-east1", "/path/to/vpc").
 		Return([]*computepb.Subnetwork{{
-			Name: ptr("subnet1"),
+			Name: new("subnet1"),
 		}, {
-			Name: ptr("subnet2"),
+			Name: new("subnet2"),
 		}, {
-			Name: ptr("subnet3"),
+			Name: new("subnet3"),
 		}, {
-			Name: ptr("subnet4"),
+			Name: new("subnet4"),
 		}}, nil)
 
 	vpcLink, subnets, err := gce.SubnetsForInstance(env, c.Context(), environs.StartInstanceParams{
@@ -839,17 +839,17 @@ func (s *environNetSuite) TestSubnetsForInstancePlacementWithSpacesNotFound(c *t
 	defer ctrl.Finish()
 
 	env := s.SetupEnv(c, s.MockService)
-	s.SetVpcInfo(env, ptr("/path/to/vpc"), true)
+	s.SetVpcInfo(env, new("/path/to/vpc"), true)
 
 	s.MockService.EXPECT().NetworkSubnetworks(gomock.Any(), "us-east1", "/path/to/vpc").
 		Return([]*computepb.Subnetwork{{
-			Name: ptr("subnet1"),
+			Name: new("subnet1"),
 		}, {
-			Name: ptr("subnet2"),
+			Name: new("subnet2"),
 		}, {
-			Name: ptr("subnet3"),
+			Name: new("subnet3"),
 		}, {
-			Name: ptr("subnet4"),
+			Name: new("subnet4"),
 		}}, nil)
 
 	_, _, err := gce.SubnetsForInstance(env, c.Context(), environs.StartInstanceParams{
@@ -869,17 +869,17 @@ func (s *environNetSuite) TestSubnetsForInstancePlacementNotFound(c *tc.C) {
 	defer ctrl.Finish()
 
 	env := s.SetupEnv(c, s.MockService)
-	s.SetVpcInfo(env, ptr("/path/to/vpc"), true)
+	s.SetVpcInfo(env, new("/path/to/vpc"), true)
 
 	s.MockService.EXPECT().NetworkSubnetworks(gomock.Any(), "us-east1", "/path/to/vpc").
 		Return([]*computepb.Subnetwork{{
-			Name: ptr("subnet1"),
+			Name: new("subnet1"),
 		}, {
-			Name: ptr("subnet2"),
+			Name: new("subnet2"),
 		}, {
-			Name: ptr("subnet3"),
+			Name: new("subnet3"),
 		}, {
-			Name: ptr("subnet4"),
+			Name: new("subnet4"),
 		}}, nil)
 
 	_, _, err := gce.SubnetsForInstance(env, c.Context(), environs.StartInstanceParams{

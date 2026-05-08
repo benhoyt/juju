@@ -33,13 +33,14 @@ import (
 	application0 "github.com/juju/juju/domain/application"
 	charm0 "github.com/juju/juju/domain/application/charm"
 	service "github.com/juju/juju/domain/application/service"
+	constraints0 "github.com/juju/juju/domain/constraints"
 	service0 "github.com/juju/juju/domain/crossmodelrelation/service"
+	charm1 "github.com/juju/juju/domain/deployment/charm"
 	relation0 "github.com/juju/juju/domain/relation"
 	removal "github.com/juju/juju/domain/removal"
 	resolve "github.com/juju/juju/domain/resolve"
 	storage "github.com/juju/juju/domain/storage"
 	config "github.com/juju/juju/environs/config"
-	charm1 "github.com/juju/juju/internal/charm"
 	params "github.com/juju/juju/rpc/params"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -865,6 +866,45 @@ func (c *MockApplicationServiceGetApplicationConstraintsCall) DoAndReturn(f func
 	return c
 }
 
+// GetApplicationDetailsByName mocks base method.
+func (m *MockApplicationService) GetApplicationDetailsByName(arg0 context.Context, arg1 string) (application0.ApplicationDetails, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetApplicationDetailsByName", arg0, arg1)
+	ret0, _ := ret[0].(application0.ApplicationDetails)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetApplicationDetailsByName indicates an expected call of GetApplicationDetailsByName.
+func (mr *MockApplicationServiceMockRecorder) GetApplicationDetailsByName(arg0, arg1 any) *MockApplicationServiceGetApplicationDetailsByNameCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApplicationDetailsByName", reflect.TypeOf((*MockApplicationService)(nil).GetApplicationDetailsByName), arg0, arg1)
+	return &MockApplicationServiceGetApplicationDetailsByNameCall{Call: call}
+}
+
+// MockApplicationServiceGetApplicationDetailsByNameCall wrap *gomock.Call
+type MockApplicationServiceGetApplicationDetailsByNameCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockApplicationServiceGetApplicationDetailsByNameCall) Return(arg0 application0.ApplicationDetails, arg1 error) *MockApplicationServiceGetApplicationDetailsByNameCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockApplicationServiceGetApplicationDetailsByNameCall) Do(f func(context.Context, string) (application0.ApplicationDetails, error)) *MockApplicationServiceGetApplicationDetailsByNameCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockApplicationServiceGetApplicationDetailsByNameCall) DoAndReturn(f func(context.Context, string) (application0.ApplicationDetails, error)) *MockApplicationServiceGetApplicationDetailsByNameCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // GetApplicationEndpointBindings mocks base method.
 func (m *MockApplicationService) GetApplicationEndpointBindings(arg0 context.Context, arg1 string) (map[string]network.SpaceUUID, error) {
 	m.ctrl.T.Helper()
@@ -978,6 +1018,45 @@ func (c *MockApplicationServiceGetApplicationLifeCall) Do(f func(context.Context
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockApplicationServiceGetApplicationLifeCall) DoAndReturn(f func(context.Context, application.UUID) (life.Value, error)) *MockApplicationServiceGetApplicationLifeCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// GetApplicationStorageDirectivesInfo mocks base method.
+func (m *MockApplicationService) GetApplicationStorageDirectivesInfo(arg0 context.Context, arg1 application.UUID) (map[string]application0.ApplicationStorageInfo, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetApplicationStorageDirectivesInfo", arg0, arg1)
+	ret0, _ := ret[0].(map[string]application0.ApplicationStorageInfo)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetApplicationStorageDirectivesInfo indicates an expected call of GetApplicationStorageDirectivesInfo.
+func (mr *MockApplicationServiceMockRecorder) GetApplicationStorageDirectivesInfo(arg0, arg1 any) *MockApplicationServiceGetApplicationStorageDirectivesInfoCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApplicationStorageDirectivesInfo", reflect.TypeOf((*MockApplicationService)(nil).GetApplicationStorageDirectivesInfo), arg0, arg1)
+	return &MockApplicationServiceGetApplicationStorageDirectivesInfoCall{Call: call}
+}
+
+// MockApplicationServiceGetApplicationStorageDirectivesInfoCall wrap *gomock.Call
+type MockApplicationServiceGetApplicationStorageDirectivesInfoCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockApplicationServiceGetApplicationStorageDirectivesInfoCall) Return(arg0 map[string]application0.ApplicationStorageInfo, arg1 error) *MockApplicationServiceGetApplicationStorageDirectivesInfoCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockApplicationServiceGetApplicationStorageDirectivesInfoCall) Do(f func(context.Context, application.UUID) (map[string]application0.ApplicationStorageInfo, error)) *MockApplicationServiceGetApplicationStorageDirectivesInfoCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockApplicationServiceGetApplicationStorageDirectivesInfoCall) DoAndReturn(f func(context.Context, application.UUID) (map[string]application0.ApplicationStorageInfo, error)) *MockApplicationServiceGetApplicationStorageDirectivesInfoCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -1763,10 +1842,10 @@ func (c *MockApplicationServiceMergeExposeSettingsCall) DoAndReturn(f func(conte
 }
 
 // ResolveApplicationConstraints mocks base method.
-func (m *MockApplicationService) ResolveApplicationConstraints(arg0 context.Context, arg1 constraints.Value) (constraints.Value, error) {
+func (m *MockApplicationService) ResolveApplicationConstraints(arg0 context.Context, arg1 constraints.Value) (constraints0.Constraints, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ResolveApplicationConstraints", arg0, arg1)
-	ret0, _ := ret[0].(constraints.Value)
+	ret0, _ := ret[0].(constraints0.Constraints)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -1784,19 +1863,19 @@ type MockApplicationServiceResolveApplicationConstraintsCall struct {
 }
 
 // Return rewrite *gomock.Call.Return
-func (c *MockApplicationServiceResolveApplicationConstraintsCall) Return(arg0 constraints.Value, arg1 error) *MockApplicationServiceResolveApplicationConstraintsCall {
+func (c *MockApplicationServiceResolveApplicationConstraintsCall) Return(arg0 constraints0.Constraints, arg1 error) *MockApplicationServiceResolveApplicationConstraintsCall {
 	c.Call = c.Call.Return(arg0, arg1)
 	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockApplicationServiceResolveApplicationConstraintsCall) Do(f func(context.Context, constraints.Value) (constraints.Value, error)) *MockApplicationServiceResolveApplicationConstraintsCall {
+func (c *MockApplicationServiceResolveApplicationConstraintsCall) Do(f func(context.Context, constraints.Value) (constraints0.Constraints, error)) *MockApplicationServiceResolveApplicationConstraintsCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockApplicationServiceResolveApplicationConstraintsCall) DoAndReturn(f func(context.Context, constraints.Value) (constraints.Value, error)) *MockApplicationServiceResolveApplicationConstraintsCall {
+func (c *MockApplicationServiceResolveApplicationConstraintsCall) DoAndReturn(f func(context.Context, constraints.Value) (constraints0.Constraints, error)) *MockApplicationServiceResolveApplicationConstraintsCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -2275,6 +2354,84 @@ func (m *MockStorageService) EXPECT() *MockStorageServiceMockRecorder {
 	return m.recorder
 }
 
+// GetStorageInstanceUUIDForID mocks base method.
+func (m *MockStorageService) GetStorageInstanceUUIDForID(arg0 context.Context, arg1 string) (storage.StorageInstanceUUID, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetStorageInstanceUUIDForID", arg0, arg1)
+	ret0, _ := ret[0].(storage.StorageInstanceUUID)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetStorageInstanceUUIDForID indicates an expected call of GetStorageInstanceUUIDForID.
+func (mr *MockStorageServiceMockRecorder) GetStorageInstanceUUIDForID(arg0, arg1 any) *MockStorageServiceGetStorageInstanceUUIDForIDCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetStorageInstanceUUIDForID", reflect.TypeOf((*MockStorageService)(nil).GetStorageInstanceUUIDForID), arg0, arg1)
+	return &MockStorageServiceGetStorageInstanceUUIDForIDCall{Call: call}
+}
+
+// MockStorageServiceGetStorageInstanceUUIDForIDCall wrap *gomock.Call
+type MockStorageServiceGetStorageInstanceUUIDForIDCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockStorageServiceGetStorageInstanceUUIDForIDCall) Return(arg0 storage.StorageInstanceUUID, arg1 error) *MockStorageServiceGetStorageInstanceUUIDForIDCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockStorageServiceGetStorageInstanceUUIDForIDCall) Do(f func(context.Context, string) (storage.StorageInstanceUUID, error)) *MockStorageServiceGetStorageInstanceUUIDForIDCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockStorageServiceGetStorageInstanceUUIDForIDCall) DoAndReturn(f func(context.Context, string) (storage.StorageInstanceUUID, error)) *MockStorageServiceGetStorageInstanceUUIDForIDCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// GetStorageInstanceUUIDsByIDs mocks base method.
+func (m *MockStorageService) GetStorageInstanceUUIDsByIDs(arg0 context.Context, arg1 []string) (map[string]storage.StorageInstanceUUID, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetStorageInstanceUUIDsByIDs", arg0, arg1)
+	ret0, _ := ret[0].(map[string]storage.StorageInstanceUUID)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetStorageInstanceUUIDsByIDs indicates an expected call of GetStorageInstanceUUIDsByIDs.
+func (mr *MockStorageServiceMockRecorder) GetStorageInstanceUUIDsByIDs(arg0, arg1 any) *MockStorageServiceGetStorageInstanceUUIDsByIDsCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetStorageInstanceUUIDsByIDs", reflect.TypeOf((*MockStorageService)(nil).GetStorageInstanceUUIDsByIDs), arg0, arg1)
+	return &MockStorageServiceGetStorageInstanceUUIDsByIDsCall{Call: call}
+}
+
+// MockStorageServiceGetStorageInstanceUUIDsByIDsCall wrap *gomock.Call
+type MockStorageServiceGetStorageInstanceUUIDsByIDsCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockStorageServiceGetStorageInstanceUUIDsByIDsCall) Return(arg0 map[string]storage.StorageInstanceUUID, arg1 error) *MockStorageServiceGetStorageInstanceUUIDsByIDsCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockStorageServiceGetStorageInstanceUUIDsByIDsCall) Do(f func(context.Context, []string) (map[string]storage.StorageInstanceUUID, error)) *MockStorageServiceGetStorageInstanceUUIDsByIDsCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockStorageServiceGetStorageInstanceUUIDsByIDsCall) DoAndReturn(f func(context.Context, []string) (map[string]storage.StorageInstanceUUID, error)) *MockStorageServiceGetStorageInstanceUUIDsByIDsCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // GetStoragePoolUUID mocks base method.
 func (m *MockStorageService) GetStoragePoolUUID(arg0 context.Context, arg1 string) (storage.StoragePoolUUID, error) {
 	m.ctrl.T.Helper()
@@ -2310,6 +2467,45 @@ func (c *MockStorageServiceGetStoragePoolUUIDCall) Do(f func(context.Context, st
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockStorageServiceGetStoragePoolUUIDCall) DoAndReturn(f func(context.Context, string) (storage.StoragePoolUUID, error)) *MockStorageServiceGetStoragePoolUUIDCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// GetStoragePoolUUIDsByName mocks base method.
+func (m *MockStorageService) GetStoragePoolUUIDsByName(arg0 context.Context, arg1 []string) (map[string]storage.StoragePoolUUID, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetStoragePoolUUIDsByName", arg0, arg1)
+	ret0, _ := ret[0].(map[string]storage.StoragePoolUUID)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetStoragePoolUUIDsByName indicates an expected call of GetStoragePoolUUIDsByName.
+func (mr *MockStorageServiceMockRecorder) GetStoragePoolUUIDsByName(arg0, arg1 any) *MockStorageServiceGetStoragePoolUUIDsByNameCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetStoragePoolUUIDsByName", reflect.TypeOf((*MockStorageService)(nil).GetStoragePoolUUIDsByName), arg0, arg1)
+	return &MockStorageServiceGetStoragePoolUUIDsByNameCall{Call: call}
+}
+
+// MockStorageServiceGetStoragePoolUUIDsByNameCall wrap *gomock.Call
+type MockStorageServiceGetStoragePoolUUIDsByNameCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockStorageServiceGetStoragePoolUUIDsByNameCall) Return(arg0 map[string]storage.StoragePoolUUID, arg1 error) *MockStorageServiceGetStoragePoolUUIDsByNameCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockStorageServiceGetStoragePoolUUIDsByNameCall) Do(f func(context.Context, []string) (map[string]storage.StoragePoolUUID, error)) *MockStorageServiceGetStoragePoolUUIDsByNameCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockStorageServiceGetStoragePoolUUIDsByNameCall) DoAndReturn(f func(context.Context, []string) (map[string]storage.StoragePoolUUID, error)) *MockStorageServiceGetStoragePoolUUIDsByNameCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -2738,6 +2934,45 @@ func (c *MockRemovalServiceRemoveRelationCall) DoAndReturn(f func(context.Contex
 	return c
 }
 
+// RemoveRelationWithRemoteOfferer mocks base method.
+func (m *MockRemovalService) RemoveRelationWithRemoteOfferer(arg0 context.Context, arg1 relation.UUID, arg2 bool, arg3 time.Duration) (removal.UUID, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RemoveRelationWithRemoteOfferer", arg0, arg1, arg2, arg3)
+	ret0, _ := ret[0].(removal.UUID)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// RemoveRelationWithRemoteOfferer indicates an expected call of RemoveRelationWithRemoteOfferer.
+func (mr *MockRemovalServiceMockRecorder) RemoveRelationWithRemoteOfferer(arg0, arg1, arg2, arg3 any) *MockRemovalServiceRemoveRelationWithRemoteOffererCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveRelationWithRemoteOfferer", reflect.TypeOf((*MockRemovalService)(nil).RemoveRelationWithRemoteOfferer), arg0, arg1, arg2, arg3)
+	return &MockRemovalServiceRemoveRelationWithRemoteOffererCall{Call: call}
+}
+
+// MockRemovalServiceRemoveRelationWithRemoteOffererCall wrap *gomock.Call
+type MockRemovalServiceRemoveRelationWithRemoteOffererCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockRemovalServiceRemoveRelationWithRemoteOffererCall) Return(arg0 removal.UUID, arg1 error) *MockRemovalServiceRemoveRelationWithRemoteOffererCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockRemovalServiceRemoveRelationWithRemoteOffererCall) Do(f func(context.Context, relation.UUID, bool, time.Duration) (removal.UUID, error)) *MockRemovalServiceRemoveRelationWithRemoteOffererCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockRemovalServiceRemoveRelationWithRemoteOffererCall) DoAndReturn(f func(context.Context, relation.UUID, bool, time.Duration) (removal.UUID, error)) *MockRemovalServiceRemoveRelationWithRemoteOffererCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // RemoveRemoteApplicationOfferer mocks base method.
 func (m *MockRemovalService) RemoveRemoteApplicationOfferer(arg0 context.Context, arg1 remoteapplication.UUID, arg2 bool, arg3 time.Duration) (removal.UUID, error) {
 	m.ctrl.T.Helper()
@@ -2773,45 +3008,6 @@ func (c *MockRemovalServiceRemoveRemoteApplicationOffererCall) Do(f func(context
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockRemovalServiceRemoveRemoteApplicationOffererCall) DoAndReturn(f func(context.Context, remoteapplication.UUID, bool, time.Duration) (removal.UUID, error)) *MockRemovalServiceRemoveRemoteApplicationOffererCall {
-	c.Call = c.Call.DoAndReturn(f)
-	return c
-}
-
-// RemoveRemoteRelation mocks base method.
-func (m *MockRemovalService) RemoveRemoteRelation(arg0 context.Context, arg1 relation.UUID, arg2 bool, arg3 time.Duration) (removal.UUID, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "RemoveRemoteRelation", arg0, arg1, arg2, arg3)
-	ret0, _ := ret[0].(removal.UUID)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// RemoveRemoteRelation indicates an expected call of RemoveRemoteRelation.
-func (mr *MockRemovalServiceMockRecorder) RemoveRemoteRelation(arg0, arg1, arg2, arg3 any) *MockRemovalServiceRemoveRemoteRelationCall {
-	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveRemoteRelation", reflect.TypeOf((*MockRemovalService)(nil).RemoveRemoteRelation), arg0, arg1, arg2, arg3)
-	return &MockRemovalServiceRemoveRemoteRelationCall{Call: call}
-}
-
-// MockRemovalServiceRemoveRemoteRelationCall wrap *gomock.Call
-type MockRemovalServiceRemoveRemoteRelationCall struct {
-	*gomock.Call
-}
-
-// Return rewrite *gomock.Call.Return
-func (c *MockRemovalServiceRemoveRemoteRelationCall) Return(arg0 removal.UUID, arg1 error) *MockRemovalServiceRemoveRemoteRelationCall {
-	c.Call = c.Call.Return(arg0, arg1)
-	return c
-}
-
-// Do rewrite *gomock.Call.Do
-func (c *MockRemovalServiceRemoveRemoteRelationCall) Do(f func(context.Context, relation.UUID, bool, time.Duration) (removal.UUID, error)) *MockRemovalServiceRemoveRemoteRelationCall {
-	c.Call = c.Call.Do(f)
-	return c
-}
-
-// DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockRemovalServiceRemoveRemoteRelationCall) DoAndReturn(f func(context.Context, relation.UUID, bool, time.Duration) (removal.UUID, error)) *MockRemovalServiceRemoveRemoteRelationCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -3012,6 +3208,45 @@ func (c *MockCrossModelRelationServiceGetRemoteApplicationOffererByApplicationNa
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockCrossModelRelationServiceGetRemoteApplicationOffererByApplicationNameCall) DoAndReturn(f func(context.Context, string) (remoteapplication.UUID, error)) *MockCrossModelRelationServiceGetRemoteApplicationOffererByApplicationNameCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// IsApplicationSynthetic mocks base method.
+func (m *MockCrossModelRelationService) IsApplicationSynthetic(arg0 context.Context, arg1 string) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IsApplicationSynthetic", arg0, arg1)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// IsApplicationSynthetic indicates an expected call of IsApplicationSynthetic.
+func (mr *MockCrossModelRelationServiceMockRecorder) IsApplicationSynthetic(arg0, arg1 any) *MockCrossModelRelationServiceIsApplicationSyntheticCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsApplicationSynthetic", reflect.TypeOf((*MockCrossModelRelationService)(nil).IsApplicationSynthetic), arg0, arg1)
+	return &MockCrossModelRelationServiceIsApplicationSyntheticCall{Call: call}
+}
+
+// MockCrossModelRelationServiceIsApplicationSyntheticCall wrap *gomock.Call
+type MockCrossModelRelationServiceIsApplicationSyntheticCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockCrossModelRelationServiceIsApplicationSyntheticCall) Return(arg0 bool, arg1 error) *MockCrossModelRelationServiceIsApplicationSyntheticCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockCrossModelRelationServiceIsApplicationSyntheticCall) Do(f func(context.Context, string) (bool, error)) *MockCrossModelRelationServiceIsApplicationSyntheticCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockCrossModelRelationServiceIsApplicationSyntheticCall) DoAndReturn(f func(context.Context, string) (bool, error)) *MockCrossModelRelationServiceIsApplicationSyntheticCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

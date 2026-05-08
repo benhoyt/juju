@@ -5,12 +5,13 @@ package apiremotecaller
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
 	"github.com/juju/retry"
-	"github.com/juju/worker/v4"
+	"github.com/juju/worker/v5"
 	"gopkg.in/tomb.v2"
 
 	"github.com/juju/juju/api"
@@ -26,12 +27,16 @@ const (
 type RemoteConnection interface {
 	// Connection returns the connection to the remote API server.
 	Connection(context.Context, func(context.Context, api.Connection) error) error
+
+	// ControllerID returns the controller ID of the remote API server.
+	ControllerID() string
 }
 
 // RemoteServer represents the public interface of the worker
 // responsible modeling the remote API server.
 type RemoteServer interface {
 	worker.Worker
+	worker.Reporter
 	RemoteConnection
 	UpdateAddresses(addresses []string)
 }
@@ -65,8 +70,10 @@ type remoteServer struct {
 	logger logger.Logger
 	clock  clock.Clock
 
-	changes     chan []string
+	changes     chan addressChange
 	connections chan chan api.Connection
+	reports     chan chan report
+	connected   atomic.Bool
 }
 
 // NewRemoteServer creates a new RemoteServer that will connect to the remote
@@ -82,12 +89,18 @@ func newRemoteServer(config RemoteServerConfig, internalStates chan string) Remo
 		logger:         config.Logger,
 		clock:          config.Clock,
 		apiOpener:      config.APIOpener,
-		changes:        make(chan []string),
+		changes:        make(chan addressChange),
 		internalStates: internalStates,
 		connections:    make(chan chan api.Connection),
+		reports:        make(chan chan report),
 	}
 	w.tomb.Go(w.loop)
 	return w
+}
+
+// ControllerID returns the controller ID of the remote API server.
+func (w *remoteServer) ControllerID() string {
+	return w.controllerID
 }
 
 // Connection returns the current connection to the remote API server if it's
@@ -117,10 +130,22 @@ func (w *remoteServer) Connection(ctx context.Context, fn func(context.Context, 
 
 // UpdateAddresses will update the addresses held for the target API server.
 func (w *remoteServer) UpdateAddresses(addresses []string) {
+	addresses = append([]string(nil), addresses...)
+
+	processed := make(chan struct{})
 	select {
 	case <-w.tomb.Dying():
 		return
-	case w.changes <- addresses:
+	case w.changes <- addressChange{addresses: addresses, processed: processed}:
+	}
+
+	// Wait for the inner goroutine to acknowledge receipt and cancel
+	// the previous request context. This prevents a race where the
+	// main loop picks up a stale request before the cancellation
+	// has been applied.
+	select {
+	case <-w.tomb.Dying():
+	case <-processed:
 	}
 }
 
@@ -134,16 +159,52 @@ func (w *remoteServer) Wait() error {
 	return w.tomb.Wait()
 }
 
-func (w *remoteServer) Report() map[string]any {
-	report := make(map[string]any)
-	report["controller-id"] = w.controllerID
-	report["addresses"] = w.info.Addrs
-	return report
+// Report outputs the state of the worker for the engine report.
+func (w *remoteServer) Report(ctx context.Context) map[string]any {
+	ctx = w.tomb.Context(ctx)
+
+	ch := make(chan report, 1)
+	select {
+	case <-ctx.Done():
+		return map[string]any{
+			"error": ctx.Err().Error(),
+		}
+	case w.reports <- ch:
+	}
+
+	select {
+	case <-ctx.Done():
+		return map[string]any{
+			"error": ctx.Err().Error(),
+		}
+	case r := <-ch:
+		return map[string]any{
+			"controller-id": w.controllerID,
+			"addresses":     r.addresses,
+			"connected":     r.connected,
+		}
+	}
 }
 
 type request struct {
 	ctx       context.Context
+	cancel    context.CancelCauseFunc
 	addresses []string
+}
+
+type report struct {
+	addresses []string
+	connected bool
+}
+
+// addressChange carries address data through the changes channel along
+// with an optional acknowledgment channel. When processed is non-nil,
+// the inner goroutine closes it after cancelling the previous request
+// context, guaranteeing the caller that the prior context is cancelled
+// before UpdateAddresses returns.
+type addressChange struct {
+	addresses []string
+	processed chan struct{}
 }
 
 func (w *remoteServer) loop() error {
@@ -153,7 +214,9 @@ func (w *remoteServer) loop() error {
 	ctx, cancel := w.scopedContext()
 	defer cancel()
 
-	requests := make(chan request)
+	w.logger.Tracef(ctx, "starting remote API caller for controller %q", w.controllerID)
+
+	requests := make(chan request, 1)
 	w.tomb.Go(func() error {
 		// When we receive a new change, we want to be able to cancel the current
 		// connection attempt. The current setup is that it will dial indefinitely
@@ -181,36 +244,46 @@ func (w *remoteServer) loop() error {
 					canceler(context.Canceled)
 				}
 				return tomb.ErrDying
-			case addresses := <-w.changes:
+			case change := <-w.changes:
 				// Cancel the current connection attempt and then proxy the
 				// change through to the main loop.
 				if canceler != nil {
 					canceler(newChangeRequestError)
 				}
 
-				// Create a new context for the next connection attempt.
-				var requestCtx context.Context
-				requestCtx, canceler = context.WithCancelCause(ctx)
+				// Signal that the previous context has been cancelled.
+				if change.processed != nil {
+					close(change.processed)
+				}
 
-				// We might want to consider only sending a change after a
-				// period of time, to avoid sending too many changes at once.
-				select {
-				case <-w.tomb.Dying():
-					// We'll always have a canceler if we're dying, so we can
-					// safely call it here.
-					canceler(context.Canceled)
-					return tomb.ErrDying
-				case requests <- request{
+				// Create a new context for the next connection attempt.
+				requestCtx, requestCancel := context.WithCancelCause(ctx)
+				canceler = requestCancel
+				req := request{
 					ctx:       requestCtx,
-					addresses: addresses,
-				}:
+					cancel:    requestCancel,
+					addresses: change.addresses,
+				}
+
+				// Keep request handoff to the main loop non-blocking and
+				// latest-wins. If the queue is full, replace the stale request.
+			enqueue:
+				for {
+					select {
+					case <-w.tomb.Dying():
+						requestCancel(context.Canceled)
+						return tomb.ErrDying
+					case requests <- req:
+						break enqueue
+					case stale := <-requests:
+						stale.cancel(newChangeRequestError)
+					}
 				}
 			}
 		}
 	})
 
 	var (
-		connected  bool
 		monitor    <-chan struct{}
 		connection api.Connection
 
@@ -238,7 +311,7 @@ func (w *remoteServer) loop() error {
 			w.logger.Debugf(ctx, "addresses for %q have changed: %v", w.controllerID, addresses)
 
 			// If the addresses already exist, we don't need to do anything.
-			if connected && w.addressesAlreadyExist(addresses) {
+			if w.connected.Load() && w.addressesAlreadyExist(addresses) {
 				w.logger.Tracef(ctx, "addresses for %q have not changed", w.controllerID)
 				continue
 			}
@@ -285,25 +358,23 @@ func (w *remoteServer) loop() error {
 
 			// We've successfully connected to the remote server, so update the
 			// addresses.
-			w.info.Addrs = addresses
-			connected = true
+			w.info.Addrs = append([]string(nil), addresses...)
+			w.connected.Store(true)
 
 			w.reportInternalState(stateChanged)
 
 		case <-monitor:
-			// If the connection is lost, force the worker to restart. We
-			// won't attempt to reconnect here, just make the worker die.
-			select {
-			case <-w.tomb.Dying():
-				return tomb.ErrDying
-			default:
-				return errors.Errorf("connection to %q has been lost", w.controllerID)
-			}
+			// Force the monitor to be nil, so we don't try to read from it
+			// again until we've reconnected.
+			monitor = nil
+
+			// The connection has broken, we need to reconnect.
+			w.forceReconnect(ctx)
 
 		case ch := <-w.connections:
 			// If we don't have a connection, we'll add the channel to the list
 			// of channels that are waiting for a connection.
-			if !connected {
+			if !w.connected.Load() {
 				channels = append(channels, ch)
 				continue
 			}
@@ -313,6 +384,16 @@ func (w *remoteServer) loop() error {
 			case <-w.tomb.Dying():
 				return tomb.ErrDying
 			case ch <- connection:
+			}
+
+		case ch := <-w.reports:
+			select {
+			case <-w.tomb.Dying():
+				return tomb.ErrDying
+			case ch <- report{
+				addresses: append([]string(nil), w.info.Addrs...),
+				connected: w.connected.Load(),
+			}:
 			}
 		}
 	}
@@ -355,7 +436,7 @@ func (w *remoteServer) connect(ctx context.Context, addresses []string) (api.Con
 		},
 		NotifyFunc: func(err error, attempt int) {
 			// This is normal behavior, so we don't need to log it as an error.
-			w.logger.Debugf(ctx, "failed to connect to %s attempt %d, with addresses %v: %v", w.controllerID, attempt, info.Addrs, err)
+			w.logger.Tracef(ctx, "failed to connect to %s attempt %d, with addresses %v: %v", w.controllerID, attempt, info.Addrs, err)
 		},
 		IsFatalError: func(err error) bool {
 			// This is the only legitimist error that can be returned from the
@@ -365,7 +446,7 @@ func (w *remoteServer) connect(ctx context.Context, addresses []string) (api.Con
 		},
 		Attempts:    retry.UnlimitedAttempts,
 		Delay:       1 * time.Second,
-		MaxDelay:    time.Minute,
+		MaxDelay:    time.Second * 30,
 		BackoffFunc: retry.DoubleDelay,
 		Stop:        ctx.Done(),
 		Clock:       w.clock,
@@ -398,6 +479,37 @@ func (w *remoteServer) callFunc(ctx context.Context, conn api.Connection, fn fun
 	return fn(ctx, conn)
 }
 
+func (w *remoteServer) forceReconnect(ctx context.Context) {
+	w.logger.Debugf(ctx, "connection to %s has broken", w.controllerID)
+	w.connected.Store(false)
+
+	// If there are any pending changes, we want to drain them before forcing a
+	// reconnect. This should ensure that we're using at least the latest
+	// addresses. This will be eventually consistent if they're stale.
+	addresses := w.info.Addrs
+DRAIN:
+	for {
+		select {
+		case <-w.tomb.Dying():
+			return
+		case change := <-w.changes:
+			addresses = change.addresses
+			if change.processed != nil {
+				close(change.processed)
+			}
+		default:
+			break DRAIN
+		}
+	}
+
+	// Force a reconnect by sending the current address list back through the
+	// changes channel, which will trigger a reconnect.
+	select {
+	case <-w.tomb.Dying():
+	case w.changes <- addressChange{addresses: addresses}:
+	}
+}
+
 // scopedContext returns a context that is in the scope of the worker lifetime.
 // It returns a cancellable context that is cancelled when the action has
 // completed.
@@ -422,4 +534,11 @@ var dialOpts = api.DialOpts{
 	// API servers, see bug #1733256.
 	Timeout:    10 * time.Second,
 	RetryDelay: 1 * time.Second,
+
+	// For controller to controller connections, we want to ping more frequently
+	// to detect broken connections faster.
+	// We want to ping more frequently to detect broken connections faster, but
+	// keep the default timeout for a ping to happen (30 seconds). The worst
+	// case would be 1 minute to detect a broken connection.
+	PingPeriod: new(30 * time.Second),
 }

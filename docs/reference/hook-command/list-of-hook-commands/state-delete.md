@@ -3,11 +3,11 @@
 > See also: [state-get](#state-get), [state-set](#state-set)
 
 ## Summary
-Delete server-side-state key value pairs.
+Deletes server-side-state key-value pairs.
 
 ## Usage
 ``` state-delete [options] <key>```
 
 ## Details
 
-state-delete deletes the value of the server side state specified by key.
+`state-delete` deletes the value of the server side state specified by key.

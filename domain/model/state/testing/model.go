@@ -8,16 +8,16 @@ import (
 	"database/sql"
 	"time"
 
+	"github.com/canonical/sqlair"
 	"github.com/juju/tc"
 
 	corecredential "github.com/juju/juju/core/credential"
 	"github.com/juju/juju/core/database"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
 	"github.com/juju/juju/domain/model"
-	statecontroller "github.com/juju/juju/domain/model/state/controller"
+	controllermodel "github.com/juju/juju/domain/model/state/controller"
 	"github.com/juju/juju/internal/secrets/provider/juju"
 	"github.com/juju/juju/internal/secrets/provider/kubernetes"
 	"github.com/juju/juju/internal/uuid"
@@ -68,6 +68,133 @@ func CreateKubernetesSecretBackend(c *tc.C, runner database.TxnRunner) {
 // reference model. This avoids the need for introducing cyclic imports with
 // tests.
 func CreateTestModel(
+	c *tc.C,
+	txnRunner database.TxnRunnerFactory,
+	name string,
+) coremodel.UUID {
+	userUUID, err := user.NewUUID()
+	c.Assert(err, tc.ErrorIsNil)
+
+	cloudUUID, err := uuid.NewUUID()
+	c.Assert(err, tc.ErrorIsNil)
+
+	regionName := name + "-region"
+	cloudRegionUUID, err := uuid.NewUUID()
+	c.Assert(err, tc.ErrorIsNil)
+
+	credID, err := corecredential.NewUUID()
+	c.Assert(err, tc.ErrorIsNil)
+
+	userName := usertesting.GenNewName(c, "test-user"+name)
+	runner, err := txnRunner(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+
+	CreateInternalSecretBackend(c, runner)
+
+	err = runner.StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO user (uuid, name, display_name, external, removed, created_by_uuid, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, userUUID.String(), userName.Name(), userName.Name(), false, false, userUUID, time.Now())
+		if err != nil {
+			return err
+		}
+
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO user_authentication (user_uuid, disabled)
+			VALUES (?, ?)
+		`, userUUID.String(), false)
+		if err != nil {
+			return err
+		}
+
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO cloud_type (id, type)
+			VALUES (-1, "dummy")
+			ON CONFLICT (id) DO NOTHING
+		`)
+		if err != nil {
+			return err
+		}
+
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO cloud (uuid, name, cloud_type_id, endpoint, skip_tls_verify)
+			VALUES (?, ?, -1, "", true)
+		`, cloudUUID.String(), name)
+		if err != nil {
+			return err
+		}
+
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO cloud_region (uuid, name, cloud_uuid)
+			VALUES (?, ?, ?)
+		`, cloudRegionUUID.String(), regionName, cloudUUID.String())
+		if err != nil {
+			return err
+		}
+
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO cloud_auth_type (cloud_uuid, auth_type_id)
+			VALUES (?, 0), (?, 2)
+		`, cloudUUID.String(), cloudUUID.String())
+		if err != nil {
+			return err
+		}
+
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO cloud_credential (uuid, cloud_uuid, auth_type_id, owner_uuid, name, revoked, invalid)
+			VALUES (?, ?, ?, ?, "foobar", false, false)
+		`, credID, cloudUUID.String(), 0, userUUID)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
+	err = runner.Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		err := controllermodel.Create(
+			ctx,
+			preparer{},
+			tx,
+			modelUUID,
+			coremodel.IAAS,
+			model.GlobalModelCreationArgs{
+				Cloud:       name,
+				CloudRegion: regionName,
+				Credential: corecredential.Key{
+					Cloud: name,
+					Owner: userName,
+					Name:  "foobar",
+				},
+				Name:          name,
+				Qualifier:     "prod",
+				AdminUsers:    []user.UUID{userUUID},
+				SecretBackend: juju.BackendName,
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		activator := controllermodel.GetActivator()
+		return activator(ctx, preparer{}, tx, modelUUID)
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	return modelUUID
+}
+
+// CreateTestModelWithoutActivation is a testing utility function for creating
+// a basic model without activating it. This is useful for testing behavior
+// that needs to work with models that haven't been fully activated (migration not finished) yet.
+//
+// This should only ever be used from within other state packages to establish a
+// reference model for testing non-activated model behavior. This avoids the
+// need for introducing cyclic imports with tests.
+func CreateTestModelWithoutActivation(
 	c *tc.C,
 	txnRunner database.TxnRunnerFactory,
 	name string,
@@ -144,29 +271,30 @@ func CreateTestModel(
 	})
 	c.Assert(err, tc.ErrorIsNil)
 
-	modelUUID := modeltesting.GenModelUUID(c)
-	modelSt := statecontroller.NewState(txnRunner)
-	err = modelSt.Create(
-		c.Context(),
-		modelUUID,
-		coremodel.IAAS,
-		model.GlobalModelCreationArgs{
-			Cloud:       name,
-			CloudRegion: regionName,
-			Credential: corecredential.Key{
-				Cloud: name,
-				Owner: userName,
-				Name:  "foobar",
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
+	err = runner.Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		// Create the model but do NOT activate it
+		return controllermodel.Create(
+			ctx,
+			preparer{},
+			tx,
+			modelUUID,
+			coremodel.IAAS,
+			model.GlobalModelCreationArgs{
+				Cloud:       name,
+				CloudRegion: regionName,
+				Credential: corecredential.Key{
+					Cloud: name,
+					Owner: userName,
+					Name:  "foobar",
+				},
+				Name:          name,
+				Qualifier:     "prod",
+				AdminUsers:    []user.UUID{userUUID},
+				SecretBackend: juju.BackendName,
 			},
-			Name:          name,
-			Qualifier:     "prod",
-			AdminUsers:    []user.UUID{userUUID},
-			SecretBackend: juju.BackendName,
-		},
-	)
-	c.Assert(err, tc.ErrorIsNil)
-
-	err = modelSt.Activate(c.Context(), modelUUID)
+		)
+	})
 	c.Assert(err, tc.ErrorIsNil)
 
 	return modelUUID
@@ -175,7 +303,13 @@ func CreateTestModel(
 // DeleteTestModel is responsible for cleaning up a testing mode previously
 // created with [CreateTestModel].
 func DeleteTestModel(c *tc.C, ctx context.Context, txnRunner database.TxnRunnerFactory, modelUUID coremodel.UUID) {
-	modelSt := statecontroller.NewState(txnRunner)
+	modelSt := controllermodel.NewState(txnRunner)
 	err := modelSt.Delete(ctx, modelUUID)
 	c.Assert(err, tc.ErrorIsNil)
+}
+
+type preparer struct{}
+
+func (p preparer) Prepare(query string, args ...any) (*sqlair.Statement, error) {
+	return sqlair.Prepare(query, args...)
 }

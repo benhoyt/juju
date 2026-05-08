@@ -9,8 +9,8 @@ import (
 
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 
 	"github.com/juju/juju/core/blockdevice"
 	"github.com/juju/juju/core/watcher"
@@ -106,7 +106,7 @@ type FilesystemAccessor interface {
 
 	// FilesystemParams returns the parameters for creating the filesystems
 	// with the specified tags.
-	FilesystemParams(context.Context, []names.FilesystemTag) ([]params.FilesystemParamsResult, error)
+	FilesystemParams(context.Context, []names.FilesystemTag) ([]params.FilesystemParamsResultV5, error)
 
 	// RemoveFilesystemParams returns the parameters for destroying or
 	// releasing the filesystems with the specified tags.
@@ -114,7 +114,7 @@ type FilesystemAccessor interface {
 
 	// FilesystemAttachmentParams returns the parameters for creating the
 	// filesystem attachments with the specified tags.
-	FilesystemAttachmentParams(context.Context, []params.MachineStorageId) ([]params.FilesystemAttachmentParamsResult, error)
+	FilesystemAttachmentParams(context.Context, []params.MachineStorageId) ([]params.FilesystemAttachmentParamsResultV5, error)
 
 	// SetFilesystemInfo records the details of newly provisioned filesystems.
 	SetFilesystemInfo(context.Context, []params.Filesystem) ([]params.ErrorResult, error)
@@ -258,23 +258,17 @@ func (w *storageProvisioner) loop() error {
 	deps.managedFilesystemSource = newManagedFilesystemSource(
 		deps.volumeBlockDevices, deps.filesystems,
 	)
-	// Units don't use managed volume backed filesystems.
-	if deps.isApplicationKind() {
-		deps.managedFilesystemSource = &noopFilesystemSource{}
-	}
 
 	// Units don't have unit-scoped volumes - all volumes are
 	// associated with the model (namespace).
-	if !deps.isApplicationKind() {
-		volumesWatcher, err := w.config.Volumes.WatchVolumes(ctx, w.config.Scope)
-		if err != nil {
-			return errors.Annotate(err, "watching volumes")
-		}
-		if err := w.catacomb.Add(volumesWatcher); err != nil {
-			return errors.Trace(err)
-		}
-		volumesChanges = volumesWatcher.Changes()
+	volumesWatcher, err := w.config.Volumes.WatchVolumes(ctx, w.config.Scope)
+	if err != nil {
+		return errors.Annotate(err, "watching volumes")
 	}
+	if err := w.catacomb.Add(volumesWatcher); err != nil {
+		return errors.Trace(err)
+	}
+	volumesChanges = volumesWatcher.Changes()
 
 	filesystemsWatcher, err := w.config.Filesystems.WatchFilesystems(ctx, w.config.Scope)
 	if err != nil {
@@ -394,6 +388,16 @@ func (w *storageProvisioner) loop() error {
 // no more changes.
 // If there are no changes, it returns with no error.
 func (w *storageProvisioner) processDependentChanges(ctx context.Context, deps *dependencies, source watcher.StringsChannel, fn func(context.Context, *dependencies, []string) error) error {
+	timer := w.config.Clock.NewTimer(defaultDependentChangesTimeout)
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.Chan():
+			default:
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-w.catacomb.Dying():
@@ -405,7 +409,16 @@ func (w *storageProvisioner) processDependentChanges(ctx context.Context, deps *
 			if err := fn(ctx, deps, changes); err != nil {
 				return errors.Trace(err)
 			}
-		case <-time.After(defaultDependentChangesTimeout):
+
+			// Restart the inactivity timeout after every processed change.
+			if !timer.Stop() {
+				select {
+				case <-timer.Chan():
+				default:
+				}
+			}
+			timer.Reset(defaultDependentChangesTimeout)
+		case <-timer.Chan():
 			// Nothing to do, we've waited long enough.
 			return nil
 		}
@@ -567,8 +580,4 @@ type dependencies struct {
 	// manages filesystems backed by volumes attached to the host
 	// machine.
 	managedFilesystemSource storage.FilesystemSource
-}
-
-func (c *dependencies) isApplicationKind() bool {
-	return c.config.Scope.Kind() == names.ApplicationTagKind
 }

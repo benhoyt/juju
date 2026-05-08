@@ -34,9 +34,15 @@ type ModelState interface {
 	// the controller model.
 	IsControllerModel(ctx context.Context, modelUUID string) (bool, error)
 
+	// EnsureModelNotAlive ensures that there is no model identified
+	// by the input model UUID, that is still alive. This does not cascade
+	// all entities associated with the model will still be alive.
+	EnsureModelNotAlive(ctx context.Context, modelUUID string, force bool) error
+
 	// EnsureModelNotAliveCascade ensures that there is no model identified
-	// by the input model UUID, that is still alive.
-	EnsureModelNotAliveCascade(ctx context.Context, modelUUID string, force bool) (removal.ModelArtifacts, error)
+	// by the input model UUID, that is still alive. Returns the artifacts
+	// that are not dead while setting the model to not alive.
+	EnsureModelNotAliveCascade(ctx context.Context, modelUUID string) (removal.ModelArtifacts, error)
 
 	// ModelScheduleRemoval schedules a removal job for the model with the
 	// input UUID, qualified with the input force boolean.
@@ -49,14 +55,22 @@ type ModelState interface {
 		force bool, when time.Time,
 	) error
 
+	// ControllerModelScheduleRemoval schedules a removal job for the controller
+	// model with the input UUID, qualified with the input force boolean.
+	ControllerModelScheduleRemoval(
+		ctx context.Context,
+		removalDeadUUID, modelUUID string,
+		force bool, when time.Time,
+	) error
+
 	// GetModelLife retrieves the life state of a model.
 	GetModelLife(ctx context.Context, modelUUID string) (life.Life, error)
 
-	// MarkModelAsDead marks the model with the input UUID as dead.
-	MarkModelAsDead(ctx context.Context, modelUUID string) error
+	// GetModelType returns the type of the current model.
+	GetModelType(ctx context.Context) (model.ModelType, error)
 
-	// DeleteModelArtifacts deletes all artifacts associated with a model.
-	DeleteModelArtifacts(ctx context.Context, modelUUID string) error
+	// MarkModelAsDead marks the model with the input UUID as dead.
+	MarkModelAsDead(ctx context.Context, modelUUID string, force bool) error
 }
 
 // RemoveModel checks if a model with the input name exists.
@@ -87,6 +101,38 @@ func (s *Service) RemoveModel(
 	return s.removeModel(ctx, modelUUID, force, wait)
 }
 
+// RemoveMigratingModel removes a model that is currently importing/migrating.
+// The model is guaranteed after this call to be dead.
+func (s *Service) RemoveMigratingModel(
+	ctx context.Context,
+	modelUUID model.UUID,
+) error {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	if controllerModel, err := s.modelState.IsControllerModel(ctx, modelUUID.String()); err != nil {
+		return errors.Capture(err)
+	} else if controllerModel {
+		return errors.Errorf("cannot remove controller model %q", modelUUID)
+	}
+
+	if migrating, err := s.controllerState.IsMigratingModel(ctx, modelUUID.String()); err != nil {
+		return errors.Errorf("getting model %q migrating status in controller: %w", modelUUID, err)
+	} else if !migrating {
+		return errors.Errorf("model %q is not importing", modelUUID)
+	}
+
+	// Once all entities are dead, we can mark the model as dead in the
+	// controller database. This will cause the undertaker to delete the model
+	// database.
+
+	if err := s.controllerState.MarkMigratingModelAsDead(ctx, modelUUID.String()); err != nil {
+		return errors.Errorf("marking controller model %q as dead: %w", modelUUID, err)
+	}
+
+	return nil
+}
+
 func (s *Service) removeModel(
 	ctx context.Context,
 	modelUUID model.UUID,
@@ -104,28 +150,27 @@ func (s *Service) removeModel(
 	// 3. Check the model exists in the model database. If it does not, and
 	//    the controller model doesn't exist, then we can return early.
 	// 4. Ensure the model is not alive in the model database and return any
-	//    artifacts that were transitioned from alive to dying.
+	//    non-dead artifacts that should have removal jobs.
 	// 5. Schedule the model removal job in the model database.
 	// 6. If there are any relations, units, machines or applications that
-	//    were transitioned from alive to dying, schedule their removal
-	//    as well.
+	//    are not dead, schedule their removal as well.
 
 	controllerModelExists, err := s.controllerState.ModelExists(ctx, modelUUID.String())
 	if err != nil {
-		return "", errors.Errorf("checking if controller model exists: %w", err)
+		return "", errors.Errorf("checking if model exists in controller database: %w", err)
 	} else if !controllerModelExists {
 		s.logger.Infof(ctx, "model %q does not exist in controller database", modelUUID)
 	}
 
 	// If the model doesn't exist we can still run this, it just will be a
 	// no-op.
-	if err := s.controllerState.EnsureModelNotAliveCascade(ctx, modelUUID.String(), force); err != nil {
+	if err := s.controllerState.EnsureModelNotAlive(ctx, modelUUID.String(), force); err != nil {
 		return "", errors.Errorf("ensuring model %q is not alive: %w", modelUUID, err)
 	}
 
 	// Now check that the model exists in the model database. If it doesn't
-	// exist and the controller model exists, then we can return early. We've
-	// successfully removed the model from the database.
+	// exist and the model in the controller database exists, then we can return
+	// early. We've successfully removed the model from the database.
 	modelExists, err := s.modelState.ModelExists(ctx, modelUUID.String())
 	if err != nil {
 		return "", errors.Errorf("checking if model exists: %w", err)
@@ -135,7 +180,7 @@ func (s *Service) removeModel(
 
 	// Either the model in the controller database or the model database exists,
 	// so we can proceed with the removal.
-	artifacts, err := s.modelState.EnsureModelNotAliveCascade(ctx, modelUUID.String(), force)
+	artifacts, err := s.modelState.EnsureModelNotAliveCascade(ctx, modelUUID.String())
 	if err != nil {
 		return "", errors.Errorf("model %q: %w", modelUUID, err)
 	}
@@ -169,8 +214,8 @@ func (s *Service) removeModel(
 	}
 
 	if len(artifacts.RelationUUIDs) > 0 {
-		// If there are any relations that transitioned from alive to dying or
-		// dead, we need to schedule their removal as well.
+		// If there are any relations that are not dead, we need to schedule
+		// their removal as well.
 		s.logger.Infof(ctx, "model has relations %v, scheduling removal", artifacts.RelationUUIDs)
 
 		s.removeRelations(ctx, artifacts.RelationUUIDs, force, wait)
@@ -180,24 +225,24 @@ func (s *Service) removeModel(
 	const destroyStorage = true
 
 	if len(artifacts.UnitUUIDs) > 0 {
-		// If there are any units that transitioned from alive to dying or
-		// dead, we need to schedule their removal as well.
+		// If there are any units that are not dead, we need to schedule their
+		// removal as well.
 		s.logger.Infof(ctx, "model has units %v, scheduling removal", artifacts.UnitUUIDs)
 
 		s.removeUnits(ctx, artifacts.UnitUUIDs, destroyStorage, force, wait)
 	}
 
 	if len(artifacts.MachineUUIDs) > 0 {
-		// If there are any machines that transitioned from alive to dying or
-		// dead, we need to schedule their removal as well.
+		// If there are any machines that are not dead, we need to schedule
+		// their removal as well.
 		s.logger.Infof(ctx, "model has machines %v, scheduling removal", artifacts.MachineUUIDs)
 
 		s.removeMachines(ctx, artifacts.MachineUUIDs, force, wait)
 	}
 
 	if len(artifacts.ApplicationUUIDs) > 0 {
-		// If there are any applications that transitioned from alive to dying
-		// or dead, we need to schedule their removal as well.
+		// If there are any applications that are not dead, we need to schedule
+		// their removal as well.
 		s.logger.Infof(ctx, "model has applications %v, scheduling removal", artifacts.ApplicationUUIDs)
 
 		s.removeApplications(ctx, artifacts.ApplicationUUIDs, destroyStorage, force, wait)
@@ -206,34 +251,46 @@ func (s *Service) removeModel(
 	return modelJobUUID, nil
 }
 
-// DeleteModel removes the model with the given UUID from the database.
-// This will remove all the model's artifacts. Though it won't delete the
-// database itself. That is done by the undertaker worker.
-// The model must be dead before it can be deleted.
-// If the model is alive or dying, an error will be returned.
+// DeleteModel removes the model with the given UUID from the controller
+// database. It is expected that this will only ever be called when the
+// model is set to dead, even with force.
 func (s *Service) DeleteModel(ctx context.Context, modelUUID model.UUID) error {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
+	if isMigrating, err := s.controllerState.IsMigratingModel(ctx, modelUUID.String()); err != nil {
+		return errors.Errorf("checking if model %q is migrating in controller: %w", modelUUID, err)
+	} else if isMigrating {
+
+		// If this fails, the undertaker will retry the deletion later.
+		if err := s.controllerState.DeleteModel(ctx, modelUUID.String()); err != nil {
+			return errors.Errorf("deleting model: %w", err)
+		}
+
+		return nil
+	}
+
 	controllerLife, err := s.controllerState.GetModelLife(ctx, modelUUID.String())
-	if err != nil && !errors.Is(err, modelerrors.NotFound) {
-		return errors.Errorf("getting controller model %q life: %w", modelUUID, err)
+	if errors.Is(err, modelerrors.NotFound) {
+		controllerLife = life.Dead
+	} else if err != nil {
+		return errors.Errorf("getting model %q life in controller: %w", modelUUID, err)
 	}
 
-	// We should ensure that the model is dead before we delete it.
-	modelLife, err := s.modelState.GetModelLife(ctx, modelUUID.String())
-	if err != nil && !errors.Is(err, modelerrors.NotFound) {
-		return errors.Errorf("getting model %q life: %w", modelUUID, err)
-	}
-
-	if modelLife == life.Alive || controllerLife == life.Alive {
+	// The life of the model should never be anything but dead. This is because
+	// if this is either a clean or forced removal, the model should have been
+	// set to dead prior to this call. There isn't away to get here, other than
+	// via the undertaker, without the model being dead.
+	switch controllerLife {
+	case life.Alive:
 		return errors.Errorf("model %q is still alive", modelUUID).Add(removalerrors.EntityStillAlive)
-	} else if modelLife == life.Dying || controllerLife == life.Dying {
-		return errors.Errorf("model %q is dying", modelUUID).Add(removalerrors.RemovalJobIncomplete)
+	case life.Dying:
+		return errors.Errorf("model %q is dying", modelUUID).Add(removalerrors.EntityNotDead)
 	}
 
 	// Attempt to destroy the provider of the model. This is best effort,
-	// because we might not have all the model information available to do so.
+	// because we might not have all the model information available to do
+	// so.
 	provider, err := s.providerGetter(ctx)
 	if err != nil && !errors.Is(err, coreerrors.NotSupported) {
 		s.logger.Errorf(ctx, "failed to get model provider: %v", err)
@@ -243,10 +300,7 @@ func (s *Service) DeleteModel(ctx context.Context, modelUUID model.UUID) error {
 		}
 	}
 
-	if err := s.modelState.DeleteModelArtifacts(ctx, modelUUID.String()); err != nil {
-		return errors.Errorf("deleting model artifacts: %w", err)
-	}
-
+	// If this fails, the undertaker will retry the deletion later.
 	if err := s.controllerState.DeleteModel(ctx, modelUUID.String()); err != nil {
 		return errors.Errorf("deleting model: %w", err)
 	}
@@ -305,8 +359,8 @@ func (s *Service) processModelJob(ctx context.Context, job removal.Job) error {
 		return errors.Errorf("model %q is alive", job.EntityUUID).Add(removalerrors.EntityStillAlive)
 	}
 
-	// If this is the controller model, we need to ensure that any other
-	// models are also not alive/dying.
+	// If the model is a controller model, we need to ensure that all other models
+	// are at least not alive or dying
 	if isController, err := s.modelState.IsControllerModel(ctx, job.EntityUUID); err != nil {
 		return errors.Capture(err)
 	} else if isController {
@@ -315,7 +369,7 @@ func (s *Service) processModelJob(ctx context.Context, job removal.Job) error {
 			return errors.Errorf("getting controller model UUIDs: %w", err)
 		}
 
-		modelsExist, err := s.aliveOrDyingModelsExist(ctx, models)
+		modelsExist, err := s.aliveOrDyingModelsExist(ctx, models, job.Force)
 		if err != nil {
 			return errors.Errorf("checking if all models are dead: %w", err)
 		} else if modelsExist {
@@ -324,7 +378,9 @@ func (s *Service) processModelJob(ctx context.Context, job removal.Job) error {
 		}
 	}
 
-	if err := s.modelState.MarkModelAsDead(ctx, job.EntityUUID); err != nil && !errors.Is(err, modelerrors.NotFound) {
+	// Marking the models as dead will also ensure that we're not deleting
+	// non-dead entities within the model, unless force is used.
+	if err := s.modelState.MarkModelAsDead(ctx, job.EntityUUID, job.Force); err != nil && !errors.Is(err, modelerrors.NotFound) {
 		return errors.Errorf("marking model %q as dead: %w", job.EntityUUID, err)
 	}
 
@@ -337,16 +393,24 @@ func (s *Service) processModelJob(ctx context.Context, job removal.Job) error {
 	return nil
 }
 
-func (s *Service) aliveOrDyingModelsExist(ctx context.Context, modelUUIDs []string) (bool, error) {
+func (s *Service) aliveOrDyingModelsExist(ctx context.Context, modelUUIDs []string, force bool) (bool, error) {
 	for _, modelUUID := range modelUUIDs {
 		mLife, err := s.controllerState.GetModelLife(ctx, modelUUID)
-		if errors.Is(err, modelerrors.NotFound) {
+		if errors.Is(err, modelerrors.NotFound) || mLife == life.Dead {
 			continue
 		} else if err != nil {
 			return false, errors.Errorf("getting model %q life: %w", modelUUID, err)
 		}
 
-		if mLife != life.Dead {
+		// If any model is alive, we cannot delete the controller model. Even
+		// if we're using force. This is indicative of a programming error.
+		if mLife == life.Alive {
+			return true, nil
+		}
+
+		// If the model is dying and we're not using force, we cannot delete
+		// the controller model.
+		if !force && mLife == life.Dying {
 			return true, nil
 		}
 	}
@@ -405,7 +469,7 @@ func (s *Service) removeRelations(ctx context.Context, uuids []string, force boo
 
 		// This is a CMR relation, so we need to remove it with
 		// RemoveRemoteRelation.
-		if _, err := s.RemoveRemoteRelation(ctx, relation.UUID(relationUUID), force, wait); errors.Is(err, relationerrors.RelationNotFound) {
+		if _, err := s.RemoveRelationWithRemoteOfferer(ctx, relation.UUID(relationUUID), force, wait); errors.Is(err, relationerrors.RelationNotFound) {
 			// There could be a chance that the relation has already been
 			// removed by another process. We can safely ignore this error and
 			// continue with the next relation.
@@ -435,6 +499,7 @@ func (s *Service) removeApplications(
 			// error. The applications are already transitioned to dying and
 			// there is no way to transition them back to alive.
 			s.logger.Errorf(ctx, "scheduling removal of application %q: %v", applicationUUID, err)
+			continue
 		} else if err == nil {
 			continue
 		}
@@ -452,11 +517,10 @@ func (s *Service) removeApplications(
 			// If the unit fails to be scheduled for removal, we log out the
 			// error. The applications are already transitioned to dying and
 			// there is no way to transition them back to alive.
-			s.logger.Errorf(ctx, "scheduling removal of application %q: %v", applicationUUID, err)
+			s.logger.Errorf(ctx, "scheduling removal of remote application offerer %q: %v", applicationUUID, err)
+			continue
 		} else if err == nil {
 			continue
 		}
-
-		// TODO: Handle remote application consumers
 	}
 }

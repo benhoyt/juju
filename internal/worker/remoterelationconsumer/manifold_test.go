@@ -8,13 +8,13 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/dependency"
-	dt "github.com/juju/worker/v4/dependency/testing"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/dependency"
+	dt "github.com/juju/worker/v5/dependency/testing"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 
 	"github.com/juju/juju/core/errors"
-	modeltesting "github.com/juju/juju/core/model/testing"
+	coremodel "github.com/juju/juju/core/model"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/worker/apiremoterelationcaller"
 	"github.com/juju/juju/internal/worker/remoterelationconsumer/consumerunitrelations"
@@ -147,7 +147,7 @@ func (s *manifoldSuite) TestStart(c *tc.C) {
 
 func (s *manifoldSuite) validConfig(c *tc.C) ManifoldConfig {
 	return ManifoldConfig{
-		ModelUUID:                   modeltesting.GenModelUUID(c),
+		ModelUUID:                   tc.Must0(c, coremodel.NewUUID),
 		APIRemoteRelationCallerName: "api-remote-relation-caller",
 		DomainServicesName:          "domain-services",
 		GetCrossModelServices: func(getter dependency.Getter, domainServicesName string) (CrossModelService, error) {

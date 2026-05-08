@@ -5,16 +5,12 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/juju/clock"
 
 	"github.com/juju/juju/core/base"
 	"github.com/juju/juju/core/constraints"
-	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/logger"
-	"github.com/juju/juju/core/lxdprofile"
-	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/providertracker"
 	"github.com/juju/juju/core/trace"
 	domainconstraints "github.com/juju/juju/domain/constraints"
@@ -32,18 +28,12 @@ type Provider interface {
 	environs.InstancePrechecker
 }
 
-// LXDProfileProvider represents a provider that can write LXD profiles.
-type LXDProfileProvider interface {
-	environs.LXDProfiler
-}
-
 // ProviderService provides the API for working with machines using the
 // underlying provider.
 type ProviderService struct {
 	Service
 
-	providerGetter           providertracker.ProviderGetter[Provider]
-	lxdProfileProviderGetter providertracker.ProviderGetter[LXDProfileProvider]
+	providerGetter providertracker.ProviderGetter[Provider]
 }
 
 // NewProviderService creates a new ProviderService.
@@ -51,7 +41,6 @@ func NewProviderService(
 	st State,
 	statusHistory StatusHistory,
 	providerGetter providertracker.ProviderGetter[Provider],
-	lxdProfileProviderGetter providertracker.ProviderGetter[LXDProfileProvider],
 	clock clock.Clock, logger logger.Logger,
 ) *ProviderService {
 	return &ProviderService{
@@ -61,8 +50,7 @@ func NewProviderService(
 			clock:         clock,
 			logger:        logger,
 		},
-		providerGetter:           providerGetter,
-		lxdProfileProviderGetter: lxdProfileProviderGetter,
+		providerGetter: providerGetter,
 	}
 }
 
@@ -78,10 +66,6 @@ func (s *ProviderService) AddMachine(ctx context.Context, args domainmachine.Add
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
-	provider, err := s.providerGetter(ctx)
-	if err != nil {
-		return AddMachineResults{}, errors.Errorf("getting provider for create machine: %w", err)
-	}
 	os, err := encodeOSType(args.Platform.OSType)
 	if err != nil {
 		return AddMachineResults{}, errors.Capture(err)
@@ -90,6 +74,7 @@ func (s *ProviderService) AddMachine(ctx context.Context, args domainmachine.Add
 	if err != nil {
 		return AddMachineResults{}, errors.Capture(err)
 	}
+
 	mergedCons, err := s.mergeMachineAndModelConstraints(ctx, args.Constraints)
 	if err != nil {
 		return AddMachineResults{}, errors.Capture(err)
@@ -98,10 +83,15 @@ func (s *ProviderService) AddMachine(ctx context.Context, args domainmachine.Add
 		Base:        base,
 		Constraints: mergedCons,
 	}
+
 	// We only precheck placement directive with the provider if the placement
 	// type is provider.
 	if args.Directive.Type == deployment.PlacementTypeProvider {
 		precheckInstanceParams.Placement = args.Directive.Directive
+	}
+	provider, err := s.providerGetter(ctx)
+	if err != nil {
+		return AddMachineResults{}, errors.Errorf("getting provider for create machine: %w", err)
 	}
 	if err := provider.PrecheckInstance(ctx, precheckInstanceParams); err != nil {
 		return AddMachineResults{}, errors.Errorf("prechecking instance for create machine: %w", err)
@@ -202,70 +192,6 @@ func (s *ProviderService) GetInstanceTypesFetcher(ctx context.Context) (environs
 		return nil, errors.Capture(err)
 	}
 	return provider, nil
-}
-
-// UpdateLXDProfiles writes LXD Profiles to LXC for applications on the
-// given machine if the providers supports it. A slice of profile names
-// is returned. If the provider does not support LXDProfiles, no error
-// is returned.
-func (s *ProviderService) UpdateLXDProfiles(ctx context.Context, modelName string, modelUUID model.UUID, machineID string) ([]string, error) {
-	ctx, span := trace.Start(ctx, trace.NameFromFunc())
-	defer span.End()
-
-	provider, err := s.lxdProfileProviderGetter(ctx)
-	if errors.Is(err, coreerrors.NotSupported) {
-		return nil, nil
-	} else if err != nil {
-		return nil, errors.Errorf("getting provider: %w", err)
-	}
-
-	profileArgs, err := s.st.GetLXDProfilesForMachine(ctx, machineID)
-	if err != nil {
-		return nil, errors.Errorf("updating LXD profiles in the model for machine %s: %w", machineID, err)
-	}
-
-	// TODO (lxdprofiles)
-	// We cannot guarantee that there is only one service per model, nor
-	// one environ per service. There have been past issues with attempting
-	// write the same profile at the same time. Previously this code
-	// had a lock, but the services must not contain state.
-	var pNames []string
-	shortUUID := model.ShortModelUUID(modelUUID)
-	for _, arg := range profileArgs {
-		pName := lxdprofile.Name(modelName, shortUUID, arg.ApplicationName, arg.CharmRevision)
-		profile, err := decodeLXDProfile(arg.LXDProfile)
-		if err != nil {
-			return nil, errors.Errorf("decoding LXD profile for machine %s: %w", machineID, err)
-		}
-		if err := provider.MaybeWriteLXDProfile(pName, profile); err != nil {
-			return nil, errors.Capture(err)
-		}
-		pNames = append(pNames, pName)
-	}
-	return pNames, nil
-}
-
-func decodeLXDProfile(profile []byte) (lxdprofile.Profile, error) {
-	if len(profile) == 0 {
-		return lxdprofile.Profile{}, nil
-	}
-
-	var result lxdProfile
-	if err := json.Unmarshal(profile, &result); err != nil {
-		return lxdprofile.Profile{}, errors.Errorf("unmarshal lxd profile: %w", err)
-	}
-
-	return lxdprofile.Profile{
-		Config:      result.Config,
-		Description: result.Description,
-		Devices:     result.Devices,
-	}, nil
-}
-
-type lxdProfile struct {
-	Config      map[string]string            `json:"config,omitempty"`
-	Description string                       `json:"description,omitempty"`
-	Devices     map[string]map[string]string `json:"devices,omitempty"`
 }
 
 // NewNoopProvider returns a no-op provider that implements the Provider

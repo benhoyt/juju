@@ -13,11 +13,11 @@ import (
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/application/bundle/mocks"
 	"github.com/juju/juju/core/life"
+	"github.com/juju/juju/domain/deployment/charm"
 	bundlechanges "github.com/juju/juju/internal/bundle/changes"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -137,8 +137,9 @@ func (s *buildModelRepSuite) TestBuildModelRepresentationApplicationsWithSubordi
 	obtainedWordpress, ok := obtainedModel.Applications["wordpress"]
 	c.Assert(ok, tc.IsTrue)
 	c.Assert(obtainedWordpress.Options, tc.HasLen, 1)
-	_, ok = obtainedWordpress.Options["skill-level"]
+	skillLevel, ok := obtainedWordpress.Options["skill-level"]
 	c.Assert(ok, tc.IsTrue)
+	c.Assert(skillLevel, tc.DeepEquals, 42) // check int option is of proper type
 	_, ok = obtainedModel.Applications["sub"]
 	c.Assert(ok, tc.IsTrue)
 
@@ -180,19 +181,20 @@ func (s *buildModelRepSuite) expectEmptyGetConfig() {
 }
 
 func (s *buildModelRepSuite) expectGetConfigSubWordpress() {
-	wordpressCfg := map[string]interface{}{
-		"outlook": map[string]interface{}{ // Uses default value, will not be in model representation.
+	wordpressCfg := map[string]any{
+		"outlook": map[string]any{ // Uses default value, will not be in model representation.
 			"description": "No default outlook.",
 			"source":      "unset",
 			"type":        "string",
 		},
-		"skill-level": map[string]interface{}{
+		"skill-level": map[string]any{
 			"description": "A number indicating skill.",
 			"source":      "user",
 			"type":        "int",
-			"value":       42,
-		}}
-	retval := []map[string]interface{}{
+			"value":       42.0, // json unmarshals int as float
+		},
+	}
+	retval := []map[string]any{
 		{},           // sub
 		wordpressCfg, // wordpress
 	}
@@ -267,7 +269,7 @@ func (s *composeAndVerifyRepSuite) TestComposeAndVerifyBundleOverlay(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 
 	expected := *bundleData
-	expected.Applications["wordpress"].Options = map[string]interface{}{
+	expected.Applications["wordpress"].Options = map[string]any{
 		"blog-title": "magic bundle config",
 	}
 
@@ -288,7 +290,7 @@ func (s *composeAndVerifyRepSuite) TestComposeAndVerifyBundleOverlayUnsupportedC
 	c.Assert(err, tc.ErrorIsNil)
 
 	expected := *bundleData
-	expected.Applications["wordpress"].Options = map[string]interface{}{
+	expected.Applications["wordpress"].Options = map[string]any{
 		"blog-title": "magic bundle config",
 	}
 
@@ -313,7 +315,7 @@ func (s *composeAndVerifyRepSuite) TestComposeAndVerifyBundleOverlayUnmarshallEr
 	c.Assert(err, tc.ErrorIsNil)
 
 	expected := *bundleData
-	expected.Applications["wordpress"].Options = map[string]interface{}{
+	expected.Applications["wordpress"].Options = map[string]any{
 		"blog-title": "magic bundle config",
 	}
 
@@ -445,7 +447,7 @@ type stringSliceMatcher struct {
 	expected []string
 }
 
-func (m stringSliceMatcher) Matches(x interface{}) bool {
+func (m stringSliceMatcher) Matches(x any) bool {
 	obtained, ok := x.([]string)
 	m.c.Assert(ok, tc.IsTrue)
 	if !ok {

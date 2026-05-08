@@ -18,6 +18,7 @@ import (
 	secrets "github.com/juju/juju/core/secrets"
 	unit "github.com/juju/juju/core/unit"
 	watcher "github.com/juju/juju/core/watcher"
+	secret "github.com/juju/juju/domain/secret"
 	service "github.com/juju/juju/domain/secret/service"
 	service0 "github.com/juju/juju/domain/secretbackend/service"
 	provider "github.com/juju/juju/internal/secrets/provider"
@@ -87,7 +88,7 @@ func (c *MockSecretTriggersSecretRotatedCall) DoAndReturn(f func(context.Context
 }
 
 // WatchDeletedSecrets mocks base method.
-func (m *MockSecretTriggers) WatchDeletedSecrets(ctx context.Context, owners ...service.CharmSecretOwner) (watcher.StringsWatcher, error) {
+func (m *MockSecretTriggers) WatchDeletedSecrets(ctx context.Context, owners ...secret.CharmSecretOwner) (watcher.StringsWatcher, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{ctx}
 	for _, a := range owners {
@@ -119,19 +120,19 @@ func (c *MockSecretTriggersWatchDeletedSecretsCall) Return(arg0 watcher.StringsW
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretTriggersWatchDeletedSecretsCall) Do(f func(context.Context, ...service.CharmSecretOwner) (watcher.StringsWatcher, error)) *MockSecretTriggersWatchDeletedSecretsCall {
+func (c *MockSecretTriggersWatchDeletedSecretsCall) Do(f func(context.Context, ...secret.CharmSecretOwner) (watcher.StringsWatcher, error)) *MockSecretTriggersWatchDeletedSecretsCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretTriggersWatchDeletedSecretsCall) DoAndReturn(f func(context.Context, ...service.CharmSecretOwner) (watcher.StringsWatcher, error)) *MockSecretTriggersWatchDeletedSecretsCall {
+func (c *MockSecretTriggersWatchDeletedSecretsCall) DoAndReturn(f func(context.Context, ...secret.CharmSecretOwner) (watcher.StringsWatcher, error)) *MockSecretTriggersWatchDeletedSecretsCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
 
 // WatchObsoleteSecrets mocks base method.
-func (m *MockSecretTriggers) WatchObsoleteSecrets(ctx context.Context, owners ...service.CharmSecretOwner) (watcher.StringsWatcher, error) {
+func (m *MockSecretTriggers) WatchObsoleteSecrets(ctx context.Context, owners ...secret.CharmSecretOwner) (watcher.StringsWatcher, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{ctx}
 	for _, a := range owners {
@@ -163,19 +164,19 @@ func (c *MockSecretTriggersWatchObsoleteSecretsCall) Return(arg0 watcher.Strings
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretTriggersWatchObsoleteSecretsCall) Do(f func(context.Context, ...service.CharmSecretOwner) (watcher.StringsWatcher, error)) *MockSecretTriggersWatchObsoleteSecretsCall {
+func (c *MockSecretTriggersWatchObsoleteSecretsCall) Do(f func(context.Context, ...secret.CharmSecretOwner) (watcher.StringsWatcher, error)) *MockSecretTriggersWatchObsoleteSecretsCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretTriggersWatchObsoleteSecretsCall) DoAndReturn(f func(context.Context, ...service.CharmSecretOwner) (watcher.StringsWatcher, error)) *MockSecretTriggersWatchObsoleteSecretsCall {
+func (c *MockSecretTriggersWatchObsoleteSecretsCall) DoAndReturn(f func(context.Context, ...secret.CharmSecretOwner) (watcher.StringsWatcher, error)) *MockSecretTriggersWatchObsoleteSecretsCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
 
 // WatchSecretRevisionsExpiryChanges mocks base method.
-func (m *MockSecretTriggers) WatchSecretRevisionsExpiryChanges(ctx context.Context, owners ...service.CharmSecretOwner) (watcher.SecretTriggerWatcher, error) {
+func (m *MockSecretTriggers) WatchSecretRevisionsExpiryChanges(ctx context.Context, owners ...secret.CharmSecretOwner) (watcher.SecretTriggerWatcher, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{ctx}
 	for _, a := range owners {
@@ -207,19 +208,19 @@ func (c *MockSecretTriggersWatchSecretRevisionsExpiryChangesCall) Return(arg0 wa
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretTriggersWatchSecretRevisionsExpiryChangesCall) Do(f func(context.Context, ...service.CharmSecretOwner) (watcher.SecretTriggerWatcher, error)) *MockSecretTriggersWatchSecretRevisionsExpiryChangesCall {
+func (c *MockSecretTriggersWatchSecretRevisionsExpiryChangesCall) Do(f func(context.Context, ...secret.CharmSecretOwner) (watcher.SecretTriggerWatcher, error)) *MockSecretTriggersWatchSecretRevisionsExpiryChangesCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretTriggersWatchSecretRevisionsExpiryChangesCall) DoAndReturn(f func(context.Context, ...service.CharmSecretOwner) (watcher.SecretTriggerWatcher, error)) *MockSecretTriggersWatchSecretRevisionsExpiryChangesCall {
+func (c *MockSecretTriggersWatchSecretRevisionsExpiryChangesCall) DoAndReturn(f func(context.Context, ...secret.CharmSecretOwner) (watcher.SecretTriggerWatcher, error)) *MockSecretTriggersWatchSecretRevisionsExpiryChangesCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
 
 // WatchSecretsRotationChanges mocks base method.
-func (m *MockSecretTriggers) WatchSecretsRotationChanges(ctx context.Context, owners ...service.CharmSecretOwner) (watcher.SecretTriggerWatcher, error) {
+func (m *MockSecretTriggers) WatchSecretsRotationChanges(ctx context.Context, owners ...secret.CharmSecretOwner) (watcher.SecretTriggerWatcher, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{ctx}
 	for _, a := range owners {
@@ -251,13 +252,13 @@ func (c *MockSecretTriggersWatchSecretsRotationChangesCall) Return(arg0 watcher.
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretTriggersWatchSecretsRotationChangesCall) Do(f func(context.Context, ...service.CharmSecretOwner) (watcher.SecretTriggerWatcher, error)) *MockSecretTriggersWatchSecretsRotationChangesCall {
+func (c *MockSecretTriggersWatchSecretsRotationChangesCall) Do(f func(context.Context, ...secret.CharmSecretOwner) (watcher.SecretTriggerWatcher, error)) *MockSecretTriggersWatchSecretsRotationChangesCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretTriggersWatchSecretsRotationChangesCall) DoAndReturn(f func(context.Context, ...service.CharmSecretOwner) (watcher.SecretTriggerWatcher, error)) *MockSecretTriggersWatchSecretsRotationChangesCall {
+func (c *MockSecretTriggersWatchSecretsRotationChangesCall) DoAndReturn(f func(context.Context, ...secret.CharmSecretOwner) (watcher.SecretTriggerWatcher, error)) *MockSecretTriggersWatchSecretsRotationChangesCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -443,7 +444,7 @@ func (c *MockSecretsConsumerGetURIByConsumerLabelCall) DoAndReturn(f func(contex
 }
 
 // GrantSecretAccess mocks base method.
-func (m *MockSecretsConsumer) GrantSecretAccess(arg0 context.Context, arg1 *secrets.URI, arg2 service.SecretAccessParams) error {
+func (m *MockSecretsConsumer) GrantSecretAccess(arg0 context.Context, arg1 *secrets.URI, arg2 secret.SecretAccessParams) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GrantSecretAccess", arg0, arg1, arg2)
 	ret0, _ := ret[0].(error)
@@ -469,19 +470,19 @@ func (c *MockSecretsConsumerGrantSecretAccessCall) Return(arg0 error) *MockSecre
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretsConsumerGrantSecretAccessCall) Do(f func(context.Context, *secrets.URI, service.SecretAccessParams) error) *MockSecretsConsumerGrantSecretAccessCall {
+func (c *MockSecretsConsumerGrantSecretAccessCall) Do(f func(context.Context, *secrets.URI, secret.SecretAccessParams) error) *MockSecretsConsumerGrantSecretAccessCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretsConsumerGrantSecretAccessCall) DoAndReturn(f func(context.Context, *secrets.URI, service.SecretAccessParams) error) *MockSecretsConsumerGrantSecretAccessCall {
+func (c *MockSecretsConsumerGrantSecretAccessCall) DoAndReturn(f func(context.Context, *secrets.URI, secret.SecretAccessParams) error) *MockSecretsConsumerGrantSecretAccessCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
 
 // RevokeSecretAccess mocks base method.
-func (m *MockSecretsConsumer) RevokeSecretAccess(arg0 context.Context, arg1 *secrets.URI, arg2 service.SecretAccessParams) error {
+func (m *MockSecretsConsumer) RevokeSecretAccess(arg0 context.Context, arg1 *secrets.URI, arg2 secret.SecretAccessParams) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "RevokeSecretAccess", arg0, arg1, arg2)
 	ret0, _ := ret[0].(error)
@@ -507,51 +508,13 @@ func (c *MockSecretsConsumerRevokeSecretAccessCall) Return(arg0 error) *MockSecr
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretsConsumerRevokeSecretAccessCall) Do(f func(context.Context, *secrets.URI, service.SecretAccessParams) error) *MockSecretsConsumerRevokeSecretAccessCall {
+func (c *MockSecretsConsumerRevokeSecretAccessCall) Do(f func(context.Context, *secrets.URI, secret.SecretAccessParams) error) *MockSecretsConsumerRevokeSecretAccessCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretsConsumerRevokeSecretAccessCall) DoAndReturn(f func(context.Context, *secrets.URI, service.SecretAccessParams) error) *MockSecretsConsumerRevokeSecretAccessCall {
-	c.Call = c.Call.DoAndReturn(f)
-	return c
-}
-
-// SaveSecretConsumer mocks base method.
-func (m *MockSecretsConsumer) SaveSecretConsumer(ctx context.Context, uri *secrets.URI, unitName unit.Name, md secrets.SecretConsumerMetadata) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SaveSecretConsumer", ctx, uri, unitName, md)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// SaveSecretConsumer indicates an expected call of SaveSecretConsumer.
-func (mr *MockSecretsConsumerMockRecorder) SaveSecretConsumer(ctx, uri, unitName, md any) *MockSecretsConsumerSaveSecretConsumerCall {
-	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveSecretConsumer", reflect.TypeOf((*MockSecretsConsumer)(nil).SaveSecretConsumer), ctx, uri, unitName, md)
-	return &MockSecretsConsumerSaveSecretConsumerCall{Call: call}
-}
-
-// MockSecretsConsumerSaveSecretConsumerCall wrap *gomock.Call
-type MockSecretsConsumerSaveSecretConsumerCall struct {
-	*gomock.Call
-}
-
-// Return rewrite *gomock.Call.Return
-func (c *MockSecretsConsumerSaveSecretConsumerCall) Return(arg0 error) *MockSecretsConsumerSaveSecretConsumerCall {
-	c.Call = c.Call.Return(arg0)
-	return c
-}
-
-// Do rewrite *gomock.Call.Do
-func (c *MockSecretsConsumerSaveSecretConsumerCall) Do(f func(context.Context, *secrets.URI, unit.Name, secrets.SecretConsumerMetadata) error) *MockSecretsConsumerSaveSecretConsumerCall {
-	c.Call = c.Call.Do(f)
-	return c
-}
-
-// DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretsConsumerSaveSecretConsumerCall) DoAndReturn(f func(context.Context, *secrets.URI, unit.Name, secrets.SecretConsumerMetadata) error) *MockSecretsConsumerSaveSecretConsumerCall {
+func (c *MockSecretsConsumerRevokeSecretAccessCall) DoAndReturn(f func(context.Context, *secrets.URI, secret.SecretAccessParams) error) *MockSecretsConsumerRevokeSecretAccessCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -735,7 +698,7 @@ func (c *MockSecretServiceGetSecretGrantsCall) DoAndReturn(f func(context.Contex
 }
 
 // GetSecretValue mocks base method.
-func (m *MockSecretService) GetSecretValue(arg0 context.Context, arg1 *secrets.URI, arg2 int, arg3 service.SecretAccessor) (secrets.SecretValue, *secrets.ValueRef, error) {
+func (m *MockSecretService) GetSecretValue(arg0 context.Context, arg1 *secrets.URI, arg2 int, arg3 secret.SecretAccessor) (secrets.SecretValue, *secrets.ValueRef, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetSecretValue", arg0, arg1, arg2, arg3)
 	ret0, _ := ret[0].(secrets.SecretValue)
@@ -763,19 +726,19 @@ func (c *MockSecretServiceGetSecretValueCall) Return(arg0 secrets.SecretValue, a
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretServiceGetSecretValueCall) Do(f func(context.Context, *secrets.URI, int, service.SecretAccessor) (secrets.SecretValue, *secrets.ValueRef, error)) *MockSecretServiceGetSecretValueCall {
+func (c *MockSecretServiceGetSecretValueCall) Do(f func(context.Context, *secrets.URI, int, secret.SecretAccessor) (secrets.SecretValue, *secrets.ValueRef, error)) *MockSecretServiceGetSecretValueCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretServiceGetSecretValueCall) DoAndReturn(f func(context.Context, *secrets.URI, int, service.SecretAccessor) (secrets.SecretValue, *secrets.ValueRef, error)) *MockSecretServiceGetSecretValueCall {
+func (c *MockSecretServiceGetSecretValueCall) DoAndReturn(f func(context.Context, *secrets.URI, int, secret.SecretAccessor) (secrets.SecretValue, *secrets.ValueRef, error)) *MockSecretServiceGetSecretValueCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
 
 // ListCharmSecrets mocks base method.
-func (m *MockSecretService) ListCharmSecrets(arg0 context.Context, arg1 ...service.CharmSecretOwner) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error) {
+func (m *MockSecretService) ListCharmSecrets(arg0 context.Context, arg1 ...secret.CharmSecretOwner) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0}
 	for _, a := range arg1 {
@@ -808,19 +771,19 @@ func (c *MockSecretServiceListCharmSecretsCall) Return(arg0 []*secrets.SecretMet
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretServiceListCharmSecretsCall) Do(f func(context.Context, ...service.CharmSecretOwner) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error)) *MockSecretServiceListCharmSecretsCall {
+func (c *MockSecretServiceListCharmSecretsCall) Do(f func(context.Context, ...secret.CharmSecretOwner) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error)) *MockSecretServiceListCharmSecretsCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretServiceListCharmSecretsCall) DoAndReturn(f func(context.Context, ...service.CharmSecretOwner) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error)) *MockSecretServiceListCharmSecretsCall {
+func (c *MockSecretServiceListCharmSecretsCall) DoAndReturn(f func(context.Context, ...secret.CharmSecretOwner) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error)) *MockSecretServiceListCharmSecretsCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
 
 // ListGrantedSecretsForBackend mocks base method.
-func (m *MockSecretService) ListGrantedSecretsForBackend(ctx context.Context, backendID string, role secrets.SecretRole, consumers ...service.SecretAccessor) ([]*secrets.SecretRevisionRef, error) {
+func (m *MockSecretService) ListGrantedSecretsForBackend(ctx context.Context, backendID string, role secrets.SecretRole, consumers ...secret.SecretAccessor) ([]*secrets.SecretRevisionRef, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{ctx, backendID, role}
 	for _, a := range consumers {
@@ -852,13 +815,13 @@ func (c *MockSecretServiceListGrantedSecretsForBackendCall) Return(arg0 []*secre
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretServiceListGrantedSecretsForBackendCall) Do(f func(context.Context, string, secrets.SecretRole, ...service.SecretAccessor) ([]*secrets.SecretRevisionRef, error)) *MockSecretServiceListGrantedSecretsForBackendCall {
+func (c *MockSecretServiceListGrantedSecretsForBackendCall) Do(f func(context.Context, string, secrets.SecretRole, ...secret.SecretAccessor) ([]*secrets.SecretRevisionRef, error)) *MockSecretServiceListGrantedSecretsForBackendCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretServiceListGrantedSecretsForBackendCall) DoAndReturn(f func(context.Context, string, secrets.SecretRole, ...service.SecretAccessor) ([]*secrets.SecretRevisionRef, error)) *MockSecretServiceListGrantedSecretsForBackendCall {
+func (c *MockSecretServiceListGrantedSecretsForBackendCall) DoAndReturn(f func(context.Context, string, secrets.SecretRole, ...secret.SecretAccessor) ([]*secrets.SecretRevisionRef, error)) *MockSecretServiceListGrantedSecretsForBackendCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -1124,6 +1087,44 @@ func (c *MockCrossModelRelationServiceGetMacaroonForRelationCall) Do(f func(cont
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockCrossModelRelationServiceGetMacaroonForRelationCall) DoAndReturn(f func(context.Context, relation.UUID) (*macaroon.Macaroon, error)) *MockCrossModelRelationServiceGetMacaroonForRelationCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// SaveRemoteSecretConsumer mocks base method.
+func (m *MockCrossModelRelationService) SaveRemoteSecretConsumer(ctx context.Context, uri *secrets.URI, unitName unit.Name, md secrets.SecretConsumerMetadata, applicationUUID application.UUID, relationUUID relation.UUID) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SaveRemoteSecretConsumer", ctx, uri, unitName, md, applicationUUID, relationUUID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SaveRemoteSecretConsumer indicates an expected call of SaveRemoteSecretConsumer.
+func (mr *MockCrossModelRelationServiceMockRecorder) SaveRemoteSecretConsumer(ctx, uri, unitName, md, applicationUUID, relationUUID any) *MockCrossModelRelationServiceSaveRemoteSecretConsumerCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveRemoteSecretConsumer", reflect.TypeOf((*MockCrossModelRelationService)(nil).SaveRemoteSecretConsumer), ctx, uri, unitName, md, applicationUUID, relationUUID)
+	return &MockCrossModelRelationServiceSaveRemoteSecretConsumerCall{Call: call}
+}
+
+// MockCrossModelRelationServiceSaveRemoteSecretConsumerCall wrap *gomock.Call
+type MockCrossModelRelationServiceSaveRemoteSecretConsumerCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockCrossModelRelationServiceSaveRemoteSecretConsumerCall) Return(arg0 error) *MockCrossModelRelationServiceSaveRemoteSecretConsumerCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockCrossModelRelationServiceSaveRemoteSecretConsumerCall) Do(f func(context.Context, *secrets.URI, unit.Name, secrets.SecretConsumerMetadata, application.UUID, relation.UUID) error) *MockCrossModelRelationServiceSaveRemoteSecretConsumerCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockCrossModelRelationServiceSaveRemoteSecretConsumerCall) DoAndReturn(f func(context.Context, *secrets.URI, unit.Name, secrets.SecretConsumerMetadata, application.UUID, relation.UUID) error) *MockCrossModelRelationServiceSaveRemoteSecretConsumerCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

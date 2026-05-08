@@ -73,6 +73,11 @@ func (s *Schema) Hook(hook Hook) {
 	s.hook = hook
 }
 
+// Patches returns the list of patches in the schema.
+func (s *Schema) Patches() []Patch {
+	return s.patches
+}
+
 // Len returns the number of total patches in the schema.
 func (s *Schema) Len() int {
 	return len(s.patches)
@@ -140,3 +145,8 @@ func (s *Schema) Ensure(ctx context.Context, runner database.TxnRunner) (ChangeS
 
 // omitHook is a no-op hook that does not modify the DDL.
 func omitHook(_ int, ddl string) (string, error) { return ddl, nil }
+
+// Stmt returns the SQL statement of the patch.
+func Stmt(p Patch) string {
+	return p.stmt
+}

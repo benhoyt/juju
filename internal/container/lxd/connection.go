@@ -123,8 +123,8 @@ var CloudImagesDailyRemote = ServerSpec{
 // CloudImagesLinuxContainersRemote hosts images for other distributions.
 // These will be used for pulling CentOS images.
 var CloudImagesLinuxContainersRemote = ServerSpec{
-	Name:     "images.linuxcontainers.org",
-	Host:     "https://images.linuxcontainers.org",
+	Name:     "images.lxd.canonical.com",
+	Host:     "https://images.lxd.canonical.com",
 	Protocol: SimpleStreamsProtocol,
 }
 

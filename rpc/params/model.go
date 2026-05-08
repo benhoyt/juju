@@ -13,8 +13,8 @@ import (
 // ConfigValue encapsulates a configuration
 // value and its source.
 type ConfigValue struct {
-	Value  interface{} `json:"value"`
-	Source string      `json:"source"`
+	Value  any    `json:"value"`
+	Source string `json:"source"`
 }
 
 // ModelConfigResults contains the result of client API calls
@@ -28,11 +28,12 @@ type ModelConfigResults struct {
 // with the provider. This is used to take down mis-behaving models
 // aggressively.
 type HostedModelConfig struct {
-	Name      string                 `json:"name"`
-	Qualifier string                 `json:"qualifier"`
-	Config    map[string]interface{} `json:"config,omitempty"`
-	CloudSpec *CloudSpec             `json:"cloud-spec,omitempty"`
-	Error     *Error                 `json:"error,omitempty"`
+	Name string `json:"name"`
+	// Qualifier is the model owner identifier used to disambiguate Name.
+	Qualifier string         `json:"qualifier"`
+	Config    map[string]any `json:"config,omitempty"`
+	CloudSpec *CloudSpec     `json:"cloud-spec,omitempty"`
+	Error     *Error         `json:"error,omitempty"`
 }
 
 // HostedModelConfigsResults contains an entry for each hosted model
@@ -62,21 +63,21 @@ type ModelSequencesResult struct {
 // ModelDefaults holds the settings for a given ModelDefaultsResult config
 // attribute.
 type ModelDefaults struct {
-	Default    interface{}      `json:"default,omitempty"`
-	Controller interface{}      `json:"controller,omitempty"`
+	Default    any              `json:"default,omitempty"`
+	Controller any              `json:"controller,omitempty"`
 	Regions    []RegionDefaults `json:"regions,omitempty"`
 }
 
 // RegionDefaults contains the settings for regions in a ModelDefaults.
 type RegionDefaults struct {
-	RegionName string      `json:"region-name"`
-	Value      interface{} `json:"value"`
+	RegionName string `json:"region-name"`
+	Value      any    `json:"value"`
 }
 
 // ModelSet contains the arguments for ModelSet client API
 // call.
 type ModelSet struct {
-	Config map[string]interface{} `json:"config"`
+	Config map[string]any `json:"config"`
 }
 
 // ModelUnset contains the arguments for ModelUnset client API
@@ -94,9 +95,9 @@ type SetModelDefaults struct {
 // ModelDefaultValues contains the default model values for
 // a cloud/region.
 type ModelDefaultValues struct {
-	CloudTag    string                 `json:"cloud-tag,omitempty"`
-	CloudRegion string                 `json:"cloud-region,omitempty"`
-	Config      map[string]interface{} `json:"config"`
+	CloudTag    string         `json:"cloud-tag,omitempty"`
+	CloudRegion string         `json:"cloud-region,omitempty"`
+	Config      map[string]any `json:"config"`
 }
 
 // ModelUnsetKeys contains the config keys to unset for
@@ -144,7 +145,9 @@ type ModelInfo struct {
 	// CloudCredentialValidity contains if model credential is valid, if known.
 	CloudCredentialValidity *bool `json:"cloud-credential-validity,omitempty"`
 
-	// Qualifier disambiguates the model name.
+	// Qualifier is the model owner identifier used to disambiguate Name.
+	// It uses user-id form (for example "admin" or "alice@external"),
+	// not full user-tag form.
 	Qualifier string `json:"qualifier"`
 
 	// Life is the current lifecycle state of the model.
@@ -179,6 +182,10 @@ type ModelInfo struct {
 	// entries (e.g. juju version) and other features that depend on the
 	// substrate the model is deployed to.
 	SupportedFeatures []SupportedFeature `json:"supported-features,omitempty"`
+
+	// TargetController is a JAAS specific field to specify the
+	// name of the controller that hosts the model.
+	TargetController string `json:"target-controller,omitempty"`
 }
 
 // SupportedFeature describes a feature that is supported by a particular model.
@@ -193,7 +200,8 @@ type SupportedFeature struct {
 
 // ModelSummary holds summary about a Juju model.
 type ModelSummary struct {
-	Name               string `json:"name"`
+	Name string `json:"name"`
+	// Qualifier is the model owner identifier used to disambiguate Name.
 	Qualifier          string `json:"qualifier"`
 	UUID               string `json:"uuid"`
 	Type               string `json:"type"`

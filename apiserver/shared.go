@@ -17,12 +17,12 @@ import (
 	"github.com/juju/juju/apiserver/facade"
 	"github.com/juju/juju/controller"
 	"github.com/juju/juju/core/changestream"
-	"github.com/juju/juju/core/database"
 	"github.com/juju/juju/core/flightrecorder"
 	"github.com/juju/juju/core/lease"
 	corelogger "github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/objectstore"
+	"github.com/juju/juju/core/providertracker"
 	"github.com/juju/juju/internal/services"
 	"github.com/juju/juju/internal/worker/trace"
 	"github.com/juju/juju/internal/worker/watcherregistry"
@@ -49,10 +49,6 @@ type sharedServerContext struct {
 	// creating a new database for new models and during model migrations.
 	dbGetter changestream.WatchableDBGetter
 
-	// dbDeleter is used to delete the database when a model migration fails
-	// and the model is being removed.
-	dbDeleter database.DBDeleter
-
 	// DomainServicesGetter is used to get the domain services for controllers
 	// and models.
 	domainServicesGetter     services.DomainServicesGetter
@@ -68,6 +64,10 @@ type sharedServerContext struct {
 	// watcherRegistryGetter is used to get the watcher registry for the API
 	// server.
 	watcherRegistryGetter watcherregistry.WatcherRegistryGetter
+
+	// ephemeralProviderFactory is used to create providers for operations that
+	// require them.
+	ephemeralProviderFactory providertracker.EphemeralProviderFactory
 
 	configMutex sync.RWMutex
 
@@ -101,11 +101,11 @@ type sharedServerConfig struct {
 	macaroonHTTPClient      facade.HTTPClient
 
 	dbGetter                 changestream.WatchableDBGetter
-	dbDeleter                database.DBDeleter
 	domainServicesGetter     services.DomainServicesGetter
 	controllerDomainServices services.ControllerDomainServices
 	tracerGetter             trace.TracerGetter
 	objectStoreGetter        objectstore.ObjectStoreGetter
+	ephemeralProviderFactory providertracker.EphemeralProviderFactory
 	watcherRegistryGetter    watcherregistry.WatcherRegistryGetter
 	machineTag               names.Tag
 	dataDir                  string
@@ -128,9 +128,6 @@ func (c *sharedServerConfig) validate() error {
 	if c.dbGetter == nil {
 		return errors.NotValidf("nil dbGetter")
 	}
-	if c.dbDeleter == nil {
-		return errors.NotValidf("nil dbDeleter")
-	}
 	if c.domainServicesGetter == nil {
 		return errors.NotValidf("nil domainServicesGetter")
 	}
@@ -145,6 +142,9 @@ func (c *sharedServerConfig) validate() error {
 	}
 	if c.watcherRegistryGetter == nil {
 		return errors.NotValidf("nil watcherRegistryGetter")
+	}
+	if c.ephemeralProviderFactory == nil {
+		return errors.NotValidf("nil ephemeralProviderFactory")
 	}
 	if c.machineTag == nil {
 		return errors.NotValidf("empty machineTag")
@@ -178,11 +178,11 @@ func newSharedServerContext(config sharedServerConfig) (*sharedServerContext, er
 		charmhubHTTPClient:       config.charmhubHTTPClient,
 		macaroonHTTPClient:       config.macaroonHTTPClient,
 		dbGetter:                 config.dbGetter,
-		dbDeleter:                config.dbDeleter,
 		domainServicesGetter:     config.domainServicesGetter,
 		controllerDomainServices: config.controllerDomainServices,
 		tracerGetter:             config.tracerGetter,
 		objectStoreGetter:        config.objectStoreGetter,
+		ephemeralProviderFactory: config.ephemeralProviderFactory,
 		watcherRegistryGetter:    config.watcherRegistryGetter,
 		machineTag:               config.machineTag,
 		dataDir:                  config.dataDir,
@@ -193,9 +193,8 @@ func newSharedServerContext(config sharedServerConfig) (*sharedServerContext, er
 
 // NewCrossModelAuthContext returns a new CrossModelAuthContext for the given
 // server host.
-func (c *sharedServerContext) NewCrossModelAuthContext(ctx context.Context, serverHost string) (facade.CrossModelAuthContext, error) {
+func (c *sharedServerContext) NewCrossModelAuthContext(serverHost string) (facade.CrossModelAuthContext, error) {
 	crossModelAuthContext, err := newOfferAuthContext(
-		ctx,
 		c.controllerDomainServices.Access(),
 		c.controllerDomainServices.Macaroon(),
 		c.offersThirdPartyKeyPair,

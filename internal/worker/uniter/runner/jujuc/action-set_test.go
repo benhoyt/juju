@@ -9,8 +9,8 @@ import (
 
 	"github.com/juju/tc"
 
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/internal/worker/uniter/runner/jujuc"
 	"github.com/juju/juju/internal/worker/uniter/runner/jujuc/jujuctesting"
 )
@@ -28,7 +28,7 @@ type actionSettingContext struct {
 	commands [][]string
 }
 
-func (a *actionSettingContext) UpdateActionResults(keys []string, value interface{}) error {
+func (a *actionSettingContext) UpdateActionResults(keys []string, value any) error {
 	if a.commands == nil {
 		a.commands = make([][]string, 0)
 	}
@@ -41,7 +41,7 @@ type nonActionSettingContext struct {
 	jujuc.Context
 }
 
-func (a *nonActionSettingContext) UpdateActionResults(keys []string, value interface{}) error {
+func (a *nonActionSettingContext) UpdateActionResults(keys []string, value any) error {
 	return fmt.Errorf("not running an action")
 }
 

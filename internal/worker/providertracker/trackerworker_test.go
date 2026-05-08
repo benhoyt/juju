@@ -8,7 +8,7 @@ import (
 	stdtesting "testing"
 
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 
@@ -17,7 +17,6 @@ import (
 	"github.com/juju/juju/core/credential"
 	corelife "github.com/juju/juju/core/life"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	usertesting "github.com/juju/juju/core/user/testing"
 	"github.com/juju/juju/core/watcher/watchertest"
 	modelerrors "github.com/juju/juju/domain/model/errors"
@@ -308,7 +307,7 @@ func (s *trackerWorkerSuite) getConfig(c *tc.C, environ environs.Environ) Tracke
 }
 
 func (s *trackerWorkerSuite) expectModel(c *tc.C) coremodel.UUID {
-	id := modeltesting.GenModelUUID(c)
+	id := tc.Must0(c, coremodel.NewUUID)
 
 	s.modelService.EXPECT().Model(gomock.Any()).Return(coremodel.ModelInfo{
 		UUID:            id,

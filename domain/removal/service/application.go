@@ -9,6 +9,7 @@ import (
 
 	coreapplication "github.com/juju/juju/core/application"
 	"github.com/juju/juju/core/machine"
+	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/relation"
 	"github.com/juju/juju/core/trace"
 	"github.com/juju/juju/core/unit"
@@ -17,7 +18,7 @@ import (
 	"github.com/juju/juju/domain/removal"
 	removalerrors "github.com/juju/juju/domain/removal/errors"
 	"github.com/juju/juju/domain/removal/internal"
-	"github.com/juju/juju/domain/storageprovisioning"
+	"github.com/juju/juju/domain/storage"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -35,7 +36,7 @@ type ApplicationState interface {
 	// the last ones on their machines, it will cascade and the machines are
 	// also set to dying. The affected machine UUIDs are returned.
 	EnsureApplicationNotAliveCascade(
-		ctx context.Context, appUUID string, destroyStorage, force bool,
+		ctx context.Context, appUUID string, destroyStorage bool,
 	) (internal.CascadedApplicationLives, error)
 
 	// ApplicationScheduleRemoval schedules a removal job for the application
@@ -48,6 +49,17 @@ type ApplicationState interface {
 
 	// DeleteApplication removes a application from the database completely.
 	DeleteApplication(ctx context.Context, appUUID string, force bool) error
+
+	// MarkApplicationAsDead marks the application with the input UUID as dead.
+	MarkApplicationAsDead(ctx context.Context, appUUID string) error
+
+	// GetApplicationUnitAndRelationCount returns the number of units and
+	// relations that still reference the application.
+	GetApplicationUnitAndRelationCount(ctx context.Context, appUUID string) (int, int, error)
+
+	// IsApplicationK8sResourcesManaged returns true if the provisioner has
+	// signalled that it is managing k8s resources for the application.
+	IsApplicationK8sResourcesManaged(ctx context.Context, appUUID string) (bool, error)
 
 	// DeleteCharmIfUnused deletes the charm with the input UUID if it is not
 	// used by any other application/unit.
@@ -92,7 +104,7 @@ func (s *Service) RemoveApplication(
 		return "", errors.Errorf("application %q does not exist", appUUID).Add(applicationerrors.ApplicationNotFound)
 	}
 
-	cascaded, err := s.modelState.EnsureApplicationNotAliveCascade(ctx, appUUID.String(), destroyStorage, force)
+	cascaded, err := s.modelState.EnsureApplicationNotAliveCascade(ctx, appUUID.String(), destroyStorage)
 	if err != nil {
 		return "", errors.Errorf("application %q: %w", appUUID, err)
 	}
@@ -135,21 +147,189 @@ func (s *Service) RemoveApplication(
 		}
 	}
 
-	for _, a := range cascaded.StorageAttachmentUUIDs {
-		if _, err := s.storageAttachmentScheduleRemoval(
-			ctx, storageprovisioning.StorageAttachmentUUID(a), force, wait,
-		); err != nil {
-			return "", errors.Capture(err)
-		}
-	}
-
 	for _, m := range cascaded.MachineUUIDs {
 		if _, err := s.machineScheduleRemoval(ctx, machine.UUID(m), force, wait); err != nil {
 			return "", errors.Capture(err)
 		}
 	}
 
+	for _, a := range cascaded.StorageAttachmentUUIDs {
+		if force && wait > 0 {
+			if _, err := s.storageAttachmentScheduleRemoval(
+				ctx, storage.StorageAttachmentUUID(a), false, 0,
+			); err != nil {
+				return "", errors.Capture(err)
+			}
+		}
+		if _, err := s.storageAttachmentScheduleRemoval(
+			ctx, storage.StorageAttachmentUUID(a), force, wait,
+		); err != nil {
+			return "", errors.Capture(err)
+		}
+	}
+
+	for _, a := range cascaded.FileSystemAttachmentUUIDs {
+		if force && wait > 0 {
+			if _, err := s.filesystemAttachmentScheduleRemoval(
+				ctx, storage.FilesystemAttachmentUUID(a), false, 0,
+			); err != nil {
+				return "", errors.Capture(err)
+			}
+		}
+		if _, err := s.filesystemAttachmentScheduleRemoval(
+			ctx, storage.FilesystemAttachmentUUID(a), force, wait,
+		); err != nil {
+			return "", errors.Capture(err)
+		}
+	}
+
+	for _, a := range cascaded.VolumeAttachmentUUIDs {
+		if force && wait > 0 {
+			if _, err := s.volumeAttachmentScheduleRemoval(
+				ctx, storage.VolumeAttachmentUUID(a), false, 0,
+			); err != nil {
+				return "", errors.Capture(err)
+			}
+		}
+		if _, err := s.volumeAttachmentScheduleRemoval(
+			ctx, storage.VolumeAttachmentUUID(a), force, wait,
+		); err != nil {
+			return "", errors.Capture(err)
+		}
+	}
+
+	for _, a := range cascaded.VolumeAttachmentPlanUUIDs {
+		if force && wait > 0 {
+			if _, err := s.volumeAttachmentPlanScheduleRemoval(
+				ctx, storage.VolumeAttachmentPlanUUID(a), false, 0,
+			); err != nil {
+				return "", errors.Capture(err)
+			}
+		}
+		if _, err := s.volumeAttachmentPlanScheduleRemoval(
+			ctx, storage.VolumeAttachmentPlanUUID(a), force, wait,
+		); err != nil {
+			return "", errors.Capture(err)
+		}
+	}
+
+	for _, a := range cascaded.FileSystemUUIDs {
+		if force && wait > 0 {
+			if _, err := s.filesystemScheduleRemoval(
+				ctx, storage.FilesystemUUID(a), false, 0,
+			); err != nil {
+				return "", errors.Capture(err)
+			}
+		}
+		if _, err := s.filesystemScheduleRemoval(
+			ctx, storage.FilesystemUUID(a), force, wait,
+		); err != nil {
+			return "", errors.Capture(err)
+		}
+	}
+
+	for _, a := range cascaded.VolumeUUIDs {
+		if force && wait > 0 {
+			if _, err := s.volumeScheduleRemoval(
+				ctx, storage.VolumeUUID(a), false, 0,
+			); err != nil {
+				return "", errors.Capture(err)
+			}
+		}
+		if _, err := s.volumeScheduleRemoval(
+			ctx, storage.VolumeUUID(a), force, wait,
+		); err != nil {
+			return "", errors.Capture(err)
+		}
+	}
+
+	for _, a := range cascaded.StorageInstanceUUIDs {
+		if force && wait > 0 {
+			if _, err := s.storageInstanceScheduleRemoval(
+				ctx, storage.StorageInstanceUUID(a), false, 0,
+			); err != nil {
+				return "", errors.Capture(err)
+			}
+		}
+		if _, err := s.storageInstanceScheduleRemoval(
+			ctx, storage.StorageInstanceUUID(a), force, wait,
+		); err != nil {
+			return "", errors.Capture(err)
+		}
+	}
+
 	return appJobUUID, nil
+}
+
+// markApplicationAsDead marks the application as dead.
+// This method is responsible for checking that the pre-conditions for marking
+// an application as dead are met before advancing its Life to Dead. These
+// pre-conditions include ensuring that the application has no units or
+// relations.
+func (s *Service) markApplicationAsDead(ctx context.Context, appUUID string) error {
+	exists, err := s.modelState.ApplicationExists(ctx, appUUID)
+	if err != nil {
+		return errors.Errorf("checking if application exists: %w", err)
+	} else if !exists {
+		return errors.Errorf("application does not exist").Add(applicationerrors.ApplicationNotFound)
+	}
+
+	// Ensure the application is dying before checking counts. This guarantees
+	// no new units or relations can be added (they require the app to be
+	// alive), so the zero-count assertion below will remain stable.
+	appLife, err := s.modelState.GetApplicationLife(ctx, appUUID)
+	if err != nil {
+		return errors.Errorf("getting application %q life: %w", appUUID, err)
+	}
+	if appLife != life.Dying {
+		return errors.Errorf("cannot mark application %q as dead, expected dying got %v", appUUID, appLife).
+			Add(removalerrors.RemovalJobIncomplete)
+	}
+
+	// Check that the application has no units or relations.
+	numUnits, numRelations, err := s.modelState.GetApplicationUnitAndRelationCount(ctx, appUUID)
+	if err != nil {
+		return errors.Errorf("getting application %q association counts: %w", appUUID, err)
+	}
+	if numUnits > 0 {
+		return errors.Errorf("cannot mark application as dead as it still has %d unit(s)", numUnits).
+			Add(applicationerrors.ApplicationHasUnits).
+			Add(removalerrors.RemovalJobIncomplete)
+	}
+	if numRelations > 0 {
+		return errors.Errorf("cannot mark application as dead as it still has %d relation(s)", numRelations).
+			Add(applicationerrors.ApplicationHasRelations).
+			Add(removalerrors.RemovalJobIncomplete)
+	}
+
+	return errors.Capture(s.modelState.MarkApplicationAsDead(ctx, appUUID))
+}
+
+// ensureApplicationProviderResourcesRemoved checks whether the CAAS
+// provisioner is still managing k8s resources for the application. Blocks
+// deletion until the provisioner signals completion by clearing the flag.
+// All DB-level cloud-service cleanup is handled by DeleteApplication.
+func (s *Service) ensureApplicationProviderResourcesRemoved(ctx context.Context, appUUID string) error {
+	modelType, err := s.modelState.GetModelType(ctx)
+	if err != nil {
+		return errors.Errorf("getting model type for application %q removal: %w", appUUID, err)
+	}
+	if modelType != coremodel.CAAS {
+		return nil
+	}
+
+	managed, err := s.modelState.IsApplicationK8sResourcesManaged(ctx, appUUID)
+	if err != nil {
+		s.logger.Warningf(ctx, "cannot check k8s resources managed for application %q, will retry: %v", appUUID, err)
+		return errors.Errorf("checking k8s resources managed for application %q: %w", appUUID, err).
+			Add(removalerrors.RemovalJobIncomplete)
+	}
+	if managed {
+		return errors.Errorf("cannot remove application %q while k8s resources are still being managed", appUUID).
+			Add(removalerrors.RemovalJobIncomplete)
+	}
+
+	return nil
 }
 
 func (s *Service) applicationScheduleRemoval(
@@ -170,7 +350,7 @@ func (s *Service) applicationScheduleRemoval(
 	return jobUUID, nil
 }
 
-// processApplicationRemovalJob deletes an application if it is dying.
+// processApplicationRemovalJob deletes an application once it is dead.
 // Note that we do not need transactionality here:
 //   - Life can only advance - it cannot become alive if dying or dead.
 func (s *Service) processApplicationRemovalJob(ctx context.Context, job removal.Job) error {
@@ -188,8 +368,26 @@ func (s *Service) processApplicationRemovalJob(ctx context.Context, job removal.
 		return errors.Errorf("getting application %q life: %w", job.EntityUUID, err)
 	}
 
+	// If the application is alive, we cannot delete it even with force. This is
+	// programming error if we've reached this point and we're still alive.
 	if l == life.Alive {
 		return errors.Errorf("application %q is alive", job.EntityUUID).Add(removalerrors.EntityStillAlive)
+	}
+
+	// When force is set, skip the dead-state and CAAS resource gates entirely.
+	if !job.Force {
+		if l != life.Dead {
+			if err := s.markApplicationAsDead(ctx, job.EntityUUID); err != nil {
+				return err
+			}
+			// Keep the dead transition and final deletion on separate retries.
+			return errors.Errorf("application %q marked as dead; waiting for next pass", job.EntityUUID).
+				Add(removalerrors.RemovalJobIncomplete)
+		}
+
+		if err := s.ensureApplicationProviderResourcesRemoved(ctx, job.EntityUUID); err != nil {
+			return err
+		}
 	}
 
 	// The unit agent itself attempts to delete the applications's secrets if it

@@ -6,6 +6,7 @@ package context
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -29,9 +30,9 @@ import (
 	"github.com/juju/juju/core/status"
 	coretrace "github.com/juju/juju/core/trace"
 	"github.com/juju/juju/core/version"
+	"github.com/juju/juju/domain/deployment/charm"
+	"github.com/juju/juju/domain/deployment/charm/hooks"
 	secreterrors "github.com/juju/juju/domain/secret/errors"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/charm/hooks"
 	"github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/internal/worker/common/charmrunner"
 	"github.com/juju/juju/internal/worker/uniter/api"
@@ -119,8 +120,8 @@ type HookUnit interface {
 	Name() string
 	NetworkInfo(ctx context.Context, bindings []string, relationId *int) (map[string]params.NetworkInfoResult, error)
 	RequestReboot(context.Context) error
-	SetUnitStatus(ctx context.Context, unitStatus status.Status, info string, data map[string]interface{}) error
-	SetAgentStatus(ctx context.Context, agentStatus status.Status, info string, data map[string]interface{}) error
+	SetUnitStatus(ctx context.Context, unitStatus status.Status, info string, data map[string]any) error
+	SetAgentStatus(ctx context.Context, agentStatus status.Status, info string, data map[string]any) error
 	State(context.Context) (params.UnitStateResult, error)
 	Tag() names.UnitTag
 	UnitStatus(context.Context) (params.StatusResult, error)
@@ -235,6 +236,10 @@ type HookContext struct {
 	// that the uniter knows about.
 	jujuProxySettings proxy.Settings
 
+	// charmTracingConfig is the current charm tracing config that the uniter
+	// knows about.
+	charmTracingConfig uniter.CharmTracingConfig
+
 	// a helper for recording requests to open/close port ranges for this unit.
 	portRangeChanges *portRangeChangeRecorder
 
@@ -345,9 +350,7 @@ func (c *HookContext) GetCharmState(ctx context.Context) (map[string]string, err
 	}
 
 	retVal := make(map[string]string, len(c.cachedCharmState))
-	for k, v := range c.cachedCharmState {
-		retVal[k] = v
-	}
+	maps.Copy(retVal, c.cachedCharmState)
 	return retVal, nil
 }
 
@@ -768,9 +771,7 @@ func (c *HookContext) ConfigSettings(ctx context.Context) (charm.Config, error) 
 		}
 	}
 	result := charm.Config{}
-	for name, value := range c.configSettings {
-		result[name] = value
-	}
+	maps.Copy(result, c.configSettings)
 	return result, nil
 }
 
@@ -791,8 +792,21 @@ func (c *HookContext) lookupOwnedSecretURIByLabel(ctx context.Context, label str
 	if err != nil {
 		return nil, err
 	}
+	isLeader, err := c.IsLeader()
+	if err != nil {
+		return nil, errors.Annotatef(err, "cannot determine leadership")
+	}
+
 	for ID, md := range mds {
-		if md.Label == label && md.Owner.ID == c.unit.Tag().Id() {
+		if md.Label != label {
+			continue
+		}
+		if md.Owner.ID == c.unitName {
+			return &coresecrets.URI{ID: ID}, nil
+		}
+
+		// Leaders own application secrets.
+		if isLeader && md.Owner.ID == c.unit.ApplicationName() {
 			return &coresecrets.URI{ID: ID}, nil
 		}
 	}
@@ -826,22 +840,27 @@ func (c *HookContext) GetSecret(ctx context.Context, uri *coresecrets.URI, label
 		if v, got := c.getPendingSecretValue(uri, label, refresh, peek); got {
 			return v, nil
 		}
-	}
-	if label != "" {
-		if v, got := c.getPendingSecretValue(nil, label, refresh, peek); got {
-			return v, nil
-		}
-	}
-	if uri == nil && label != "" {
-		// try to resolve label to URI by looking up owned secrets.
+	} else {
+		// Try to resolve label to URI by looking up owned secrets.
 		ownedSecretURI, err := c.lookupOwnedSecretURIByLabel(ctx, label)
 		if err != nil && !errors.Is(err, errors.NotFound) {
 			return nil, err
 		}
 		if ownedSecretURI != nil {
-			// Found owned secret, no need label anymore.
+			// We now know the URI, see if there's any pending creates/updates
+			// that should be used for the content.
+			if v, got := c.getPendingSecretValue(ownedSecretURI, "", refresh, peek); got {
+				return v, nil
+			}
+			// Found owned secret, no need for label anymore.
 			uri = ownedSecretURI
 			label = ""
+		} else {
+			// No previously created secret with this label, check if there's
+			// any pending creates/updates that should be used for the content.
+			if v, got := c.getPendingSecretValue(nil, label, refresh, peek); got {
+				return v, nil
+			}
 		}
 	}
 	backend, err := c.getSecretsBackend()
@@ -1248,7 +1267,7 @@ func (c *HookContext) cloudSpecK8s(ctx context.Context) (*params.CloudSpec, erro
 
 // ActionParams simply returns the arguments to the Action.
 // Implements jujuc.ActionHookContext.actionHookContext, part of runner.Context.
-func (c *HookContext) ActionParams() (map[string]interface{}, error) {
+func (c *HookContext) ActionParams() (map[string]any, error) {
 	c.actionDataMu.Lock()
 	defer c.actionDataMu.Unlock()
 	if c.actionData == nil {
@@ -1297,7 +1316,7 @@ func (c *HookContext) SetActionFailed() error {
 // upon completion of the Action.  It returns an error if not called on an
 // Action-containing HookContext.
 // Implements jujuc.ActionHookContext.actionHookContext, part of runner.Context.
-func (c *HookContext) UpdateActionResults(keys []string, value interface{}) error {
+func (c *HookContext) UpdateActionResults(keys []string, value any) error {
 	c.actionDataMu.Lock()
 	defer c.actionDataMu.Unlock()
 	if c.actionData == nil {
@@ -1405,12 +1424,21 @@ func (c *HookContext) HookVars(
 		"JUJU_AVAILABILITY_ZONE="+c.availabilityZone,
 		"JUJU_VERSION="+version.Current.String(),
 		"CLOUD_API_VERSION="+c.cloudAPIVersion,
+
 		// Some of these will be empty, but that is fine, better
 		// to explicitly export them as empty.
 		"JUJU_CHARM_HTTP_PROXY="+c.jujuProxySettings.Http,
 		"JUJU_CHARM_HTTPS_PROXY="+c.jujuProxySettings.Https,
 		"JUJU_CHARM_FTP_PROXY="+c.jujuProxySettings.Ftp,
 		"JUJU_CHARM_NO_PROXY="+c.jujuProxySettings.NoProxy,
+
+		// Add charm tracing config to the environment variables (if any
+		// of the tracing config is set). This allows charms to write
+		// trace spans to the same OTEL collector without needing to have
+		// multiple charm integrations.
+		"JUJU_CHARM_TRACE_CONFIG_HTTP="+c.charmTracingConfig.HTTPEndpoint,
+		"JUJU_CHARM_TRACE_CONFIG_GRPC="+c.charmTracingConfig.GRPCEndpoint,
+		"JUJU_CHARM_TRACE_CONFIG_CA_CERT="+c.charmTracingConfig.CACertificate,
 	)
 	if r, err := c.HookRelation(); err == nil {
 		vars = append(vars,
@@ -1762,7 +1790,7 @@ func (c *HookContext) finalizeAction(ctx context.Context, err, flushErr error) e
 	}
 	if flushErr != nil {
 		if results == nil {
-			results = map[string]interface{}{}
+			results = map[string]any{}
 		}
 		if stderr, ok := results["stderr"].(string); ok {
 			results["stderr"] = stderr + "\n" + flushErr.Error()

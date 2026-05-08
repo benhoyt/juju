@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Understand Juju application modeling: service isolation, access control, and abstraction layers for simplified cloud operations."
+---
+
 (application-modelling)=
 # Application modelling
 

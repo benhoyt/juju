@@ -8,6 +8,27 @@ import (
 	"time"
 )
 
+// storageInstanceUUID is used for queries that only require a storage
+// instance UUID input and cannot use [entityUUID] due to conflict of type names
+// with sqlair.
+type storageInstanceUUID entityUUID
+
+// storageInstanceUUIDs is used for queries that accept a list of storage
+// instance UUIDs.
+type storageInstanceUUIDs []string
+
+// storageInstanceAttachmentCheckCount is used to represent attachment counts
+// for a storage instance.
+type storageInstanceAttachmentCheckCount struct {
+	StorageInstanceUUID string `db:"storage_instance_uuid"`
+	ExpectedCount       int    `db:"expected_count"`
+	UnexpectedCount     int    `db:"unexpected_count"`
+}
+
+// storageAttachmentUUIDs is used for queries that return a list of storage
+// attachment UUIDs.
+type storageAttachmentUUIDs []string
+
 // insertStorageFilesystem represents the set of values required for inserting a
 // new storage filesystem into the model.
 type insertStorageFilesystem struct {
@@ -15,6 +36,13 @@ type insertStorageFilesystem struct {
 	LifeID           int    `db:"life_id"`
 	ProvisionScopeID int    `db:"provision_scope_id"`
 	UUID             string `db:"uuid"`
+}
+
+// setStorageFilesystemProviderID is used to update the provider ID for an
+// existing filesystem.
+type setStorageFilesystemProviderID struct {
+	UUID       string `db:"uuid"`
+	ProviderID string `db:"provider_id"`
 }
 
 // insertStorageFilesystemAttachment represents the set of values required for
@@ -25,6 +53,20 @@ type insertStorageFilesystemAttachment struct {
 	ProvisionScopeID      int    `db:"provision_scope_id"`
 	StorageFilesystemUUID string `db:"storage_filesystem_uuid"`
 	UUID                  string `db:"uuid"`
+}
+
+// setStorageFilesystemAttachmentProviderID is used to update the provider ID
+// for an existing filesystem attachment.
+type setStorageFilesystemAttachmentProviderID struct {
+	UUID       string `db:"uuid"`
+	ProviderID string `db:"provider_id"`
+}
+
+// setStorageInstanceCharmName is used to update the charm name for an
+// existing storage instance.
+type setStorageInstanceCharmName struct {
+	CharmName string `db:"charm_name"`
+	UUID      string `db:"uuid"`
 }
 
 // insertStorageFilesystemInstance represents the set of values required for
@@ -104,13 +146,22 @@ type insertStorageVolumeStatus struct {
 // either a volume or filesystem in the model.
 type storageProviderIDs []string
 
+// applicationStorageInfo is used to retrieve storage information for an
+// application.
+type applicationStorageInfo struct {
+	StoragePoolName string `db:"storage_pool_name"`
+	StorageName     string `db:"storage_name"`
+	Count           uint64 `db:"count"`
+	SizeMiB         uint64 `db:"size_mib"`
+}
+
 // storageDirective represents either a storage directive from a unit in the
 // model or an application.
 type storageDirective struct {
 	CharmMetadataName string `db:"charm_metadata_name"`
 	CharmStorageKind  string `db:"charm_storage_kind"`
 	Count             uint32 `db:"count"`
-	CountMax          uint32 `db:"count_max"`
+	CountMax          int    `db:"count_max"`
 	SizeMiB           uint64 `db:"size_mib"`
 	StorageName       string `db:"storage_name"`
 	StoragePoolUUID   string `db:"storage_pool_uuid"`
@@ -127,6 +178,19 @@ type storageInstanceComposition struct {
 	VolumeUUID               sql.Null[string] `db:"volume_uuid"`
 }
 
+// storageAttachmentComposition is used to get the composition of a storage
+// attachment within the model.
+type storageAttachmentComposition struct {
+	UUID                               string           `db:"uuid"`
+	StorageInstanceUUID                string           `db:"storage_instance_uuid"`
+	FilesystemAttachmentProvisionScope sql.Null[int]    `db:"filesystem_attachment_provision_scope"`
+	FilesystemAttachmentUUID           sql.Null[string] `db:"filesystem_attachment_uuid"`
+	FilesystemUUID                     sql.Null[string] `db:"filesystem_uuid"`
+	VolumeAttachmentProvisionScope     sql.Null[int]    `db:"volume_attachment_provision_scope"`
+	VolumeAttachmentUUID               sql.Null[string] `db:"volume_attachment_uuid"`
+	VolumeUUID                         sql.Null[string] `db:"volume_uuid"`
+}
+
 // storageModelConfigKeys is used to get model config to select the storage pool
 // or storage provider type.
 type storageModelConfigKeys struct {
@@ -137,4 +201,25 @@ type storageModelConfigKeys struct {
 type modelStoragePools struct {
 	StorageKindID   int    `db:"storage_kind_id"`
 	StoragePoolUUID string `db:"storage_pool_uuid"`
+}
+
+// updateApplicationStorageDirective represents the data needed to update
+// an application storage directive during charm refresh.
+type updateApplicationStorageDirective struct {
+	ApplicationUUID string `db:"application_uuid"`
+	CharmUUID       string `db:"charm_uuid"`
+	Count           uint32 `db:"count"`
+	SizeMiB         uint64 `db:"size_mib"`
+	StorageName     string `db:"storage_name"`
+	StoragePoolUUID string `db:"storage_pool_uuid"`
+}
+
+// unitAttachStorageInstanceCheckInfo is used to capture unit state and
+// attachment counts needed to validate attaching a storage instance.
+type unitAttachStorageInstanceCheckInfo struct {
+	AlreadyAttached     bool             `db:"already_attached"`
+	MachineUUID         sql.Null[string] `db:"unit_machine_uuid"`
+	UnitAttachmentCount uint32           `db:"unit_attachment_count"`
+	UnitCharmUUID       string           `db:"unit_charm_uuid"`
+	UnitLifeID          int              `db:"unit_life_id"`
 }

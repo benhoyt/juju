@@ -22,8 +22,8 @@ import (
 	coremachine "github.com/juju/juju/core/machine"
 	machinetesting "github.com/juju/juju/core/machine/testing"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/status"
+	"github.com/juju/juju/core/storage"
 	coreunit "github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/agentbinary"
 	blockcommanderrors "github.com/juju/juju/domain/blockcommand/errors"
@@ -32,7 +32,6 @@ import (
 	machineservice "github.com/juju/juju/domain/machine/service"
 	"github.com/juju/juju/environs/config"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
-	"github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/internal/testhelpers"
 	coretesting "github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/internal/uuid"
@@ -57,7 +56,7 @@ func TestAddMachineManagerSuite(t *testing.T) {
 
 func (s *AddMachineManagerSuite) SetUpTest(c *tc.C) {
 	s.authorizer = &apiservertesting.FakeAuthorizer{Tag: names.NewUserTag("admin")}
-	s.modelUUID = modeltesting.GenModelUUID(c)
+	s.modelUUID = tc.Must0(c, coremodel.NewUUID)
 	s.controllerUUID = uuid.MustNewUUID().String()
 }
 
@@ -133,6 +132,71 @@ func (s *AddMachineManagerSuite) TestAddMachines(c *tc.C) {
 	c.Assert(machines.Machines, tc.HasLen, 2)
 }
 
+func (s *AddMachineManagerSuite) TestAddMachinesContainerPlacement(c *tc.C) {
+	ctrl := s.setup(c)
+	defer ctrl.Finish()
+
+	apiParams := params.AddMachineParams{
+		Base:      &params.Base{Name: "ubuntu", Channel: "22.04"},
+		Jobs:      []coremodel.MachineJob{coremodel.JobHostUnits},
+		Placement: &instance.Placement{Scope: string(instance.LXD), Directive: "0"},
+	}
+
+	s.machineService.EXPECT().AddMachine(gomock.Any(), domainmachine.AddMachineArgs{
+		Platform: deployment.Platform{
+			Channel: "22.04/stable",
+			OSType:  deployment.Ubuntu,
+		},
+		Directive: deployment.Placement{
+			Type:      deployment.PlacementTypeContainer,
+			Container: deployment.ContainerTypeLXD,
+			Directive: "0",
+		},
+	}).Return(machineservice.AddMachineResults{
+		MachineName:      coremachine.Name("0"),
+		ChildMachineName: new(coremachine.Name("0/lxd/0")),
+	}, nil)
+
+	machines, err := s.api.AddMachines(c.Context(), params.AddMachines{MachineParams: []params.AddMachineParams{apiParams}})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(machines.Machines, tc.HasLen, 1)
+	c.Check(machines.Machines[0].Machine, tc.Equals, "0/lxd/0")
+	c.Check(machines.Machines[0].Error, tc.IsNil)
+}
+
+func (s *AddMachineManagerSuite) TestAddMachinesContainerMembers(c *tc.C) {
+	ctrl := s.setup(c)
+	defer ctrl.Finish()
+
+	apiParams := params.AddMachineParams{
+		Base:          &params.Base{Name: "ubuntu", Channel: "22.04"},
+		Jobs:          []coremodel.MachineJob{coremodel.JobHostUnits},
+		ContainerType: instance.LXD,
+		ParentId:      "0",
+	}
+
+	s.machineService.EXPECT().AddMachine(gomock.Any(), domainmachine.AddMachineArgs{
+		Platform: deployment.Platform{
+			Channel: "22.04/stable",
+			OSType:  deployment.Ubuntu,
+		},
+		Directive: deployment.Placement{
+			Type:      deployment.PlacementTypeContainer,
+			Container: deployment.ContainerTypeLXD,
+			Directive: "0",
+		},
+	}).Return(machineservice.AddMachineResults{
+		MachineName:      coremachine.Name("0"),
+		ChildMachineName: new(coremachine.Name("0/lxd/0")),
+	}, nil)
+
+	machines, err := s.api.AddMachines(c.Context(), params.AddMachines{MachineParams: []params.AddMachineParams{apiParams}})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(machines.Machines, tc.HasLen, 1)
+	c.Check(machines.Machines[0].Machine, tc.Equals, "0/lxd/0")
+	c.Check(machines.Machines[0].Error, tc.IsNil)
+}
+
 func (s *AddMachineManagerSuite) TestAddMachinesStateError(c *tc.C) {
 	defer s.setup(c).Finish()
 
@@ -185,7 +249,7 @@ func (s *DestroyMachineManagerSuite) TestStub(c *tc.C) {
 func (s *DestroyMachineManagerSuite) SetUpTest(c *tc.C) {
 	s.CleanupSuite.SetUpTest(c)
 	s.authorizer = &apiservertesting.FakeAuthorizer{Tag: names.NewUserTag("admin")}
-	s.modelUUID = modeltesting.GenModelUUID(c)
+	s.modelUUID = tc.Must0(c, coremodel.NewUUID)
 	s.controllerUUID = uuid.MustNewUUID().String()
 }
 
@@ -260,9 +324,9 @@ func (s *DestroyMachineManagerSuite) TestDestroyMachineDryRun(c *tc.C) {
 			Info: &params.DestroyMachineInfo{
 				MachineId: "0",
 				DestroyedUnits: []params.Entity{
-					{"unit-foo-0"},
-					{"unit-foo-1"},
-					{"unit-foo-2"},
+					{Tag: "unit-foo-0"},
+					{Tag: "unit-foo-1"},
+					{Tag: "unit-foo-2"},
 				},
 			},
 		}},
@@ -290,17 +354,17 @@ func (s *DestroyMachineManagerSuite) TestDestroyMachineWithContainersDryRun(c *t
 			Info: &params.DestroyMachineInfo{
 				MachineId: "0",
 				DestroyedUnits: []params.Entity{
-					{"unit-foo-0"},
-					{"unit-foo-1"},
-					{"unit-foo-2"},
+					{Tag: "unit-foo-0"},
+					{Tag: "unit-foo-1"},
+					{Tag: "unit-foo-2"},
 				},
 				DestroyedContainers: []params.DestroyMachineResult{{
 					Info: &params.DestroyMachineInfo{
 						MachineId: "0/lxd/0",
 						DestroyedUnits: []params.Entity{
-							{"unit-foo-0"},
-							{"unit-foo-1"},
-							{"unit-foo-2"},
+							{Tag: "unit-foo-0"},
+							{Tag: "unit-foo-1"},
+							{Tag: "unit-foo-2"},
 						},
 					},
 				}},
@@ -336,9 +400,9 @@ func (s *DestroyMachineManagerSuite) TestDestroyMachineWithParamsNoWait(c *tc.C)
 			Info: &params.DestroyMachineInfo{
 				MachineId: "0",
 				DestroyedUnits: []params.Entity{
-					{"unit-foo-0"},
-					{"unit-foo-1"},
-					{"unit-foo-2"},
+					{Tag: "unit-foo-0"},
+					{Tag: "unit-foo-1"},
+					{Tag: "unit-foo-2"},
 				},
 			},
 		}},
@@ -371,9 +435,9 @@ func (s *DestroyMachineManagerSuite) TestDestroyMachineWithParamsNilWait(c *tc.C
 			Info: &params.DestroyMachineInfo{
 				MachineId: "0",
 				DestroyedUnits: []params.Entity{
-					{"unit-foo-0"},
-					{"unit-foo-1"},
-					{"unit-foo-2"},
+					{Tag: "unit-foo-0"},
+					{Tag: "unit-foo-1"},
+					{Tag: "unit-foo-2"},
 				},
 			},
 		}},
@@ -403,17 +467,17 @@ func (s *DestroyMachineManagerSuite) TestDestroyMachineWithContainers(c *tc.C) {
 			Info: &params.DestroyMachineInfo{
 				MachineId: "0",
 				DestroyedUnits: []params.Entity{
-					{"unit-foo-0"},
-					{"unit-foo-1"},
-					{"unit-foo-2"},
+					{Tag: "unit-foo-0"},
+					{Tag: "unit-foo-1"},
+					{Tag: "unit-foo-2"},
 				},
 				DestroyedContainers: []params.DestroyMachineResult{{
 					Info: &params.DestroyMachineInfo{
 						MachineId: "0/lxd/0",
 						DestroyedUnits: []params.Entity{
-							{"unit-foo-0"},
-							{"unit-foo-1"},
-							{"unit-foo-2"},
+							{Tag: "unit-foo-0"},
+							{Tag: "unit-foo-1"},
+							{Tag: "unit-foo-2"},
 						},
 					},
 				}},
@@ -453,7 +517,7 @@ func (s *ProvisioningMachineManagerSuite) SetUpTest(c *tc.C) {
 func (s *ProvisioningMachineManagerSuite) setupMocks(c *tc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 	s.controllerUUID = uuid.MustNewUUID().String()
-	s.modelUUID = modeltesting.GenModelUUID(c)
+	s.modelUUID = tc.Must0(c, coremodel.NewUUID)
 
 	s.controllerConfigService = NewMockControllerConfigService(ctrl)
 	s.controllerConfigService.EXPECT().ControllerConfig(gomock.Any()).Return(coretesting.FakeControllerConfig(), nil).AnyTimes()
@@ -638,7 +702,7 @@ func (s *ProvisioningMachineManagerSuite) TestRetryProvisioning(c *tc.C) {
 	s.statusService.EXPECT().GetInstanceStatus(gomock.Any(), coremachine.Name("0")).Return(status.StatusInfo{Status: status.ProvisioningError}, nil)
 	s.statusService.EXPECT().SetInstanceStatus(gomock.Any(), coremachine.Name("0"), status.StatusInfo{
 		Status: status.ProvisioningError,
-		Data:   map[string]interface{}{"transient": true},
+		Data:   map[string]any{"transient": true},
 		Since:  &now,
 	}).Return(nil)
 
@@ -662,7 +726,7 @@ func (s *ProvisioningMachineManagerSuite) TestRetryProvisioningAll(c *tc.C) {
 	s.statusService.EXPECT().GetInstanceStatus(gomock.Any(), coremachine.Name("0")).Return(status.StatusInfo{Status: status.ProvisioningError}, nil)
 	s.statusService.EXPECT().SetInstanceStatus(gomock.Any(), coremachine.Name("0"), status.StatusInfo{
 		Status: status.ProvisioningError,
-		Data:   map[string]interface{}{"transient": true},
+		Data:   map[string]any{"transient": true},
 		Since:  &now,
 	}).Return(nil)
 

@@ -21,6 +21,7 @@ import (
 	"github.com/juju/juju/api/client/modelconfig"
 	commoncharm "github.com/juju/juju/api/common/charm"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	appbundle "github.com/juju/juju/cmd/juju/application/bundle"
 	"github.com/juju/juju/cmd/juju/application/store"
 	"github.com/juju/juju/cmd/juju/application/utils"
@@ -28,11 +29,10 @@ import (
 	"github.com/juju/juju/core/arch"
 	corebase "github.com/juju/juju/core/base"
 	"github.com/juju/juju/core/constraints"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/environs/config"
 	bundlechanges "github.com/juju/juju/internal/bundle/changes"
-	"github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/charmhub"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -43,7 +43,7 @@ const (
 
 // ModelConfigGetter defines an interface for getting model configuration.
 type ModelConfigGetter interface {
-	ModelGet(ctx context.Context) (map[string]interface{}, error)
+	ModelGet(ctx context.Context) (map[string]any, error)
 }
 
 // ModelConstraintsGetter defines an interface for getting model constraints.
@@ -441,7 +441,7 @@ func (e *extractorImpl) GetConstraints(ctx context.Context, applications ...stri
 }
 
 // GetConfig is part of ModelExtractor.
-func (e *extractorImpl) GetConfig(ctx context.Context, applications ...string) ([]map[string]interface{}, error) {
+func (e *extractorImpl) GetConfig(ctx context.Context, applications ...string) ([]map[string]any, error) {
 	return e.application.GetConfig(ctx, applications...)
 }
 

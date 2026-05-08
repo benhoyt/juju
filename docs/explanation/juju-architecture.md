@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Deep dive into Juju architecture: bootstrapping, controller structure, agent communication, and deployment process on Kubernetes and machines."
+---
+
 (juju-architecture)=
 # Juju architecture
 

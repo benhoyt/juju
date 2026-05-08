@@ -56,6 +56,7 @@ type FilesystemParams struct {
 	Attributes    map[string]string
 	ID            string
 	Provider      string
+	ProviderID    *string
 	SizeMiB       uint64
 	BackingVolume *FilesystemBackingVolume
 }
@@ -100,46 +101,91 @@ type FilesystemAttachment struct {
 // FilesystemAttachmentParams defines the set of parameters that a caller needs
 // to know in order to provision a filesystem attachment in the model.
 type FilesystemAttachmentParams struct {
+	// CharmStorageMaxCount defines the maximum number of storage instances that
+	// may exist for this storage on the unit. This value is guaranteed to be a
+	// non negative integer. If the charm has no defined maximum 0 will be used.
+	CharmStorageCountMax int
+
+	// CharmStorageLocation defines the recommended mount location for the
+	// filesystem attachment as directed by the charm. If this filesystem
+	// attachment cannot be linked to a charm storage a zero value will be used.
+	CharmStorageLocation string
+
+	// CharmStorageReadOnly indicates if the charm wants this attachment to be
+	// readonly.
+	CharmStorageReadOnly bool
+
+	// MachineInstanceID is the cloud instance id given to the machine this
+	// filesystem attachment is on to. If the attachment is not onto a
+	// machine or no cloud instance id exists a zero value will be supplied.
 	MachineInstanceID string
-	Provider          string
-	ProviderID        string
-	MountPoint        string
-	ReadOnly          bool
+
+	// CAASInstanceID is similar to MachineInstanceID but slightly differs in
+	// that it's not attached to a machine but to a CAAS resource. If the
+	// attachment is not onto a CAAS resource then a zero value will be supplied.
+	// There will only be a non-zero value for either a MachineInstanceID or
+	// CAASInstanceID.
+	CAASInstanceID string
+
+	// MountPoint is the path at which this filesystem attachment is mounted at.
+	// Should the attachment not be mounted yet the zero value will be set.
+	MountPoint string
+
+	// Provider is the storage provider responsible for provisioning the
+	// attachment.
+	Provider string
+
+	// FilesystemProviderID is the unique ID given to the filesystem from the
+	// storage provider.
+	FilesystemProviderID string
+
+	// FilesystemAttachmentProviderID is the unique ID given to the filesystem
+	// attachment from the storage provider.
+	FilesystemAttachmentProviderID *string
 }
 
 // FilesystemTemplate represents the required information to supply a Kubernetes
 // PVC template/Pod template, such that the required Filsystems for a new unit
 // of the supplied application are created and mounted correctly.
 type FilesystemTemplate struct {
-	// StorageName is the name of the storage as defined in the charm for this
-	// application.
-	StorageName string
+	// Attachments describes the attachment templates for this filesystem.
+	// It also includes the realized attachments if they exist.
+	Attachments []FilesystemAttachmentTemplateWithProvisioned
+
+	// Attributes are a set of key value pairs that are supplied to the provider
+	// or provisioner to facilitate this filesystem(s).
+	Attributes map[string]string
 
 	// Count is the number of filesystem(s) to mount for this storage.
 	Count int
-
-	// MaxCount is the maxium number of filesystems for this storage.
-	MaxCount int
-
-	// SizeMiB is the number of mebibytes to allocate for this filesystem or
-	// each of these filesystems.
-	SizeMiB uint64
 
 	// ProviderType is the name of the provider to be used to provision this
 	// filesystem(s).
 	ProviderType string
 
-	// ReadOnly is true if this filesystem(s) or the mount should be read-only.
+	// SizeMiB is the number of mebibytes to allocate for this filesystem or
+	// each of these filesystems.
+	SizeMiB uint64
+
+	// StorageName is the name of the storage as defined in the charm for this
+	// application.
+	StorageName string
+}
+
+// FilesystemAttachmentTemplate describes an attachment that MUST be made as
+// part of a [FilesystemTemplate].
+type FilesystemAttachmentTemplate struct {
+	// ReadOnly is true when the charm has specified the filesystem to be read
+	// only mounted.
 	ReadOnly bool
 
-	// Location is a path to hint where the filesystem(s) should be mounted for
-	// the charm to access. It is not the exact path the filesystem(s) will be
-	// mounted.
-	Location string
+	// MountPoint is the location where the filesystem attachment should be
+	// made.
+	MountPoint string
 
-	// Attributes are a set of key value pairs that are supplied to the provider
-	// or provisioner to facilitate this filesystem(s).
-	Attributes map[string]string
+	// ContainerKey is the identifier of the container this attachment
+	// should be mounted to.
+	ContainerKey string
 }
 
 // FilesystemProvisionedInfo is information set by the storage provisioner for
@@ -160,4 +206,22 @@ type FilesystemAttachmentProvisionedInfo struct {
 
 	// ReadOnly is true if the filesystem is mounted read-only.
 	ReadOnly bool
+}
+
+// ProvisionedFilesystemAttachment represents the details of a filesystem attachment
+// that has been realized in the model.
+type ProvisionedFilesystemAttachment struct {
+	// AttachmentUUID is the unique identifier for the filesystem attachment.
+	AttachmentUUID string
+	// StorageName is the name of the storage as defined in the charm for this attachment.
+	StorageName string
+	// ProviderID is the identifier of the attachment from the storage provider.
+	ProviderID string
+}
+
+// FilesystemAttachmentTemplateWithProvisioned combines a FilesystemAttachmentTemplate
+// with its provisioned attachments.
+type FilesystemAttachmentTemplateWithProvisioned struct {
+	FilesystemAttachmentTemplate
+	ProvisionedAttachments []ProvisionedFilesystemAttachment
 }

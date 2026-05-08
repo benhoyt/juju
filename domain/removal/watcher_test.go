@@ -17,6 +17,7 @@ import (
 	corecharm "github.com/juju/juju/core/charm"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/database"
+	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/model"
 	coreobjectstore "github.com/juju/juju/core/objectstore"
 	corestorage "github.com/juju/juju/core/storage"
@@ -27,6 +28,8 @@ import (
 	applicationservice "github.com/juju/juju/domain/application/service"
 	applicationstorageservice "github.com/juju/juju/domain/application/service/storage"
 	applicationstate "github.com/juju/juju/domain/application/state"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	objectstorestate "github.com/juju/juju/domain/objectstore/state"
 	"github.com/juju/juju/domain/removal/service"
 	statecontroller "github.com/juju/juju/domain/removal/state/controller"
@@ -34,8 +37,6 @@ import (
 	domaintesting "github.com/juju/juju/domain/testing"
 	"github.com/juju/juju/environs"
 	changestreamtesting "github.com/juju/juju/internal/changestream/testing"
-	internalcharm "github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	internalstorage "github.com/juju/juju/internal/storage"
@@ -177,7 +178,7 @@ func (s *watcherSuite) TestWatchEntityRemovals(c *tc.C) {
 	})
 
 	harness.AddTest(c, func(c *tc.C) {
-		err := modelState.DeleteUnit(c.Context(), unitUUID)
+		err := modelState.DeleteUnit(c.Context(), unitUUID, false)
 		c.Assert(err, tc.ErrorIsNil)
 	}, func(w watchertest.WatcherC[[]string]) {
 		w.AssertNoChange()
@@ -197,6 +198,9 @@ func (s *watcherSuite) setupApplicationService(c *tc.C, factory domain.Watchable
 	caasProviderGetter := func(ctx context.Context) (applicationservice.CAASProvider, error) {
 		return appProvider{}, nil
 	}
+	cloudInfoGetter := func(ctx context.Context) (applicationservice.CloudInfoProvider, error) {
+		return nil, coreerrors.NotSupported
+	}
 
 	storageProviderRegistryGetter := corestorage.ConstModelStorageRegistry(
 		func() internalstorage.ProviderRegistry {
@@ -204,24 +208,28 @@ func (s *watcherSuite) setupApplicationService(c *tc.C, factory domain.Watchable
 		},
 	)
 	state := applicationstate.NewState(
-		modelDB, clock.WallClock, loggertesting.WrapCheckLog(c),
+		modelDB, model.UUID(s.ModelUUID()), clock.WallClock, loggertesting.WrapCheckLog(c),
 	)
 	storageSvc := applicationstorageservice.NewService(
-		state, applicationstorageservice.NewStoragePoolProvider(
+		state,
+		applicationstorageservice.NewStoragePoolProvider(
 			storageProviderRegistryGetter, state,
 		),
+		loggertesting.WrapCheckLog(c),
 	)
 
 	return applicationservice.NewWatchableService(
-		applicationstate.NewState(modelDB, clock.WallClock, loggertesting.WrapCheckLog(c)),
+		applicationstate.NewState(modelDB, model.UUID(s.ModelUUID()), clock.WallClock, loggertesting.WrapCheckLog(c)),
 		storageSvc,
 		domaintesting.NoopLeaderEnsurer(),
 		domain.NewWatcherFactory(factory, loggertesting.WrapCheckLog(c)),
 		nil,
 		providerGetter,
 		caasProviderGetter,
+		cloudInfoGetter,
 		nil,
 		domain.NewStatusHistory(loggertesting.WrapCheckLog(c), clock.WallClock),
+		model.UUID(s.ModelUUID()),
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -244,7 +252,7 @@ func (s *watcherSuite) createIAASApplication(c *tc.C, svc *applicationservice.Wa
 		},
 		ResolvedResources: applicationservice.ResolvedResources{{
 			Name:     "buzz",
-			Revision: ptr(42),
+			Revision: new(42),
 			Origin:   charmresource.OriginStore,
 		}},
 	}, units...)
@@ -260,7 +268,8 @@ func (s *watcherSuite) setCharmObjectStoreMetadata(c *tc.C, appID string) {
 		return s.ModelTxnRunner(), nil
 	}
 
-	objectStoreUUID, err := objectstorestate.NewState(modelDB).PutMetadata(c.Context(), coreobjectstore.Metadata{
+	uuid := tc.Must(c, uuid.NewUUID).String()
+	objectStoreUUID, err := objectstorestate.NewState(modelDB, clock.WallClock).PutMetadata(c.Context(), uuid, coreobjectstore.Metadata{
 		SHA256: fmt.Sprintf("%v-sha256", appID),
 		SHA384: fmt.Sprintf("%v-sha384", appID),
 		Path:   fmt.Sprintf("/path/to/%v", appID),
@@ -410,8 +419,4 @@ func (caasApplication) Units() ([]caas.Unit, error) {
 	return []caas.Unit{{
 		Id: "some-app-0",
 	}}, nil
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }

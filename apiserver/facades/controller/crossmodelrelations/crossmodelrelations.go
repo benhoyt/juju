@@ -11,9 +11,10 @@ import (
 	"github.com/juju/collections/transform"
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
-	"github.com/juju/worker/v4"
+	"github.com/juju/worker/v5"
 	"gopkg.in/macaroon.v2"
 
+	apimacaroon "github.com/juju/juju/api/macaroon"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/apiserver/facade"
 	"github.com/juju/juju/apiserver/internal"
@@ -35,7 +36,6 @@ import (
 	"github.com/juju/juju/domain/relation"
 	relationerrors "github.com/juju/juju/domain/relation/errors"
 	internalerrors "github.com/juju/juju/internal/errors"
-	internalmacaroon "github.com/juju/juju/internal/macaroon"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -109,6 +109,8 @@ func (api *CrossModelRelationsAPIv3) publishOneRelationChange(ctx context.Contex
 		return err
 	}
 
+	api.logger.Debugf(ctx, "publishing relation changes for relation %q", relationUUID)
+
 	// Ensure that we have a relation and that it isn't dead.
 	// If the relation is not found or dead, we simply skip publishing
 	// for that relation. This shouldn't bring down the whole operation.
@@ -132,8 +134,10 @@ func (api *CrossModelRelationsAPIv3) publishOneRelationChange(ctx context.Contex
 		return errors.Annotatef(err, "checking macaroons for relation %q", relationUUID)
 	}
 
-	applicationUUID, err := api.getApplicationUUIDFromToken(ctx, change.ApplicationOrOfferToken)
-	if err != nil {
+	applicationUUID, err := api.getApplicationUUIDFromToken(ctx, change.ApplicationOrOfferToken, relationUUID)
+	if errors.Is(err, applicationerrors.ApplicationNotFound) {
+		return errors.NotFoundf("application for offer %q", change.ApplicationOrOfferToken)
+	} else if err != nil {
 		return errors.Annotatef(err, "getting application UUID for relation %q", relationUUID)
 	}
 
@@ -146,11 +150,11 @@ func (api *CrossModelRelationsAPIv3) publishOneRelationChange(ctx context.Contex
 	}
 
 	switch {
-	case change.Life != life.Alive:
+	case isNotAlive(change.Life):
 		// Relations only transition to dying and are removed, so we can safely
 		// just remove the relation and return early.
 		forceCleanup := change.ForceCleanup != nil && *change.ForceCleanup
-		_, err := api.removalService.RemoveRemoteRelation(ctx, relationUUID, forceCleanup, 0)
+		_, err := api.removalService.RemoveRelationWithRemoteConsumer(ctx, relationUUID, forceCleanup, 0)
 		if errors.Is(err, relationerrors.RelationNotFound) {
 			return nil
 		}
@@ -172,20 +176,14 @@ func (api *CrossModelRelationsAPIv3) publishOneRelationChange(ctx context.Contex
 func (api *CrossModelRelationsAPIv3) getApplicationUUIDFromToken(
 	ctx context.Context,
 	token string,
+	relationUUID corerelation.UUID,
 ) (coreapplication.UUID, error) {
-	// First try as an application UUID.
-	appUUID, err := coreapplication.ParseUUID(token)
-	if err == nil {
-		return appUUID, nil
-	}
-
-	// Next try as an offer UUID.
 	offerUUID, err := offer.ParseUUID(token)
 	if err != nil {
 		return "", errors.NotValidf("token %q is not a valid application or offer UUID", token)
 	}
 
-	_, appUUID, err = api.crossModelRelationService.GetApplicationNameAndUUIDByOfferUUID(ctx, offerUUID)
+	appUUID, err := api.crossModelRelationService.GetSyntheticApplicationUUIDByRemoteToken(ctx, offerUUID, relationUUID)
 	if err != nil {
 		return "", errors.Annotatef(err, "getting application UUID from offer %q", offerUUID)
 	}
@@ -338,7 +336,7 @@ func (api *CrossModelRelationsAPIv3) handleDepartedUnits(
 	for _, u := range departedUnits {
 		unitName, err := unit.NewNameFromParts(applicationName, u)
 		if err != nil {
-			return errors.Annotatef(err, "parsing departed unit name %q", u)
+			return errors.Annotatef(err, "parsing departed unit %d", u)
 		}
 
 		// If the relation unit doesn't exist, then it has already been removed,
@@ -425,7 +423,7 @@ func (api *CrossModelRelationsAPIv3) registerOneRemoteRelation(
 		return nil, errors.Annotate(err, "adding remote application consumer")
 	}
 
-	relationKey, err := api.relationService.GetRelationKeyByUUID(ctx, relation.RelationToken)
+	relationKey, err := api.relationService.GetRelationKeyByUUID(ctx, corerelation.UUID(relation.RelationToken))
 	if err != nil {
 		return nil, errors.Annotate(err, "getting relation key")
 	}
@@ -444,6 +442,34 @@ func (api *CrossModelRelationsAPIv3) registerOneRemoteRelation(
 		Token:    appUUID.String(),
 		Macaroon: relationMacaroon.M(),
 	}, nil
+}
+
+// RelationChangesWatcher wraps a NotifyWatcher, providing methods to recall
+// the application and relation UUIDs associated with this watcher.
+type RelationChangesWatcher interface {
+	watcher.NotifyWatcher
+
+	// ApplicationUUID returns the application token of the relation.
+	ApplicationUUID() coreapplication.UUID
+
+	// RelationUUID returns the relation token of the relation.
+	RelationUUID() corerelation.UUID
+}
+
+type relationChangesWatcherShim struct {
+	watcher.NotifyWatcher
+	applicationUUID coreapplication.UUID
+	relationUUID    corerelation.UUID
+}
+
+// ApplicationUUID returns the application UUID for the RelationChangesWatcher.
+func (w *relationChangesWatcherShim) ApplicationUUID() coreapplication.UUID {
+	return w.applicationUUID
+}
+
+// RelationUUID returns the relation UUID for the RelationChangesWatcher.
+func (w *relationChangesWatcherShim) RelationUUID() corerelation.UUID {
+	return w.relationUUID
 }
 
 // WatchRelationChanges starts a RemoteRelationChangesWatcher for each
@@ -481,18 +507,18 @@ func (api *CrossModelRelationsAPIv3) WatchRelationChanges(
 func (api *CrossModelRelationsAPIv3) watchOneRelationChanges(
 	ctx context.Context,
 	arg params.RemoteEntityArg,
-) (RelationChangesWatcher, params.RemoteRelationChangeEvent, error) {
+) (*relationChangesWatcherShim, params.RemoteRelationChangeEvent, error) {
 	var empty params.RemoteRelationChangeEvent
 	// relationToken is the relation UUID.
 	relationToken := arg.Token
+	relationUUID := corerelation.UUID(relationToken)
 
-	relationKey, err := api.relationService.GetRelationKeyByUUID(ctx, relationToken)
+	relationKey, err := api.relationService.GetRelationKeyByUUID(ctx, relationUUID)
 	if err != nil {
 		return nil, empty, internalerrors.Errorf("getting relation key for %q: %w", relationToken, err)
 	}
 	relationTag := names.NewRelationTag(relationKey.String())
 
-	relationUUID := corerelation.UUID(relationToken)
 	if err := api.checkMacaroonsForRelation(ctx, relationUUID, relationTag, arg.Macaroons, arg.BakeryVersion); err != nil {
 		return nil, empty, internalerrors.Capture(err)
 	}
@@ -512,9 +538,10 @@ func (api *CrossModelRelationsAPIv3) watchOneRelationChanges(
 		return nil, empty, internalerrors.Errorf("getting initial change: %w", err)
 	}
 
-	wrapped, err := wrappedRelationChangesWatcher(w, applicationUUID, relationUUID, api.relationService)
-	if err != nil {
-		return nil, empty, internalerrors.Errorf("watching relation changes: %w", err)
+	wrapped := &relationChangesWatcherShim{
+		NotifyWatcher:   w,
+		applicationUUID: applicationUUID,
+		relationUUID:    relationUUID,
 	}
 
 	return wrapped, change, nil
@@ -531,17 +558,17 @@ func (api *CrossModelRelationsAPIv3) getRemoteRelationChangeEvent(
 	}
 
 	var (
-		appSettings  map[string]interface{}
+		appSettings  map[string]any
 		unitSettings []params.RemoteRelationUnitChange
 	)
 	if change.ApplicationSettings != nil {
-		appSettings = transform.Map(change.ApplicationSettings, func(k string, v string) (string, interface{}) { return k, v })
+		appSettings = transform.Map(change.ApplicationSettings, func(k string, v string) (string, any) { return k, v })
 	}
 	if change.UnitsSettings != nil {
 		unitSettings = transform.Slice(change.UnitsSettings, func(in relation.UnitSettings) params.RemoteRelationUnitChange {
 			return params.RemoteRelationUnitChange{
 				UnitId:   in.UnitID,
-				Settings: transform.Map(in.Settings, func(k string, v string) (string, interface{}) { return k, v }),
+				Settings: transform.Map(in.Settings, func(k string, v string) (string, any) { return k, v }),
 			}
 		})
 	}
@@ -550,7 +577,7 @@ func (api *CrossModelRelationsAPIv3) getRemoteRelationChangeEvent(
 		RelationToken:           relationUUID.String(),
 		ApplicationOrOfferToken: applicationUUID.String(),
 		Life:                    change.Life,
-		Suspended:               ptr(change.Suspended),
+		Suspended:               new(change.Suspended),
 		SuspendedReason:         change.SuspendedReason,
 		ApplicationSettings:     appSettings,
 		ChangedUnits:            unitSettings,
@@ -586,7 +613,8 @@ func (api *CrossModelRelationsAPIv3) WatchRelationsSuspendedStatus(
 	}
 
 	for i, arg := range remoteRelationArgs.Args {
-		relationKey, err := api.relationService.GetRelationKeyByUUID(ctx, arg.Token)
+		relationUUID := corerelation.UUID(arg.Token)
+		relationKey, err := api.relationService.GetRelationKeyByUUID(ctx, relationUUID)
 		if err != nil {
 			results.Results[i].Error = apiservererrors.ServerError(
 				internalerrors.Errorf("getting relation key for %q: %w", arg.Token, err))
@@ -594,7 +622,6 @@ func (api *CrossModelRelationsAPIv3) WatchRelationsSuspendedStatus(
 		}
 		relationTag := names.NewRelationTag(relationKey.String())
 
-		relationUUID := corerelation.UUID(arg.Token)
 		if err := api.checkMacaroonsForRelation(ctx, relationUUID, relationTag, arg.Macaroons, arg.BakeryVersion); err != nil {
 			results.Results[i].Error = apiservererrors.ServerError(err)
 			continue
@@ -724,7 +751,7 @@ func (api *CrossModelRelationsAPIv3) WatchConsumedSecretsChanges(ctx context.Con
 		var offerUUIDStr string
 		// Old clients don't pass in the relation token.
 		if arg.RelationToken == "" {
-			declared := checkers.InferDeclared(internalmacaroon.MacaroonNamespace, arg.Macaroons)
+			declared := checkers.InferDeclared(apimacaroon.MacaroonNamespace, arg.Macaroons)
 			offerUUIDStr = declared["offer-uuid"]
 		} else {
 			offerUUID, err := api.crossModelRelationService.GetOfferUUIDByRelationUUID(ctx, corerelation.UUID(arg.RelationToken))
@@ -854,7 +881,7 @@ func (api *CrossModelRelationsAPIv3) WatchEgressAddressesForRelations(ctx contex
 	}
 	for i, arg := range remoteRelationArgs.Args {
 		relationUUID := corerelation.UUID(arg.Token)
-		relationKey, err := api.relationService.GetRelationKeyByUUID(ctx, relationUUID.String())
+		relationKey, err := api.relationService.GetRelationKeyByUUID(ctx, relationUUID)
 		if err != nil {
 			results.Results[i].Error = apiservererrors.ServerError(err)
 			continue
@@ -912,6 +939,14 @@ func constructRelationTag(key corerelation.Key) (names.RelationTag, error) {
 	return names.NewRelationTag(relationKey), nil
 }
 
-func ptr[T any](v T) *T {
-	return &v
+func isNotAlive(l life.Value) bool {
+	// We just don't know the value of the life value, as it wasn't returned
+	// in the change. This will be compatible with both 3.x and 4.x controllers.
+	// Thus we assume that the life is alive.
+	if l == "" {
+		return false
+	}
+
+	// Check if the life is not alive.
+	return life.IsNotAlive(l)
 }

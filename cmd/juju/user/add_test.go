@@ -14,9 +14,9 @@ import (
 
 	"github.com/juju/juju/api/base"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/user"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc/params"
 )
@@ -118,7 +118,7 @@ Please send this command to foobar:
 
 func (s *UserAddCommandSuite) TestUserRegistrationString(c *tc.C) {
 	// Ensure that the user registration string only contains alphanumerics.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		s.mockAPI.secretKey = []byte(strings.Repeat("X", 32+i))
 		context, err := s.run(c, "foobar", "Foo Bar")
 		c.Assert(err, tc.ErrorIsNil)

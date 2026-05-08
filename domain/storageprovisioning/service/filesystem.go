@@ -6,6 +6,8 @@ package service
 import (
 	"context"
 	"fmt"
+	"path"
+	"strconv"
 
 	coreapplication "github.com/juju/juju/core/application"
 	corechangestream "github.com/juju/juju/core/changestream"
@@ -20,8 +22,10 @@ import (
 	machineerrors "github.com/juju/juju/domain/machine/errors"
 	domainnetwork "github.com/juju/juju/domain/network"
 	networkerrors "github.com/juju/juju/domain/network/errors"
+	domainstorage "github.com/juju/juju/domain/storage"
 	"github.com/juju/juju/domain/storageprovisioning"
 	storageprovisioningerrors "github.com/juju/juju/domain/storageprovisioning/errors"
+	"github.com/juju/juju/domain/storageprovisioning/internal"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -41,7 +45,7 @@ type FilesystemState interface {
 	// exists for the provided filesystem UUID.
 	GetFilesystem(
 		context.Context,
-		storageprovisioning.FilesystemUUID,
+		domainstorage.FilesystemUUID,
 	) (storageprovisioning.Filesystem, error)
 
 	// GetFilesystemAttachment retrieves the
@@ -52,7 +56,7 @@ type FilesystemState interface {
 	// - [storageprovisioningerrors.FilesystemNotFound] when no filesystem
 	// exists for the provided filesystem UUID.
 	GetFilesystemAttachment(
-		context.Context, storageprovisioning.FilesystemAttachmentUUID,
+		context.Context, domainstorage.FilesystemAttachmentUUID,
 	) (storageprovisioning.FilesystemAttachment, error)
 
 	// GetFilesystemAttachmentIDs returns the
@@ -81,7 +85,7 @@ type FilesystemState interface {
 	// when no filesystem attachment exists for the provided UUID.
 	GetFilesystemAttachmentLife(
 		context.Context,
-		storageprovisioning.FilesystemAttachmentUUID,
+		domainstorage.FilesystemAttachmentUUID,
 	) (domainlife.Life, error)
 
 	// GetFilesystemAttachmentLifeForNetNode returns a mapping of filesystem
@@ -97,7 +101,7 @@ type FilesystemState interface {
 	// - [storageprovisioningerrors.FilesystemAttachmentNotFound] when no
 	// filesystem attachment exists for the supplied uuid.
 	GetFilesystemAttachmentParams(
-		context.Context, storageprovisioning.FilesystemAttachmentUUID,
+		context.Context, domainstorage.FilesystemAttachmentUUID,
 	) (storageprovisioning.FilesystemAttachmentParams, error)
 
 	// GetFilesystemAttachmentUUIDForFilesystemNetNode returns the filesystem
@@ -113,9 +117,9 @@ type FilesystemState interface {
 	// when no filesystem attachment exists for the supplied values.
 	GetFilesystemAttachmentUUIDForFilesystemNetNode(
 		context.Context,
-		storageprovisioning.FilesystemUUID,
+		domainstorage.FilesystemUUID,
 		domainnetwork.NetNodeUUID,
-	) (storageprovisioning.FilesystemAttachmentUUID, error)
+	) (domainstorage.FilesystemAttachmentUUID, error)
 
 	// GetFilesystemLife returns the current life value for a filesystem UUID.
 	//
@@ -123,7 +127,7 @@ type FilesystemState interface {
 	// - [github.com/juju/juju/domain/storageprovisioning/errors.FilesystemNotFound]
 	// when no filesystem exists for the provided filesystem UUID.
 	GetFilesystemLife(
-		context.Context, storageprovisioning.FilesystemUUID,
+		context.Context, domainstorage.FilesystemUUID,
 	) (domainlife.Life, error)
 
 	// GetFilesystemLifeForNetNode returns a mapping of filesystem IDs to current
@@ -137,7 +141,7 @@ type FilesystemState interface {
 	// - [storageprovisioningerrors.FilesystemNotFound] when no filesystem
 	// exists for the uuid.
 	GetFilesystemParams(
-		context.Context, storageprovisioning.FilesystemUUID,
+		context.Context, domainstorage.FilesystemUUID,
 	) (storageprovisioning.FilesystemParams, error)
 
 	// GetFilesystemRemovalParams returns the filesystem removal params for the
@@ -147,7 +151,7 @@ type FilesystemState interface {
 	// - [storageprovisioningerrors.FilesystemNotFound] when no filesystem
 	// exists for the uuid.
 	GetFilesystemRemovalParams(
-		context.Context, storageprovisioning.FilesystemUUID,
+		context.Context, domainstorage.FilesystemUUID,
 	) (storageprovisioning.FilesystemRemovalParams, error)
 
 	// GetFilesystemUUIDForID returns the UUID for a filesystem with the
@@ -158,7 +162,7 @@ type FilesystemState interface {
 	// when no filesystem exists for the provided filesystem UUID.
 	GetFilesystemUUIDForID(
 		context.Context, string,
-	) (storageprovisioning.FilesystemUUID, error)
+	) (domainstorage.FilesystemUUID, error)
 
 	// InitialWatchStatementMachineProvisionedFilesystems returns both the
 	// namespace for watching filesystem life changes where the filesystem is
@@ -173,7 +177,7 @@ type FilesystemState interface {
 	// namespace for watching filesystem life changes where the filesystem is
 	// model provisioned and the initial query for getting the current set of
 	// model provisioned filesystems in the model.
-	InitialWatchStatementModelProvisionedFilesystems() (string, eventsource.NamespaceQuery)
+	InitialWatchStatementModelProvisionedFilesystems() (string, string, eventsource.NamespaceQuery)
 
 	// InitialWatchStatementMachineProvisionedFilesystemAttachments returns
 	// both the namespace for watching filesystem attachment life changes where
@@ -188,19 +192,43 @@ type FilesystemState interface {
 	// the namespace for watching filesystem attachment life changes where the
 	// filesystem attachment is model provisioned and the initial query for
 	// getting the current set of model provisioned filesystem attachments.
-	InitialWatchStatementModelProvisionedFilesystemAttachments() (string, eventsource.NamespaceQuery)
+	InitialWatchStatementModelProvisionedFilesystemAttachments() (string, string, eventsource.NamespaceQuery)
 
 	// GetFilesystemTemplatesForApplication returns all the filesystem templates
 	// for a given application.
-	GetFilesystemTemplatesForApplication(context.Context, coreapplication.UUID) ([]storageprovisioning.FilesystemTemplate, error)
+	GetFilesystemTemplatesForApplication(
+		context.Context,
+		coreapplication.UUID,
+	) ([]internal.FilesystemTemplate, error)
 
 	// SetFilesystemProvisionedInfo sets on the provided filesystem the information
 	// about the provisioned filesystem.
-	SetFilesystemProvisionedInfo(ctx context.Context, filesystemUUID storageprovisioning.FilesystemUUID, info storageprovisioning.FilesystemProvisionedInfo) error
+	SetFilesystemProvisionedInfo(ctx context.Context, filesystemUUID domainstorage.FilesystemUUID, info storageprovisioning.FilesystemProvisionedInfo) error
 
 	// SetFilesystemAttachmentProvisionedInfo sets on the provided filesystem
 	// attachment information about the provisoned filesystem attachment.
-	SetFilesystemAttachmentProvisionedInfo(ctx context.Context, filesystemAttachmentUUID storageprovisioning.FilesystemAttachmentUUID, info storageprovisioning.FilesystemAttachmentProvisionedInfo) error
+	SetFilesystemAttachmentProvisionedInfo(ctx context.Context, filesystemAttachmentUUID domainstorage.FilesystemAttachmentUUID, info storageprovisioning.FilesystemAttachmentProvisionedInfo) error
+
+	// GetProvisionedFilesystemAttachmentsForApplication returns the provisioned filesystem
+	// attachments indexed by storage name for the given application UUID.
+	// It returns an error satisfying [applicationerrors.ApplicationNotFound] if
+	// the application does not exist.
+	GetProvisionedFilesystemAttachmentsForApplication(ctx context.Context, uuid coreapplication.UUID) (
+		map[string][]storageprovisioning.ProvisionedFilesystemAttachment,
+		error,
+	)
+}
+
+// CharmState defines the methods required to fetch the mount points for charm
+// containers.
+type CharmState interface {
+	// GetContainerMountsForApplication returns the map of mount locations for
+	// an application. The map entry is keyed by the storage name.
+	// An empty map will be returned if there are no records.
+	GetContainerMountsForApplication(
+		context.Context,
+		coreapplication.UUID,
+	) (map[string][]internal.ContainerMount, error)
 }
 
 // CheckFilesystemForIDExists checks if a filesystem exists for the supplied
@@ -309,7 +337,7 @@ func (s *Service) GetFilesystemAttachmentIDs(
 // attachment exists for the provided UUID.
 func (s *Service) GetFilesystemAttachmentLife(
 	ctx context.Context,
-	uuid storageprovisioning.FilesystemAttachmentUUID,
+	uuid domainstorage.FilesystemAttachmentUUID,
 ) (domainlife.Life, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
@@ -328,7 +356,8 @@ func (s *Service) GetFilesystemAttachmentLife(
 }
 
 // GetFilesystemAttachmentParams retrieves the attachment parameters for a given
-// filesystem attachment.
+// filesystem attachment. This function guarantees to always return a mount
+// point for the attachment.
 //
 // The following errors may be returned:
 // - [coreerrors.NotValid] when the supplied filesystem attachment UUID is not
@@ -337,7 +366,7 @@ func (s *Service) GetFilesystemAttachmentLife(
 // attachment exists for the supplied uuid.
 func (s *Service) GetFilesystemAttachmentParams(
 	ctx context.Context,
-	uuid storageprovisioning.FilesystemAttachmentUUID,
+	uuid domainstorage.FilesystemAttachmentUUID,
 ) (storageprovisioning.FilesystemAttachmentParams, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
@@ -348,7 +377,121 @@ func (s *Service) GetFilesystemAttachmentParams(
 		).Add(coreerrors.NotValid)
 	}
 
-	return s.st.GetFilesystemAttachmentParams(ctx, uuid)
+	params, err := s.st.GetFilesystemAttachmentParams(ctx, uuid)
+	if err != nil {
+		return storageprovisioning.FilesystemAttachmentParams{}, errors.Capture(err)
+	}
+
+	if params.MountPoint != "" {
+		// The mount point has already been set on the attachment. There is
+		// nothing more to do.
+		return params, nil
+	}
+
+	params.MountPoint = calculateFilesystemAttachmentMountPoint(
+		params.CharmStorageLocation,
+		// Storage for a charm is considered a singleton when the max count is 1.
+		params.CharmStorageCountMax == 1,
+		uuid.String(),
+	)
+	return params, nil
+}
+
+// calculateFilesystemAttachmentMountPoint calculates the mount point for a
+// filesystem attachment. If the charmSuggestedLocation supplied is empty then
+// the value from [storageprovisioning.DefaultFilesystemAttachmentDir] will be
+// used as the base of the mount point.
+//
+// If the charmSuggestedLocation is non zero and the storage being attached is
+// a singleton the verbatim location will be returned to the caller. Otherwise
+// the attachment id will be appended to the location to ensure uniqueness.
+//
+// This function guarantees to be idempotent given the same attachment and charm
+// location and singleton status.
+func calculateFilesystemAttachmentMountPoint(
+	charmSuggestedLocation string,
+	isSingleton bool,
+	id string,
+) string {
+	refLocation := charmSuggestedLocation
+	if charmSuggestedLocation == "" {
+		refLocation = storageprovisioning.DefaultFilesystemAttachmentDir
+		// We purposely disable singleton storage when using the default
+		// location. This ensures that multiple attachments for different
+		// storage do not collide.
+		isSingleton = false
+	}
+
+	// If only one attachment of this storage can ever be made then we return
+	// the verbatim refLocation asked for.
+	if isSingleton {
+		return refLocation
+	}
+
+	// Multiple attachments are expected for this storage so we append the
+	// attachment id to form a unique mount point.
+	return path.Join(refLocation, id)
+}
+
+// calculateFilesystemAttachmentTemplates calculates all of the
+// [storageprovisioning.FilesystemAttachmentTemplate]s for the supplied args.
+func calculateFilesystemAttachmentTemplates(
+	storageName,
+	charmStorageLocation string,
+	isSingleton bool,
+	readOnly bool,
+	count int,
+	attachTo string,
+) []storageprovisioning.FilesystemAttachmentTemplate {
+	retVal := make([]storageprovisioning.FilesystemAttachmentTemplate, 0, count)
+	for i := range count {
+		id := strconv.Itoa(i)
+		if charmStorageLocation == "" {
+			// If the charmStorageLocation is zero we need to make sure the id
+			// value is unique across all storage names.
+			id = storageName + "-" + id
+		}
+		mountPoint := calculateFilesystemAttachmentMountPoint(
+			charmStorageLocation, isSingleton, id,
+		)
+
+		retVal = append(retVal, storageprovisioning.FilesystemAttachmentTemplate{
+			MountPoint:   mountPoint,
+			ReadOnly:     readOnly,
+			ContainerKey: attachTo,
+		})
+	}
+	return retVal
+}
+
+// calculateFilesystemAttachmentTemplatesForContainers calculates all the
+// [storageprovisioning.FilesystemAttachmentTemplate]s for the supplied args.
+// This is specifically used for a container that has specified mount
+// points.
+func calculateFilesystemAttachmentTemplatesForContainers(
+	location string,
+	readOnly bool,
+	count int,
+	attachTo string,
+) []storageprovisioning.FilesystemAttachmentTemplate {
+	retVal := make([]storageprovisioning.FilesystemAttachmentTemplate, 0, count)
+
+	// We are strongly assuming it's a singleton storage so we use the location
+	// what's defined by the charm. At the moment, the behaviour for when it's a
+	// non-singleton instance is undefined. We don't have a pre-defined contract
+	// with charm authors on how this work.
+	// In theory, we can follow what
+	// [calculateFilesystemAttachmentTemplates] does but will require a future
+	// effort. See https://github.com/juju/juju/issues/21465.
+	mountPoint := calculateFilesystemAttachmentMountPoint(
+		location, true, "",
+	)
+	retVal = append(retVal, storageprovisioning.FilesystemAttachmentTemplate{
+		MountPoint:   mountPoint,
+		ReadOnly:     readOnly,
+		ContainerKey: attachTo,
+	})
+	return retVal
 }
 
 // GetFilesystemAttachmentUUIDForFilesystemIDMachine returns the filesystem attachment
@@ -366,7 +509,7 @@ func (s *Service) GetFilesystemAttachmentUUIDForFilesystemIDMachine(
 	ctx context.Context,
 	filesystemID string,
 	machineUUID coremachine.UUID,
-) (storageprovisioning.FilesystemAttachmentUUID, error) {
+) (domainstorage.FilesystemAttachmentUUID, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
@@ -419,7 +562,7 @@ func (s *Service) GetFilesystemAttachmentUUIDForFilesystemIDUnit(
 	ctx context.Context,
 	filesystemID string,
 	unitUUID coreunit.UUID,
-) (storageprovisioning.FilesystemAttachmentUUID, error) {
+) (domainstorage.FilesystemAttachmentUUID, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
@@ -491,7 +634,7 @@ func (s *Service) GetFilesystemForID(
 // when no filesystem exists for the provided filesystem UUID.
 func (s *Service) GetFilesystemLife(
 	ctx context.Context,
-	uuid storageprovisioning.FilesystemUUID,
+	uuid domainstorage.FilesystemUUID,
 ) (domainlife.Life, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
@@ -517,7 +660,7 @@ func (s *Service) GetFilesystemLife(
 // for the uuid.
 func (s *Service) GetFilesystemParams(
 	ctx context.Context,
-	uuid storageprovisioning.FilesystemUUID,
+	uuid domainstorage.FilesystemUUID,
 ) (storageprovisioning.FilesystemParams, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
@@ -541,7 +684,7 @@ func (s *Service) GetFilesystemParams(
 // - [storageprovisioningerrors.FilesystemNotDead] when the filesystem was found
 // but is either alive or dying, when it is expected to be dead.
 func (s *Service) GetFilesystemRemovalParams(
-	ctx context.Context, uuid storageprovisioning.FilesystemUUID,
+	ctx context.Context, uuid domainstorage.FilesystemUUID,
 ) (storageprovisioning.FilesystemRemovalParams, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
@@ -576,7 +719,7 @@ func (s *Service) GetFilesystemRemovalParams(
 // when no filesystem exists for the provided filesystem UUID.
 func (s *Service) GetFilesystemUUIDForID(
 	ctx context.Context, filesystemID string,
-) (storageprovisioning.FilesystemUUID, error) {
+) (domainstorage.FilesystemUUID, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
@@ -596,12 +739,14 @@ func (s *Service) WatchModelProvisionedFilesystems(
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
-	ns, initialQuery := s.st.InitialWatchStatementModelProvisionedFilesystems()
+	lifeNS, providerIdNS, initialQuery := s.st.InitialWatchStatementModelProvisionedFilesystems()
 	return s.watcherFactory.NewNamespaceWatcher(
 		ctx,
 		initialQuery,
 		"model provisioned filesystem watcher",
-		eventsource.NamespaceFilter(ns, corechangestream.All))
+		eventsource.NamespaceFilter(lifeNS, corechangestream.All),
+		eventsource.NamespaceFilter(providerIdNS, corechangestream.All),
+	)
 }
 
 // WatchMachineProvisionedFilesystems returns a watcher that emits filesystem IDs,
@@ -657,12 +802,13 @@ func (s *Service) WatchModelProvisionedFilesystemAttachments(
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
-	ns, initialQuery := s.st.InitialWatchStatementModelProvisionedFilesystemAttachments()
+	lifeNS, providerIdNS, initialQuery := s.st.InitialWatchStatementModelProvisionedFilesystemAttachments()
 	return s.watcherFactory.NewNamespaceWatcher(
 		ctx,
 		initialQuery,
 		"model provisioned filesystem attachment watcher",
-		eventsource.NamespaceFilter(ns, corechangestream.All),
+		eventsource.NamespaceFilter(lifeNS, corechangestream.All),
+		eventsource.NamespaceFilter(providerIdNS, corechangestream.All),
 	)
 }
 
@@ -731,7 +877,72 @@ func (s *Service) GetFilesystemTemplatesForApplication(
 			"getting filesystem templates for app %q: %w", appUUID, err,
 		)
 	}
-	return fsTemplates, nil
+
+	containerMounts, err := s.st.GetContainerMountsForApplication(ctx, appUUID)
+	if err != nil {
+		return nil, errors.Errorf(
+			"getting container mounts id for app %q: %w", appUUID, err,
+		)
+	}
+
+	provisionedAttachments, err := s.st.GetProvisionedFilesystemAttachmentsForApplication(ctx, appUUID)
+	if err != nil {
+		return nil, errors.Errorf(
+			"getting realized attachments for app %q: %w", appUUID, err,
+		)
+	}
+	retVal := make([]storageprovisioning.FilesystemTemplate, 0, len(fsTemplates))
+	for _, fsTemplate := range fsTemplates {
+		attachments := calculateFilesystemAttachmentTemplates(
+			fsTemplate.StorageName,
+			fsTemplate.CharmLocationHint,
+			fsTemplate.MaxCount == 1,
+			fsTemplate.ReadOnly,
+			fsTemplate.Count,
+			"charm",
+		)
+
+		for _, mount := range containerMounts[fsTemplate.StorageName] {
+			containerAttachments := calculateFilesystemAttachmentTemplatesForContainers(
+				mount.MountPoint,
+				fsTemplate.ReadOnly,
+				fsTemplate.Count,
+				mount.ContainerKey,
+			)
+			attachments = append(attachments, containerAttachments...)
+		}
+
+		attachmentTemplatesWithProvisioned := buildFilesystemAttachmentTemplatesWithProvisioned(
+			attachments,
+			provisionedAttachments[fsTemplate.StorageName],
+		)
+
+		mountTemplate := storageprovisioning.FilesystemTemplate{
+			Attachments:  attachmentTemplatesWithProvisioned,
+			Attributes:   fsTemplate.Attributes,
+			Count:        fsTemplate.Count,
+			ProviderType: fsTemplate.ProviderType,
+			SizeMiB:      fsTemplate.SizeMiB,
+			StorageName:  fsTemplate.StorageName,
+		}
+		retVal = append(retVal, mountTemplate)
+	}
+
+	return retVal, nil
+}
+
+func buildFilesystemAttachmentTemplatesWithProvisioned(
+	attachments []storageprovisioning.FilesystemAttachmentTemplate,
+	provisionedAttachments []storageprovisioning.ProvisionedFilesystemAttachment,
+) []storageprovisioning.FilesystemAttachmentTemplateWithProvisioned {
+	result := make([]storageprovisioning.FilesystemAttachmentTemplateWithProvisioned, len(attachments))
+	for i, attachment := range attachments {
+		result[i] = storageprovisioning.FilesystemAttachmentTemplateWithProvisioned{
+			FilesystemAttachmentTemplate: attachment,
+			ProvisionedAttachments:       provisionedAttachments,
+		}
+	}
+	return result
 }
 
 // SetFilesystemProvisionedInfo sets on the provided filesystem the information

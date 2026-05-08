@@ -7,12 +7,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/canonical/sqlair"
 	"github.com/juju/collections/transform"
 
-	coreagentbinary "github.com/juju/juju/core/agentbinary"
 	coreapplication "github.com/juju/juju/core/application"
 	corecharm "github.com/juju/juju/core/charm"
 	"github.com/juju/juju/core/database"
@@ -20,27 +20,25 @@ import (
 	coremachine "github.com/juju/juju/core/machine"
 	"github.com/juju/juju/core/network"
 	corestatus "github.com/juju/juju/core/status"
+	corestorage "github.com/juju/juju/core/storage"
 	coreunit "github.com/juju/juju/core/unit"
 	"github.com/juju/juju/core/watcher/eventsource"
 	"github.com/juju/juju/domain"
 	"github.com/juju/juju/domain/application"
+	domainapplicationcharm "github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
-	internalapplication "github.com/juju/juju/domain/application/internal"
+	applicationinternal "github.com/juju/juju/domain/application/internal"
 	"github.com/juju/juju/domain/constraints"
-	"github.com/juju/juju/domain/deployment"
 	"github.com/juju/juju/domain/ipaddress"
-	"github.com/juju/juju/domain/life"
-	domainmachine "github.com/juju/juju/domain/machine"
+	domainlife "github.com/juju/juju/domain/life"
 	machineerrors "github.com/juju/juju/domain/machine/errors"
-	machinestate "github.com/juju/juju/domain/machine/state"
 	modelerrors "github.com/juju/juju/domain/model/errors"
 	domainnetwork "github.com/juju/juju/domain/network"
-	domainsequence "github.com/juju/juju/domain/sequence"
-	sequencestate "github.com/juju/juju/domain/sequence/state"
+	"github.com/juju/juju/domain/port"
 	"github.com/juju/juju/domain/status"
+	domainstorage "github.com/juju/juju/domain/storage"
 	internaldatabase "github.com/juju/juju/internal/database"
 	"github.com/juju/juju/internal/errors"
-	"github.com/juju/juju/internal/uuid"
 )
 
 // checkUnitExists checks if the unit with the given UUID exists in the model.
@@ -48,9 +46,9 @@ import (
 func (st *State) checkUnitExists(
 	ctx context.Context,
 	tx *sqlair.TX,
-	unitUUID coreunit.UUID,
+	unitUUID string,
 ) (bool, error) {
-	uuidInput := entityUUID{UUID: unitUUID.String()}
+	uuidInput := entityUUID{UUID: unitUUID}
 
 	checkStmt, err := st.Prepare(`
 SELECT &entityUUID.*
@@ -72,7 +70,7 @@ WHERE  uuid = $entityUUID.uuid
 	return true, nil
 }
 
-func (st *State) getUnitLifeAndNetNode(ctx context.Context, tx *sqlair.TX, uuid coreunit.UUID) (life.Life, string, error) {
+func (st *State) getUnitLifeAndNetNode(ctx context.Context, tx *sqlair.TX, uuid string) (domainlife.Life, string, error) {
 	unitUUID := unitUUID{UnitUUID: uuid}
 	queryUnit := `
 SELECT &unitLifeAndNetNode.*
@@ -92,7 +90,7 @@ WHERE uuid = $unitUUID.uuid
 		return 0, "", errors.Errorf("querying unit %q life: %w", unitUUID, err)
 	}
 
-	return life.Life(lifeAndNetNode.LifeID), lifeAndNetNode.NetNodeID, nil
+	return domainlife.Life(lifeAndNetNode.LifeID), lifeAndNetNode.NetNodeID, nil
 }
 
 // GetCAASUnitRegistered checks if a caas unit by the provided name is already
@@ -108,7 +106,7 @@ func (st *State) GetCAASUnitRegistered(
 	}
 
 	var (
-		unitNameInput = unitName{Name: uName}
+		unitNameInput = unitName{Name: uName.String()}
 		dbVal         unitUUIDAndNetNode
 	)
 
@@ -143,101 +141,14 @@ func (st *State) GetCAASUnitRegistered(
 		nil
 }
 
-// status data. If returns an error satisfying [applicationerrors.UnitNotFound]
-// if the unit doesn't exist.
-func (st *State) setUnitAgentStatus(
-	ctx context.Context,
-	tx *sqlair.TX,
-	unitUUID coreunit.UUID,
-	sts *status.StatusInfo[status.UnitAgentStatusType],
-) error {
-	if sts == nil {
-		return nil
-	}
-
-	statusID, err := status.EncodeAgentStatus(sts.Status)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	statusInfo := unitStatusInfo{
-		UnitUUID:  unitUUID,
-		StatusID:  statusID,
-		Message:   sts.Message,
-		Data:      sts.Data,
-		UpdatedAt: sts.Since,
-	}
-	stmt, err := st.Prepare(`
-INSERT INTO unit_agent_status (*) VALUES ($unitStatusInfo.*)
-ON CONFLICT(unit_uuid) DO UPDATE SET
-    status_id = excluded.status_id,
-    message = excluded.message,
-    updated_at = excluded.updated_at,
-    data = excluded.data;
-`, statusInfo)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	if err := tx.Query(ctx, stmt, statusInfo).Run(); internaldatabase.IsErrConstraintForeignKey(err) {
-		return errors.Errorf("%w: %q", applicationerrors.UnitNotFound, unitUUID)
-	} else if err != nil {
-		return errors.Capture(err)
-	}
-	return nil
-}
-
-// setUnitWorkloadStatus saves the given unit workload status, overwriting any
-// current status data. If returns an error satisfying
-// [applicationerrors.UnitNotFound] if the unit doesn't exist.
-func (st *State) setUnitWorkloadStatus(
-	ctx context.Context,
-	tx *sqlair.TX,
-	unitUUID coreunit.UUID,
-	sts *status.StatusInfo[status.WorkloadStatusType],
-) error {
-	if sts == nil {
-		return nil
-	}
-
-	statusID, err := status.EncodeWorkloadStatus(sts.Status)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	statusInfo := unitStatusInfo{
-		UnitUUID:  unitUUID,
-		StatusID:  statusID,
-		Message:   sts.Message,
-		Data:      sts.Data,
-		UpdatedAt: sts.Since,
-	}
-	stmt, err := st.Prepare(`
-INSERT INTO unit_workload_status (*) VALUES ($unitStatusInfo.*)
-ON CONFLICT(unit_uuid) DO UPDATE SET
-    status_id = excluded.status_id,
-    message = excluded.message,
-    updated_at = excluded.updated_at,
-    data = excluded.data;
-`, statusInfo)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	if err := tx.Query(ctx, stmt, statusInfo).Run(); internaldatabase.IsErrConstraintForeignKey(err) {
-		return errors.Errorf("%w: %q", applicationerrors.UnitNotFound, unitUUID)
-	} else if err != nil {
-		return errors.Capture(err)
-	}
-	return nil
-}
-
 // InitialWatchStatementUnitAddressesHash returns the initial namespace query
 // for the unit addresses hash watcher as well as the tables to be watched
 // (ip_address and application_endpoint)
-func (st *State) InitialWatchStatementUnitAddressesHash(appUUID coreapplication.UUID, netNodeUUID string) (string, string, eventsource.NamespaceQuery) {
+func (st *State) InitialWatchStatementUnitAddressesHash(
+	appUUID coreapplication.UUID,
+	netNodeUUID string,
+) (string, string, eventsource.NamespaceQuery) {
 	queryFunc := func(ctx context.Context, runner database.TxnRunner) ([]string, error) {
-
 		var (
 			spaceAddresses   []spaceAddress
 			endpointBindings map[string]string
@@ -271,7 +182,7 @@ func (st *State) InitialWatchStatementUnitAddressesHash(appUUID coreapplication.
 // the watcher namespace to watch.
 func (st *State) InitialWatchStatementUnitInsertDeleteOnNetNode(netNodeUUID string) (string, eventsource.NamespaceQuery) {
 	return "custom_unit_name_lifecycle", func(ctx context.Context, runner database.TxnRunner) ([]string, error) {
-		var unitNames []coreunit.Name
+		var unitNames []string
 		err := runner.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
 			var err error
 			unitNames, err = st.getUnitNamesForNetNode(ctx, tx, netNodeUUID)
@@ -280,9 +191,7 @@ func (st *State) InitialWatchStatementUnitInsertDeleteOnNetNode(netNodeUUID stri
 		if err != nil {
 			return nil, errors.Errorf("querying unit names for net node %q: %w", netNodeUUID, err)
 		}
-		return transform.Slice(unitNames, func(unitName coreunit.Name) string {
-			return unitName.String()
-		}), nil
+		return unitNames, nil
 	}
 }
 
@@ -313,7 +222,7 @@ WHERE a.name = $applicationName.name
 		}
 		uuids := make([]string, len(result))
 		for i, r := range result {
-			uuids[i] = r.UnitUUID.String()
+			uuids[i] = r.UnitUUID
 		}
 		return uuids, nil
 	}
@@ -360,51 +269,6 @@ AND a.name = $applicationName.name
 		result[u.UnitUUID] = u.LifeID
 	}
 	return result, nil
-}
-
-// getApplicationUnits returns all the unit uuids for a given application. No
-// check is performed to make sure the application for the supplied uuid exists.
-func (st *State) getApplicationUnits(
-	ctx context.Context,
-	appUUID coreapplication.UUID,
-) ([]coreunit.UUID, error) {
-	db, err := st.DB(ctx)
-	if err != nil {
-		return nil, errors.Capture(err)
-	}
-
-	appUUIDInput := applicationUUID{
-		ApplicationUUID: appUUID.String(),
-	}
-
-	unitsStmt, err := st.Prepare(`
-SELECT &unitUUID.*
-FROM unit u
-WHERE application_uuid = $applicationUUID.application_uuid
-`,
-		appUUIDInput, unitUUID{},
-	)
-	if err != nil {
-		return nil, errors.Capture(err)
-	}
-
-	var dbVals []unitUUID
-	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		err := tx.Query(ctx, unitsStmt, appUUIDInput).GetAll(&dbVals)
-		if errors.Is(err, sqlair.ErrNoRows) {
-			return nil
-		}
-		return err
-	})
-	if err != nil {
-		return nil, errors.Capture(err)
-	}
-
-	rval := make([]coreunit.UUID, 0, len(dbVals))
-	for _, val := range dbVals {
-		rval = append(rval, val.UnitUUID)
-	}
-	return rval, nil
 }
 
 // GetAllUnitLifeForApplication returns a map of the unit names and their lives
@@ -471,26 +335,26 @@ WHERE u.application_uuid = $entityUUID.uuid
 //     machine assigned.
 //   - [applicationerrors.UnitNotFound] if the unit cannot be found.
 //   - [applicationerrors.UnitIsDead] if the unit is dead.
-func (st *State) GetUnitMachineName(ctx context.Context, unitName coreunit.Name) (coremachine.Name, error) {
+func (st *State) GetUnitMachineName(ctx context.Context, unitUUID string) (string, error) {
 	db, err := st.DB(ctx)
 	if err != nil {
 		return "", errors.Capture(err)
 	}
-	arg := getUnitMachineName{
-		UnitName: unitName,
+	arg := unitMachineName{
+		UnitUUID: unitUUID,
 	}
 	stmt, err := st.Prepare(`
-SELECT (m.name) AS (&getUnitMachineName.*)
+SELECT (m.name) AS (&unitMachineName.*)
 FROM   unit AS u
 JOIN   machine AS m ON u.net_node_uuid = m.net_node_uuid
-WHERE  u.name = $getUnitMachineName.unit_name
+WHERE  u.uuid = $unitMachineName.unit_uuid
 `, arg)
 	if err != nil {
 		return "", errors.Capture(err)
 	}
 
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		if err := st.checkUnitNotDeadByName(ctx, tx, unitName); err != nil {
+		if err := st.checkUnitNotDead(ctx, tx, unitUUID); err != nil {
 			return errors.Capture(err)
 		}
 
@@ -514,99 +378,81 @@ WHERE  u.name = $getUnitMachineName.unit_name
 //     machine assigned.
 //   - [applicationerrors.UnitNotFound] if the unit cannot be found.
 //   - [applicationerrors.UnitIsDead] if the unit is dead.
-func (st *State) GetUnitMachineUUID(ctx context.Context, unitName coreunit.Name) (coremachine.UUID, error) {
+func (st *State) GetUnitMachineUUID(ctx context.Context, unitUUID string) (string, error) {
 	db, err := st.DB(ctx)
 	if err != nil {
 		return "", errors.Capture(err)
 	}
-	arg := getUnitMachineUUID{
-		UnitName: unitName,
+
+	var machineUUID string
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		if err := st.checkUnitNotDead(ctx, tx, unitUUID); err != nil {
+			return errors.Capture(err)
+		}
+
+		machineUUID, err = st.getUnitMachineUUID(ctx, tx, unitUUID)
+		if err != nil {
+			return errors.Capture(err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	return machineUUID, nil
+}
+
+func (st *State) getUnitMachineUUID(ctx context.Context, tx *sqlair.TX, unitUUID string) (string, error) {
+	arg := unitMachineUUID{
+		UnitUUID: unitUUID,
 	}
 	stmt, err := st.Prepare(`
-SELECT (m.uuid) AS (&getUnitMachineUUID.*)
+SELECT (m.uuid) AS (&unitMachineUUID.*)
 FROM   unit AS u
 JOIN   machine AS m ON u.net_node_uuid = m.net_node_uuid
-WHERE  u.name = $getUnitMachineUUID.unit_name
+WHERE  u.uuid = $unitMachineUUID.unit_uuid
 `, arg)
 	if err != nil {
 		return "", errors.Capture(err)
 	}
 
-	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		if err := st.checkUnitNotDeadByName(ctx, tx, unitName); err != nil {
-			return errors.Capture(err)
-		}
-
-		err = tx.Query(ctx, stmt, arg).Get(&arg)
-		if errors.Is(err, sqlair.ErrNoRows) {
-			return applicationerrors.UnitMachineNotAssigned
-		}
-		return errors.Capture(err)
-	})
-	if err != nil {
+	err = tx.Query(ctx, stmt, arg).Get(&arg)
+	if errors.Is(err, sqlair.ErrNoRows) {
+		return "", applicationerrors.UnitMachineNotAssigned
+	} else if err != nil {
 		return "", errors.Capture(err)
 	}
 
 	return arg.MachineUUID, nil
 }
 
-// getUnitMachineIdentifiers gets the identifiers of the machine that a unit is
-// attached to.
-//
-// The following errors may be expected:
-// - [applicationerrors.UnitNotFound] when the unit identified by the uuid no
-// longer exists.
-// - [applicationerrors.UnitMachineNotAssigned] when the unit is not assigned to
-// a machine.
-func (st *State) getUnitMachineIdentifiers(
-	ctx context.Context, tx *sqlair.TX, unitUUID coreunit.UUID,
-) (internalapplication.MachineIdentifiers, error) {
-	var (
-		input = entityUUID{UUID: unitUUID.String()}
-		dbVal machineIdentifiers
-	)
-
-	q := `
-SELECT (m.uuid, m.net_node_uuid, m.name) AS (&machineIdentifiers.*)
-FROM   unit u
-JOIN   machine AS m ON u.net_node_uuid = m.net_node_uuid
-WHERE  u.uuid = $entityUUID.uuid
-`
-
-	stmt, err := st.Prepare(q, input, dbVal)
+func (st *State) getNonDeadUnitNetNodeByUnitName(ctx context.Context, tx *sqlair.TX, unitName string) (string, error) {
+	val := nameWithNetNodeAndLife{
+		Name: unitName,
+	}
+	stmt, err := st.Prepare(`
+SELECT &nameWithNetNodeAndLife.*
+FROM   unit
+WHERE  name = $nameWithNetNodeAndLife.name
+`, val)
 	if err != nil {
-		return internalapplication.MachineIdentifiers{}, errors.Capture(err)
+		return "", errors.Capture(err)
 	}
 
-	exists, err := st.checkUnitExists(ctx, tx, unitUUID)
-	if err != nil {
-		return internalapplication.MachineIdentifiers{}, errors.Errorf(
-			"checking unit %q exists", unitUUID,
-		)
-	}
-
-	if !exists {
-		return internalapplication.MachineIdentifiers{}, errors.Errorf(
-			"unit %q does not exist", unitUUID,
-		).Add(applicationerrors.UnitNotFound)
-	}
-
-	err = tx.Query(ctx, stmt, input).Get(&dbVal)
+	err = tx.Query(ctx, stmt, val).Get(&val)
 	if errors.Is(err, sqlair.ErrNoRows) {
-		// While we expect the caller had validated this statement we can still
-		// provide a more helpful error message than sql error no rows.
-		return internalapplication.MachineIdentifiers{}, errors.Errorf(
-			"unit %q is not assigned to a machine in the model", unitUUID,
-		).Add(applicationerrors.UnitMachineNotAssigned)
+		return "", errors.Errorf("unit %q not found", unitName).Add(applicationerrors.UnitNotFound)
 	} else if err != nil {
-		return internalapplication.MachineIdentifiers{}, errors.Capture(err)
+		return "", errors.Capture(err)
 	}
 
-	return internalapplication.MachineIdentifiers{
-		Name:        coremachine.Name(dbVal.Name),
-		NetNodeUUID: domainnetwork.NetNodeUUID(dbVal.NetNodeUUID),
-		UUID:        coremachine.UUID(dbVal.UUID),
-	}, nil
+	switch val.LifeID {
+	case domainlife.Dead:
+		return "", applicationerrors.UnitIsDead
+	default:
+		return val.NetNodeUUID, nil
+	}
 }
 
 // AddIAASUnits adds the specified units to the application. Returns the unit
@@ -638,17 +484,17 @@ func (st *State) AddIAASUnits(
 		machineNames []coremachine.Name
 	)
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		if err := st.checkApplicationAlive(ctx, tx, appUUID); err != nil {
+		if err := st.checkApplicationAlive(ctx, tx, appUUID.String()); err != nil {
 			return errors.Capture(err)
 		}
 
-		charmUUID, err := st.getCharmIDByApplicationUUID(ctx, tx, appUUID)
+		charmUUID, err := st.getCharmIDByApplicationUUID(ctx, tx, appUUID.String())
 		if err != nil {
 			return errors.Errorf("getting application %q charm uuid: %w", appUUID, err)
 		}
 
 		for i, arg := range args {
-			uName, _, mNames, err := st.insertIAASUnit(ctx, tx, appUUID, charmUUID, arg)
+			uName, mNames, err := st.InsertIAASUnit(ctx, tx, appUUID.String(), charmUUID, arg)
 			if err != nil {
 				return errors.Errorf("inserting unit %d: %w ", i, err)
 			}
@@ -680,113 +526,22 @@ func (st *State) AddCAASUnits(
 
 	var unitNames []coreunit.Name
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		charmUUID, err := st.getCharmIDByApplicationUUID(ctx, tx, appUUID)
+		charmUUID, err := st.getCharmIDByApplicationUUID(ctx, tx, appUUID.String())
 		if err != nil {
 			return errors.Errorf("getting application %q charm uuid: %w", appUUID, err)
 		}
 
 		for _, arg := range args {
-			unitName, err := st.insertCAASUnit(ctx, tx, appUUID, charmUUID, arg)
+			unitName, err := st.insertCAASUnit(ctx, tx, appUUID.String(), charmUUID, arg)
 			if err != nil {
 				return errors.Errorf("inserting unit %q: %w ", unitName, err)
 			}
 
-			unitNames = append(unitNames, unitName)
+			unitNames = append(unitNames, coreunit.Name(unitName))
 		}
 		return nil
 	})
 	return unitNames, errors.Capture(err)
-}
-
-// AddIAASSubordinateUnit adds a unit to the specified subordinate application
-// to the IAAS application on the same machine as the given principal unit and
-// records the principal-subordinate relationship.
-//
-// The following error types can be expected:
-//   - [applicationerrors.ApplicationNotFound] when the subordinate application
-//     cannot be found.
-//   - [applicationerrors.UnitNotFound] when the principal unit cannot be found.
-//   - [machineerrors.MachineNotFound] when no machine is attached to the
-//
-// principal unit.
-func (st *State) AddIAASSubordinateUnit(
-	ctx context.Context,
-	arg application.SubordinateUnitArg,
-) (coreunit.Name, []coremachine.Name, error) {
-	db, err := st.DB(ctx)
-	if err != nil {
-		return "", nil, errors.Capture(err)
-	}
-
-	var (
-		unitName     coreunit.Name
-		unitUUID     coreunit.UUID
-		machineNames []coremachine.Name
-	)
-	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		// Check the application is alive.
-		if err := st.checkApplicationAlive(ctx, tx, arg.SubordinateAppID); err != nil {
-			return errors.Capture(err)
-		}
-		if err := st.checkUnitNotDead(ctx, tx, arg.PrincipalUnitUUID); err != nil {
-			return errors.Capture(err)
-		}
-
-		// Check this unit does not already have a subordinate unit from this
-		// application.
-		err := st.checkNoSubordinateExists(ctx, tx, arg.SubordinateAppID, arg.PrincipalUnitUUID)
-		if err != nil {
-			return errors.Errorf("checking if subordinate already exists: %w", err)
-		}
-		charmUUID, err := st.getCharmIDByApplicationUUID(ctx, tx, arg.SubordinateAppID)
-		if err != nil {
-			return errors.Errorf(
-				"getting subordinate application %q charm uuid: %w",
-				arg.SubordinateAppID, err,
-			)
-		}
-
-		// Place the subordinate on the same machine as the principal unit.
-		machineIdentifiers, err := st.getUnitMachineIdentifiers(
-			ctx, tx, arg.PrincipalUnitUUID,
-		)
-		if err != nil {
-			return errors.Errorf("getting principal unit machine information: %w", err)
-		}
-
-		addUnitArg := application.AddIAASUnitArg{
-			MachineNetNodeUUID: machineIdentifiers.NetNodeUUID,
-			MachineUUID:        machineIdentifiers.UUID,
-			AddUnitArg: application.AddUnitArg{
-				CreateUnitStorageArg: arg.CreateUnitStorageArg,
-				NetNodeUUID:          arg.NetNodeUUID,
-				Placement: deployment.Placement{
-					Type:      deployment.PlacementTypeMachine,
-					Directive: machineIdentifiers.Name.String(),
-				},
-				UnitStatusArg: arg.UnitStatusArg,
-			},
-		}
-
-		unitName, unitUUID, machineNames, err = st.insertIAASUnit(
-			ctx, tx, arg.SubordinateAppID, charmUUID, addUnitArg,
-		)
-		if err != nil {
-			return errors.Errorf("inserting new IAAS subordinate unitq: %w", err)
-		}
-
-		// Record the principal/subordinate relationship.
-		if err := st.recordUnitPrincipal(ctx, tx, arg.PrincipalUnitUUID, unitUUID); err != nil {
-			return errors.Errorf("recording principal-subordinate relationship: %w", err)
-		}
-
-		return nil
-	})
-	if err != nil {
-		return "", nil, errors.Capture(err)
-	}
-
-	return unitName, machineNames, nil
 }
 
 // GetUnitPrincipal gets the subordinates principal unit. If no principal unit
@@ -801,16 +556,16 @@ func (st *State) GetUnitPrincipal(
 		return "", false, errors.Capture(err)
 	}
 
-	arg := getPrincipal{
+	arg := principal{
 		SubordinateUnitName: unitName,
 	}
 
 	stmt, err := st.Prepare(`
-SELECT principal.name AS &getPrincipal.principal_unit_name
+SELECT principal.name AS &principal.principal_unit_name
 FROM   unit AS principal
 JOIN   unit_principal AS up ON principal.uuid = up.principal_uuid
 JOIN   unit AS sub ON up.unit_uuid = sub.uuid
-WHERE  sub.name = $getPrincipal.subordinate_unit_name
+WHERE  sub.name = $principal.subordinate_unit_name
 `, arg)
 	if err != nil {
 		return "", false, errors.Capture(err)
@@ -826,44 +581,6 @@ WHERE  sub.name = $getPrincipal.subordinate_unit_name
 		return err
 	})
 	return arg.PrincipalUnitName, ok, err
-}
-
-// checkNoSubordinateExists returns
-// [applicationerrors.UnitAlreadyHasSubordinate] if the specified unit already
-// has a subordinate for the given application.
-func (st *State) checkNoSubordinateExists(
-	ctx context.Context,
-	tx *sqlair.TX,
-	subordinateAppUUID coreapplication.UUID,
-	principalUnitUUID coreunit.UUID,
-) error {
-	var (
-		sAppUUID  = applicationUUID{ApplicationUUID: subordinateAppUUID.String()}
-		pUnitUUID = entityUUID{UUID: principalUnitUUID.String()}
-	)
-
-	stmt, err := st.Prepare(`
-SELECT pu.uuid AS &entityUUID.uuid
-FROM   unit pu
-JOIN   unit_principal up ON up.principal_uuid = pu.uuid
-JOIN   unit su ON su.uuid = up.unit_uuid
-WHERE  pu.uuid = $entityUUID.uuid
-AND    su.application_uuid = $applicationUUID.application_uuid
-`,
-		sAppUUID, pUnitUUID,
-	)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	err = tx.Query(ctx, stmt, sAppUUID, pUnitUUID).Get(&pUnitUUID)
-	if errors.Is(err, sqlair.ErrNoRows) {
-		return nil
-	} else if err != nil {
-		return errors.Capture(err)
-	}
-
-	return applicationerrors.UnitAlreadyHasSubordinate
 }
 
 // IsSubordinateApplication returns true if the application is a subordinate
@@ -943,7 +660,7 @@ WHERE  principal.name = $principalName.name
 
 	var subNames []subName
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		if err := st.checkUnitExistsByName(ctx, tx, unitName); err != nil {
+		if err := st.checkUnitExistsByName(ctx, tx, unitName.String()); err != nil {
 			return errors.Errorf("checking unit exists: %w", err)
 		}
 
@@ -964,80 +681,6 @@ WHERE  principal.name = $principalName.name
 
 }
 
-// SetRunningAgentBinaryVersion sets the running agent binary version for the
-// provided unit uuid. Any previously set values for this unit uuid will
-// be overwritten by this call.
-//
-// The following errors can be expected:
-// - [errors.UnitNotFound] if the unit does not exist.
-// - [coreerrors.NotSupported] if the architecture is not known to the database.
-func (st *State) SetRunningAgentBinaryVersion(ctx context.Context, uuid coreunit.UUID, version coreagentbinary.Version) error {
-	db, err := st.DB(ctx)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	archMap := architectureMap{Name: version.Arch}
-
-	archMapStmt, err := st.Prepare(`
-SELECT id AS &architectureMap.id FROM architecture WHERE name = $architectureMap.name
-`, archMap)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	unitAgentVersion := unitAgentVersion{
-		UnitUUID: uuid.String(),
-		Version:  version.Number.String(),
-	}
-
-	upsertRunningVersionStmt, err := st.Prepare(`
-INSERT INTO unit_agent_version (*)
-VALUES ($unitAgentVersion.*)
-ON CONFLICT (unit_uuid) DO
-UPDATE SET version = excluded.version,
-           architecture_id = excluded.architecture_id
-`, unitAgentVersion)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-
-		// Check if unit exists and is not dead.
-		err := st.checkUnitNotDead(ctx, tx, uuid)
-		if err != nil {
-			return errors.Errorf(
-				"checking unit %q exists: %w", uuid, err,
-			)
-		}
-
-		// Look up architecture ID.
-		err = tx.Query(ctx, archMapStmt, archMap).Get(&archMap)
-		if errors.Is(err, sqlair.ErrNoRows) {
-			return errors.Errorf(
-				"architecture %q is unsupported", version.Arch,
-			).Add(coreerrors.NotSupported)
-		} else if err != nil {
-			return errors.Errorf(
-				"looking up id for architecture %q: %w", version.Arch, err,
-			)
-		}
-
-		unitAgentVersion.ArchitectureID = archMap.ID
-		return tx.Query(ctx, upsertRunningVersionStmt, unitAgentVersion).Run()
-	})
-
-	if err != nil {
-		return errors.Errorf(
-			"setting running agent binary version for unit %q: %w",
-			uuid, err,
-		)
-	}
-
-	return nil
-}
-
 // GetUnitNameForUUID returns the name of the unit with the given UUID.
 //
 // The following errors can be expected:
@@ -1052,7 +695,7 @@ func (st *State) GetUnitNameForUUID(
 	}
 
 	var (
-		unitUUIDInput = unitUUID{UnitUUID: uuid}
+		unitUUIDInput = unitUUID{UnitUUID: uuid.String()}
 		dbVal         unitName
 	)
 
@@ -1078,7 +721,7 @@ func (st *State) GetUnitNameForUUID(
 		return "", errors.Capture(err)
 	}
 
-	return dbVal.Name, nil
+	return coreunit.Name(dbVal.Name), nil
 }
 
 // GetUnitUUIDByName returns the UUID for the named unit, returning an error
@@ -1089,7 +732,7 @@ func (st *State) GetUnitUUIDByName(ctx context.Context, name coreunit.Name) (cor
 		return "", errors.Capture(err)
 	}
 
-	var uuid coreunit.UUID
+	var uuid string
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
 		uuid, err = st.getUnitUUIDByName(ctx, tx, name)
 		if err != nil {
@@ -1101,15 +744,15 @@ func (st *State) GetUnitUUIDByName(ctx context.Context, name coreunit.Name) (cor
 		return "", errors.Capture(err)
 	}
 
-	return uuid, nil
+	return coreunit.UUID(uuid), nil
 }
 
 func (st *State) getUnitUUIDByName(
 	ctx context.Context,
 	tx *sqlair.TX,
 	name coreunit.Name,
-) (coreunit.UUID, error) {
-	unitName := unitName{Name: name}
+) (string, error) {
+	unitName := unitName{Name: name.String()}
 
 	query, err := st.Prepare(`
 SELECT &unitUUID.*
@@ -1128,7 +771,7 @@ WHERE  name = $unitName.name
 	return unitUUID.UnitUUID, errors.Capture(err)
 }
 
-func (st *State) getUnitDetails(ctx context.Context, tx *sqlair.TX, unitName coreunit.Name) (*unitDetails, error) {
+func (st *State) getUnitDetails(ctx context.Context, tx *sqlair.TX, unitName string) (*unitDetails, error) {
 	unit := unitDetails{
 		Name: unitName,
 	}
@@ -1147,30 +790,6 @@ func (st *State) getUnitDetails(ctx context.Context, tx *sqlair.TX, unitName cor
 	}
 
 	return &unit, nil
-}
-
-func (st *State) getUnitApplicationUUID(ctx context.Context, tx *sqlair.TX, uuid coreunit.UUID) (string, error) {
-	unitUUID := unitUUID{UnitUUID: uuid}
-
-	query, err := st.Prepare(`
-SELECT a.uuid AS &entityUUID.uuid
-FROM application AS a
-JOIN unit AS u ON u.application_uuid = a.uuid
-WHERE u.uuid = $unitUUID.uuid
-	`, entityUUID{}, unitUUID)
-	if err != nil {
-		return "", errors.Capture(err)
-	}
-
-	var appID entityUUID
-	err = tx.Query(ctx, query, unitUUID).Get(&appID)
-	if errors.Is(err, sqlair.ErrNoRows) {
-		return "", errors.Errorf("unit %q not found", uuid).Add(applicationerrors.UnitNotFound)
-	} else if err != nil {
-		return "", errors.Capture(err)
-	}
-
-	return appID.UUID, nil
 }
 
 func makeCloudContainerArg(unitName coreunit.Name, cloudContainer application.CloudContainerParams) *application.CloudContainer {
@@ -1231,10 +850,11 @@ func (st *State) RegisterCAASUnit(ctx context.Context, appName string, arg appli
 	}
 	cloudContainer := makeCloudContainerArg(arg.UnitName, cloudContainerParams)
 
-	now := ptr(st.clock.Now())
+	now := new(st.clock.Now().UTC())
 	addUnitArg := application.AddCAASUnitArg{
 		AddUnitArg: application.AddUnitArg{
 			CreateUnitStorageArg: arg.CreateUnitStorageArg,
+			UnitUUID:             arg.UnitUUID,
 			NetNodeUUID:          arg.NetNodeUUID,
 			UnitStatusArg: application.UnitStatusArg{
 				AgentStatus: &status.StatusInfo[status.UnitAgentStatusType]{
@@ -1255,9 +875,10 @@ func (st *State) RegisterCAASUnit(ctx context.Context, appName string, arg appli
 		appDetails, err := st.getApplicationDetails(ctx, tx, appName)
 		if err != nil {
 			return errors.Errorf("querying life for application %q: %w", appName, err)
-		}
-		if appDetails.LifeID != life.Alive {
+		} else if appDetails.LifeID != domainlife.Alive {
 			return errors.Errorf("registering application %q: %w", appName, applicationerrors.ApplicationNotAlive)
+		} else if appDetails.IsApplicationSynthetic {
+			return errors.Errorf("registering unit for synthetic application %q", appName)
 		}
 		appUUID := appDetails.UUID
 
@@ -1278,7 +899,7 @@ func (st *State) RegisterCAASUnit(ctx context.Context, appName string, arg appli
 			}
 
 			uuid, err := st.insertCAASUnitWithName(
-				ctx, tx, appUUID, appDetails.CharmUUID, arg.UnitName, addUnitArg,
+				ctx, tx, appUUID, appDetails.CharmUUID, arg.UnitName.String(), addUnitArg,
 			)
 			if err != nil {
 				return errors.Errorf("inserting new caas application %s: %w", arg.UnitName, err)
@@ -1295,12 +916,12 @@ func (st *State) RegisterCAASUnit(ctx context.Context, appName string, arg appli
 		} else if err != nil {
 			return errors.Errorf("checking unit life %q: %w", arg.UnitName, err)
 		}
-		if unitLife == life.Dead {
+		if unitLife == domainlife.Dead {
 			return errors.Errorf("dead unit %q already exists", arg.UnitName).Add(applicationerrors.UnitAlreadyExists)
 		}
 
 		// Unit already exists and is not dead. Update the cloud container.
-		toUpdate, err := st.getUnitDetails(ctx, tx, arg.UnitName)
+		toUpdate, err := st.getUnitDetails(ctx, tx, arg.UnitName.String())
 		if err != nil {
 			return errors.Capture(err)
 		}
@@ -1309,6 +930,24 @@ func (st *State) RegisterCAASUnit(ctx context.Context, appName string, arg appli
 		if err != nil {
 			return errors.Errorf("updating cloud container for unit %q: %w", arg.UnitName, err)
 		}
+
+		err = st.setFilesystemProviderIDs(ctx, tx, arg.FilesystemProviderIDs)
+		if err != nil {
+			return errors.Errorf(
+				"setting filesystem provider IDs for unit %q: %w",
+				arg.UnitName, err,
+			)
+		}
+
+		err = st.setFilesystemAttachmentProviderIDs(ctx, tx, arg.FilesystemAttachmentProviderIDs)
+		if err != nil {
+			return errors.Errorf(
+				"setting filesystem attachment provider IDs for unit %q: %w",
+				arg.UnitName, err,
+			)
+		}
+
+		// TODO(storage): set volume and volume attachment provider IDs.
 
 		err = st.setUnitPassword(ctx, tx, toUpdate.UnitUUID, application.PasswordInfo{
 			PasswordHash:  arg.PasswordHash,
@@ -1325,7 +964,7 @@ func (st *State) RegisterCAASUnit(ctx context.Context, appName string, arg appli
 	return nil
 }
 
-func (st *State) setUnitPassword(ctx context.Context, tx *sqlair.TX, unitUUID coreunit.UUID, password application.PasswordInfo) error {
+func (st *State) setUnitPassword(ctx context.Context, tx *sqlair.TX, unitUUID string, password application.PasswordInfo) error {
 	info := unitPassword{
 		UnitUUID:                unitUUID,
 		PasswordHash:            password.PasswordHash,
@@ -1351,10 +990,9 @@ WHERE uuid = $unitPassword.uuid
 func (st *State) insertCAASUnit(
 	ctx context.Context,
 	tx *sqlair.TX,
-	appUUID coreapplication.UUID,
-	charmUUID corecharm.ID,
+	appUUID, charmUUID string,
 	args application.AddCAASUnitArg,
-) (coreunit.Name, error) {
+) (string, error) {
 	unitName, err := st.newUnitName(ctx, tx, appUUID)
 	if err != nil {
 		return "", errors.Errorf("getting new unit name for application %q: %w", appUUID, err)
@@ -1370,27 +1008,61 @@ func (st *State) insertCAASUnit(
 
 // insertCAASUnitWithName inserts a new CAAS unit into the model using the
 // supplied unit name. Returned is the uuid for the new unit.
+//
+// The following errors can be expected:
+//   - [storageerrors.StorageInstanceNotFound] when any storage instance
+//     in [application.AddUnitArg.CreateUnitStorageArg.ExistingStorageInstanceUUIDsToCheck]
+//     does not exist.
+//   - [storageerrors.StorageInstanceNotAlive] when any storage instance
+//     in [application.AddUnitArg.CreateUnitStorageArg.ExistingStorageInstanceUUIDsToCheck]
+//     is not alive.
+//   - [applicationerrors.StorageInstanceUnexpectedAttachments] when a storage
+//     instance has attachments outside
+//     [internal.StorageInstanceAttachmentCheckArgs.ExpectedAttachments] or is
+//     missing expected attachments.
 func (st *State) insertCAASUnitWithName(
 	ctx context.Context,
 	tx *sqlair.TX,
-	appUUID coreapplication.UUID,
-	charmUUID corecharm.ID,
-	unitName coreunit.Name,
+	appUUID, charmUUID, unitName string,
 	args application.AddCAASUnitArg,
-) (coreunit.UUID, error) {
-	unitUUID, err := coreunit.NewUUID()
-	if err != nil {
-		return "", errors.Capture(err)
-	}
+) (string, error) {
+	unitUUID := args.UnitUUID.String()
 
-	if err := st.insertUnit(ctx, tx, appUUID, unitUUID, args.NetNodeUUID.String(), insertUnitArg{
+	err := st.insertUnit(ctx, tx, appUUID, unitUUID, args.NetNodeUUID.String(), insertUnitArg{
 		CharmUUID:      charmUUID,
 		UnitName:       unitName,
 		CloudContainer: args.CloudContainer,
 		Constraints:    args.Constraints,
 		UnitStatusArg:  args.UnitStatusArg,
-	}); err != nil {
+	})
+	if err != nil {
 		return "", errors.Errorf("inserting unit for CAAS application %q: %w", appUUID, err)
+	}
+
+	// This checks that any existing Storage Instances being used as part of
+	// creating this new unit exist and are alive.
+	err = st.checkStorageInstancesExistAndAlive(
+		ctx, tx, args.AddUnitArg.CreateUnitStorageArg.ExistingStorageInstanceUUIDsToCheck,
+	)
+	if err != nil {
+		return "", errors.Errorf(
+			"checking existing Storage Instances exist and are alive: %w", err,
+		)
+	}
+
+	// This checks that any existing Storage Instances being used as part of
+	// creating this new unit have the expected attachments on which the
+	// information was calculated.
+	err = st.checkStorageInstancesAttachmentExpectations(
+		ctx,
+		tx,
+		args.AddUnitArg.CreateUnitStorageArg.StorageInstanceAttachmentCheckArgs,
+	)
+	if err != nil {
+		return "", errors.Errorf(
+			"checking pre condition for existing storage instance attachments: %w",
+			err,
+		)
 	}
 
 	err = st.insertUnitStorageDirectives(
@@ -1402,7 +1074,7 @@ func (st *State) insertCAASUnitWithName(
 		)
 	}
 
-	err = st.insertUnitStorageInstances(
+	_, err = st.insertUnitStorageInstances(
 		ctx, tx, args.StorageInstances,
 	)
 	if err != nil {
@@ -1430,207 +1102,19 @@ func (st *State) insertCAASUnitWithName(
 		)
 	}
 
+	// If we are using any existing Storage Instances we need to ensure that the
+	// charm name column has been updated.
+	err = st.setStorageInstancesCharmName(
+		ctx, tx, args.StorageInstanceCharmNameSetArgs,
+	)
+	if err != nil {
+		return "", errors.Errorf(
+			"updating storage instance charm name for new unit %q: %w",
+			unitName, err,
+		)
+	}
+
 	return unitUUID, nil
-}
-
-// placeIAASUnitMachine is responsible for making sure that the machine required
-// by the unit being added has been placed.
-func (st *State) placeIAASUnitMachine(
-	ctx context.Context,
-	tx *sqlair.TX,
-	args application.AddIAASUnitArg,
-) ([]coremachine.Name, error) {
-	// If the placement is on to an already existing machine in the model we do
-	// nothing.
-	if args.Placement.Type == deployment.PlacementTypeMachine {
-		return []coremachine.Name{coremachine.Name(args.Placement.Directive)}, nil
-	}
-
-	// Handle the placement of the net node and machines accompanying the unit.
-	placeMachineArgs := domainmachine.PlaceMachineArgs{
-		Constraints: args.Constraints,
-		Directive:   args.Placement,
-		Platform:    args.Platform,
-		Nonce:       args.Nonce,
-		NetNodeUUID: args.MachineNetNodeUUID,
-		MachineUUID: args.MachineUUID,
-	}
-	machineNames, err := machinestate.PlaceMachine(
-		ctx, tx, st, st.clock, placeMachineArgs,
-	)
-	if err != nil {
-		return nil, errors.Errorf(
-			"performing unit placement %+v: %w", args.Placement, err,
-		)
-	}
-
-	return machineNames, nil
-}
-
-func (st *State) insertIAASUnit(
-	ctx context.Context,
-	tx *sqlair.TX,
-	appUUID coreapplication.UUID,
-	charmUUID corecharm.ID,
-	args application.AddIAASUnitArg,
-) (coreunit.Name, coreunit.UUID, []coremachine.Name, error) {
-	unitName, err := st.newUnitName(ctx, tx, appUUID)
-	if err != nil {
-		return "", "", nil, errors.Errorf("getting new unit name for application %q: %w", appUUID, err)
-	}
-
-	unitUUID, err := coreunit.NewUUID()
-	if err != nil {
-		return "", "", nil, errors.Capture(err)
-	}
-
-	machineNames, err := st.placeIAASUnitMachine(ctx, tx, args)
-	if err != nil {
-		return "", "", nil, errors.Capture(err)
-	}
-
-	err = st.insertUnit(
-		ctx, tx, appUUID, unitUUID, args.NetNodeUUID.String(), insertUnitArg{
-			CharmUUID:     charmUUID,
-			UnitName:      unitName,
-			Constraints:   args.Constraints,
-			UnitStatusArg: args.UnitStatusArg,
-		},
-	)
-	if err != nil {
-		return "", "", nil, errors.Errorf("inserting unit for application %q: %w", appUUID, err)
-	}
-
-	err = st.insertUnitStorageDirectives(
-		ctx, tx, unitUUID, charmUUID, args.StorageDirectives,
-	)
-	if err != nil {
-		return "", "", nil, errors.Errorf(
-			"creating storage directives for unit %q: %w", unitName, err,
-		)
-	}
-
-	err = st.insertUnitStorageInstances(ctx, tx, args.StorageInstances)
-	if err != nil {
-		return "", "", nil, errors.Errorf(
-			"creating storage instances for unit %q: %w", unitName, err,
-		)
-	}
-
-	err = st.insertUnitStorageAttachments(
-		ctx,
-		tx,
-		unitUUID,
-		args.StorageToAttach,
-	)
-	if err != nil {
-		return "", "", nil, errors.Errorf(
-			"creating storage attachments for unit %q: %w", unitName, err,
-		)
-	}
-
-	err = st.insertUnitStorageOwnership(ctx, tx, unitUUID, args.StorageToOwn)
-	if err != nil {
-		return "", "", nil, errors.Errorf(
-			"inserting storage ownership for unit %q: %w", unitName, err,
-		)
-	}
-
-	err = st.insertMachineVolumeOwnership(ctx, tx, args.MachineUUID,
-		args.VolumesToOwn)
-	if err != nil {
-		return "", "", nil, errors.Errorf(
-			"inserting volume ownership for machine %q: %w",
-			args.MachineUUID, err,
-		)
-	}
-
-	err = st.insertMachineFilesystemOwnership(ctx, tx, args.MachineUUID,
-		args.FilesystemsToOwn)
-	if err != nil {
-		return "", "", nil, errors.Errorf(
-			"inserting volume ownership for machine %q: %w",
-			args.MachineUUID, err,
-		)
-	}
-
-	return unitName, unitUUID, machineNames, nil
-}
-
-type insertUnitArg struct {
-	CharmUUID      corecharm.ID
-	UnitName       coreunit.Name
-	CloudContainer *application.CloudContainer
-	Password       *application.PasswordInfo
-	Constraints    constraints.Constraints
-	application.UnitStatusArg
-}
-
-func (st *State) insertUnit(
-	ctx context.Context, tx *sqlair.TX,
-	appUUID coreapplication.UUID,
-	unitUUID coreunit.UUID,
-	netNodeUUID string,
-	args insertUnitArg,
-) error {
-	if err := st.checkApplicationAlive(ctx, tx, appUUID); err != nil {
-		return errors.Capture(err)
-	}
-
-	createParams := unitRow{
-		ApplicationID: appUUID,
-		UnitUUID:      unitUUID,
-		CharmUUID:     args.CharmUUID,
-		Name:          args.UnitName,
-		NetNodeID:     netNodeUUID,
-		LifeID:        life.Alive,
-	}
-	if args.Password != nil {
-		// Unit passwords are optional when we insert a unit (they're mainly
-		// used for CAAS units). If they are set they must be unique across
-		// all units.
-		createParams.PasswordHash = sql.NullString{
-			String: args.Password.PasswordHash,
-			Valid:  true,
-		}
-		createParams.PasswordHashAlgorithmID = sql.NullInt16{
-			Int16: int16(args.Password.HashAlgorithm),
-			Valid: true,
-		}
-	}
-
-	createUnit := `INSERT INTO unit (*) VALUES ($unitRow.*)`
-	createUnitStmt, err := st.Prepare(createUnit, createParams)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	err = st.ensureFutureUnitNetNode(ctx, tx, netNodeUUID)
-	if err != nil {
-		return errors.Errorf(
-			"ensuring that the net node %q exists for new unit %q: %w",
-			netNodeUUID, args.UnitName, err,
-		)
-	}
-
-	if err := tx.Query(ctx, createUnitStmt, createParams).Run(); err != nil {
-		return errors.Errorf("creating unit for unit %q: %w", args.UnitName, err)
-	}
-	if args.CloudContainer != nil {
-		if err := st.upsertUnitCloudContainer(ctx, tx, args.UnitName, unitUUID, netNodeUUID, args.CloudContainer); err != nil {
-			return errors.Errorf("creating cloud container for unit %q: %w", args.UnitName, err)
-		}
-	}
-	if err := st.setUnitAgentStatus(ctx, tx, unitUUID, args.AgentStatus); err != nil {
-		return errors.Errorf("setting agent status for unit %q: %w", args.UnitName, err)
-	}
-	if err := st.setUnitWorkloadStatus(ctx, tx, unitUUID, args.WorkloadStatus); err != nil {
-		return errors.Errorf("setting workload status for unit %q: %w", args.UnitName, err)
-	}
-	if err := st.setUnitWorkloadVersion(ctx, tx, unitUUID, ""); err != nil {
-		return errors.Errorf("setting workload version for unit %q: %w", args.UnitName, err)
-	}
-	return nil
 }
 
 // UpdateCAASUnit updates the cloud container for specified unit,
@@ -1658,7 +1142,7 @@ func (st *State) UpdateCAASUnit(ctx context.Context, unitName coreunit.Name, par
 	}
 
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		toUpdate, err := st.getUnitDetails(ctx, tx, unitName)
+		toUpdate, err := st.getUnitDetails(ctx, tx, unitName.String())
 		if err != nil {
 			return errors.Errorf("getting unit %q: %w", unitName, err)
 		}
@@ -1689,38 +1173,241 @@ func (st *State) UpdateCAASUnit(ctx context.Context, unitName coreunit.Name, par
 	return nil
 }
 
+// GetUnitStorageDirectivesCurrentNext returns the current and the next storage
+// directives for this unit, if the unit was to switch to the given charm.
+//
+// The following errors can be expected:
+// - [applicationerrors.UnitNotFound] when the unit does not exist.
+// - [applicationerrors.CharmNotFound] when the charm does not exist.
+func (st *State) GetUnitStorageRefreshArgs(
+	ctx context.Context, unit coreunit.UUID, next corecharm.ID,
+) (applicationinternal.UnitStorageRefreshArgs, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return applicationinternal.UnitStorageRefreshArgs{}, errors.Capture(err)
+	}
+
+	charmUUID := charmUUID{UUID: next.String()}
+	unitUUID := unitUUID{UnitUUID: unit.String()}
+
+	unitStmt, err := st.Prepare(`
+SELECT &unitNetNodeWithCharmAndMachine.* FROM (
+	SELECT    u.uuid,
+	          u.net_node_uuid,
+	          u.charm_uuid, 
+	          m.uuid AS machine_uuid
+	FROM      unit u
+	LEFT JOIN machine m ON u.net_node_uuid = m.net_node_uuid
+	WHERE     u.uuid = $unitUUID.uuid
+)
+`, unitUUID, unitNetNodeWithCharmAndMachine{})
+	if err != nil {
+		return applicationinternal.UnitStorageRefreshArgs{}, errors.Capture(err)
+	}
+
+	sdStmt, err := st.Prepare(`
+SELECT &storageDirective.* FROM (
+    SELECT usd.count,
+           usd.size_mib,
+           usd.storage_name,
+           usd.storage_pool_uuid,
+           cm.name AS charm_metadata_name,
+           csk.kind AS charm_storage_kind,
+           cs.count_max AS count_max
+    FROM   unit_storage_directive usd
+    JOIN   charm_storage cs ON cs.charm_uuid = usd.charm_uuid AND
+                               cs.name = usd.storage_name
+    JOIN   charm_metadata cm ON cm.charm_uuid = usd.charm_uuid
+    JOIN   charm_storage_kind csk ON csk.id = cs.storage_kind_id
+    WHERE  usd.unit_uuid = $unitUUID.uuid AND
+           usd.charm_uuid = $charmUUID.charm_uuid
+)`, unitUUID, charmUUID, storageDirective{})
+	if err != nil {
+		return applicationinternal.UnitStorageRefreshArgs{}, errors.Capture(err)
+	}
+
+	unitVal := unitNetNodeWithCharmAndMachine{}
+	sdVals := []storageDirective{}
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err := tx.Query(ctx, unitStmt, unitUUID).Get(&unitVal)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return errors.Errorf(
+				"unit %q does not exist", unit,
+			).Add(applicationerrors.UnitNotFound)
+		} else if err != nil {
+			return errors.Errorf(
+				"getting unit %q details: %w", unit, err,
+			)
+		}
+
+		err = st.checkCharmExists(ctx, tx, charmUUID.UUID)
+		if err != nil {
+			return errors.Errorf(
+				"checking charm %q exists: %w", charmUUID.UUID, err,
+			)
+		}
+
+		err = tx.Query(ctx, sdStmt, unitUUID, charmUUID).GetAll(&sdVals)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+
+		return nil
+	})
+	if err != nil {
+		return applicationinternal.UnitStorageRefreshArgs{}, errors.Capture(err)
+	}
+
+	retVal := applicationinternal.UnitStorageRefreshArgs{
+		NetNodeUUID:      domainnetwork.NetNodeUUID(unitVal.NetNodeUUID),
+		CurrentCharmUUID: corecharm.ID(unitVal.CharmUUID),
+		RefreshCharmUUID: next,
+		RefreshStorageDirectives: make(
+			[]applicationinternal.StorageDirective, 0, len(sdVals)),
+	}
+	if unitVal.MachineUUID.Valid {
+		retVal.MachineUUID = new(coremachine.UUID(unitVal.MachineUUID.V))
+	}
+	for _, v := range sdVals {
+		sd := applicationinternal.StorageDirective{
+			CharmMetadataName: v.CharmMetadataName,
+			CharmStorageType:  domainapplicationcharm.StorageType(v.CharmStorageKind),
+			Count:             v.Count,
+			MaxCount:          v.CountMax,
+			Name:              domainstorage.Name(v.StorageName),
+			PoolUUID:          domainstorage.StoragePoolUUID(v.StoragePoolUUID),
+			Size:              v.SizeMiB,
+		}
+		retVal.RefreshStorageDirectives = append(
+			retVal.RefreshStorageDirectives, sd)
+	}
+
+	return retVal, nil
+}
+
 // UpdateUnitCharm updates the currently running charm marker for the given
-// unit.
+// unit, creates new storage instances required, and deletes unit storage
+// directives for the old charm.
 // The following errors may be returned:
 // - [applicationerrors.UnitNotFound] if the unit does not exist.
 // - [applicationerrors.UnitIsDead] if the unit is dead.
 // - [applicationerrors.CharmNotFound] if the charm does not exist.
-func (st *State) UpdateUnitCharm(ctx context.Context, name coreunit.Name, uuid corecharm.ID) error {
+func (st *State) UpdateUnitCharm(
+	ctx context.Context, arg applicationinternal.UpdateUnitCharmArg,
+) error {
 	db, err := st.DB(ctx)
 	if err != nil {
 		return errors.Capture(err)
 	}
-	charmUUID := charmUUID{UUID: uuid}
-	unitName := unitName{Name: name}
 
-	query, err := st.Prepare(`
-UPDATE unit SET charm_uuid = $charmUUID.charm_uuid
-WHERE name = $unitName.name
-`, charmUUID, unitName)
+	unitUUID := unitUUID{UnitUUID: arg.UUID.String()}
+	targetCharmUUID := charmUUID{UUID: arg.CharmUUID.String()}
+
+	unitStmt, err := st.Prepare(`
+SELECT &unitLifeWithCharm.*
+FROM   unit u
+WHERE  u.uuid = $unitUUID.uuid
+`, unitUUID, unitLifeWithCharm{})
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	updateUnitCharmStmt, err := st.Prepare(`
+UPDATE unit
+SET    charm_uuid = $charmUUID.charm_uuid
+WHERE  uuid = $unitUUID.uuid
+`, unitUUID, targetCharmUUID)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	deleteStorageDirectiveStmt, err := st.Prepare(`
+DELETE FROM unit_storage_directive
+WHERE       unit_uuid = $unitUUID.uuid AND
+            charm_uuid = $charmUUID.charm_uuid
+`, unitUUID, charmUUID{})
 	if err != nil {
 		return errors.Capture(err)
 	}
 
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		if err := st.checkUnitNotDeadByName(ctx, tx, name); err != nil {
-			return errors.Capture(err)
-		}
-		err := tx.Query(ctx, query, charmUUID, unitName).Run()
-		if internaldatabase.IsErrConstraintForeignKey(err) {
-			return errors.Errorf("charm %q not found", uuid).Add(applicationerrors.CharmNotFound)
+		unitLifeCharm := unitLifeWithCharm{}
+		err := tx.Query(ctx, unitStmt, unitUUID).Get(&unitLifeCharm)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return errors.Errorf(
+				"unit %q not found", arg.UUID,
+			).Add(applicationerrors.UnitNotFound)
 		} else if err != nil {
+			return errors.Errorf(
+				"getting unit %q charm and life: %w", arg.UUID, err,
+			)
+		}
+		// Ensure unit is alive for update.
+		if unitLifeCharm.LifeID == int(domainlife.Dead) {
+			return errors.Errorf(
+				"unit %q is dead", arg.UUID,
+			).Add(applicationerrors.UnitIsDead)
+		}
+		// Ensure the target charm exists.
+		err = st.checkCharmExists(ctx, tx, targetCharmUUID.UUID)
+		if err != nil {
 			return errors.Capture(err)
 		}
+
+		// Update unit charm UUID.
+		err = tx.Query(ctx, updateUnitCharmStmt, targetCharmUUID, unitUUID).Run()
+		if err != nil {
+			return errors.Errorf(
+				"updating unit %q charm to %q: %w",
+				arg.UUID, arg.CharmUUID, err,
+			)
+		}
+
+		// Insert new storage instances.
+		_, err = st.insertUnitStorageInstances(
+			ctx, tx, arg.UnitStorage.StorageInstances)
+		if err != nil {
+			return errors.Capture(err)
+		}
+		err = st.insertUnitStorageOwnership(
+			ctx, tx, arg.UUID.String(), arg.UnitStorage.StorageToOwn)
+		if err != nil {
+			return errors.Capture(err)
+		}
+		err = st.insertUnitStorageAttachments(
+			ctx, tx, arg.UUID.String(), arg.UnitStorage.StorageToAttach)
+		if err != nil {
+			return errors.Capture(err)
+		}
+		if arg.MachineUUID != nil && arg.IAASUnitStorage != nil {
+			err = st.insertMachineFilesystemOwnership(
+				ctx, tx, *arg.MachineUUID, arg.IAASUnitStorage.FilesystemsToOwn)
+			if err != nil {
+				return errors.Capture(err)
+			}
+			err = st.insertMachineVolumeOwnership(
+				ctx, tx, *arg.MachineUUID, arg.IAASUnitStorage.VolumesToOwn)
+			if err != nil {
+				return errors.Capture(err)
+			}
+		}
+
+		// Delete old unit storage directives.
+		oldCharmUUID := charmUUID{
+			UUID: unitLifeCharm.CharmUUID,
+		}
+		err = tx.Query(
+			ctx, deleteStorageDirectiveStmt, unitUUID, oldCharmUUID,
+		).Run()
+		if err != nil {
+			return errors.Errorf(
+				"deleting previous unit %q storage directives: %w",
+				arg.UUID, err,
+			)
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -1921,7 +1608,7 @@ func (st *State) GetAllUnitNames(ctx context.Context) ([]coreunit.Name, error) {
 		return nil, errors.Capture(err)
 	}
 	return transform.Slice(result, func(r unitName) coreunit.Name {
-		return r.Name
+		return coreunit.Name(r.Name)
 	}), nil
 }
 
@@ -1936,7 +1623,11 @@ func (st *State) GetUnitNamesForApplication(ctx context.Context, uuid coreapplic
 	}
 
 	appUUID := entityUUID{UUID: uuid.String()}
-	query := ` SELECT &unitName.* FROM unit WHERE application_uuid = $entityUUID.uuid`
+	query := `
+SELECT &unitName.*
+FROM unit
+JOIN charm AS c ON unit.charm_uuid = c.uuid
+WHERE application_uuid = $entityUUID.uuid AND c.source_id < 2`
 	stmt, err := st.Prepare(query, unitName{}, appUUID)
 	if err != nil {
 		return nil, errors.Capture(err)
@@ -1958,7 +1649,7 @@ func (st *State) GetUnitNamesForApplication(ctx context.Context, uuid coreapplic
 		return nil, errors.Capture(err)
 	}
 	return transform.Slice(result, func(r unitName) coreunit.Name {
-		return r.Name
+		return coreunit.Name(r.Name)
 	}), nil
 }
 
@@ -1977,7 +1668,7 @@ func (st *State) GetUnitUUIDAndNetNodeForName(
 	}
 
 	var (
-		input = unitName{Name: name}
+		input = unitName{Name: name.String()}
 		dbVal unitUUIDAndNetNode
 	)
 
@@ -2018,7 +1709,7 @@ func (st *State) GetUnitNamesForNetNode(ctx context.Context, uuid string) ([]cor
 		return nil, errors.Capture(err)
 	}
 
-	var unitNames []coreunit.Name
+	var unitNames []string
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
 		var err error
 		unitNames, err = st.getUnitNamesForNetNode(ctx, tx, uuid)
@@ -2027,10 +1718,12 @@ func (st *State) GetUnitNamesForNetNode(ctx context.Context, uuid string) ([]cor
 	if err != nil {
 		return nil, errors.Errorf("querying unit names for net node %q: %w", uuid, err)
 	}
-	return unitNames, nil
+	return transform.Slice(unitNames, func(n string) coreunit.Name {
+		return coreunit.Name(n)
+	}), nil
 }
 
-func (st *State) getUnitNamesForNetNode(ctx context.Context, tx *sqlair.TX, uuid string) ([]coreunit.Name, error) {
+func (st *State) getUnitNamesForNetNode(ctx context.Context, tx *sqlair.TX, uuid string) ([]string, error) {
 	netNodeUUID := netNodeUUID{NetNodeUUID: uuid}
 	verifyExistsQuery := `SELECT COUNT(*) AS &countResult.count FROM net_node WHERE uuid = $netNodeUUID.uuid`
 	verifyExistsStmt, err := st.Prepare(verifyExistsQuery, countResult{}, netNodeUUID)
@@ -2055,12 +1748,12 @@ func (st *State) getUnitNamesForNetNode(ctx context.Context, tx *sqlair.TX, uuid
 	var result []unitName
 	err = tx.Query(ctx, stmt, netNodeUUID).GetAll(&result)
 	if errors.Is(err, sqlair.ErrNoRows) {
-		return nil, nil
+		return []string{}, nil
 	} else if err != nil {
 		return nil, errors.Capture(err)
 	}
 
-	return transform.Slice(result, func(r unitName) coreunit.Name {
+	return transform.Slice(result, func(r unitName) string {
 		return r.Name
 	}), nil
 }
@@ -2081,58 +1774,6 @@ func (st *State) SetUnitWorkloadVersion(ctx context.Context, unitName coreunit.N
 	})
 	if err != nil {
 		return errors.Capture(err)
-	}
-	return nil
-}
-
-// setUnitWorkloadVersion workload version sets the denormalized workload
-// version on both the unit and the application. These are on separate tables,
-// so we need to do two separate queries. This prevents the workload version
-// from trigging a cascade of unwanted updates to the application and or unit
-// tables.
-func (st *State) setUnitWorkloadVersion(
-	ctx context.Context,
-	tx *sqlair.TX,
-	unitUUID coreunit.UUID,
-	version string,
-) error {
-	unitQuery, err := st.Prepare(`
-INSERT INTO unit_workload_version (*)
-VALUES ($unitWorkloadVersion.*)
-ON CONFLICT (unit_uuid) DO UPDATE SET
-    version = excluded.version;
-`, unitWorkloadVersion{})
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	appQuery, err := st.Prepare(`
-INSERT INTO application_workload_version (*)
-VALUES ($applicationWorkloadVersion.*)
-ON CONFLICT (application_uuid) DO UPDATE SET
-	version = excluded.version;
-`, applicationWorkloadVersion{})
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	appID, err := st.getUnitApplicationUUID(ctx, tx, unitUUID)
-	if err != nil {
-		return errors.Errorf("getting application UUID for unit %q: %w", unitUUID, err)
-	}
-
-	if err := tx.Query(ctx, unitQuery, unitWorkloadVersion{
-		UnitUUID: unitUUID,
-		Version:  version,
-	}).Run(); err != nil {
-		return errors.Errorf("setting workload version for unit %q: %w", unitUUID, err)
-	}
-
-	if err := tx.Query(ctx, appQuery, applicationWorkloadVersion{
-		ApplicationUUID: appID,
-		Version:         version,
-	}).Run(); err != nil {
-		return errors.Errorf("setting workload version for application %q: %w", appID, err)
 	}
 	return nil
 }
@@ -2224,63 +1865,6 @@ WHERE u.application_uuid = $entityUUID.uuid
 	return res, nil
 }
 
-// newUnitName returns a new name for the unit. It increments the unit counter
-// on the application.
-func (st *State) newUnitName(
-	ctx context.Context,
-	tx *sqlair.TX,
-	appID coreapplication.UUID,
-) (coreunit.Name, error) {
-
-	var nextUnitNum uint64
-	appName, err := st.getApplicationName(ctx, tx, appID)
-	if err != nil {
-		return "", errors.Capture(err)
-	}
-
-	namespace := domainsequence.MakePrefixNamespace(application.ApplicationSequenceNamespace, appName)
-	nextUnitNum, err = sequencestate.NextValue(ctx, st, tx, namespace)
-	if err != nil {
-		return "", errors.Errorf("getting next unit number: %w", err)
-	}
-
-	return coreunit.NewNameFromParts(appName, int(nextUnitNum))
-}
-
-// recordUnitPrincipal records a subordinate-principal relationship between
-// units.
-//
-// It is expected that the caller has already verified that both unit uuids
-// exist in the model.
-func (st *State) recordUnitPrincipal(
-	ctx context.Context,
-	tx *sqlair.TX,
-	principalUnitUUID, subordinateUnitUUID coreunit.UUID,
-) error {
-	type unitPrincipal struct {
-		PrincipalUUID   string `db:"principal_uuid"`
-		SubordinateUUID string `db:"unit_uuid"`
-	}
-	arg := unitPrincipal{
-		PrincipalUUID:   principalUnitUUID.String(),
-		SubordinateUUID: subordinateUnitUUID.String(),
-	}
-	stmt, err := st.Prepare(`
-INSERT INTO unit_principal (*)
-VALUES ($unitPrincipal.*)
-`, arg)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	err = tx.Query(ctx, stmt, arg).Run()
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	return nil
-}
-
 // GetUnitsK8sPodInfo returns information about the k8s pods for all alive units.
 // If any of the requested pieces of data are not present yet, zero values will
 // be returned in their place.
@@ -2290,8 +1874,8 @@ func (st *State) GetUnitsK8sPodInfo(ctx context.Context) (map[coreunit.Name]appl
 		return nil, errors.Capture(err)
 	}
 
-	infoQuerydb := infoQuerydb{
-		LifeID: int(life.Dead),
+	deadLife := entityLife{
+		LifeID: int(domainlife.Dead),
 	}
 
 	infoQuery := `
@@ -2310,11 +1894,11 @@ LEFT JOIN link_layer_device lld ON lld.net_node_uuid = u.net_node_uuid
 LEFT JOIN ip_address ip ON ip.device_uuid = lld.uuid
 LEFT JOIN k8s_pod_port kpp ON kpp.unit_uuid = u.uuid
 WHERE
-	u.life_id != $infoQuerydb.life_id
+	u.life_id != $entityLife.life_id
 GROUP BY
 	u.name
 `
-	stmt, err := st.Prepare(infoQuery, unitK8sPodInfoWithName{}, infoQuerydb)
+	stmt, err := st.Prepare(infoQuery, unitK8sPodInfoWithName{}, deadLife)
 	if err != nil {
 		return nil, errors.Capture(err)
 	}
@@ -2322,7 +1906,7 @@ GROUP BY
 	var infos []unitK8sPodInfoWithName
 
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		if err := tx.Query(ctx, stmt, infoQuerydb).GetAll(&infos); err != nil && !errors.Is(err, sqlair.ErrNoRows) {
+		if err := tx.Query(ctx, stmt, deadLife).GetAll(&infos); err != nil && !errors.Is(err, sqlair.ErrNoRows) {
 			return errors.Capture(err)
 		}
 		return nil
@@ -2334,7 +1918,7 @@ GROUP BY
 	result := make(map[coreunit.Name]application.K8sPodInfo)
 	for _, info := range infos {
 		ports := make([]k8sPodPort, 0)
-		for _, p := range strings.Split(info.Ports, ",") {
+		for p := range strings.SplitSeq(info.Ports, ",") {
 			ports = append(ports, k8sPodPort{Port: p})
 		}
 		result[coreunit.Name(info.UnitName)] = encodeK8sPodInfo(
@@ -2360,7 +1944,7 @@ func (st *State) GetUnitK8sPodInfo(ctx context.Context, name coreunit.Name) (app
 		return application.K8sPodInfo{}, errors.Capture(err)
 	}
 
-	unitName := unitName{Name: name}
+	unitName := unitName{Name: name.String()}
 	infoQuery := `
 SELECT    k.provider_id AS &unitK8sPodInfo.provider_id,
           ip.address_value AS &unitK8sPodInfo.address
@@ -2387,7 +1971,7 @@ WHERE  u.name = $unitName.name`
 	var info unitK8sPodInfo
 	var ports []k8sPodPort
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		if err := st.checkUnitNotDeadByName(ctx, tx, name); err != nil {
+		if err := st.checkUnitNotDeadByName(ctx, tx, name.String()); err != nil {
 			return errors.Capture(err)
 		}
 
@@ -2422,7 +2006,7 @@ func (st *State) GetUnitNetNodesByName(ctx context.Context, name coreunit.Name) 
 		return nil, errors.Capture(err)
 	}
 
-	ident := unitName{Name: name}
+	ident := unitName{Name: name.String()}
 	stmt, err := st.Prepare(`
 SELECT &unitNetNodeUUID.*
 FROM (
@@ -2458,258 +2042,565 @@ WHERE n.name = $unitName.name
 	return netNodeUUIDstrs, nil
 }
 
-func (st *State) upsertUnitCloudContainer(
+// GetUnitNetNodeUUID returns the net node UUID for the specified unit.
+// The following error types can be expected:
+// - [applicationerrors.UnitNotFound]: when the unit is not found.
+func (st *State) GetUnitNetNodeUUID(ctx context.Context, uuid coreunit.UUID) (string, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	ident := unitUUID{UnitUUID: uuid.String()}
+	stmt, err := st.Prepare(`
+SELECT &unitNetNodeUUID.*
+FROM   unit u
+WHERE  u.uuid = $unitUUID.uuid
+`, unitNetNodeUUID{}, ident)
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	var netNodeUUID unitNetNodeUUID
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err = tx.Query(ctx, stmt, ident).Get(&netNodeUUID)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return errors.Errorf("%w: %s", applicationerrors.UnitNotFound, uuid)
+		}
+		return errors.Capture(err)
+	})
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	return netNodeUUID.NetNodeUUID, nil
+}
+
+// GetStorageAddInfoByUnitUUID returns the deploy metadata and how many
+// storage instances exist for the named storage on the specified unit.
+//
+// The following error types can be expected:
+// - [applicationerrors.StorageNameNotSupported]: when storage name is not defined in charm metadata.
+func (st *State) GetStorageAddInfoByUnitUUID(
+	ctx context.Context, unitUUID coreunit.UUID, storageName corestorage.Name,
+) (applicationinternal.StorageInfoForAdd, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return applicationinternal.StorageInfoForAdd{}, errors.Capture(err)
+	}
+
+	var (
+		addInfo storageInfoForAdd
+		count   uint32
+	)
+	if err := db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		addInfo, err = st.getStorageInstanceInfoForAdd(ctx, tx, unitUUID, storageName)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return errors.Errorf("storage %q is not found", storageName).Add(applicationerrors.StorageNameNotSupported)
+		}
+		if err != nil {
+			return errors.Errorf("getting charm storage metadata for unit %q: %w", unitUUID, err)
+		}
+		count, err = st.getUnitStorageCount(ctx, tx, unitUUID, storageName)
+		if err != nil {
+			return errors.Errorf("getting storage count for unit %q storage %s: %w", unitUUID, storageName, err)
+		}
+		return nil
+	}); err != nil {
+		return applicationinternal.StorageInfoForAdd{}, errors.Capture(err)
+	}
+	return applicationinternal.StorageInfoForAdd{
+		CharmStorageDefinitionForValidation: applicationinternal.CharmStorageDefinitionForValidation{
+			Name:        addInfo.Name,
+			Type:        domainapplicationcharm.StorageType(addInfo.Kind),
+			CountMin:    addInfo.CountMin,
+			CountMax:    addInfo.CountMax,
+			MinimumSize: addInfo.MinimumSize,
+		},
+		AlreadyAttachedCount: count,
+	}, nil
+}
+
+// GetIAASUnitContext returns IAAS context information required for the
+// construction of a context factory.
+//
+// The following errors may be returned:
+// - [applicationerrors.UnitNotFound] if the unit does not exist.
+// - [applicationerrors.UnitIsDead] if the unit is dead.
+func (st *State) GetIAASUnitContext(ctx context.Context, unitName string) (applicationinternal.IAASUnitContext, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return applicationinternal.IAASUnitContext{}, errors.Capture(err)
+	}
+
+	var (
+		legacyProxySettings, jujuProxySettings applicationinternal.ProxySettings
+		machineOpenedPortRanges                []unitEndpointOpenedPortRange
+		unitAddress                            *string
+	)
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		netNodeUUID, err := st.getNonDeadUnitNetNodeByUnitName(ctx, tx, unitName)
+		if err != nil {
+			return errors.Errorf("getting net node for unit: %w", err)
+		}
+
+		legacyProxySettings, err = st.getLegacyProxySettings(ctx, tx)
+		if err != nil {
+			return errors.Errorf("getting legacy proxy settings: %w", err)
+		}
+
+		jujuProxySettings, err = st.getJujuProxySettings(ctx, tx)
+		if err != nil {
+			return errors.Errorf("getting proxy settings: %w", err)
+		}
+
+		machineOpenedPortRanges, err = st.getMachineOpenedPortRanges(ctx, tx, netNodeUUID)
+		if err != nil {
+			return errors.Errorf("getting machine opened port ranges: %w", err)
+		}
+
+		unitAddress, err = st.getUnitPrivateAddress(ctx, tx, netNodeUUID)
+		if err != nil {
+			return errors.Errorf("getting private address for unit: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return applicationinternal.IAASUnitContext{}, errors.Capture(err)
+	}
+
+	decoded := port.UnitEndpointPortRanges(
+		transform.Slice(machineOpenedPortRanges,
+			func(p unitEndpointOpenedPortRange) port.UnitEndpointPortRange {
+				return p.decodeToUnitEndpointPortRange()
+			},
+		),
+	)
+
+	return applicationinternal.IAASUnitContext{
+		LegacyProxySettings:               legacyProxySettings,
+		JujuProxySettings:                 jujuProxySettings,
+		OpenedMachinePortRangesByEndpoint: decoded.ByUnitByEndpoint(),
+		PrivateAddress:                    unitAddress,
+	}, nil
+}
+
+// GetCAASUnitContext returns CAAS context information required for the
+// construction of a context factory.
+// The following errors may be returned:
+// - [applicationerrors.UnitNotFound] if the unit does not exist.
+// - [applicationerrors.UnitIsDead] if the unit is dead.
+func (st *State) GetCAASUnitContext(ctx context.Context, unitName string) (applicationinternal.CAASUnitContext, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return applicationinternal.CAASUnitContext{}, errors.Capture(err)
+	}
+
+	var (
+		legacyProxySettings, jujuProxySettings applicationinternal.ProxySettings
+		unitOpenedPortRanges                   []unitEndpointOpenedPortRange
+	)
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		if err := st.checkUnitNotDeadByName(ctx, tx, unitName); err != nil {
+			return errors.Capture(err)
+		}
+
+		legacyProxySettings, err = st.getLegacyProxySettings(ctx, tx)
+		if err != nil {
+			return errors.Errorf("getting legacy proxy settings: %w", err)
+		}
+
+		jujuProxySettings, err = st.getJujuProxySettings(ctx, tx)
+		if err != nil {
+			return errors.Errorf("getting proxy settings: %w", err)
+		}
+
+		unitOpenedPortRanges, err = st.getUnitOpenedPortRanges(ctx, tx, unitName)
+		if err != nil {
+			return errors.Errorf("getting machine opened port ranges: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return applicationinternal.CAASUnitContext{}, errors.Capture(err)
+	}
+
+	decoded := port.UnitEndpointPortRanges(
+		transform.Slice(unitOpenedPortRanges,
+			func(p unitEndpointOpenedPortRange) port.UnitEndpointPortRange {
+				return p.decodeToUnitEndpointPortRange()
+			}),
+	)
+
+	return applicationinternal.CAASUnitContext{
+		LegacyProxySettings:        legacyProxySettings,
+		JujuProxySettings:          jujuProxySettings,
+		OpenedPortRangesByEndpoint: decoded.ByUnitByEndpoint(),
+	}, nil
+}
+
+func (st *State) getLegacyProxySettings(ctx context.Context, tx *sqlair.TX) (applicationinternal.ProxySettings, error) {
+	type modelConfig struct {
+		Key   string `db:"key"`
+		Value string `db:"value"`
+	}
+
+	stmt, err := st.Prepare(`
+SELECT &modelConfig.*
+FROM model_config
+WHERE key IN ('http-proxy', 'https-proxy', 'ftp-proxy', 'no-proxy')
+`, modelConfig{})
+	if err != nil {
+		return applicationinternal.ProxySettings{}, errors.Capture(err)
+	}
+
+	var configs []modelConfig
+	err = tx.Query(ctx, stmt).GetAll(&configs)
+	if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
+		return applicationinternal.ProxySettings{}, err
+	}
+
+	proxySettings := applicationinternal.ProxySettings{}
+	for _, config := range configs {
+		switch config.Key {
+		case "http-proxy":
+			proxySettings.HTTP = config.Value
+		case "https-proxy":
+			proxySettings.HTTPS = config.Value
+		case "ftp-proxy":
+			proxySettings.FTP = config.Value
+		case "no-proxy":
+			proxySettings.NoProxy = config.Value
+		}
+	}
+	return proxySettings, nil
+}
+
+func (st *State) getJujuProxySettings(ctx context.Context, tx *sqlair.TX) (applicationinternal.ProxySettings, error) {
+	type modelConfig struct {
+		Key   string `db:"key"`
+		Value string `db:"value"`
+	}
+
+	stmt, err := st.Prepare(`
+SELECT &modelConfig.*
+FROM model_config
+WHERE key IN ('juju-http-proxy', 'juju-https-proxy', 'juju-ftp-proxy', 'juju-no-proxy')
+`, modelConfig{})
+	if err != nil {
+		return applicationinternal.ProxySettings{}, errors.Capture(err)
+	}
+
+	var configs []modelConfig
+	err = tx.Query(ctx, stmt).GetAll(&configs)
+	if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
+		return applicationinternal.ProxySettings{}, err
+	}
+
+	proxySettings := applicationinternal.ProxySettings{}
+	for _, config := range configs {
+		switch config.Key {
+		case "juju-http-proxy":
+			proxySettings.HTTP = config.Value
+		case "juju-https-proxy":
+			proxySettings.HTTPS = config.Value
+		case "juju-ftp-proxy":
+			proxySettings.FTP = config.Value
+		case "juju-no-proxy":
+			proxySettings.NoProxy = config.Value
+		}
+	}
+	return proxySettings, nil
+}
+
+type unitEndpointOpenedPortRange struct {
+	UnitName coreunit.Name `db:"unit_name"`
+	Protocol string        `db:"protocol"`
+	FromPort int           `db:"from_port"`
+	ToPort   int           `db:"to_port"`
+	Endpoint string        `db:"endpoint"`
+}
+
+func (p unitEndpointOpenedPortRange) decodeToUnitEndpointPortRange() port.UnitEndpointPortRange {
+	return port.UnitEndpointPortRange{
+		UnitName:  p.UnitName,
+		Endpoint:  p.Endpoint,
+		PortRange: p.decodeToPortRange(),
+	}
+}
+
+func (p unitEndpointOpenedPortRange) decodeToPortRange() network.PortRange {
+	return network.PortRange{
+		Protocol: p.Protocol,
+		FromPort: p.FromPort,
+		ToPort:   p.ToPort,
+	}
+}
+
+func (st *State) getMachineOpenedPortRanges(
 	ctx context.Context,
 	tx *sqlair.TX,
-	unitName coreunit.Name,
-	unitUUID coreunit.UUID,
 	netNodeUUID string,
-	cc *application.CloudContainer,
-) error {
-	containerInfo := cloudContainer{
-		UnitUUID:   unitUUID,
-		ProviderID: cc.ProviderID,
-	}
+) ([]unitEndpointOpenedPortRange, error) {
+	nUUID := entityUUID{UUID: netNodeUUID}
 
-	queryStmt, err := st.Prepare(`
-SELECT &cloudContainer.*
-FROM k8s_pod
-WHERE unit_uuid = $cloudContainer.unit_uuid
-`, containerInfo)
+	query, err := st.Prepare(`
+SELECT &unitEndpointOpenedPortRange.*
+FROM v_port_range
+JOIN unit ON unit_uuid = unit.uuid
+WHERE unit.net_node_uuid = $entityUUID.uuid
+`, unitEndpointOpenedPortRange{}, nUUID)
 	if err != nil {
-		return errors.Capture(err)
+		return nil, errors.Errorf("preparing get machine opened ports statement: %w", err)
 	}
 
-	insertStmt, err := st.Prepare(`
-INSERT INTO k8s_pod (*) VALUES ($cloudContainer.*)
-`, containerInfo)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	updateStmt, err := st.Prepare(`
-UPDATE k8s_pod SET
-    provider_id = $cloudContainer.provider_id
-WHERE unit_uuid = $cloudContainer.unit_uuid
-`, containerInfo)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	err = tx.Query(ctx, queryStmt, containerInfo).Get(&containerInfo)
-	if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
-		return errors.Errorf("looking up cloud container %q: %w", unitName, err)
-	}
-	if err == nil {
-		newProviderID := cc.ProviderID
-		if newProviderID != "" &&
-			containerInfo.ProviderID != newProviderID {
-			st.logger.Debugf(ctx, "unit %q has provider id %q which changed to %q",
-				unitName, containerInfo.ProviderID, newProviderID)
-		}
-		containerInfo.ProviderID = newProviderID
-		if err := tx.Query(ctx, updateStmt, containerInfo).Run(); err != nil {
-			return errors.Errorf("updating cloud container for unit %q: %w", unitName, err)
-		}
-	} else {
-		if err := tx.Query(ctx, insertStmt, containerInfo).Run(); err != nil {
-			return errors.Errorf("inserting cloud container for unit %q: %w", unitName, err)
-		}
-	}
-
-	if cc.Address != nil {
-		if err := st.upsertCloudContainerAddress(ctx, tx, unitName, netNodeUUID, *cc.Address); err != nil {
-			return errors.Errorf("updating cloud container address for unit %q: %w", unitName, err)
-		}
-	}
-	if cc.Ports != nil {
-		if err := st.upsertCloudContainerPorts(ctx, tx, unitUUID, *cc.Ports); err != nil {
-			return errors.Errorf("updating cloud container ports for unit %q: %w", unitName, err)
-		}
-	}
-	return nil
-}
-
-func (st *State) upsertCloudContainerAddress(
-	ctx context.Context, tx *sqlair.TX, unitName coreunit.Name, netNodeUUID string, address application.ContainerAddress,
-) error {
-	// First ensure the address link layer device is upserted.
-	// For cloud containers, the device is a placeholder without
-	// a MAC address. It just exits to tie the address to the
-	// net node corresponding to the cloud container.
-	cloudContainerDeviceInfo := cloudContainerDevice{
-		Name:              address.Device.Name,
-		NetNodeID:         netNodeUUID,
-		DeviceTypeID:      int(address.Device.DeviceTypeID),
-		VirtualPortTypeID: int(address.Device.VirtualPortTypeID),
-	}
-
-	selectCloudContainerDeviceStmt, err := st.Prepare(`
-SELECT &cloudContainerDevice.uuid
-FROM link_layer_device
-WHERE net_node_uuid = $cloudContainerDevice.net_node_uuid
-`, cloudContainerDeviceInfo)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	insertCloudContainerDeviceStmt, err := st.Prepare(`
-INSERT INTO link_layer_device (*) VALUES ($cloudContainerDevice.*)
-`, cloudContainerDeviceInfo)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	// See if the link layer device exists, if not insert it.
-	err = tx.Query(ctx, selectCloudContainerDeviceStmt, cloudContainerDeviceInfo).Get(&cloudContainerDeviceInfo)
-	if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
-		return errors.Errorf("querying cloud container link layer device for unit %q: %w", unitName, err)
-	}
+	var results []unitEndpointOpenedPortRange
+	err = tx.Query(ctx, query, nUUID).GetAll(&results)
 	if errors.Is(err, sqlair.ErrNoRows) {
-		deviceUUID, err := uuid.NewUUID()
-		if err != nil {
-			return errors.Capture(err)
-		}
-		cloudContainerDeviceInfo.UUID = deviceUUID.String()
-		if err := tx.Query(ctx, insertCloudContainerDeviceStmt, cloudContainerDeviceInfo).Run(); err != nil {
-			return errors.Errorf("inserting cloud container device for unit %q: %w", unitName, err)
-		}
+		return nil, nil
 	}
-	deviceUUID := cloudContainerDeviceInfo.UUID
+	return results, nil
+}
 
-	subnetUUIDs, err := st.k8sSubnetUUIDsByAddressType(ctx, tx)
+func (st *State) getUnitOpenedPortRanges(
+	ctx context.Context,
+	tx *sqlair.TX,
+	unitName string,
+) ([]unitEndpointOpenedPortRange, error) {
+	uName := unitEndpointOpenedPortRange{UnitName: coreunit.Name(unitName)}
+
+	query, err := st.Prepare(`
+SELECT &unitEndpointOpenedPortRange.*
+FROM v_port_range
+WHERE unit_name = $unitEndpointOpenedPortRange.unit_name
+`, uName)
 	if err != nil {
-		return errors.Capture(err)
-	}
-	subnetUUID, ok := subnetUUIDs[ipaddress.UnMarshallAddressType(address.AddressType)]
-	if !ok {
-		// Note: This is a programming error. Today the K8S subnets are
-		// placeholders which should always be created when a model is
-		// added.
-		return errors.Errorf("subnet for address type %q not found", address.AddressType)
+		return nil, errors.Errorf("preparing get unit opened ports statement: %w", err)
 	}
 
-	// Now process the address details.
-	ipAddr := ipAddress{
-		Value:        address.Value,
-		SubnetUUID:   subnetUUID,
-		NetNodeUUID:  netNodeUUID,
-		ConfigTypeID: int(address.ConfigType),
-		TypeID:       int(address.AddressType),
-		OriginID:     int(address.Origin),
-		ScopeID:      int(address.Scope),
-		DeviceID:     deviceUUID,
-	}
-
-	selectAddressUUIDStmt, err := st.Prepare(`
-SELECT &ipAddress.uuid
-FROM   ip_address
-WHERE  device_uuid = $ipAddress.device_uuid;
-`, ipAddr)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	upsertAddressStmt, err := st.Prepare(`
-INSERT INTO ip_address (*)
-VALUES ($ipAddress.*)
-ON CONFLICT(uuid) DO UPDATE SET
-    address_value = excluded.address_value,
-    subnet_uuid = excluded.subnet_uuid,
-    type_id = excluded.type_id,
-    scope_id = excluded.scope_id,
-    origin_id = excluded.origin_id,
-    config_type_id = excluded.config_type_id
-`, ipAddr)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	// Container addresses are never deleted unless the container itself is deleted.
-	// First see if there's an existing address recorded.
-	err = tx.Query(ctx, selectAddressUUIDStmt, ipAddr).Get(&ipAddr)
-	if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
-		return errors.Errorf("querying existing cloud container address for device %q: %w", deviceUUID, err)
-	}
-
-	// Create a UUID for new addresses.
+	var results []unitEndpointOpenedPortRange
+	err = tx.Query(ctx, query, uName).GetAll(&results)
 	if errors.Is(err, sqlair.ErrNoRows) {
-		addrUUID, err := uuid.NewUUID()
-		if err != nil {
-			return errors.Capture(err)
-		}
-		ipAddr.AddressUUID = addrUUID.String()
+		return nil, nil
 	}
-
-	// Update the address values.
-	if err = tx.Query(ctx, upsertAddressStmt, ipAddr).Run(); err != nil {
-		return errors.Errorf("updating cloud container address attributes for device %q: %w", deviceUUID, err)
-	}
-	return nil
+	return results, nil
 }
 
-func (st *State) upsertCloudContainerPorts(ctx context.Context, tx *sqlair.TX, unitUUID coreunit.UUID, portValues []string) error {
-	type ports []string
+func (st *State) getUnitPrivateAddress(ctx context.Context, tx *sqlair.TX, netNodeUUID string) (*string, error) {
+	entityUUID := entityUUID{UUID: netNodeUUID}
 
-	ccPort := unitK8sPodPort{
-		UnitUUID: unitUUID,
-	}
-	deleteStmt, err := st.Prepare(`
-DELETE FROM k8s_pod_port
-WHERE port NOT IN ($ports[:])
-AND unit_uuid = $unitK8sPodPort.unit_uuid;
-`, ports{}, ccPort)
+	// A unit private address is determined by looking for IP addresses
+	// associated with the unit's net node, and prioritising them as follows:
+	//
+	//  - Local cloud scoped IPv4 addresses
+	//  - Local cloud scoped IPv6 addresses
+	//  - Public or unknown scoped IPv4 addresses
+	//  - Public or unknown scoped IPv6 addresses
+	//  - Origin either from machine or provider
+	//  - Real ethernet devices over virtual ethernet devices
+	//
+	// Loopback addresses are excluded.
+	//
+	// Note: unknown scope is included as a fallback for compatibility with the
+	// openstack provider, though in practice we would expect these to be public
+	// addresses and shouldn't be used.
+
+	query, err := st.Prepare(`
+SELECT
+    a.address_value AS &unitAddress.value,
+	d.device_type_id,
+    CASE
+        WHEN a.scope_id = 2 THEN 0
+        WHEN a.scope_id IN (1, 0) THEN 1
+        ELSE 2
+    END AS scope_rank,
+    CASE
+        WHEN a.type_id = 0 THEN 0
+        WHEN a.type_id = 1 THEN 1
+        ELSE 2
+    END AS type_rank,
+	CASE
+		WHEN a.origin_id = 0 THEN 1
+		WHEN a.origin_id = 1 THEN 0
+		ELSE 2
+	END AS origin_rank
+FROM net_node n
+JOIN link_layer_device d ON n.uuid = d.net_node_uuid
+JOIN ip_address a ON d.uuid = a.device_uuid
+WHERE
+    a.scope_id IN (0, 1, 2)
+    AND a.config_type_id != 6
+    AND n.uuid = $entityUUID.uuid
+ORDER BY
+    scope_rank,
+    type_rank,
+	origin_rank,
+	d.device_type_id,
+    a.address_value
+LIMIT 1;
+`, unitAddress{}, entityUUID)
 	if err != nil {
-		return errors.Capture(err)
+		return nil, errors.Errorf("preparing get unit private address statement: %w", err)
 	}
 
-	upsertStmt, err := st.Prepare(`
-INSERT INTO k8s_pod_port (*)
-VALUES ($unitK8sPodPort.*)
-ON CONFLICT(unit_uuid, port)
-DO NOTHING
-`, ccPort)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	if err := tx.Query(ctx, deleteStmt, ports(portValues), ccPort).Run(); err != nil {
-		return errors.Errorf("removing cloud container ports for %q: %w", unitUUID, err)
-	}
-
-	for _, port := range portValues {
-		ccPort.Port = port
-		if err := tx.Query(ctx, upsertStmt, ccPort).Run(); err != nil {
-			return errors.Errorf("updating cloud container ports for %q: %w", unitUUID, err)
-		}
-	}
-
-	return nil
-}
-
-// ensureFutureUnitNetNode exists to ensure that a netnode uuid that is about to
-// be used for a machine exists. We do this because the business logic around if
-// netnode uuid for a unit is shared or already exists is outside the scope of
-// state.
-func (st *State) ensureFutureUnitNetNode(
-	ctx context.Context, tx *sqlair.TX, uuid string,
-) error {
-	netNodeUUID := netNodeUUID{NetNodeUUID: uuid}
-
-	ensureNode := `INSERT INTO net_node (uuid) VALUES ($netNodeUUID.*)`
-	ensureNodeStmt, err := st.Prepare(ensureNode, netNodeUUID)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	err = tx.Query(ctx, ensureNodeStmt, netNodeUUID).Run()
-	if internaldatabase.IsErrConstraintPrimaryKey(err) {
-		return nil
+	var address unitAddress
+	err = tx.Query(ctx, query, entityUUID).Get(&address)
+	if errors.Is(err, sqlair.ErrNoRows) {
+		return nil, nil
 	} else if err != nil {
-		return errors.Errorf("ensuring net node %q for future unit: %w", uuid, err)
+		return nil, errors.Errorf("querying unit private address: %w", err)
+	}
+	return new(address.Value), nil
+}
+
+// GetCharmStorageAndInstanceInfoByUnitUUIDAndStorageUUID returns the metadata
+// GetStorageAttachInfoByUnitUUIDAndStorageUUID returns the metadata
+// and select details for the storage instance on the specified unit.
+// The details include how many existing instances of the same named storage
+// already exist, the requested size, and the instance's storage pool.
+//
+// The following errors can be expected:
+// - [applicationerrors.UnitNotFound] when the unit does not exist.
+// - [storageerrors.StorageInstanceNotFound] when the storage instance does not
+// exist.
+// - [applicationerrors.StorageNameNotSupported] when the unit's charm does not
+// define the storage name in use by the storage instance.
+func (st *State) GetStorageAttachInfoByUnitUUIDAndStorageUUID(
+	ctx context.Context,
+	unitUUID coreunit.UUID,
+	storageUUID domainstorage.StorageInstanceUUID,
+) (domainstorage.StorageInstanceInfoForUnitAttach, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return domainstorage.StorageInstanceInfoForUnitAttach{}, errors.Capture(err)
 	}
 
-	return nil
+	var (
+		storageInstInfo        storageInstanceInfoForAttach
+		storageInstAttachments []storageInstanceUnitAttachment
+		unitStorageNameInfo    unitStorageNameInfo
+	)
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		unitExists, err := st.checkUnitExists(ctx, tx, unitUUID.String())
+		if err != nil {
+			return errors.Errorf("check if unit exists: %w", err)
+		}
+		if !unitExists {
+			return errors.Errorf(
+				"unit %q does not exist", unitUUID,
+			).Add(applicationerrors.UnitNotFound)
+		}
+
+		storageInstInfo, err = st.getStorageInstanceInfoForAttach(ctx, tx, storageUUID)
+		if err != nil {
+			return errors.Errorf(
+				"getting storage instance information for attachment: %w", err,
+			)
+		}
+
+		storageInstAttachments, err = st.getStorageInstanceUnitAttachments(ctx, tx, storageUUID)
+		if err != nil {
+			return errors.Errorf(
+				"getting storage instance unit attachments: %w", err,
+			)
+		}
+
+		// We use the name of the Storage Instance to lookup and find the
+		// storage definition information for the unit.
+		unitStorageNameInfo, err = st.getUnitStorageNameInfo(
+			ctx, tx, unitUUID, storageInstInfo.StorageName,
+		)
+		if err != nil {
+			return errors.Errorf(
+				"getting unit storage name %q info: %w",
+				storageInstInfo.StorageName,
+				err,
+			)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return domainstorage.StorageInstanceInfoForUnitAttach{}, err
+	}
+
+	retVal := domainstorage.StorageInstanceInfoForUnitAttach{
+		StorageInstanceInfoForAttach: domainstorage.StorageInstanceInfoForAttach{
+			StorageInstanceAttachInfo: domainstorage.StorageInstanceAttachInfo{
+				UUID:             domainstorage.StorageInstanceUUID(storageInstInfo.UUID),
+				Life:             domainlife.Life(storageInstInfo.Life),
+				Kind:             domainstorage.StorageKind(storageInstInfo.StorageKindID),
+				RequestedSizeMIB: storageInstInfo.RequestedSizeMIB,
+				StorageName:      storageInstInfo.StorageName,
+			},
+		},
+
+		UnitAttachNamedStorageInfo: domainstorage.UnitAttachNamedStorageInfo{
+			AlreadyAttachedCount: unitStorageNameInfo.AlreadyAttachedCount,
+			CharmStorageDefinition: domainstorage.CharmStorageDefinition{
+				CountMin:    unitStorageNameInfo.StorageDefinitionCountMin,
+				CountMax:    unitStorageNameInfo.StorageDefinitionCountMax,
+				MinimumSize: unitStorageNameInfo.StorageDefinitionMinimumSize,
+				Name:        unitStorageNameInfo.StorageDefinitionName,
+				Shared:      unitStorageNameInfo.StorageDefinitionShared,
+				Type:        domainapplicationcharm.StorageType(unitStorageNameInfo.StorageDefinitionKind),
+			},
+			CharmMetadataName: unitStorageNameInfo.CharmMetadataName,
+			CharmUUID:         corecharm.ID(unitStorageNameInfo.UnitCharmUUID),
+			Life:              domainlife.Life(unitStorageNameInfo.UnitLifeID),
+			Name:              coreunit.Name(unitStorageNameInfo.UnitName),
+			NetNodeUUID:       domainnetwork.NetNodeUUID(unitStorageNameInfo.UnitNetNodeUUID),
+			UUID:              coreunit.UUID(unitStorageNameInfo.UnitUUID),
+		},
+	}
+
+	if unitStorageNameInfo.MachineUUID.Valid {
+		retVal.UnitAttachNamedStorageInfo.MachineUUID = new(
+			coremachine.UUID(unitStorageNameInfo.MachineUUID.V))
+	}
+
+	if storageInstInfo.CharmName.Valid {
+		retVal.StorageInstanceAttachInfo.CharmName = new(storageInstInfo.CharmName.V)
+	}
+
+	if storageInstInfo.FilesystemUUID.Valid {
+		retVal.StorageInstanceAttachInfo.Filesystem = &domainstorage.StorageInstanceAttachFilesystemInfo{
+			UUID:           domainstorage.FilesystemUUID(storageInstInfo.FilesystemUUID.V),
+			ProvisionScope: domainstorage.ProvisionScope(storageInstInfo.FilesystemProvisionScopeID.V),
+			SizeMib:        storageInstInfo.FilesystemSizeMIB.V,
+		}
+	}
+	if storageInstInfo.FilesystemOwnedMachineUUID.Valid {
+		retVal.StorageInstanceAttachInfo.Filesystem.OwningMachineUUID =
+			new(coremachine.UUID(storageInstInfo.FilesystemOwnedMachineUUID.V))
+	}
+	if storageInstInfo.VolumeUUID.Valid {
+		retVal.StorageInstanceAttachInfo.Volume = &domainstorage.StorageInstanceAttachVolumeInfo{
+			UUID:           domainstorage.VolumeUUID(storageInstInfo.VolumeUUID.V),
+			ProvisionScope: domainstorage.ProvisionScope(storageInstInfo.VolumeProvisionScopeID.V),
+			SizeMiB:        storageInstInfo.VolumeSizeMIB.V,
+		}
+	}
+	if storageInstInfo.VolumeOwnedMachineUUID.Valid {
+		retVal.StorageInstanceAttachInfo.Volume.OwningMachineUUID =
+			new(coremachine.UUID(storageInstInfo.VolumeOwnedMachineUUID.V))
+	}
+
+	retVal.StorageInstanceAttachments = slices.Grow(
+		retVal.StorageInstanceAttachments, len(storageInstAttachments))
+	for _, unitAttachment := range storageInstAttachments {
+		retVal.StorageInstanceAttachments = append(
+			retVal.StorageInstanceAttachments,
+			domainstorage.StorageInstanceUnitAttachmentID{
+				UnitUUID: coreunit.UUID(unitAttachment.UnitUUID),
+				UUID:     domainstorage.StorageAttachmentUUID(unitAttachment.UUID),
+			},
+		)
+	}
+
+	return retVal, nil
 }
 
 // setK8sPodStatus saves the given k8s pod status, overwriting
@@ -2718,7 +2609,7 @@ func (st *State) ensureFutureUnitNetNode(
 func (st *State) setK8sPodStatus(
 	ctx context.Context,
 	tx *sqlair.TX,
-	unitUUID coreunit.UUID,
+	unitUUID string,
 	sts *status.StatusInfo[status.K8sPodStatusType],
 ) error {
 	if sts == nil {

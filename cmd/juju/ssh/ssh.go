@@ -21,9 +21,9 @@ import (
 	"github.com/juju/juju/api/client/client"
 	"github.com/juju/juju/api/jujuclient"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/model"
-	"github.com/juju/juju/internal/cmd"
 	jujussh "github.com/juju/juju/internal/network/ssh"
 	"github.com/juju/juju/rpc/params"
 )
@@ -57,6 +57,7 @@ can be used to disable these checks. Use of this option is not recommended as
 it opens up the possibility of a man-in-the-middle attack.
 
 The default identity known to Juju and used by this command is ` + "`~/.ssh/id_ed25519`" + `.
+For models on a machine cloud, an appropriate SSH key must be added to the model first.
 
 Options can be passed to the local OpenSSH client (ssh) on platforms
 where it is available. This is done by inserting them between the target and
@@ -123,13 +124,13 @@ Interact with the Pebble instance in the workload container via the charm contai
 
 **For k8s controller:**
 
-Connect to the api server pod:
+Connect to the controller api-server container:
 
-    juju ssh --container api-server 0
+    juju ssh 0
 
-Connect to the mongo db pod:
+Connect to the controller charm container:
 
-    juju ssh --container mongodb 0
+    juju ssh --container charm 0
 `
 
 const (
@@ -143,7 +144,7 @@ const (
 
 func NewSSHCommand(
 	hostChecker jujussh.ReachableChecker,
-	isTerminal func(interface{}) bool,
+	isTerminal func(any) bool,
 	retryStrategy retry.CallArgs,
 	publicKeyRetryStrategy retry.CallArgs,
 ) cmd.Command {
@@ -181,7 +182,7 @@ type sshCommand struct {
 	provider sshProvider
 
 	hostChecker jujussh.ReachableChecker
-	isTerminal  func(interface{}) bool
+	isTerminal  func(any) bool
 	pty         autoBoolValue
 
 	retryStrategy          retry.CallArgs
@@ -282,20 +283,26 @@ func (c *sshCommand) Run(ctx *cmd.Context) error {
 		}
 	}
 
-	var pty bool
+	return c.provider.ssh(ctx, c.enablePty(ctx), target)
+}
+
+// enablePty determines whether a pseudo-terminal should be allocated
+// for the SSH session, based on the --pty flag and terminal availability.
+func (c *sshCommand) enablePty(ctx *cmd.Context) bool {
 	if c.pty.b != nil {
-		pty = *c.pty.b
-	} else {
-		// Flag was not specified: create a pty
-		// on the remote side if this process
-		// has a terminal.
-		isTerminal := isTerminal
-		if c.isTerminal != nil {
-			isTerminal = c.isTerminal
-		}
-		pty = isTerminal(ctx.Stdin)
+		return *c.pty.b
 	}
-	return c.provider.ssh(ctx, pty, target)
+	// Flag was not specified.
+	// If a command is supplied, we shouldn't use a pty
+	// unless requested (which is handled above).
+	// If no command is supplied, we use a pty if we have a terminal.
+	if len(c.provider.getArgs()) > 0 {
+		return false
+	}
+	if c.isTerminal != nil {
+		return c.isTerminal(ctx.Stdin)
+	}
+	return isTerminal(ctx.Stdin)
 }
 
 // autoBoolValue is like gnuflag.boolValue, but remembers
@@ -314,7 +321,7 @@ func (b *autoBoolValue) Set(s string) error {
 	return nil
 }
 
-func (b *autoBoolValue) Get() interface{} {
+func (b *autoBoolValue) Get() any {
 	if b.b != nil {
 		return *b.b
 	}
@@ -359,7 +366,7 @@ func (c *leaderResolver) maybeResolveLeaderUnit(ctx context.Context, target stri
 	return c.resolvedLeader, errors.Trace(err)
 }
 
-func isTerminal(f interface{}) bool {
+func isTerminal(f any) bool {
 	f_, ok := f.(*os.File)
 	if !ok {
 		return false

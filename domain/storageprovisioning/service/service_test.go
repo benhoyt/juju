@@ -14,7 +14,7 @@ import (
 	"github.com/juju/juju/core/changestream"
 	coreerrors "github.com/juju/juju/core/errors"
 	machinetesting "github.com/juju/juju/core/machine/testing"
-	modeltesting "github.com/juju/juju/core/model/testing"
+	coremodel "github.com/juju/juju/core/model"
 	unittesting "github.com/juju/juju/core/unit/testing"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	"github.com/juju/juju/domain/blockdevice"
@@ -22,9 +22,7 @@ import (
 	machineerrors "github.com/juju/juju/domain/machine/errors"
 	domainstorage "github.com/juju/juju/domain/storage"
 	storageerrors "github.com/juju/juju/domain/storage/errors"
-	storagetesting "github.com/juju/juju/domain/storage/testing"
 	"github.com/juju/juju/domain/storageprovisioning"
-	storageprovisioningtesting "github.com/juju/juju/domain/storageprovisioning/testing"
 	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/uuid"
@@ -96,7 +94,7 @@ func (s *serviceSuite) TestGetStorageResourceTagsForModel(c *tc.C) {
 
 	ri := storageprovisioning.ModelResourceTagInfo{
 		BaseResourceTags: "a=x b=y juju-drop-me=bad",
-		ModelUUID:        modeltesting.GenModelUUID(c).String(),
+		ModelUUID:        tc.Must0(c, coremodel.NewUUID).String(),
 		ControllerUUID:   uuid.MustNewUUID().String(),
 	}
 	s.state.EXPECT().GetStorageResourceTagInfoForModel(gomock.Any(), "resource-tags").Return(
@@ -213,7 +211,7 @@ func (s *serviceSuite) TestGetAttachmentLife(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	unitUUID := unittesting.GenUnitUUID(c)
-	storageInstanceUUID := storagetesting.GenStorageInstanceUUID(c)
+	storageInstanceUUID := tc.Must(c, domainstorage.NewStorageInstanceUUID)
 	life := domainlife.Alive
 
 	s.state.EXPECT().GetStorageInstanceUUIDByID(gomock.Any(), "foo/1").Return(
@@ -254,7 +252,7 @@ func (s *serviceSuite) TestGetAttachmentLifeWithUnitNotFound(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	unitUUID := unittesting.GenUnitUUID(c)
-	storageInstanceUUID := storagetesting.GenStorageInstanceUUID(c)
+	storageInstanceUUID := tc.Must(c, domainstorage.NewStorageInstanceUUID)
 
 	s.state.EXPECT().GetStorageInstanceUUIDByID(gomock.Any(), "foo/1").Return(
 		storageInstanceUUID, nil,
@@ -272,7 +270,7 @@ func (s *serviceSuite) TestGetAttachmentLifeWithAttachmentNotFound(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	unitUUID := unittesting.GenUnitUUID(c)
-	storageInstanceUUID := storagetesting.GenStorageInstanceUUID(c)
+	storageInstanceUUID := tc.Must(c, domainstorage.NewStorageInstanceUUID)
 
 	s.state.EXPECT().GetStorageInstanceUUIDByID(gomock.Any(), "foo/1").Return(
 		storageInstanceUUID, nil,
@@ -290,7 +288,7 @@ func (s *serviceSuite) TestGetStorageAttachmentUUIDForUnit(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	unitUUID := unittesting.GenUnitUUID(c)
-	storageAttachmentUUID := storageprovisioningtesting.GenStorageAttachmentUUID(c)
+	storageAttachmentUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
 
 	s.state.EXPECT().GetStorageAttachmentUUIDForUnit(
 		gomock.Any(), "foo/1", unitUUID,
@@ -382,7 +380,7 @@ func (s *serviceSuite) TestWatchStorageAttachmentsForUnit(c *tc.C) {
 func (s *serviceSuite) TestWatchStorageAttachment(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	storageAttachmentUUID := storageprovisioningtesting.GenStorageAttachmentUUID(c)
+	storageAttachmentUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
 
 	s.state.EXPECT().NamespaceForStorageAttachment().Return("foo_namespace")
 	s.watcherFactory.EXPECT().NewNotifyWatcher(gomock.Any(),
@@ -402,7 +400,7 @@ func (s *serviceSuite) TestWatchStorageAttachment(c *tc.C) {
 func (s *serviceSuite) TestGetUnitStorageAttachmentInfoForVolume(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	storageAttachmentUUID := storageprovisioningtesting.GenStorageAttachmentUUID(c)
+	storageAttachmentUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
 	bdUUID := tc.Must(c, blockdevice.NewBlockDeviceUUID)
 	info := storageprovisioning.StorageAttachmentInfo{
 		Kind:            domainstorage.StorageKindBlock,
@@ -426,7 +424,7 @@ func (s *serviceSuite) TestGetUnitStorageAttachmentInfoForVolume(c *tc.C) {
 func (s *serviceSuite) TestGetUnitStorageAttachmentInfoForFilesystem(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	storageAttachmentUUID := storageprovisioningtesting.GenStorageAttachmentUUID(c)
+	storageAttachmentUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
 	info := storageprovisioning.StorageAttachmentInfo{
 		Kind:                 domainstorage.StorageKindFilesystem,
 		Life:                 domainlife.Alive,

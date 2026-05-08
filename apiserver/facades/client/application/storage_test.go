@@ -9,9 +9,9 @@ import (
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
+	"github.com/juju/juju/core/storage"
 	applicationservice "github.com/juju/juju/domain/application/service"
 	domainstorage "github.com/juju/juju/domain/storage"
-	"github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/internal/uuid"
 )
 
@@ -53,7 +53,7 @@ func (s *storageSuite) TestStorageDirectives(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(sdo, tc.DeepEquals, map[string]applicationservice.StorageDirectiveOverrides{
 		"a": {PoolUUID: &poolUUID},
-		"b": {Size: ptr[uint64](123)},
-		"c": {Count: ptr[uint32](5)},
+		"b": {Size: new(uint64(123))},
+		"c": {Count: new(uint32(5))},
 	})
 }

@@ -15,10 +15,10 @@ import (
 	url "net/url"
 	reflect "reflect"
 
+	api "github.com/juju/juju/api"
 	base "github.com/juju/juju/api/base"
 	network "github.com/juju/juju/core/network"
 	semversion "github.com/juju/juju/core/semversion"
-	proxy "github.com/juju/juju/internal/proxy"
 	names "github.com/juju/names/v6"
 	gomock "go.uber.org/mock/gomock"
 	httprequest "gopkg.in/httprequest.v1"
@@ -545,18 +545,18 @@ func (c *MockConnectionCookieURLCall) DoAndReturn(f func() *url.URL) *MockConnec
 }
 
 // HTTPClient mocks base method.
-func (m *MockConnection) HTTPClient() (*httprequest.Client, error) {
+func (m *MockConnection) HTTPClient(arg0 base.HTTPClientScope) (*httprequest.Client, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "HTTPClient")
+	ret := m.ctrl.Call(m, "HTTPClient", arg0)
 	ret0, _ := ret[0].(*httprequest.Client)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // HTTPClient indicates an expected call of HTTPClient.
-func (mr *MockConnectionMockRecorder) HTTPClient() *MockConnectionHTTPClientCall {
+func (mr *MockConnectionMockRecorder) HTTPClient(arg0 any) *MockConnectionHTTPClientCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HTTPClient", reflect.TypeOf((*MockConnection)(nil).HTTPClient))
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HTTPClient", reflect.TypeOf((*MockConnection)(nil).HTTPClient), arg0)
 	return &MockConnectionHTTPClientCall{Call: call}
 }
 
@@ -572,13 +572,13 @@ func (c *MockConnectionHTTPClientCall) Return(arg0 *httprequest.Client, arg1 err
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockConnectionHTTPClientCall) Do(f func() (*httprequest.Client, error)) *MockConnectionHTTPClientCall {
+func (c *MockConnectionHTTPClientCall) Do(f func(base.HTTPClientScope) (*httprequest.Client, error)) *MockConnectionHTTPClientCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockConnectionHTTPClientCall) DoAndReturn(f func() (*httprequest.Client, error)) *MockConnectionHTTPClientCall {
+func (c *MockConnectionHTTPClientCall) DoAndReturn(f func(base.HTTPClientScope) (*httprequest.Client, error)) *MockConnectionHTTPClientCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -775,10 +775,10 @@ func (c *MockConnectionModelTagCall) DoAndReturn(f func() (names.ModelTag, bool)
 }
 
 // Proxy mocks base method.
-func (m *MockConnection) Proxy() proxy.Proxier {
+func (m *MockConnection) Proxy() api.Proxier {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Proxy")
-	ret0, _ := ret[0].(proxy.Proxier)
+	ret0, _ := ret[0].(api.Proxier)
 	return ret0
 }
 
@@ -795,19 +795,19 @@ type MockConnectionProxyCall struct {
 }
 
 // Return rewrite *gomock.Call.Return
-func (c *MockConnectionProxyCall) Return(arg0 proxy.Proxier) *MockConnectionProxyCall {
+func (c *MockConnectionProxyCall) Return(arg0 api.Proxier) *MockConnectionProxyCall {
 	c.Call = c.Call.Return(arg0)
 	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockConnectionProxyCall) Do(f func() proxy.Proxier) *MockConnectionProxyCall {
+func (c *MockConnectionProxyCall) Do(f func() api.Proxier) *MockConnectionProxyCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockConnectionProxyCall) DoAndReturn(f func() proxy.Proxier) *MockConnectionProxyCall {
+func (c *MockConnectionProxyCall) DoAndReturn(f func() api.Proxier) *MockConnectionProxyCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -850,45 +850,6 @@ func (c *MockConnectionPublicDNSNameCall) DoAndReturn(f func() string) *MockConn
 	return c
 }
 
-// RootHTTPClient mocks base method.
-func (m *MockConnection) RootHTTPClient() (*httprequest.Client, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "RootHTTPClient")
-	ret0, _ := ret[0].(*httprequest.Client)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// RootHTTPClient indicates an expected call of RootHTTPClient.
-func (mr *MockConnectionMockRecorder) RootHTTPClient() *MockConnectionRootHTTPClientCall {
-	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RootHTTPClient", reflect.TypeOf((*MockConnection)(nil).RootHTTPClient))
-	return &MockConnectionRootHTTPClientCall{Call: call}
-}
-
-// MockConnectionRootHTTPClientCall wrap *gomock.Call
-type MockConnectionRootHTTPClientCall struct {
-	*gomock.Call
-}
-
-// Return rewrite *gomock.Call.Return
-func (c *MockConnectionRootHTTPClientCall) Return(arg0 *httprequest.Client, arg1 error) *MockConnectionRootHTTPClientCall {
-	c.Call = c.Call.Return(arg0, arg1)
-	return c
-}
-
-// Do rewrite *gomock.Call.Do
-func (c *MockConnectionRootHTTPClientCall) Do(f func() (*httprequest.Client, error)) *MockConnectionRootHTTPClientCall {
-	c.Call = c.Call.Do(f)
-	return c
-}
-
-// DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockConnectionRootHTTPClientCall) DoAndReturn(f func() (*httprequest.Client, error)) *MockConnectionRootHTTPClientCall {
-	c.Call = c.Call.DoAndReturn(f)
-	return c
-}
-
 // ServerVersion mocks base method.
 func (m *MockConnection) ServerVersion() (semversion.Number, bool) {
 	m.ctrl.T.Helper()
@@ -924,6 +885,45 @@ func (c *MockConnectionServerVersionCall) Do(f func() (semversion.Number, bool))
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockConnectionServerVersionCall) DoAndReturn(f func() (semversion.Number, bool)) *MockConnectionServerVersionCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// SimpleHTTPClient mocks base method.
+func (m *MockConnection) SimpleHTTPClient() (base.SimpleHTTPClient, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SimpleHTTPClient")
+	ret0, _ := ret[0].(base.SimpleHTTPClient)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SimpleHTTPClient indicates an expected call of SimpleHTTPClient.
+func (mr *MockConnectionMockRecorder) SimpleHTTPClient() *MockConnectionSimpleHTTPClientCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SimpleHTTPClient", reflect.TypeOf((*MockConnection)(nil).SimpleHTTPClient))
+	return &MockConnectionSimpleHTTPClientCall{Call: call}
+}
+
+// MockConnectionSimpleHTTPClientCall wrap *gomock.Call
+type MockConnectionSimpleHTTPClientCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockConnectionSimpleHTTPClientCall) Return(arg0 base.SimpleHTTPClient, arg1 error) *MockConnectionSimpleHTTPClientCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockConnectionSimpleHTTPClientCall) Do(f func() (base.SimpleHTTPClient, error)) *MockConnectionSimpleHTTPClientCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockConnectionSimpleHTTPClientCall) DoAndReturn(f func() (base.SimpleHTTPClient, error)) *MockConnectionSimpleHTTPClientCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

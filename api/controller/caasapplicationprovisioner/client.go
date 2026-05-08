@@ -251,12 +251,14 @@ func filesystemProvisioningInfoFromParams(in params.CAASApplicationFilesystemPro
 
 func filesystemFromParams(in params.KubernetesFilesystemParams) (*storage.KubernetesFilesystemParams, error) {
 	var attachment *storage.KubernetesFilesystemAttachmentParams
+	var attachments []storage.KubernetesFilesystemAttachmentParams
 	if in.Attachment != nil {
 		var err error
 		attachment, err = filesystemAttachmentFromParams(*in.Attachment)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
+		attachments = append(attachments, *attachment)
 	}
 	return &storage.KubernetesFilesystemParams{
 		StorageName:  in.StorageName,
@@ -264,7 +266,7 @@ func filesystemFromParams(in params.KubernetesFilesystemParams) (*storage.Kubern
 		Size:         in.Size,
 		Attributes:   in.Attributes,
 		ResourceTags: in.Tags,
-		Attachment:   attachment,
+		Attachments:  attachments,
 	}, nil
 }
 

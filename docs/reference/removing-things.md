@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju removal commands reference: understand unregister, detach, remove, destroy, and kill commands with increasing severity levels."
+---
+
 (removing-things)=
 # Removing things
 
@@ -20,11 +26,11 @@ There is a distinction between the similar sounding commands `unregister`, `deta
 <!--REPLACE THIS NOTE WITH SEE ALSO'S FROM THE SPECIFIC DOCS TO THIS DOC.-->
 ```{note}
 
-These command terms/prefixes do not apply to all commands in a generic way. The explanations above are merely intended to convey how a command generally operates and what its severity level is. 
+These command terms/prefixes do not apply to all commands in a generic way. The explanations above are merely intended to convey how a command generally operates and what its severity level is.
 
 ```
 
- 
+
 ## Forcing removals
 
 Juju object removal commands do not succeed when there are errors in the multiple steps that are required to remove the underlying object. For instance, a unit will not remove properly if it has a hook error, or a model cannot be removed if application units are in an error state. This is an intentionally conservative approach to the deletion of things.

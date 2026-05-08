@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Discover Juju performance benefits: quick deployment, powerful CLI, scalable operations, and efficient cloud resource management."
+---
+
 (performance-with-juju)=
 # Performance with Juju
 

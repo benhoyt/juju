@@ -8,8 +8,8 @@ import (
 	"io"
 
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 
 	"github.com/juju/juju/core/database"
 	"github.com/juju/juju/core/objectstore"
@@ -25,10 +25,13 @@ type controllerWorker struct {
 	tracer      coretrace.Tracer
 }
 
-func newControllerWorker(
+// NewControllerWorker creates a new controllerWorker. The worker does not track
+// the model state, and is expected to be used for agents in the controller
+// namespace, where there is no model.
+func NewControllerWorker(
 	objectStore TrackedObjectStore,
 	tracer coretrace.Tracer,
-) (*controllerWorker, error) {
+) (worker.Worker, error) {
 	w := &controllerWorker{
 		objectStore: objectStore,
 		tracer:      tracer,
@@ -58,7 +61,7 @@ func (t *controllerWorker) Wait() error {
 
 // Get returns an io.ReadCloser for data at path, namespaced to the
 // model.
-func (t *controllerWorker) Get(ctx context.Context, path string) (_ io.ReadCloser, _ int64, err error) {
+func (t *controllerWorker) Get(ctx context.Context, path string) (_ io.ReadCloser, _ objectstore.Digest, err error) {
 	ctx, span := coretrace.Start(coretrace.WithTracer(ctx, t.tracer), coretrace.NameFromFunc(),
 		coretrace.WithAttributes(coretrace.StringAttr("objectstore.path", path)),
 	)
@@ -72,7 +75,7 @@ func (t *controllerWorker) Get(ctx context.Context, path string) (_ io.ReadClose
 
 // GetBySHA256 returns an io.ReadCloser for the object with the given SHA256
 // hash, namespaced to the model.
-func (t *controllerWorker) GetBySHA256(ctx context.Context, sha256 string) (_ io.ReadCloser, _ int64, err error) {
+func (t *controllerWorker) GetBySHA256(ctx context.Context, sha256 string) (_ io.ReadCloser, _ objectstore.Digest, err error) {
 	ctx, span := coretrace.Start(coretrace.WithTracer(ctx, t.tracer), coretrace.NameFromFunc(),
 		coretrace.WithAttributes(coretrace.StringAttr("objectstore.sha256", sha256)),
 	)
@@ -86,7 +89,7 @@ func (t *controllerWorker) GetBySHA256(ctx context.Context, sha256 string) (_ io
 
 // GetBySHA256Prefix returns an io.ReadCloser for any object with the a SHA256
 // hash starting with a given prefix, namespaced to the model.
-func (t *controllerWorker) GetBySHA256Prefix(ctx context.Context, sha256Prefix string) (_ io.ReadCloser, _ int64, err error) {
+func (t *controllerWorker) GetBySHA256Prefix(ctx context.Context, sha256Prefix string) (_ io.ReadCloser, _ objectstore.Digest, err error) {
 	ctx, span := coretrace.Start(coretrace.WithTracer(ctx, t.tracer), coretrace.NameFromFunc(),
 		coretrace.WithAttributes(coretrace.StringAttr("objectstore.sha256_prefix", sha256Prefix)),
 	)
@@ -164,8 +167,8 @@ func (t *controllerWorker) RemoveAll(ctx context.Context) (err error) {
 	return nil
 }
 
-func (t *controllerWorker) Report() map[string]any {
-	report := t.objectStore.Report()
+func (t *controllerWorker) Report(ctx context.Context) map[string]any {
+	report := t.objectStore.Report(ctx)
 	report["modelUUID"] = database.ControllerNS
 	return report
 }

@@ -87,7 +87,7 @@ func (c *Client) CloudSpec(ctx context.Context, modelTag names.ModelTag) (enviro
 type HostedConfig struct {
 	Name      string
 	Qualifier string
-	Config    map[string]interface{}
+	Config    map[string]any
 	CloudSpec environscloudspec.CloudSpec
 	Error     error
 }
@@ -268,7 +268,7 @@ func (c *Client) GetControllerAccess(ctx context.Context, user string) (permissi
 // ConfigSet updates the passed controller configuration values. Any
 // settings that aren't passed will be left with their previous
 // values.
-func (c *Client) ConfigSet(ctx context.Context, values map[string]interface{}) error {
+func (c *Client) ConfigSet(ctx context.Context, values map[string]any) error {
 	return errors.Trace(
 		c.facade.FacadeCall(ctx, "ConfigSet", params.ControllerConfigSet{Config: values}, nil),
 	)
@@ -316,7 +316,7 @@ func (s *MigrationSpec) Validate() error {
 // The API server supports starting multiple migrations in one request
 // but we don't need that at the client side yet (and may never) so
 // this call just supports starting one migration at a time.
-func (c *Client) InitiateMigration(ctx context.Context, spec MigrationSpec) (string, error) {
+func (c *Client) InitiateMigration(ctx context.Context, spec MigrationSpec, dryRun bool) (string, error) {
 	if err := spec.Validate(); err != nil {
 		return "", errors.Annotatef(err, "client-side validation failed")
 	}
@@ -327,6 +327,7 @@ func (c *Client) InitiateMigration(ctx context.Context, spec MigrationSpec) (str
 	}
 
 	args := params.InitiateMigrationArgs{
+		DryRun: dryRun,
 		Specs: []params.MigrationSpec{{
 			ModelTag: names.NewModelTag(spec.ModelUUID).String(),
 			TargetInfo: params.MigrationTargetInfo{
@@ -399,7 +400,7 @@ type DashboardConnectionSSHTunnel struct {
 // ProxierFactory is an interface type representing a factory that can make a
 // new juju proxier from the supplied raw config.
 type ProxierFactory interface {
-	ProxierFromConfig(string, map[string]interface{}) (proxy.Proxier, error)
+	ProxierFromConfig(string, map[string]any) (proxy.Proxier, error)
 }
 
 // DashboardConnectionInfo fetches the connection information needed for

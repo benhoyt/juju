@@ -4,16 +4,19 @@
 package remoterelationconsumer
 
 import (
+	"context"
 	"time"
 
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
+	"github.com/juju/worker/v5"
 	"go.uber.org/mock/gomock"
 	"gopkg.in/macaroon.v2"
 	"gopkg.in/tomb.v2"
 
+	coreapplication "github.com/juju/juju/core/application"
 	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/model"
+	corerelation "github.com/juju/juju/core/relation"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/testhelpers"
 )
@@ -72,11 +75,50 @@ func (w *errWorker) Wait() error {
 	return w.tomb.Wait()
 }
 
+// macaroonErrWorker extends errWorker with Macaroon(), RelationUUID(), and
+// ConsumerApplicationUUID() methods, so it can be used as an offerer unit
+// relation worker in tests.
+type macaroonErrWorker struct {
+	errWorker
+	macaroon                *macaroon.Macaroon
+	relationUUID            corerelation.UUID
+	consumerApplicationUUID coreapplication.UUID
+}
+
+func newMacaroonErrWorker(
+	mac *macaroon.Macaroon,
+	relationUUID corerelation.UUID,
+	consumerApplicationUUID coreapplication.UUID,
+) *macaroonErrWorker {
+	w := &macaroonErrWorker{
+		macaroon:                mac,
+		relationUUID:            relationUUID,
+		consumerApplicationUUID: consumerApplicationUUID,
+	}
+	w.tomb.Go(func() error {
+		<-w.tomb.Dying()
+		return nil
+	})
+	return w
+}
+
+func (w *macaroonErrWorker) Macaroon() *macaroon.Macaroon {
+	return w.macaroon
+}
+
+func (w *macaroonErrWorker) RelationUUID() corerelation.UUID {
+	return w.relationUUID
+}
+
+func (w *macaroonErrWorker) ConsumerApplicationUUID() coreapplication.UUID {
+	return w.consumerApplicationUUID
+}
+
 type reportableWorker struct {
 	worker.Worker
 }
 
-func (w reportableWorker) Report() map[string]any {
+func (w reportableWorker) Report(_ context.Context) map[string]any {
 	return make(map[string]any)
 }
 

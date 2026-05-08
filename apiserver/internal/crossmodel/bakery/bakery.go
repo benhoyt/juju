@@ -13,10 +13,10 @@ import (
 	"gopkg.in/macaroon.v2"
 	"gopkg.in/yaml.v3"
 
+	apimacaroon "github.com/juju/juju/api/macaroon"
 	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/permission"
 	internalerrors "github.com/juju/juju/internal/errors"
-	internalmacaroon "github.com/juju/juju/internal/macaroon"
 )
 
 const (
@@ -28,7 +28,7 @@ const (
 
 // RelationInfoFromMacaroons extracts the relation and offer caveats from a macaroon.
 func RelationInfoFromMacaroons(mac macaroon.Slice) (string, string, bool) {
-	declared := checkers.InferDeclared(internalmacaroon.MacaroonNamespace, mac)
+	declared := checkers.InferDeclared(apimacaroon.MacaroonNamespace, mac)
 	relKey, ok1 := declared[relationKey]
 	offerUUID, ok2 := declared[offerUUIDKey]
 	return relKey, offerUUID, ok1 && ok2
@@ -80,7 +80,7 @@ type DeclaredValues struct {
 func NewDeclaredValues(userName, sourceModelUUID, offerUUID, relationKey string) DeclaredValues {
 	var p *string
 	if userName != "" {
-		p = ptr(userName)
+		p = new(userName)
 	}
 	return DeclaredValues{
 		userName:        p,
@@ -212,21 +212,21 @@ func (o *baseBakery) GetOfferRequiredValues(sourceModelUUID, offerUUID string) (
 
 // GetRelationRequiredValues returns the required values for the specified
 // relation access.
-func (o *baseBakery) GetRelationRequiredValues(sourceModelUUID, offerUUID, relationKey string) (map[string]string, error) {
+func (o *baseBakery) GetRelationRequiredValues(sourceModelUUID, offerUUID, relationValue string) (map[string]string, error) {
 	if sourceModelUUID == "" {
 		return nil, internalerrors.New("source model uuid is required").Add(coreerrors.NotValid)
 	}
 	if offerUUID == "" {
 		return nil, internalerrors.New("offer uuid is required").Add(coreerrors.NotValid)
 	}
-	if relationKey == "" {
+	if relationValue == "" {
 		return nil, internalerrors.New("relation key is required").Add(coreerrors.NotValid)
 	}
 
 	return map[string]string{
 		sourceModelKey: sourceModelUUID,
 		offerUUIDKey:   offerUUID,
-		relationKey:    relationKey,
+		relationKey:    relationValue,
 	}, nil
 }
 
@@ -238,8 +238,4 @@ func (o *baseBakery) AllowedAuth(ctx context.Context, op bakery.Op, mac macaroon
 		return nil, err
 	}
 	return authInfo.Conditions(), nil
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }

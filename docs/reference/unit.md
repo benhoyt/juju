@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju unit reference: deployed charm instances, multi-unit applications, and unit lifecycle management."
+---
+
 (unit)=
 # Unit
 

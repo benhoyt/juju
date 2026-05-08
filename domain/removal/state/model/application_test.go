@@ -19,15 +19,16 @@ import (
 	"github.com/juju/juju/core/devices"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/machine"
+	corenetwork "github.com/juju/juju/core/network"
 	objectstoretesting "github.com/juju/juju/core/objectstore/testing"
 	"github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	applicationservice "github.com/juju/juju/domain/application/service"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/domain/life"
 	"github.com/juju/juju/domain/relation"
 	removalerrors "github.com/juju/juju/domain/removal/errors"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 )
 
@@ -74,7 +75,7 @@ func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeNormalSuccess(c *
 
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
-	artifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false, false)
+	artifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false)
 	c.Assert(err, tc.ErrorIsNil)
 
 	// We don't have any units, so we expect an empty slice for both unit and
@@ -86,7 +87,7 @@ func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeNormalSuccess(c *
 	var lifeID int
 	err = row.Scan(&lifeID)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(lifeID, tc.Equals, 1)
+	c.Check(lifeID, tc.Equals, int(life.Dying))
 }
 
 func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeNormalSuccessWithAliveUnitsCascadedStorage(c *tc.C) {
@@ -129,7 +130,7 @@ VALUES ('storage-attachment-uuid', 'instance-uuid', ?, 0)`
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
 	// Perform the ensure operation with destroyStorage.
-	artifacts, err := st.EnsureApplicationNotAliveCascade(ctx, appUUID.String(), true, false)
+	artifacts, err := st.EnsureApplicationNotAliveCascade(ctx, appUUID.String(), true)
 	c.Assert(err, tc.ErrorIsNil)
 
 	c.Check(artifacts.RelationUUIDs, tc.HasLen, 0)
@@ -146,13 +147,13 @@ VALUES ('storage-attachment-uuid', 'instance-uuid', ?, 0)`
 	var lifeID int
 	err = row.Scan(&lifeID)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(lifeID, tc.Equals, 1)
+	c.Check(lifeID, tc.Equals, int(life.Dying))
 
 	// Storage instance should be "dying".
 	row = db.QueryRowContext(ctx, "SELECT life_id FROM storage_instance WHERE uuid = 'instance-uuid'")
 	err = row.Scan(&lifeID)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(lifeID, tc.Equals, 1)
+	c.Check(lifeID, tc.Equals, int(life.Dying))
 }
 
 func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeNormalSuccessWithAliveAndDyingUnits(c *tc.C) {
@@ -175,20 +176,22 @@ func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeNormalSuccessWith
 	_, err = s.DB().Exec(`UPDATE machine SET life_id = 1 WHERE uuid = ?`, allMachineUUIDs[0].String())
 	c.Assert(err, tc.ErrorIsNil)
 
-	aliveUnitUUIDs := allUnitUUIDs[1:]
-	aliveMachineUUIDs := allMachineUUIDs[1:]
-
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
-	artifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false, false)
+	artifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false)
 	c.Assert(err, tc.ErrorIsNil)
 
 	c.Check(artifacts.RelationUUIDs, tc.HasLen, 0)
-	s.checkUnitContents(c, artifacts.UnitUUIDs, aliveUnitUUIDs)
-	s.checkMachineContents(c, artifacts.MachineUUIDs, aliveMachineUUIDs)
+	// Dying children should be returned too so retries can re-schedule them.
+	s.checkUnitContents(c, artifacts.UnitUUIDs, allUnitUUIDs)
+	// All machine UUIDs are returned, including the already-dying one,
+	// so retries can re-schedule child removal jobs.
+	s.checkMachineContents(c, artifacts.MachineUUIDs, allMachineUUIDs)
 
 	s.checkApplicationDyingState(c, appUUID)
-	s.checkUnitDyingState(c, aliveUnitUUIDs)
+	s.checkUnitDyingState(c, allUnitUUIDs)
+	// Only the previously-alive machines were transitioned by this call.
+	aliveMachineUUIDs := allMachineUUIDs[1:]
 	s.checkMachineDyingState(c, aliveMachineUUIDs)
 }
 
@@ -215,7 +218,7 @@ func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeNormalSuccessWith
 
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
-	artifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false, false)
+	artifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false)
 	c.Assert(err, tc.ErrorIsNil)
 
 	c.Check(artifacts.RelationUUIDs, tc.HasLen, 0)
@@ -252,7 +255,7 @@ func (s *applicationSuite) TestEnsureApplicationOnMultipleMachines(c *tc.C) {
 
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
-	artifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID1.String(), false, false)
+	artifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID1.String(), false)
 	c.Assert(err, tc.ErrorIsNil)
 
 	app1UnitUUIDs := s.getAllUnitUUIDs(c, appUUID1)
@@ -308,7 +311,7 @@ func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeNormalSuccessWith
 
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
-	artifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false, false)
+	artifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false)
 	c.Assert(err, tc.ErrorIsNil)
 
 	c.Check(artifacts.RelationUUIDs, tc.HasLen, 1)
@@ -329,7 +332,7 @@ func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeDyingSuccess(c *t
 
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
-	artifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false, false)
+	artifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false)
 	c.Assert(err, tc.ErrorIsNil)
 
 	// We don't have any units, so we expect an empty slice for both unit and
@@ -341,39 +344,130 @@ func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeDyingSuccess(c *t
 	var lifeID int
 	err = row.Scan(&lifeID)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(lifeID, tc.Equals, 1)
+	c.Check(lifeID, tc.Equals, int(life.Dying))
+}
+
+func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeRetryReturnsDyingArtifacts(c *tc.C) {
+	svc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, svc, "some-app", applicationservice.AddIAASUnitArg{})
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	firstArtifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(firstArtifacts.RelationUUIDs, tc.HasLen, 0)
+	c.Check(firstArtifacts.UnitUUIDs, tc.HasLen, 1)
+	c.Check(firstArtifacts.MachineUUIDs, tc.HasLen, 1)
+
+	secondArtifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(secondArtifacts.RelationUUIDs, tc.DeepEquals, firstArtifacts.RelationUUIDs)
+	c.Check(secondArtifacts.UnitUUIDs, tc.DeepEquals, firstArtifacts.UnitUUIDs)
+	// Machine UUIDs are still returned on retries so child removal
+	// jobs can be re-scheduled.
+	c.Check(secondArtifacts.MachineUUIDs, tc.SameContents, firstArtifacts.MachineUUIDs)
+
+	s.checkApplicationDyingState(c, appUUID)
+	s.checkUnitDyingState(c, s.getAllUnitUUIDs(c, appUUID))
+	_, allMachineUUIDs := s.getAllUnitAndMachineUUIDs(c)
+	s.checkMachineDyingState(c, allMachineUUIDs)
+}
+
+func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeRetryReturnsDyingRelations(c *tc.C) {
+	appSvc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, appSvc, "app1")
+	s.createIAASApplication(c, appSvc, "app2")
+
+	relSvc := s.setupRelationService(c)
+	_, _, err := relSvc.AddRelation(c.Context(), "app1:foo", "app2:bar")
+	c.Assert(err, tc.ErrorIsNil)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	firstArtifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(firstArtifacts.RelationUUIDs, tc.HasLen, 1)
+	c.Check(firstArtifacts.UnitUUIDs, tc.HasLen, 0)
+	c.Check(firstArtifacts.MachineUUIDs, tc.HasLen, 0)
+
+	secondArtifacts, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(secondArtifacts, tc.DeepEquals, firstArtifacts)
+
+	row := s.DB().QueryRowContext(c.Context(), "SELECT life_id FROM relation WHERE uuid = ?", firstArtifacts.RelationUUIDs[0])
+	var relationLife life.Life
+	err = row.Scan(&relationLife)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(relationLife, tc.Equals, life.Dying)
+}
+
+func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeRetryReturnsDyingStorageArtifacts(c *tc.C) {
+	svc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, svc, "some-app", applicationservice.AddIAASUnitArg{})
+
+	allUnitUUIDs := s.getAllUnitUUIDs(c, appUUID)
+	c.Assert(allUnitUUIDs, tc.HasLen, 1)
+
+	ctx := c.Context()
+	db := s.DB()
+
+	_, err := db.ExecContext(
+		ctx, "INSERT INTO storage_pool (uuid, name, type) VALUES ('pool-uuid', 'pool', 'whatever')",
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = db.ExecContext(ctx, `
+INSERT INTO storage_instance (
+	uuid, storage_id, storage_pool_uuid, requested_size_mib, charm_name, storage_name, life_id, storage_kind_id
+)
+VALUES ('instance-uuid', 'does-not-matter', 'pool-uuid', 100, 'charm-name', 'storage-name', 0, 0)`)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = db.ExecContext(ctx, `
+INSERT INTO storage_attachment (uuid, storage_instance_uuid, unit_uuid, life_id)
+VALUES ('storage-attachment-uuid', 'instance-uuid', ?, 0)`, allUnitUUIDs[0])
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = db.ExecContext(ctx,
+		"INSERT INTO storage_unit_owner (storage_instance_uuid, unit_uuid) VALUES ('instance-uuid', ?)",
+		allUnitUUIDs[0],
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	firstArtifacts, err := st.EnsureApplicationNotAliveCascade(ctx, appUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(firstArtifacts.StorageAttachmentUUIDs, tc.DeepEquals, []string{"storage-attachment-uuid"})
+	c.Check(firstArtifacts.StorageInstanceUUIDs, tc.DeepEquals, []string{"instance-uuid"})
+
+	secondArtifacts, err := st.EnsureApplicationNotAliveCascade(ctx, appUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(secondArtifacts.StorageAttachmentUUIDs, tc.DeepEquals, firstArtifacts.StorageAttachmentUUIDs)
+	c.Check(secondArtifacts.StorageInstanceUUIDs, tc.DeepEquals, firstArtifacts.StorageInstanceUUIDs)
+	c.Check(secondArtifacts.UnitUUIDs, tc.DeepEquals, firstArtifacts.UnitUUIDs)
+	// Machine UUIDs are still returned on retries so child removal
+	// jobs can be re-scheduled.
+	c.Check(secondArtifacts.MachineUUIDs, tc.SameContents, firstArtifacts.MachineUUIDs)
 }
 
 func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeOfferConnections(c *tc.C) {
 	svc := s.setupApplicationService(c)
 	appUUID := s.createIAASApplication(c, svc, "some-app")
-	offerUUID := s.createOfferForApplication(c, "some-app", "some-offer")
+	offerUUID := s.createOfferForApplication(c, appUUID, "some-offer")
 	s.createRemoteApplicationConsumer(c, "some-remote-app", offerUUID)
 
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
-	_, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false, false)
-	c.Assert(err, tc.ErrorIs, removalerrors.ApplicationHasOfferConnections)
-	c.Assert(err, tc.ErrorIs, removalerrors.ForceRequired)
-}
-
-func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeOfferConnectionsWithForce(c *tc.C) {
-	svc := s.setupApplicationService(c)
-	appUUID := s.createIAASApplication(c, svc, "some-app")
-	offerUUID := s.createOfferForApplication(c, "some-app", "some-offer")
-	s.createRemoteApplicationConsumer(c, "some-remote-app", offerUUID)
-
-	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
-
-	_, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false, true)
+	_, err := st.EnsureApplicationNotAliveCascade(c.Context(), appUUID.String(), false)
+	// Offer connections should NOT block application removal.
 	c.Assert(err, tc.ErrorIsNil)
-	s.checkApplicationDyingState(c, appUUID)
 }
 
-func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeNotExistsSuccess(c *tc.C) {
+func (s *applicationSuite) TestEnsureApplicationNotAliveCaadeNotExistsSuccess(c *tc.C) {
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
-	_, err := st.EnsureApplicationNotAliveCascade(c.Context(), "some-application-uuid", false, false)
+	_, err := st.EnsureApplicationNotAliveCascade(c.Context(), "some-application-uuid", false)
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -462,10 +556,62 @@ func (s *applicationSuite) TestGetApplicationLifeNotFound(c *tc.C) {
 	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationNotFound)
 }
 
+func (s *applicationSuite) TestMarkApplicationAsDead(c *tc.C) {
+	svc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, svc, "some-app")
+
+	s.advanceApplicationLife(c, appUUID, life.Dying)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+	err := st.MarkApplicationAsDead(c.Context(), appUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+
+	l, err := st.GetApplicationLife(c.Context(), appUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(l, tc.Equals, life.Dead)
+}
+
+func (s *applicationSuite) TestGetApplicationUnitAndRelationCountWithUnits(c *tc.C) {
+	svc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, svc, "some-app", applicationservice.AddIAASUnitArg{})
+
+	s.advanceApplicationLife(c, appUUID, life.Dying)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+	unitCount, relationCount, err := st.GetApplicationUnitAndRelationCount(c.Context(), appUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(unitCount, tc.Equals, 1)
+	c.Check(relationCount, tc.Equals, 0)
+}
+
+func (s *applicationSuite) TestGetApplicationUnitAndRelationCountWithRelations(c *tc.C) {
+	appSvc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, appSvc, "app1")
+	s.createIAASApplication(c, appSvc, "app2")
+
+	relSvc := s.setupRelationService(c)
+	ep1, ep2, err := relSvc.AddRelation(c.Context(), "app1:foo", "app2:bar")
+	c.Assert(err, tc.ErrorIsNil)
+	relUUID, err := relSvc.GetRelationUUIDForRemoval(c.Context(), relation.GetRelationUUIDForRemovalArgs{
+		Endpoints: []string{ep1.String(), ep2.String()},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	s.advanceApplicationLife(c, appUUID, life.Dying)
+	s.advanceRelationLife(c, relUUID, life.Dead)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+	unitCount, relationCount, err := st.GetApplicationUnitAndRelationCount(c.Context(), appUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(unitCount, tc.Equals, 0)
+	c.Check(relationCount, tc.Equals, 1)
+}
+
 func (s *applicationSuite) TestDeleteIAASApplication(c *tc.C) {
 	svc := s.setupApplicationService(c)
 	appUUID := s.createIAASApplication(c, svc, "some-app")
 
+	s.checkApplicationSequence(c, "some-app", 0)
 	s.advanceApplicationLife(c, appUUID, life.Dead)
 
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
@@ -477,9 +623,94 @@ func (s *applicationSuite) TestDeleteIAASApplication(c *tc.C) {
 	exists, err := st.ApplicationExists(c.Context(), appUUID.String())
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(exists, tc.Equals, false)
+
+	s.checkNoApplicationSequence(c, "some-app")
 }
 
 func (s *applicationSuite) TestDeleteIAASApplicationWithUnits(c *tc.C) {
+	svc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, svc, "some-app",
+		applicationservice.AddIAASUnitArg{},
+	)
+	charmUUID := s.getCharmUUIDForApplication(c, appUUID.String())
+	unitUUIDs := s.getAllUnitUUIDs(c, appUUID)
+	c.Assert(unitUUIDs, tc.HasLen, 1)
+
+	s.checkApplicationSequence(c, "some-app", 1)
+	s.advanceUnitLife(c, unitUUIDs[0], life.Dead)
+	s.advanceApplicationLife(c, appUUID, life.Dead)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	// This should fail because the application has units.
+	err := st.DeleteApplication(c.Context(), appUUID.String(), false)
+	c.Check(err, tc.ErrorIs, removalerrors.RemovalJobIncomplete)
+	c.Check(err, tc.ErrorIs, applicationerrors.ApplicationHasUnits)
+
+	// Delete any units associated with the application.
+	err = st.DeleteUnit(c.Context(), unitUUIDs[0].String(), false)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Now we can delete the application.
+	err = st.DeleteApplication(c.Context(), appUUID.String(), false)
+	c.Assert(err, tc.ErrorIsNil)
+	err = st.DeleteCharmIfUnused(c.Context(), charmUUID)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// The application should be gone.
+	exists, err := st.ApplicationExists(c.Context(), appUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.Equals, false)
+
+	s.checkNoCharmsExist(c)
+}
+
+func (s *applicationSuite) TestDeleteIAASApplicationWithForce(c *tc.C) {
+	svc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, svc, "some-app",
+		applicationservice.AddIAASUnitArg{},
+	)
+	charmUUID := s.getCharmUUIDForApplication(c, appUUID.String())
+	unitUUIDs := s.getAllUnitUUIDs(c, appUUID)
+	c.Assert(unitUUIDs, tc.HasLen, 1)
+
+	// We always expect the unit to be at least "dying" before deletion.
+	// Otherwise, this is a programmatic error.
+	s.advanceUnitLife(c, unitUUIDs[0], life.Dying)
+	s.advanceApplicationLife(c, appUUID, life.Dying)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	// Without force, this should fail because the application is not dead.
+	err := st.DeleteApplication(c.Context(), appUUID.String(), false)
+	c.Check(err, tc.ErrorIs, removalerrors.RemovalJobIncomplete)
+	c.Check(err, tc.ErrorIs, removalerrors.EntityNotDead)
+
+	// With force, the dead-state gate is skipped, but it still fails
+	// because the unit has not been removed yet.
+	err = st.DeleteApplication(c.Context(), appUUID.String(), true)
+	c.Check(err, tc.ErrorIs, removalerrors.RemovalJobIncomplete)
+	c.Check(err, tc.ErrorIs, applicationerrors.ApplicationHasUnits)
+
+	// Delete the unit first.
+	err = st.DeleteUnit(c.Context(), unitUUIDs[0].String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Now we can force-delete the application (without needing to mark dead).
+	err = st.DeleteApplication(c.Context(), appUUID.String(), true)
+	c.Assert(err, tc.ErrorIsNil)
+	err = st.DeleteCharmIfUnused(c.Context(), charmUUID)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// The application should be gone.
+	exists, err := st.ApplicationExists(c.Context(), appUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.Equals, false)
+
+	s.checkNoCharmsExist(c)
+}
+
+func (s *applicationSuite) TestDeleteIAASApplicationWithUnitsWithForce(c *tc.C) {
 	svc := s.setupApplicationService(c)
 	appUUID := s.createIAASApplication(c, svc, "some-app",
 		applicationservice.AddIAASUnitArg{},
@@ -493,17 +724,23 @@ func (s *applicationSuite) TestDeleteIAASApplicationWithUnits(c *tc.C) {
 
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
-	// This should fail because the application has units.
+	// This should fail because the application still has units, even when
+	// forcing. Units are removed by their own removal jobs, so the
+	// application must wait for them to complete.
 	err := st.DeleteApplication(c.Context(), appUUID.String(), false)
 	c.Check(err, tc.ErrorIs, removalerrors.RemovalJobIncomplete)
 	c.Check(err, tc.ErrorIs, applicationerrors.ApplicationHasUnits)
 
-	// Delete any units associated with the application.
-	err = st.DeleteUnit(c.Context(), unitUUIDs[0].String())
+	err = st.DeleteApplication(c.Context(), appUUID.String(), true)
+	c.Check(err, tc.ErrorIs, removalerrors.RemovalJobIncomplete)
+	c.Check(err, tc.ErrorIs, applicationerrors.ApplicationHasUnits)
+
+	// Delete the unit first.
+	err = st.DeleteUnit(c.Context(), unitUUIDs[0].String(), true)
 	c.Assert(err, tc.ErrorIsNil)
 
 	// Now we can delete the application.
-	err = st.DeleteApplication(c.Context(), appUUID.String(), false)
+	err = st.DeleteApplication(c.Context(), appUUID.String(), true)
 	c.Assert(err, tc.ErrorIsNil)
 	err = st.DeleteCharmIfUnused(c.Context(), charmUUID)
 	c.Assert(err, tc.ErrorIsNil)
@@ -572,7 +809,7 @@ func (s *applicationSuite) TestDeleteIAASApplicationMultipleRemovesCharm(c *tc.C
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
 	// Delete any units associated with the application.
-	err := st.DeleteUnit(c.Context(), unitUUIDs[0].String())
+	err := st.DeleteUnit(c.Context(), unitUUIDs[0].String(), false)
 	c.Assert(err, tc.ErrorIsNil)
 
 	// Now we can delete the application.
@@ -606,7 +843,7 @@ func (s *applicationSuite) TestDeleteCAASApplication(c *tc.C) {
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
 	// Delete any units associated with the application.
-	err := st.DeleteUnit(c.Context(), unitUUIDs[0].String())
+	err := st.DeleteUnit(c.Context(), unitUUIDs[0].String(), false)
 	c.Assert(err, tc.ErrorIsNil)
 
 	err = st.DeleteApplication(c.Context(), appUUID.String(), false)
@@ -621,6 +858,72 @@ func (s *applicationSuite) TestDeleteCAASApplication(c *tc.C) {
 	c.Check(exists, tc.Equals, false)
 
 	s.checkNoCharmsExist(c)
+}
+
+func (s *applicationSuite) TestDeleteCAASApplicationWithK8sService(c *tc.C) {
+	svc := s.setupApplicationService(c)
+	appUUID := s.createCAASApplication(c, svc, "some-app")
+
+	err := svc.UpdateK8sService(c.Context(), "some-app", "provider-id", corenetwork.ProviderAddresses{
+		{
+			MachineAddress: corenetwork.MachineAddress{
+				Value:      "10.0.0.1/8",
+				ConfigType: corenetwork.ConfigStatic,
+				Type:       corenetwork.IPv4Address,
+				Scope:      corenetwork.ScopeCloudLocal,
+			},
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Capture the net node UUID before deletion so we can verify it is removed.
+	var netNodeUUID string
+	err = s.DB().QueryRowContext(c.Context(),
+		"SELECT net_node_uuid FROM k8s_service WHERE application_uuid = ?", appUUID.String(),
+	).Scan(&netNodeUUID)
+	c.Assert(err, tc.ErrorIsNil)
+
+	s.advanceApplicationLife(c, appUUID, life.Dead)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	// DeleteApplication handles cloud service cleanup internally.
+	err = st.DeleteApplication(c.Context(), appUUID.String(), false)
+	c.Assert(err, tc.ErrorIsNil)
+
+	exists, err := st.ApplicationExists(c.Context(), appUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.Equals, false)
+
+	// Verify the net node and cloud service rows were cleaned up, not orphaned.
+	var count int
+	err = s.DB().QueryRowContext(c.Context(),
+		"SELECT COUNT(*) FROM net_node WHERE uuid = ?", netNodeUUID,
+	).Scan(&count)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(count, tc.Equals, 0, tc.Commentf("net_node should be deleted"))
+
+	err = s.DB().QueryRowContext(c.Context(),
+		"SELECT COUNT(*) FROM k8s_service WHERE application_uuid = ?", appUUID.String(),
+	).Scan(&count)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(count, tc.Equals, 0, tc.Commentf("k8s_service should be deleted"))
+}
+
+func (s *applicationSuite) TestDeleteCAASApplicationWithoutK8sService(c *tc.C) {
+	svc := s.setupApplicationService(c)
+	appUUID := s.createCAASApplication(c, svc, "some-app")
+
+	s.advanceApplicationLife(c, appUUID, life.Dead)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	err := st.DeleteApplication(c.Context(), appUUID.String(), false)
+	c.Assert(err, tc.ErrorIsNil)
+
+	exists, err := st.ApplicationExists(c.Context(), appUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.Equals, false)
 }
 
 func (s *applicationSuite) TestDeleteCAASApplicationWithUnit(c *tc.C) {
@@ -654,7 +957,7 @@ func (s *applicationSuite) TestDeleteApplicationNotWipingDeviceConstraints(c *tc
 		},
 		ResolvedResources: applicationservice.ResolvedResources{{
 			Name:     "buzz",
-			Revision: ptr(42),
+			Revision: new(42),
 			Origin:   charmresource.OriginStore,
 		}},
 		Devices: map[string]devices.Constraints{
@@ -668,6 +971,7 @@ func (s *applicationSuite) TestDeleteApplicationNotWipingDeviceConstraints(c *tc
 		},
 	})
 	c.Assert(err, tc.ErrorIsNil)
+
 	_, err = svc.CreateIAASApplication(c.Context(), "app2", &stubCharm{name: "test-charm"}, corecharm.Origin{
 		Source: corecharm.CharmHub,
 		Platform: corecharm.Platform{
@@ -683,7 +987,7 @@ func (s *applicationSuite) TestDeleteApplicationNotWipingDeviceConstraints(c *tc
 		},
 		ResolvedResources: applicationservice.ResolvedResources{{
 			Name:     "buzz",
-			Revision: ptr(42),
+			Revision: new(42),
 			Origin:   charmresource.OriginStore,
 		}},
 		Devices: map[string]devices.Constraints{
@@ -711,6 +1015,7 @@ func (s *applicationSuite) TestDeleteApplicationNotWipingDeviceConstraints(c *tc
 	c.Assert(devices, tc.HasLen, 1)
 	c.Assert(devices["bitcoinminer"].Count, tc.Equals, 20)
 }
+
 func (s *applicationSuite) TestDeleteApplicationWithObjectstoreResource(c *tc.C) {
 	// Arrange: Two apps that share a resource object
 	appSvc := s.setupApplicationService(c)
@@ -729,6 +1034,9 @@ func (s *applicationSuite) TestDeleteApplicationWithObjectstoreResource(c *tc.C)
 		objectStoreUUID.String(), "/path/to/resource")
 	c.Assert(err, tc.ErrorIsNil)
 
+	_, err = s.DB().Exec("INSERT INTO object_store_placement (uuid, node_id) VALUES (?, 0)", objectStoreUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+
 	_, err = s.DB().Exec("INSERT INTO resource_file_store (resource_uuid, store_uuid, size, sha384) VALUES (?, ?, ?, ?)",
 		resourceUUID, objectStoreUUID.String(), 42, "sha_384")
 	c.Assert(err, tc.ErrorIsNil)
@@ -743,9 +1051,14 @@ func (s *applicationSuite) TestDeleteApplicationWithObjectstoreResource(c *tc.C)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(exists, tc.Equals, false)
 
-	// Assert: The resource object store entry is deleted
-	row := s.DB().QueryRow("SELECT COUNT(*) FROM object_store_metadata WHERE uuid = ?", objectStoreUUID.String())
 	var count int
+	row := s.DB().QueryRow("SELECT COUNT(*) FROM object_store_placement WHERE uuid = ?", objectStoreUUID.String())
+	err = row.Scan(&count)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(count, tc.Equals, 0)
+
+	// Assert: The resource object store entry is deleted
+	row = s.DB().QueryRow("SELECT COUNT(*) FROM object_store_metadata WHERE uuid = ?", objectStoreUUID.String())
 	err = row.Scan(&count)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(count, tc.Equals, 0)
@@ -861,6 +1174,24 @@ func (s *applicationSuite) TestDeleteCharmReturnConstraintError(c *tc.C) {
 	c.Assert(err, tc.ErrorMatches, ".*FOREIGN KEY constraint failed.*")
 }
 
+func (s *applicationSuite) TestGetApplicationName(c *tc.C) {
+	appSvc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, appSvc, "some-app")
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+	applicationName, err := st.GetApplicationName(c.Context(), appUUID.String())
+
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(applicationName, tc.Equals, "some-app")
+}
+
+func (s *applicationSuite) TestGetApplicationNameNotFound(c *tc.C) {
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+	_, err := st.GetApplicationName(c.Context(), "some-application-uuid")
+
+	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationNotFound)
+}
+
 func (s *applicationSuite) TestGetCharmForApplication(c *tc.C) {
 	// Arrange: One application with a charm.
 	appSvc := s.setupApplicationService(c)
@@ -935,8 +1266,8 @@ func (s *applicationSuite) TestDeleteApplicationWithSharedObjectstoreResource(c 
 func (s *applicationSuite) TestDeleteApplicationWithOffers(c *tc.C) {
 	svc := s.setupApplicationService(c)
 	appUUID := s.createIAASApplication(c, svc, "some-app")
-	offerUUID1 := s.createOfferForApplication(c, "some-app", "some-offer")
-	offerUUID2 := s.createOfferForApplication(c, "some-app", "some-other-offer")
+	offerUUID1 := s.createOfferForApplication(c, appUUID, "some-offer")
+	offerUUID2 := s.createOfferForApplication(c, appUUID, "some-other-offer")
 
 	s.advanceApplicationLife(c, appUUID, life.Dead)
 
@@ -987,7 +1318,31 @@ func (s *applicationSuite) checkApplicationDyingState(c *tc.C, appUUID coreappli
 	var lifeID int
 	err := row.Scan(&lifeID)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(lifeID, tc.Equals, 1)
+	c.Check(lifeID, tc.Equals, int(life.Dying))
+}
+
+func (s *applicationSuite) checkNoApplicationSequence(c *tc.C, appName string) {
+	c.Helper()
+
+	// Ensure that there are no sequences left for the application.
+	row := s.DB().QueryRow(`
+SELECT EXISTS(SELECT 1 FROM sequence WHERE namespace = CONCAT('application_', ?))`, appName)
+	var exists bool
+	err := row.Scan(&exists)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.IsFalse)
+}
+
+func (s *applicationSuite) checkApplicationSequence(c *tc.C, appName string, amount int) {
+	c.Helper()
+
+	// Ensure that there are no sequences left for the application.
+	row := s.DB().QueryRow(`
+SELECT COUNT(*) FROM sequence WHERE namespace = CONCAT('application_', ?)`, appName)
+	var count int
+	err := row.Scan(&count)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(count, tc.Equals, amount)
 }
 
 func (s *applicationSuite) checkUnitDyingState(c *tc.C, unitUUIDs []unit.UUID) {
@@ -1042,6 +1397,66 @@ func (s *applicationSuite) getCharmUUIDForApplication(c *tc.C, appUUID string) s
 	err := row.Scan(&charmUUID)
 	c.Assert(err, tc.ErrorIsNil)
 	return charmUUID
+}
+
+// TestDeleteApplicationDefersUntilUnitsAndRelationsGone verifies that
+// DeleteApplication returns RemovalJobIncomplete whenever units or relations
+// still exist, regardless of the force flag. Units and relations must be
+// cleaned up by their own removal jobs first; the application removal job
+// will retry until they are gone.
+func (s *applicationSuite) TestDeleteApplicationDefersUntilUnitsAndRelationsGone(c *tc.C) {
+	appSvc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, appSvc, "app1",
+		applicationservice.AddIAASUnitArg{},
+	)
+	s.createIAASApplication(c, appSvc, "app2")
+
+	relSvc := s.setupRelationService(c)
+	ep1, ep2, err := relSvc.AddRelation(c.Context(), "app1:foo", "app2:bar")
+	c.Assert(err, tc.ErrorIsNil)
+
+	relUUID, err := relSvc.GetRelationUUIDForRemoval(c.Context(), relation.GetRelationUUIDForRemovalArgs{
+		Endpoints: []string{ep1.String(), ep2.String()},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	unitUUIDs := s.getAllUnitUUIDs(c, appUUID)
+	c.Assert(unitUUIDs, tc.HasLen, 1)
+
+	s.advanceUnitLife(c, unitUUIDs[0], life.Dead)
+	s.advanceApplicationLife(c, appUUID, life.Dead)
+	s.advanceRelationLife(c, relUUID, life.Dead)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	// Both force and non-force must defer while the relation still exists.
+	err = st.DeleteApplication(c.Context(), appUUID.String(), false)
+	c.Check(err, tc.ErrorIs, removalerrors.RemovalJobIncomplete)
+
+	err = st.DeleteApplication(c.Context(), appUUID.String(), true)
+	c.Check(err, tc.ErrorIs, removalerrors.RemovalJobIncomplete)
+
+	// Simulate the relation removal job completing.
+	err = st.DeleteRelationUnits(c.Context(), relUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	err = st.DeleteRelation(c.Context(), relUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Still defers while the unit exists.
+	err = st.DeleteApplication(c.Context(), appUUID.String(), false)
+	c.Check(err, tc.ErrorIs, removalerrors.RemovalJobIncomplete)
+
+	// Simulate the unit removal job completing.
+	err = st.DeleteUnit(c.Context(), unitUUIDs[0].String(), false)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Now the application can be deleted.
+	err = st.DeleteApplication(c.Context(), appUUID.String(), false)
+	c.Assert(err, tc.ErrorIsNil)
+
+	exists, err := st.ApplicationExists(c.Context(), appUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.Equals, false)
 }
 
 func removeDuplicates[T comparable](uuids []T) []T {

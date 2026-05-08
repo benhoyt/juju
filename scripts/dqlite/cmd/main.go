@@ -15,7 +15,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/canonical/go-dqlite/v2/client"
+	"github.com/canonical/go-dqlite/v3/client"
 	"github.com/canonical/sqlair"
 	"github.com/chzyer/readline"
 	"github.com/fatih/color"
@@ -38,7 +38,9 @@ var (
 	dbPathFlag = flag.String("db-path", "", "Path to the database")
 
 	// Prevent the SQL commands from being printed to the console on startup.
-	quiteFlag = flag.Bool("q", false, "Quite mode")
+	quietFlag = flag.Bool("q", false, "Quiet mode")
+	// Detached mode just create the sqlite files but don't start the server.'
+	detachedFlag = flag.Bool("d", false, "Detached mode")
 
 	// Having a history of sql commands is useful for debugging and
 	// for re-running commands.
@@ -70,7 +72,7 @@ func main() {
 	default:
 		panic("unknown database type")
 	}
-	if !*quiteFlag {
+	if !*quietFlag {
 		schema.Hook(func(i int, stmt string) (string, error) {
 			fmt.Printf("-- Applying patch %d\n%s\n", i, stmt)
 			return stmt, nil
@@ -136,6 +138,10 @@ func main() {
 		panic(err)
 	}
 
+	if *detachedFlag {
+		return
+	}
+
 	go func() {
 		defer cancel()
 
@@ -185,7 +191,7 @@ func main() {
 				} else {
 					continue
 				}
-			} else if err == io.EOF {
+			} else if errors.Is(err, io.EOF) {
 				return
 			}
 
@@ -237,12 +243,12 @@ func dumpDB(ctx context.Context, db *sql.DB, path, name string) error {
 
 	files, err := cli.Dump(ctx, name)
 	if err != nil {
-		return fmt.Errorf("dump failed")
+		return fmt.Errorf("dump failed: %w", err)
 	}
 
 	for _, file := range files {
 		filePath := filepath.Join(path, file.Name)
-		fmt.Println("Dumping file", path)
+		fmt.Println("Dumping file", filePath)
 
 		err := os.WriteFile(filePath, file.Data, 0600)
 		if err != nil {
@@ -333,8 +339,8 @@ func processQuery(ctx context.Context, db database.TxnRunner, query string, args
 		_, _ = fmt.Fprintln(writer)
 
 		for rows.Next() {
-			row := make([]interface{}, n)
-			rowPointers := make([]interface{}, n)
+			row := make([]any, n)
+			rowPointers := make([]any, n)
 			for i := range row {
 				rowPointers[i] = &row[i]
 			}

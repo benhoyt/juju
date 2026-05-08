@@ -14,11 +14,11 @@ import (
 
 	"github.com/juju/juju/core/annotations"
 	"github.com/juju/juju/core/network"
-	"github.com/juju/juju/domain/annotation"
+	domainannotation "github.com/juju/juju/domain/annotation"
 	annotationerrors "github.com/juju/juju/domain/annotation/errors"
+	"github.com/juju/juju/domain/deployment/charm"
 	schematesting "github.com/juju/juju/domain/schema/testing"
-	storagetesting "github.com/juju/juju/domain/storage/testing"
-	"github.com/juju/juju/internal/charm"
+	domainstorage "github.com/juju/juju/domain/storage"
 )
 
 type stateSuite struct {
@@ -52,7 +52,7 @@ func (s *stateSuite) TestGetCharmAnnotations(c *tc.C) {
 	s.ensureAnnotation(c, "charm", "123", "foo", "5")
 	s.ensureAnnotation(c, "charm", "123", "bar", "6")
 
-	annotations, err := st.GetCharmAnnotations(c.Context(), annotation.GetCharmArgs{
+	annotations, err := st.GetCharmAnnotations(c.Context(), domainannotation.GetCharmArgs{
 		Source:   "local",
 		Name:     "mycharmurl",
 		Revision: 5,
@@ -85,7 +85,7 @@ func (s *stateSuite) TestSetAnnotations(c *tc.C) {
 		Name: "my-machine",
 	}
 
-	err := st.SetAnnotations(c.Context(), id, map[string]string{"bar": "6", "foo": "15"})
+	err := st.SetAnnotations(c.Context(), id, map[string]string{"bar": "6", "foo": "15"}, []string{})
 	c.Assert(err, tc.ErrorIsNil)
 
 	// Check the final annotation set
@@ -93,13 +93,13 @@ func (s *stateSuite) TestSetAnnotations(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(annotations, tc.DeepEquals, map[string]string{"bar": "6", "foo": "15"})
 
-	err = st.SetAnnotations(c.Context(), id, map[string]string{"bar": "6", "baz": "7"})
+	err = st.SetAnnotations(c.Context(), id, map[string]string{"bar": "6", "baz": "7"}, []string{})
 	c.Assert(err, tc.ErrorIsNil)
 
 	// Check the final annotation set
 	annotations, err = st.GetAnnotations(c.Context(), id)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(annotations, tc.DeepEquals, map[string]string{"bar": "6", "baz": "7"})
+	c.Check(annotations, tc.DeepEquals, map[string]string{"bar": "6", "baz": "7", "foo": "15"})
 }
 
 func (s *stateSuite) TestSetCharmAnnotations(c *tc.C) {
@@ -107,14 +107,14 @@ func (s *stateSuite) TestSetCharmAnnotations(c *tc.C) {
 
 	s.ensureCharm(c, "local:mycharmurl-5", "mystorage", "123")
 
-	args := annotation.GetCharmArgs{
+	args := domainannotation.GetCharmArgs{
 		Source:   "local",
 		Name:     "mycharmurl",
 		Revision: 5,
 	}
 
 	// Set annotations bar:6 and foo:15
-	err := st.SetCharmAnnotations(c.Context(), args, map[string]string{"bar": "6", "foo": "15"})
+	err := st.SetCharmAnnotations(c.Context(), args, map[string]string{"bar": "6", "foo": "15"}, []string{})
 	c.Assert(err, tc.ErrorIsNil)
 
 	// Check the final annotation set
@@ -122,8 +122,8 @@ func (s *stateSuite) TestSetCharmAnnotations(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(annotations, tc.DeepEquals, map[string]string{"bar": "6", "foo": "15"})
 
-	// Set annotations bar:6 and foo:15
-	err = st.SetCharmAnnotations(c.Context(), args, map[string]string{"bar": "6", "baz": "7"})
+	// Set annotations bar:6 and baz:7 and unset foo.
+	err = st.SetCharmAnnotations(c.Context(), args, map[string]string{"bar": "6", "baz": "7"}, []string{"foo"})
 	c.Assert(err, tc.ErrorIsNil)
 
 	// Check the final annotation set
@@ -213,7 +213,7 @@ func testAnnotationUpdate(c *tc.C, st *State, id annotations.ID) {
 	c.Check(annotations1, tc.DeepEquals, map[string]string{"foo": "5"})
 
 	// Add bar:6 and update foo:15
-	err = st.SetAnnotations(c.Context(), id, map[string]string{"bar": "6", "foo": "15"})
+	err = st.SetAnnotations(c.Context(), id, map[string]string{"bar": "6", "foo": "15"}, []string{})
 	c.Assert(err, tc.ErrorIsNil)
 
 	// Check the final annotation set
@@ -230,25 +230,44 @@ func (s *stateSuite) TestSetAnnotationsUnset(c *tc.C) {
 	// Add a machine into the TABLE machine and an annotation (to be updated)
 	s.ensureMachine(c, "my-machine", "123")
 	s.ensureAnnotation(c, "machine", "123", "foo", "5")
+	s.ensureAnnotation(c, "machine", "123", "bar", "6")
 
 	id := annotations.ID{
 		Kind: annotations.KindMachine,
 		Name: "my-machine",
 	}
 
-	// Check that we only have the foo:5
+	// Check that we have both foo:5 and bar:6
 	annotations1, err := st.GetAnnotations(c.Context(), id)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(annotations1, tc.DeepEquals, map[string]string{"foo": "5"})
+	c.Check(annotations1, tc.DeepEquals, map[string]string{"foo": "5", "bar": "6"})
 
 	// Unset foo
-	err = st.SetAnnotations(c.Context(), id, map[string]string{})
+	err = st.SetAnnotations(c.Context(), id, map[string]string{}, []string{"foo"})
 	c.Assert(err, tc.ErrorIsNil)
 
-	// Check the final annotation set
+	// Check that we only have bar:6
 	annotations2, err := st.GetAnnotations(c.Context(), id)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(annotations2, tc.HasLen, 0)
+	c.Check(annotations2, tc.DeepEquals, map[string]string{"bar": "6"})
+
+	// Set nothing
+	err = st.SetAnnotations(c.Context(), id, map[string]string{}, []string{})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Check that we still have the bar:6
+	annotations3, err := st.GetAnnotations(c.Context(), id)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(annotations3, tc.DeepEquals, map[string]string{"bar": "6"})
+
+	// Both add and remove at the same time
+	err = st.SetAnnotations(c.Context(), id, map[string]string{"baz": "7"}, []string{"bar"})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Check that we only have baz:7
+	annotations4, err := st.GetAnnotations(c.Context(), id)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(annotations4, tc.DeepEquals, map[string]string{"baz": "7"})
 }
 
 // TestSetAnnotationsUnsetModel asserts the happy path, unsets some annotations
@@ -257,19 +276,29 @@ func (s *stateSuite) TestSetAnnotationsUnsetModel(c *tc.C) {
 	st := NewState(s.TxnRunnerFactory())
 
 	s.ensureAnnotation(c, "model", "", "foo", "5")
+	s.ensureAnnotation(c, "model", "", "bar", "6")
 
 	id := annotations.ID{
 		Kind: annotations.KindModel,
 	}
 
 	// Unset foo
-	err := st.SetAnnotations(c.Context(), id, map[string]string{})
+	err := st.SetAnnotations(c.Context(), id, map[string]string{}, []string{"foo"})
 	c.Assert(err, tc.ErrorIsNil)
 
-	// Check the final annotation set
+	// Check that we only have bar:6
 	annotations2, err := st.GetAnnotations(c.Context(), id)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(annotations2, tc.HasLen, 0)
+	c.Check(annotations2, tc.DeepEquals, map[string]string{"bar": "6"})
+
+	// Set nothing
+	err = st.SetAnnotations(c.Context(), id, map[string]string{}, []string{})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Check that we still have the bar:6
+	annotations3, err := st.GetAnnotations(c.Context(), id)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(annotations3, tc.DeepEquals, map[string]string{"bar": "6"})
 }
 
 // TestUUIDQueryForID asserts the happy path of the utility uuidQueryForID
@@ -427,8 +456,9 @@ VALUES (?, ?)
 		}
 
 		_, err = tx.ExecContext(ctx, `
-INSERT INTO charm_storage (charm_uuid, name, storage_kind_id, count_min, count_max)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO charm_storage (charm_uuid, name, storage_kind_id, count_min,
+                           shared, count_max)
+VALUES (?, ?, ?, ?, false, ?)
 		`, uuid, storageName, 0, 0, 1)
 		if err != nil {
 			return err
@@ -441,7 +471,7 @@ VALUES (?, ?, ?, ?, ?)
 
 // ensureStorage inserts a row into the storage_instance table
 func (s *stateSuite) ensureStorage(c *tc.C, name, uuid, charmName string) {
-	poolUUID := storagetesting.GenStoragePoolUUID(c)
+	poolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
 
 	_, err := s.DB().Exec(`
 INSERT INTO storage_pool (uuid, name, type) VALUES (?, ?, ?)`,

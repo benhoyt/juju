@@ -13,15 +13,14 @@ import (
 
 	"github.com/juju/juju/core/crossmodel"
 	"github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	permission "github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/domain/application/architecture"
 	"github.com/juju/juju/domain/application/charm"
 	"github.com/juju/juju/domain/crossmodelrelation"
 	crossmodelrelationservice "github.com/juju/juju/domain/crossmodelrelation/service"
+	charm0 "github.com/juju/juju/domain/deployment/charm"
 	statusservice "github.com/juju/juju/domain/status/service"
-	charm0 "github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/testhelpers"
 	"github.com/juju/juju/internal/uuid"
 	"github.com/juju/juju/rpc/params"
@@ -281,7 +280,7 @@ func (s *statusSuite) setupMocks(c *tc.C) *gomock.Controller {
 	s.statusService = NewMockStatusService(ctrl)
 	s.authorizer = NewMockAuthorizer(ctrl)
 
-	s.modelUUID = modeltesting.GenModelUUID(c)
+	s.modelUUID = tc.Must0(c, model.NewUUID)
 
 	c.Cleanup(func() {
 		s.authorizer = nil

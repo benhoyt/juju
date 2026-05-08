@@ -12,7 +12,6 @@ import (
 
 	coremachine "github.com/juju/juju/core/machine"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	usertesting "github.com/juju/juju/core/user/testing"
 	jujuversion "github.com/juju/juju/core/version"
 	domainagentbinary "github.com/juju/juju/domain/agentbinary"
@@ -101,7 +100,7 @@ func (s *stateSuite) TestCheckMachineDoesNotExist(c *tc.C) {
 func (s *stateSuite) TestGetModelId(c *tc.C) {
 	mst := statemodel.NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	args := model.ModelDetailArgs{
 		UUID:               modelUUID,
 		LatestAgentVersion: jujuversion.Current,

@@ -13,7 +13,6 @@ import (
 	base "github.com/juju/juju/core/base"
 	constraints "github.com/juju/juju/core/constraints"
 	instance "github.com/juju/juju/core/instance"
-	lxdprofile "github.com/juju/juju/core/lxdprofile"
 	environs "github.com/juju/juju/environs"
 	instances "github.com/juju/juju/environs/instances"
 	instancecfg "github.com/juju/juju/internal/cloudconfig/instancecfg"
@@ -42,45 +41,6 @@ func NewMockTestLXDManager(ctrl *gomock.Controller) *MockTestLXDManager {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockTestLXDManager) EXPECT() *MockTestLXDManagerMockRecorder {
 	return m.recorder
-}
-
-// AssignLXDProfiles mocks base method.
-func (m *MockTestLXDManager) AssignLXDProfiles(arg0 string, arg1 []string, arg2 []lxdprofile.ProfilePost) ([]string, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AssignLXDProfiles", arg0, arg1, arg2)
-	ret0, _ := ret[0].([]string)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// AssignLXDProfiles indicates an expected call of AssignLXDProfiles.
-func (mr *MockTestLXDManagerMockRecorder) AssignLXDProfiles(arg0, arg1, arg2 any) *MockTestLXDManagerAssignLXDProfilesCall {
-	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AssignLXDProfiles", reflect.TypeOf((*MockTestLXDManager)(nil).AssignLXDProfiles), arg0, arg1, arg2)
-	return &MockTestLXDManagerAssignLXDProfilesCall{Call: call}
-}
-
-// MockTestLXDManagerAssignLXDProfilesCall wrap *gomock.Call
-type MockTestLXDManagerAssignLXDProfilesCall struct {
-	*gomock.Call
-}
-
-// Return rewrite *gomock.Call.Return
-func (c *MockTestLXDManagerAssignLXDProfilesCall) Return(arg0 []string, arg1 error) *MockTestLXDManagerAssignLXDProfilesCall {
-	c.Call = c.Call.Return(arg0, arg1)
-	return c
-}
-
-// Do rewrite *gomock.Call.Do
-func (c *MockTestLXDManagerAssignLXDProfilesCall) Do(f func(string, []string, []lxdprofile.ProfilePost) ([]string, error)) *MockTestLXDManagerAssignLXDProfilesCall {
-	c.Call = c.Call.Do(f)
-	return c
-}
-
-// DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockTestLXDManagerAssignLXDProfilesCall) DoAndReturn(f func(string, []string, []lxdprofile.ProfilePost) ([]string, error)) *MockTestLXDManagerAssignLXDProfilesCall {
-	c.Call = c.Call.DoAndReturn(f)
-	return c
 }
 
 // CreateContainer mocks base method.
@@ -273,44 +233,6 @@ func (c *MockTestLXDManagerListContainersCall) Do(f func() ([]instances.Instance
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockTestLXDManagerListContainersCall) DoAndReturn(f func() ([]instances.Instance, error)) *MockTestLXDManagerListContainersCall {
-	c.Call = c.Call.DoAndReturn(f)
-	return c
-}
-
-// MaybeWriteLXDProfile mocks base method.
-func (m *MockTestLXDManager) MaybeWriteLXDProfile(arg0 string, arg1 lxdprofile.Profile) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "MaybeWriteLXDProfile", arg0, arg1)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// MaybeWriteLXDProfile indicates an expected call of MaybeWriteLXDProfile.
-func (mr *MockTestLXDManagerMockRecorder) MaybeWriteLXDProfile(arg0, arg1 any) *MockTestLXDManagerMaybeWriteLXDProfileCall {
-	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MaybeWriteLXDProfile", reflect.TypeOf((*MockTestLXDManager)(nil).MaybeWriteLXDProfile), arg0, arg1)
-	return &MockTestLXDManagerMaybeWriteLXDProfileCall{Call: call}
-}
-
-// MockTestLXDManagerMaybeWriteLXDProfileCall wrap *gomock.Call
-type MockTestLXDManagerMaybeWriteLXDProfileCall struct {
-	*gomock.Call
-}
-
-// Return rewrite *gomock.Call.Return
-func (c *MockTestLXDManagerMaybeWriteLXDProfileCall) Return(arg0 error) *MockTestLXDManagerMaybeWriteLXDProfileCall {
-	c.Call = c.Call.Return(arg0)
-	return c
-}
-
-// Do rewrite *gomock.Call.Do
-func (c *MockTestLXDManagerMaybeWriteLXDProfileCall) Do(f func(string, lxdprofile.Profile) error) *MockTestLXDManagerMaybeWriteLXDProfileCall {
-	c.Call = c.Call.Do(f)
-	return c
-}
-
-// DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockTestLXDManagerMaybeWriteLXDProfileCall) DoAndReturn(f func(string, lxdprofile.Profile) error) *MockTestLXDManagerMaybeWriteLXDProfileCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

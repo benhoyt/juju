@@ -9,7 +9,7 @@ import (
 	"gopkg.in/macaroon.v2"
 
 	"github.com/juju/juju/core/life"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 )
 
 // ExternalControllerInfoResults contains the results of querying
@@ -53,7 +53,9 @@ type OfferFilters struct {
 
 // OfferFilter is used to query offers.
 type OfferFilter struct {
-	// ModelQualifier disambiguates the name of the model hosting the offer.
+	// ModelQualifier is the owner identifier used to disambiguate ModelName.
+	// It uses user-id form (for example "admin" or "alice@external"),
+	// not full user-tag form.
 	ModelQualifier string `json:"model-qualifier"`
 
 	// ModelName is the name of the model hosting the offer.
@@ -345,7 +347,7 @@ type RemoteRelationUnitChange struct {
 	UnitId int `json:"unit-id"`
 
 	// Settings is the current settings for the relation unit.
-	Settings map[string]interface{} `json:"settings,omitempty"`
+	Settings map[string]any `json:"settings,omitempty"`
 }
 
 // RemoteRelationChangeEvent is pushed to the remote model to communicate
@@ -373,7 +375,7 @@ type RemoteRelationChangeEvent struct {
 
 	// ApplicationSettings represent the updated application-level settings in
 	// this relation.
-	ApplicationSettings map[string]interface{} `json:"application-settings,omitempty"`
+	ApplicationSettings map[string]any `json:"application-settings,omitempty"`
 
 	// ChangedUnits maps unit tokens to relation unit changes.
 	ChangedUnits []RemoteRelationUnitChange `json:"changed-units,omitempty"`
@@ -390,11 +392,13 @@ type RemoteRelationChangeEvent struct {
 
 	// DepartedUnits contains the ids of units that have departed
 	// the relation since the last change.
+	//
 	// Deprecated: Use InScopeUnits will tell us which units are expected
 	// to be alive and in-scope. Anything else should be treated as departed.
 	DepartedUnits []int `json:"departed-units,omitempty"`
 
 	// UnitCount is the number of units still in relation scope.
+	//
 	// Deprecated: Use len(InScopeUnits) instead.
 	UnitCount int `json:"unit-count"`
 }

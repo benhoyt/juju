@@ -10,7 +10,6 @@ import (
 	"gopkg.in/macaroon.v2"
 
 	"github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 )
 
 //go:generate go run go.uber.org/mock/mockgen -typed -package bakery -destination clock_mock_test.go github.com/juju/clock Clock
@@ -40,7 +39,7 @@ func (s *baseBakerySuite) setupMocks(c *tc.C) *gomock.Controller {
 	s.authorizer = NewMockOpsAuthorizer(ctrl)
 	s.httpClient = NewMockHTTPClient(ctrl)
 
-	s.modelUUID = modeltesting.GenModelUUID(c)
+	s.modelUUID = tc.Must0(c, model.NewUUID)
 
 	s.keyPair = bakery.MustGenerateKey()
 

@@ -12,7 +12,7 @@ import (
 	"gopkg.in/yaml.v2"
 
 	coresecrets "github.com/juju/juju/core/secrets"
-	"github.com/juju/juju/internal/charm/hooks"
+	"github.com/juju/juju/domain/deployment/charm/hooks"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/worker/uniter/hook"
 	operationmocks "github.com/juju/juju/internal/worker/uniter/operation/mocks"
@@ -35,10 +35,6 @@ func (s *secretsSuite) setupMocks(c *tc.C) *gomock.Controller {
 	s.stateReadWriter = operationmocks.NewMockUnitStateReadWriter(ctrl)
 	s.secretsClient = mocks.NewMockSecretsClient(ctrl)
 	return ctrl
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }
 
 func (s *secretsSuite) yamlString(c *tc.C, st *secrets.State) string {
@@ -64,14 +60,14 @@ func (s *secretsSuite) TestCommitSecretChanged(c *tc.C) {
 		map[string]coresecrets.SecretRevisionInfo{"secret:9m4e2mr0ui3e8a215n4g": {LatestRevision: 667}}, nil,
 	)
 
-	s.stateReadWriter.EXPECT().SetState(gomock.Any(), params.SetUnitStateArg{SecretState: ptr(s.yamlString(c,
+	s.stateReadWriter.EXPECT().SetState(gomock.Any(), params.SetUnitStateArg{SecretState: new(s.yamlString(c,
 		&secrets.State{
 			ConsumedSecretInfo:      map[string]int{"secret:9m4e2mr0ui3e8a215n4g": 667},
 			SecretObsoleteRevisions: map[string][]int{},
 		},
 	))})
 
-	s.stateReadWriter.EXPECT().SetState(gomock.Any(), params.SetUnitStateArg{SecretState: ptr(s.yamlString(c,
+	s.stateReadWriter.EXPECT().SetState(gomock.Any(), params.SetUnitStateArg{SecretState: new(s.yamlString(c,
 		&secrets.State{
 			ConsumedSecretInfo:      map[string]int{"secret:9m4e2mr0ui3e8a215n4g": 666},
 			SecretObsoleteRevisions: map[string][]int{},
@@ -103,7 +99,7 @@ func (s *secretsSuite) TestCommitSecretRemove(c *tc.C) {
 		},
 	)}, nil)
 
-	s.stateReadWriter.EXPECT().SetState(gomock.Any(), params.SetUnitStateArg{SecretState: ptr(s.yamlString(c,
+	s.stateReadWriter.EXPECT().SetState(gomock.Any(), params.SetUnitStateArg{SecretState: new(s.yamlString(c,
 		&secrets.State{
 			ConsumedSecretInfo: map[string]int{},
 			SecretObsoleteRevisions: map[string][]int{
@@ -153,7 +149,7 @@ func (s *secretsSuite) TestCommitNoOpSecretRevisionRemoved(c *tc.C) {
 		}, nil,
 	)
 
-	s.stateReadWriter.EXPECT().SetState(gomock.Any(), params.SetUnitStateArg{SecretState: ptr(s.yamlString(c,
+	s.stateReadWriter.EXPECT().SetState(gomock.Any(), params.SetUnitStateArg{SecretState: new(s.yamlString(c,
 		&secrets.State{
 			ConsumedSecretInfo: map[string]int{
 				"secret:666e2mr0ui3e8a215n4g": 666,

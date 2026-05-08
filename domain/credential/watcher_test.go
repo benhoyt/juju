@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/canonical/sqlair"
+	"github.com/juju/clock"
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/cloud"
@@ -69,6 +70,8 @@ func (s *watcherSuite) TestWatchCloud(c *tc.C) {
 	}
 	s.createCloudCredential(c, st, key)
 
+	s.AssertChangeStreamIdle(c)
+
 	watcher, err := service.WatchCredential(c.Context(), key)
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -109,7 +112,7 @@ func (s *watcherSuite) addCloud(c *tc.C, userName user.Name, cloud cloud.Cloud) 
 func (s *watcherSuite) addOwner(c *tc.C, name user.Name) user.UUID {
 	userUUID, err := user.NewUUID()
 	c.Assert(err, tc.ErrorIsNil)
-	userState := userstate.NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+	userState := userstate.NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
 	err = userState.AddUserWithPermission(
 		c.Context(),
 		userUUID,

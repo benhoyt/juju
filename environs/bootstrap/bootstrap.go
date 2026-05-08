@@ -6,6 +6,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 
@@ -23,6 +24,7 @@ import (
 	corecontext "github.com/juju/juju/core/context"
 	"github.com/juju/juju/core/semversion"
 	jujuversion "github.com/juju/juju/core/version"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/environs/imagemetadata"
@@ -30,7 +32,6 @@ import (
 	"github.com/juju/juju/environs/storage"
 	"github.com/juju/juju/environs/sync"
 	"github.com/juju/juju/environs/tools"
-	"github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/cloudconfig/instancecfg"
 	"github.com/juju/juju/internal/cloudconfig/podcfg"
 	internallogger "github.com/juju/juju/internal/logger"
@@ -96,7 +97,7 @@ type BootstrapParams struct {
 
 	// ControllerInheritedConfig is the set of config attributes to be shared
 	// across all models in the same controller.
-	ControllerInheritedConfig map[string]interface{}
+	ControllerInheritedConfig map[string]any
 
 	// ControllerModelAuthorizedKeys is a set of pre-allowed authorized keys
 	// for the initial controller model.
@@ -149,14 +150,6 @@ type BootstrapParams struct {
 
 	// DialOpts contains the bootstrap dial options.
 	DialOpts environs.BootstrapDialOpts
-
-	// JujuDbSnapPath is the path to a local .snap file that will be used
-	// to run the juju-db service.
-	JujuDbSnapPath string
-
-	// JujuDbSnapAssertionsPath is the path to a local .assertfile that
-	// will be used to test the contents of the .snap at JujuDbSnap.
-	JujuDbSnapAssertionsPath string
 
 	// StoragePools is one or more named storage pools to create
 	// in the controller model.
@@ -548,7 +541,7 @@ func bootstrapIAAS(
 	if args.AgentVersion != nil {
 		agentVersion = *args.AgentVersion
 	}
-	if cfg, err = cfg.Apply(map[string]interface{}{
+	if cfg, err = cfg.Apply(map[string]any{
 		"agent-version": agentVersion.String(),
 	}); err != nil {
 		return errors.Trace(err)
@@ -628,10 +621,6 @@ func bootstrapIAAS(
 
 	ctx.Infof("Installing Juju agent on bootstrap instance")
 	if err := instanceConfig.SetTools(selectedToolsList); err != nil {
-		return errors.Trace(err)
-	}
-
-	if err := instanceConfig.SetSnapSource(args.JujuDbSnapPath, args.JujuDbSnapAssertionsPath); err != nil {
 		return errors.Trace(err)
 	}
 
@@ -795,8 +784,6 @@ func finalizeInstanceBootstrapConfig(
 	icfg.Bootstrap.RegionInheritedConfig = args.Cloud.RegionConfig
 	icfg.Bootstrap.StoragePools = args.StoragePools
 	icfg.Bootstrap.Timeout = args.DialOpts.Timeout
-	icfg.Bootstrap.JujuDbSnapPath = args.JujuDbSnapPath
-	icfg.Bootstrap.JujuDbSnapAssertionsPath = args.JujuDbSnapAssertionsPath
 	icfg.Bootstrap.ControllerCharm = args.ControllerCharmPath
 	icfg.Bootstrap.ControllerCharmChannel = args.ControllerCharmChannel
 	return nil
@@ -856,9 +843,7 @@ func finalizePodBootstrapConfig(
 	}
 
 	pcfg.AgentEnvironment = make(map[string]string)
-	for k, v := range args.ExtraAgentValuesForTesting {
-		pcfg.AgentEnvironment[k] = v
-	}
+	maps.Copy(pcfg.AgentEnvironment, args.ExtraAgentValuesForTesting)
 
 	pcfg.Bootstrap.ControllerModelAuthorizedKeys = args.ControllerModelAuthorizedKeys
 	pcfg.Bootstrap.ControllerModelConfig = cfg
@@ -1019,7 +1004,7 @@ func getBootstrapToolsVersion(ctx context.Context, possibleTools coretools.List)
 func setBootstrapAgentVersion(ctx context.Context, environ environs.Configer, toolsVersion semversion.Number) error {
 	cfg := environ.Config()
 	if agentVersion, _ := cfg.AgentVersion(); agentVersion != toolsVersion {
-		cfg, err := cfg.Apply(map[string]interface{}{
+		cfg, err := cfg.Apply(map[string]any{
 			"agent-version": toolsVersion.String(),
 		})
 		if err == nil {

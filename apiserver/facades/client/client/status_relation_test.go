@@ -13,8 +13,8 @@ import (
 	corerelation "github.com/juju/juju/core/relation"
 	corerelationtesting "github.com/juju/juju/core/relation/testing"
 	"github.com/juju/juju/core/status"
+	"github.com/juju/juju/domain/deployment/charm"
 	domainrelation "github.com/juju/juju/domain/relation"
-	"github.com/juju/juju/internal/charm"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/testhelpers"
 )
@@ -54,24 +54,24 @@ func (s *relationStatusSuite) TestFetchRelation(c *tc.C) {
 		Key: corerelationtesting.GenNewKey(c, "sink:consumer source:provider"),
 		Endpoints: []domainrelation.Endpoint{
 			{
-				ApplicationName: "source",
-				Relation: charm.Relation{
-					Name: "provider",
-					Role: charm.RoleProvider,
-				},
-			},
-			{
 				ApplicationName: "sink",
 				Relation: charm.Relation{
 					Name: "consumer",
 					Role: charm.RoleRequirer,
 				},
 			},
+			{
+				ApplicationName: "source",
+				Relation: charm.Relation{
+					Name: "provider",
+					Role: charm.RoleProvider,
+				},
+			},
 		},
 		Status: status.StatusInfo{
 			Status:  "joined",
 			Message: "Hey man !",
-			Data: map[string]interface{}{
+			Data: map[string]any{
 				"foo": "bar",
 			},
 		},
@@ -117,17 +117,17 @@ func (s *relationStatusSuite) TestFetchRelationWithError(c *tc.C) {
 		Key: corerelationtesting.GenNewKey(c, "sink:consumer source:provider"),
 		Endpoints: []domainrelation.Endpoint{
 			{
-				ApplicationName: "source",
-				Relation: charm.Relation{
-					Name: "provider",
-					Role: charm.RoleProvider,
-				},
-			},
-			{
 				ApplicationName: "sink",
 				Relation: charm.Relation{
 					Name: "consumer",
 					Role: charm.RoleRequirer,
+				},
+			},
+			{
+				ApplicationName: "source",
+				Relation: charm.Relation{
+					Name: "provider",
+					Role: charm.RoleProvider,
 				},
 			},
 		},

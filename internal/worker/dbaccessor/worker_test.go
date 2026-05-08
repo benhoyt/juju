@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 
@@ -33,6 +33,34 @@ func TestWorkerSuite(t *stdtesting.T) {
 	tc.Run(t, &workerSuite{})
 }
 
+func (s *workerSuite) TestFirstClosedCancelStopsGoroutines(c *tc.C) {
+	never := make(chan struct{})
+	for range 100 {
+		_, cancel := firstClosed(never, never)
+		cancel()
+	}
+}
+
+func (s *workerSuite) TestFirstClosedMultipleChannelsNoLeak(c *tc.C) {
+	const n = 64
+	chs := make([]chan struct{}, n)
+	readOnly := make([]<-chan struct{}, n)
+	for i := range n {
+		ch := make(chan struct{})
+		chs[i] = ch
+		readOnly[i] = ch
+	}
+
+	out, cancel := firstClosed(readOnly...)
+	close(chs[n-1])
+	select {
+	case <-c.Context().Done():
+		c.Fatal("timed out waiting for firstClosed to return")
+	case <-out:
+		cancel()
+	}
+}
+
 func (s *workerSuite) TestKilledGetDBErrDying(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
@@ -47,6 +75,7 @@ func (s *workerSuite) TestKilledGetDBErrDying(c *tc.C) {
 	mgrExp.IsLoopbackPreferred().Return(false)
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 
 	// We may or may not get this call.
 	mgrExp.SetClusterToLocalNode(gomock.Any()).Return(nil).AnyTimes()
@@ -84,6 +113,7 @@ func (s *workerSuite) TestStartupTimeoutSingleControllerReconfigure(c *tc.C) {
 	mgrExp.WithTLSOption().Return(nil, nil)
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 	mgrExp.SetClusterToLocalNode(gomock.Any()).Return(nil)
 
 	// App gets started, we time out waiting, then we close it.
@@ -122,6 +152,7 @@ func (s *workerSuite) TestStartupTimeoutMultipleControllerRetry(c *tc.C) {
 	mgrExp.WithTLSOption().Return(nil, nil).Times(2)
 	mgrExp.WithLogFuncOption().Return(nil).Times(2)
 	mgrExp.WithTracingOption().Return(nil).Times(2)
+	mgrExp.WithBusyTimeoutOption().Return(nil).Times(2)
 
 	// App gets started, we time out waiting, then we close it both times.
 	appExp := s.dbApp.EXPECT()
@@ -166,6 +197,7 @@ func (s *workerSuite) TestStartupNotExistingNodeThenCluster(c *tc.C) {
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTLSOption().Return(nil, nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 	mgrExp.IsLoopbackBound(gomock.Any()).Return(false, nil)
 
 	// Expects 1 attempt to start and 2 attempts to reconfigure.
@@ -236,7 +268,9 @@ func (s *workerSuite) TestStartupNotExistingNodeThenCluster(c *tc.C) {
 		ID:      1,
 		Address: "10.10.1.1",
 	}, nil)
-	report := w.(interface{ Report() map[string]any }).Report()
+	report := w.(interface {
+		Report(ctx context.Context) map[string]any
+	}).Report(c.Context())
 	c.Assert(report, MapHasKeys, []string{
 		"leader",
 		"leader-id",
@@ -265,6 +299,7 @@ func (s *workerSuite) TestWorkerStartupExistingNode(c *tc.C) {
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTLSOption().Return(nil, nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 
 	s.client.EXPECT().Cluster(gomock.Any()).Return(nil, nil)
 
@@ -309,6 +344,7 @@ func (s *workerSuite) TestWorkerStartupExistingNodeWithLoopbackPreferred(c *tc.C
 	mgrExp.IsLoopbackPreferred().Return(false).MinTimes(1)
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 
 	s.client.EXPECT().Cluster(gomock.Any()).Return(nil, nil)
 
@@ -345,6 +381,7 @@ func (s *workerSuite) TestWorkerStartupAsBootstrapNodeSingleServerNoRebind(c *tc
 	mgrExp.IsLoopbackPreferred().Return(false).Times(3)
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 
 	s.client.EXPECT().Cluster(gomock.Any()).Return(nil, nil)
 
@@ -415,6 +452,7 @@ func (s *workerSuite) TestWorkerStartupAsBootstrapNodeThenReconfigure(c *tc.C) {
 
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 
 	// These are the expectations around reconfiguring
 	// the cluster and local node.
@@ -494,6 +532,7 @@ func (s *workerSuite) TestWorkerStartupAsBootstrapNodeThenReconfigureWithLoopbac
 	mgrExp.EnsureDataDir().Return(dataDir, nil).MinTimes(1)
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 
 	// If this is a loopback preferred node, we do not invoke the TLS or
 	// cluster options.

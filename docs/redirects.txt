@@ -1,5 +1,17 @@
 # <old URL> <new URL>
-
+# redirect old version release notes to main releasenotes page
+releasenotes/juju_3.6.x releasenotes
+releasenotes/juju_2.9.x releasenotes
+reference/juju/juju-roadmap-and-releases releasenotes
+reference/plugin/ reference
+reference/plugin/list-of-known-juju-plugins/#list-of-known-juju-plugins reference
+reference/plugin/list-of-known-juju-plugins/plugin-juju-stash/ reference
+reference/plugin/plugin-flags/ reference
+howto/manage-plugins/ howto
+reference/plugin/list-of-known-juju-plugins/plugin-juju-metadata reference/juju-cli/plugin-juju-metadata
+reference/cloud/list-of-supported-clouds/the-manual-cloud-and-juju reference/cloud/list-of-supported-clouds/the-unmanaged-cloud-and-juju
+contributor/reference/architectural-overview contributor/reference
+contributor/howto/create-new-mongo-db-collection contributor/howto
 reference/charm/charm-development-best-practices/ reference/charm
 # redirects after updating landing pages
 explanation/performance-with-juju explanation/juju-performance
@@ -330,11 +342,11 @@ user/reference/model reference/model
 user/reference/offer reference/offer
 user/reference/pebble reference/pebble
 user/reference/placement-directive reference/placement-directive
-user/reference/plugin reference/plugin
-user/reference/plugin/list-of-known-juju-plugins reference/plugin/list-of-known-juju-plugins
-user/reference/plugin/list-of-known-juju-plugins/plugin-juju-metadata reference/plugin/list-of-known-juju-plugins/plugin-juju-metadata
-user/reference/plugin/list-of-known-juju-plugins/plugin-juju-stash reference/plugin/list-of-known-juju-plugins/plugin-juju-stash
-user/reference/plugin/plugin-flags reference/plugin/plugin-flags
+user/reference/plugin reference
+user/reference/plugin/list-of-known-juju-plugins reference
+user/reference/plugin/list-of-known-juju-plugins/plugin-juju-metadata reference/juju-cli/plugin-juju-metadata
+user/reference/plugin/list-of-known-juju-plugins/plugin-juju-stash reference
+user/reference/plugin/plugin-flags reference
 user/reference/relation reference/relation
 user/reference/removing-things reference/removing-things
 user/reference/resource-charm reference/resource-charm
@@ -354,7 +366,6 @@ user/reference/resource-compute/list-of-commands-available-on-a-compute-resource
 user/reference/resource-compute/list-of-commands-available-on-a-compute-resource-provisioned-by-juju/list-of-juju-introspect-macros/juju_metrics reference/resource-compute/list-of-commands-available-on-a-compute-resource-provisioned-by-juju/list-of-juju-introspect-macros/juju_metrics
 user/reference/resource-compute/list-of-commands-available-on-a-compute-resource-provisioned-by-juju/list-of-juju-introspect-macros/juju_pubsub_report reference/resource-compute/list-of-commands-available-on-a-compute-resource-provisioned-by-juju/list-of-juju-introspect-macros/juju_pubsub_report
 user/reference/resource-compute/list-of-commands-available-on-a-compute-resource-provisioned-by-juju/list-of-juju-introspect-macros/juju_start_unit reference/resource-compute/list-of-commands-available-on-a-compute-resource-provisioned-by-juju/list-of-juju-introspect-macros/juju_start_unit
-user/reference/resource-compute/list-of-commands-available-on-a-compute-resource-provisioned-by-juju/list-of-juju-introspect-macros/juju_statepool_report reference/resource-compute/list-of-commands-available-on-a-compute-resource-provisioned-by-juju/list-of-juju-introspect-macros/juju_statepool_report
 user/reference/resource-compute/list-of-commands-available-on-a-compute-resource-provisioned-by-juju/list-of-juju-introspect-macros/juju_statetracker_report reference/resource-compute/list-of-commands-available-on-a-compute-resource-provisioned-by-juju/list-of-juju-introspect-macros/juju_statetracker_report
 user/reference/resource-compute/list-of-commands-available-on-a-compute-resource-provisioned-by-juju/list-of-juju-introspect-macros/juju_stop_unit reference/resource-compute/list-of-commands-available-on-a-compute-resource-provisioned-by-juju/list-of-juju-introspect-macros/juju_stop_unit
 user/reference/resource-compute/list-of-commands-available-on-a-compute-resource-provisioned-by-juju/list-of-juju-introspect-macros/juju_unit_agent_name reference/resource-compute/list-of-commands-available-on-a-compute-resource-provisioned-by-juju/list-of-juju-introspect-macros/juju_unit_agent_name

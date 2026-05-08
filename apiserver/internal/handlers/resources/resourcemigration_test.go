@@ -20,8 +20,8 @@ import (
 
 	"github.com/juju/juju/apiserver/apiserverhttp"
 	"github.com/juju/juju/core/resource"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	domainresource "github.com/juju/juju/domain/resource"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/rpc/params"
 )
@@ -31,6 +31,9 @@ const migrateResourcesPrefix = "/migrate/resources"
 type resourcesUploadSuite struct {
 	resourceServiceGetter *MockResourceServiceGetter
 	resourceService       *MockResourceService
+
+	modelServiceGetter *MockModelServiceGetter
+	modelService       *MockModelService
 
 	content        string
 	origin         charmresource.Origin
@@ -74,8 +77,7 @@ func (s *resourcesUploadSuite) TearDownTest(c *tc.C) {
 func (s *resourcesUploadSuite) TestStub(c *tc.C) {
 	c.Skip("This suite is missing tests for the following scenarios:\n" +
 		"- Sending a POST req requires authorization via unit or application only.\n" +
-		"- Rejects an unknown model with http.StatusNotFound.\n" +
-		"- Test fails when model not importing.")
+		"- Rejects an unknown model with http.StatusNotFound.\n")
 }
 
 // TestServeMethodNotSupported ensures that the handler rejects HTTP methods
@@ -83,7 +85,8 @@ func (s *resourcesUploadSuite) TestStub(c *tc.C) {
 func (s *resourcesUploadSuite) TestServeMethodNotSupported(c *tc.C) {
 	// Arrange
 	handler := NewResourceMigrationUploadHandler(
-		nil,
+		nil, // application service getter (unused for non-POST)
+		nil, // resource service getter (unused for non-POST)
 		loggertesting.WrapCheckLog(c),
 	)
 	unsupportedMethods := []string{
@@ -117,6 +120,26 @@ func (s *resourcesUploadSuite) TestServeMethodNotSupported(c *tc.C) {
 		c.Check(response.StatusCode, tc.Equals, http.StatusMethodNotAllowed,
 			tc.Commentf("(Assert) unexpected status code. method: %s", method))
 	}
+}
+
+// TestServeUploadModelNotImporting verifies that POST requests are rejected
+// with 400 Bad Request when the model is not importing.
+func (s *resourcesUploadSuite) TestServeUploadModelNotImporting(c *tc.C) {
+	// Arrange
+	defer s.setupHandlerWithImporting(c, false).Finish()
+	query := url.Values{
+		"name":        {"resource-name"},
+		"application": {"app-name"},
+		"timestamp":   {"not-placeholder"},
+	}
+
+	// Act
+	response, err := http.Post(s.srv.URL+migrateResourcesPrefix+"?"+query.Encode(), "application/octet-stream", http.NoBody)
+	c.Assert(err, tc.ErrorIsNil, tc.Commentf("(Act) unexpected error while executing request"))
+	defer response.Body.Close()
+
+	// Assert
+	c.Check(response.StatusCode, tc.Equals, http.StatusBadRequest)
 }
 
 // TestServeUploadApplicationResourceNotFound verifies the handler's behavior
@@ -164,9 +187,10 @@ func (s *resourcesUploadSuite) TestServeUploadApplicationStoreResourceError(c *t
 		"app-name",
 		"resource-name",
 	).Return("res-uuid", nil)
-	s.resourceService.EXPECT().StoreResource(gomock.Any(), gomock.Any()).Return(errors.New("cannot store resource"))
+	s.resourceService.EXPECT().StoreResource(gomock.Any(), gomock.Any()).Return(
+		resource.Resource{}, errors.New("cannot store resource"))
 	s.resourceService.EXPECT().GetResource(gomock.Any(), resource.UUID("res-uuid")).Return(resource.Resource{
-		UUID: "res-uuid",
+		ID: "res-uuid",
 		Resource: charmresource.Resource{
 			Origin:   s.origin,
 			Revision: s.revision,
@@ -257,21 +281,22 @@ func (s *resourcesUploadSuite) TestServeUploadApplication(c *tc.C) {
 		"app-name",
 		"resource-name",
 	).Return("res-uuid", nil)
+	expectedResource := resource.Resource{
+		ID: "res-uuid",
+		Resource: charmresource.Resource{
+			Origin:   s.origin,
+			Revision: s.revision,
+		},
+		Timestamp: now,
+	}
 	s.resourceService.EXPECT().StoreResource(gomock.Any(), domainresource.StoreResourceArgs{
 		ResourceUUID:    "res-uuid",
 		Reader:          http.NoBody,
 		RetrievedByType: resource.Application,
 		Fingerprint:     s.fingerprint,
 		Size:            s.size,
-	}).Return(nil)
-	s.resourceService.EXPECT().GetResource(gomock.Any(), resource.UUID("res-uuid")).Return(resource.Resource{
-		UUID: "res-uuid",
-		Resource: charmresource.Resource{
-			Origin:   s.origin,
-			Revision: s.revision,
-		},
-		Timestamp: now,
-	}, nil).Times(2)
+	}).Return(expectedResource, nil)
+	s.resourceService.EXPECT().GetResource(gomock.Any(), resource.UUID("res-uuid")).Return(expectedResource, nil)
 
 	// Act
 	response, err := http.Post(s.srv.URL+migrateResourcesPrefix+"?"+query.Encode(), "application/octet-stream", http.NoBody)
@@ -312,6 +337,14 @@ func (s *resourcesUploadSuite) TestServeUploadApplicationRetrievedByUser(c *tc.C
 		"app-name",
 		"resource-name",
 	).Return("res-uuid", nil)
+	expectedRes := resource.Resource{
+		ID: "res-uuid",
+		Resource: charmresource.Resource{
+			Origin:   charmresource.OriginUpload,
+			Revision: -1,
+		},
+		Timestamp: now,
+	}
 	s.resourceService.EXPECT().StoreResource(gomock.Any(), domainresource.StoreResourceArgs{
 		ResourceUUID:    "res-uuid",
 		Reader:          http.NoBody,
@@ -319,15 +352,8 @@ func (s *resourcesUploadSuite) TestServeUploadApplicationRetrievedByUser(c *tc.C
 		RetrievedBy:     "username",
 		Fingerprint:     s.fingerprint,
 		Size:            s.size,
-	}).Return(nil)
-	s.resourceService.EXPECT().GetResource(gomock.Any(), resource.UUID("res-uuid")).Return(resource.Resource{
-		UUID: "res-uuid",
-		Resource: charmresource.Resource{
-			Origin:   charmresource.OriginUpload,
-			Revision: -1,
-		},
-		Timestamp: now,
-	}, nil).Times(2)
+	}).Return(expectedRes, nil)
+	s.resourceService.EXPECT().GetResource(gomock.Any(), resource.UUID("res-uuid")).Return(expectedRes, nil)
 
 	// Act
 	response, err := http.Post(s.srv.URL+migrateResourcesPrefix+"?"+query.Encode(), "application/octet-stream", http.NoBody)
@@ -357,6 +383,14 @@ func (s *resourcesUploadSuite) TestServeUploadApplicationRetrievedByApplication(
 		"app-name",
 		"resource-name",
 	).Return("res-uuid", nil)
+	expectedRes := resource.Resource{
+		ID: "res-uuid",
+		Resource: charmresource.Resource{
+			Origin:   s.origin,
+			Revision: s.revision,
+		},
+		Timestamp: now,
+	}
 	s.resourceService.EXPECT().StoreResource(gomock.Any(), domainresource.StoreResourceArgs{
 		ResourceUUID:    "res-uuid",
 		Reader:          http.NoBody,
@@ -364,15 +398,8 @@ func (s *resourcesUploadSuite) TestServeUploadApplicationRetrievedByApplication(
 		RetrievedBy:     "app-name",
 		Fingerprint:     s.fingerprint,
 		Size:            s.size,
-	}).Return(nil)
-	s.resourceService.EXPECT().GetResource(gomock.Any(), resource.UUID("res-uuid")).Return(resource.Resource{
-		UUID: "res-uuid",
-		Resource: charmresource.Resource{
-			Origin:   s.origin,
-			Revision: s.revision,
-		},
-		Timestamp: now,
-	}, nil).Times(2)
+	}).Return(expectedRes, nil)
+	s.resourceService.EXPECT().GetResource(gomock.Any(), resource.UUID("res-uuid")).Return(expectedRes, nil)
 
 	// Act
 	response, err := http.Post(s.srv.URL+migrateResourcesPrefix+"?"+query.Encode(), "application/octet-stream", http.NoBody)
@@ -401,6 +428,14 @@ func (s *resourcesUploadSuite) TestServeUploadApplicationRetrievedByUnit(c *tc.C
 		"app-name",
 		"resource-name",
 	).Return("res-uuid", nil)
+	expectedRes := resource.Resource{
+		ID: "res-uuid",
+		Resource: charmresource.Resource{
+			Origin:   s.origin,
+			Revision: s.revision,
+		},
+		Timestamp: now,
+	}
 	s.resourceService.EXPECT().StoreResource(gomock.Any(), domainresource.StoreResourceArgs{
 		ResourceUUID:    "res-uuid",
 		Reader:          http.NoBody,
@@ -408,15 +443,8 @@ func (s *resourcesUploadSuite) TestServeUploadApplicationRetrievedByUnit(c *tc.C
 		RetrievedBy:     "app-name/0",
 		Fingerprint:     s.fingerprint,
 		Size:            s.size,
-	}).Return(nil)
-	s.resourceService.EXPECT().GetResource(gomock.Any(), resource.UUID("res-uuid")).Return(resource.Resource{
-		UUID: "res-uuid",
-		Resource: charmresource.Resource{
-			Origin:   s.origin,
-			Revision: s.revision,
-		},
-		Timestamp: now,
-	}, nil).Times(2)
+	}).Return(expectedRes, nil)
+	s.resourceService.EXPECT().GetResource(gomock.Any(), resource.UUID("res-uuid")).Return(expectedRes, nil)
 
 	// Act
 	response, err := http.Post(s.srv.URL+migrateResourcesPrefix+"?"+query.Encode(), "application/octet-stream", http.NoBody)
@@ -467,13 +495,25 @@ func (s *resourcesUploadSuite) TestServeUploadUnit(c *tc.C) {
 		tc.Commentf("(Assert) unexpected status code."))
 }
 
-// setupHandler configures the resources migration upload HTTP handler, init
-// mocks and registers it to the mux. It provides cleanup logic.
+// setupHandler configures the resources migration upload HTTP handler for the
+// common case where the model is importing, initialises mocks and registers it
+// to the mux. It provides cleanup logic.
 func (s *resourcesUploadSuite) setupHandler(c *tc.C) Finisher {
+	return s.setupHandlerWithImporting(c, true)
+}
+
+// setupHandlerWithImporting configures the handler indicating whether the model
+// is currently importing (migration in progress). When importing is false, the
+// request is expected to be rejected before hitting the resource service.
+func (s *resourcesUploadSuite) setupHandlerWithImporting(c *tc.C, importing bool) Finisher {
 	finish := s.setupMocks(c).Finish
-	s.expectResourceService()
+	s.expectApplicationService(importing)
+	if importing {
+		s.expectResourceService()
+	}
 
 	handler := NewResourceMigrationUploadHandler(
+		s.modelServiceGetter,
 		s.resourceServiceGetter,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -494,6 +534,12 @@ func (s *resourcesUploadSuite) expectResourceService() {
 	s.resourceServiceGetter.EXPECT().Resource(gomock.Any()).Return(s.resourceService, nil)
 }
 
+// expectApplicationService prepare mocks for application service
+func (s *resourcesUploadSuite) expectApplicationService(importing bool) {
+	s.modelServiceGetter.EXPECT().Model(gomock.Any()).Return(s.modelService, nil)
+	s.modelService.EXPECT().IsImportingModel(gomock.Any()).Return(importing, nil)
+}
+
 // setupMocks initializes mock services and returns a gomock.Controller
 // for managing mock lifecycle.
 func (s *resourcesUploadSuite) setupMocks(c *tc.C) *gomock.Controller {
@@ -501,6 +547,8 @@ func (s *resourcesUploadSuite) setupMocks(c *tc.C) *gomock.Controller {
 
 	s.resourceServiceGetter = NewMockResourceServiceGetter(ctrl)
 	s.resourceService = NewMockResourceService(ctrl)
+	s.modelServiceGetter = NewMockModelServiceGetter(ctrl)
+	s.modelService = NewMockModelService(ctrl)
 
 	return ctrl
 }

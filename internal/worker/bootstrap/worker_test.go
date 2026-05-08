@@ -12,8 +12,8 @@ import (
 	"github.com/juju/clock"
 	"github.com/juju/errors"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 
@@ -24,21 +24,20 @@ import (
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/logger"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
 	accessservice "github.com/juju/juju/domain/access/service"
 	"github.com/juju/juju/domain/controllernode"
+	"github.com/juju/juju/domain/deployment/charm"
 	macaroonerrors "github.com/juju/juju/domain/macaroon/errors"
+	domainstorage "github.com/juju/juju/domain/storage"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/internal/bootstrap"
-	"github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/cloudconfig"
 	"github.com/juju/juju/internal/cloudconfig/instancecfg"
 	"github.com/juju/juju/internal/storage"
-	"github.com/juju/juju/internal/storage/provider"
 	"github.com/juju/juju/internal/testing"
 )
 
@@ -59,7 +58,7 @@ func TestWorkerSuite(t *stdtesting.T) {
 func (s *workerSuite) SetUpTest(c *tc.C) {
 	s.adminUserID = usertesting.GenUserUUID(c)
 	s.controllerModel = coremodel.Model{
-		UUID: modeltesting.GenModelUUID(c),
+		UUID: tc.Must0(c, coremodel.NewUUID),
 	}
 }
 
@@ -310,7 +309,12 @@ func (s *workerSuite) TestSeedStoragePools(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	s.expectSeedDefaultStoragePools()
-	s.storageService.EXPECT().CreateStoragePool(gomock.Any(), "loop-pool", provider.LoopProviderType, map[string]any{"foo": "bar"})
+	s.storageService.EXPECT().CreateStoragePool(
+		gomock.Any(),
+		"loop-pool",
+		domainstorage.ProviderType("loop"),
+		map[string]any{"foo": "bar"},
+	)
 
 	w := &bootstrapWorker{
 		internalStates: s.states,
@@ -382,9 +386,9 @@ func (s *workerSuite) newWorkerWithFunc(c *tc.C, controllerCharmDeployerFunc Con
 }
 
 func (s *workerSuite) setupMocks(c *tc.C) *gomock.Controller {
-	// Ensure we buffer the channel, this is because we might miss the
-	// event if we're too quick at starting up.
-	s.states = make(chan string, 1)
+	// Buffer both state transitions. The worker can report "started" and
+	// "completed" before the test drains the first event.
+	s.states = make(chan string, 2)
 
 	ctrl := s.baseSuite.setupMocks(c)
 

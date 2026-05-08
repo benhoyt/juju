@@ -5,31 +5,66 @@ package state
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/canonical/sqlair"
 
 	"github.com/juju/juju/core/application"
 	corerelation "github.com/juju/juju/core/relation"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
+	"github.com/juju/juju/domain/deployment/charm"
 	domainrelation "github.com/juju/juju/domain/relation"
-	"github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/errors"
 )
+
+// ImportPeerRelation establishes a peer relation on the endpoint passed as
+// argument. Used for migration import.
+func (st *State) ImportPeerRelation(
+	ctx context.Context,
+	relUUID string,
+	epIdentifier corerelation.EndpointIdentifier,
+	id uint64,
+	scope charm.RelationScope,
+) error {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		// Get endpoint uuid for the application.
+		endpointUUID, err := st.getApplicationEndpointUUID(ctx, tx, epIdentifier.ApplicationName, epIdentifier.EndpointName)
+		if err != nil {
+			return err
+		}
+
+		// Insert a new relation with a new relation UUID.
+		if err := st.insertNewRelation(ctx, tx, relUUID, id, scope); err != nil {
+			return errors.Errorf("inserting new relation: %w", err)
+		}
+
+		// Insert relation_endpoint
+		if err := st.insertNewRelationEndpoint(ctx, tx, relUUID, endpointUUID); err != nil {
+			return errors.Errorf("inserting relation endpoint %q: %w", epIdentifier.String(), err)
+		}
+
+		return nil
+	})
+	return errors.Capture(err)
+}
 
 // ImportRelation establishes a relation between two endpoints identified
 // by ep1 and ep2 and returns the relation UUID. Used for migration
 // import.
 func (st *State) ImportRelation(
 	ctx context.Context,
+	relUUID string,
 	epIdentifier1, epIdentifier2 corerelation.EndpointIdentifier,
 	id uint64,
 	scope charm.RelationScope,
-) (corerelation.UUID, error) {
-	var relUUID corerelation.UUID
+) error {
 	db, err := st.DB(ctx)
 	if err != nil {
-		return relUUID, errors.Capture(err)
+		return errors.Capture(err)
 	}
 
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
@@ -44,28 +79,22 @@ func (st *State) ImportRelation(
 		}
 
 		// Insert a new relation with a new relation UUID.
-		relUUID, err = st.insertNewRelation(ctx, tx, id, scope)
-		if err != nil {
-			return errors.Errorf("setting new relation: %s %s: %w", epIdentifier1, epIdentifier2, err)
-		}
-
-		// Insert relation status.
-		if err := st.insertNewRelationStatus(ctx, tx, relUUID); err != nil {
-			return errors.Errorf("setting new relation status: %s %s: %w", epIdentifier1, epIdentifier2, err)
+		if err := st.insertNewRelation(ctx, tx, relUUID, id, scope); err != nil {
+			return errors.Errorf("inserting new relation: %w", err)
 		}
 
 		// Insert both relation_endpoint from application_endpoint_uuid and relation
 		// uuid.
 		if err := st.insertNewRelationEndpoint(ctx, tx, relUUID, endpointUUID1); err != nil {
-			return errors.Errorf("setting new relation endpoint for %q: %w", epIdentifier1.String(), err)
+			return errors.Errorf("inserting relation endpoint %q: %w", epIdentifier1.String(), err)
 		}
 		if err := st.insertNewRelationEndpoint(ctx, tx, relUUID, endpointUUID2); err != nil {
-			return errors.Errorf("setting new relation endpoint for %q: %w", epIdentifier2.String(), err)
+			return errors.Errorf("inserting relation endpoint %q: %w", epIdentifier2.String(), err)
 		}
 
 		return nil
 	})
-	return relUUID, errors.Capture(err)
+	return errors.Capture(err)
 }
 
 // GetApplicationUUIDByName returns the application UUID of the given application.
@@ -81,22 +110,23 @@ func (st *State) GetApplicationUUIDByName(ctx context.Context, appName string) (
 
 	var id application.UUID
 	if err := db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		app := applicationUUIDAndName{Name: appName}
+		app := nameAndUUID{Name: appName}
 		queryApplicationStmt, err := st.Prepare(`
-SELECT uuid AS &applicationUUIDAndName.uuid
+SELECT uuid AS &nameAndUUID.uuid
 FROM application
-WHERE name = $applicationUUIDAndName.name
+WHERE name = $nameAndUUID.name
 `, app)
 		if err != nil {
 			return errors.Capture(err)
 		}
 		err = tx.Query(ctx, queryApplicationStmt, app).Get(&app)
 		if errors.Is(err, sqlair.ErrNoRows) {
-			return errors.Errorf("%w: %s", applicationerrors.ApplicationNotFound, appName)
+			return errors.Errorf("getting UUID for application %q not found", appName).
+				Add(applicationerrors.ApplicationNotFound)
 		} else if err != nil {
 			return errors.Errorf("looking up UUID for application %q: %w", appName, err)
 		}
-		id = app.ID
+		id = application.UUID(app.UUID)
 		return nil
 	}); err != nil {
 		return "", errors.Capture(err)
@@ -105,7 +135,7 @@ WHERE name = $applicationUUIDAndName.name
 }
 
 // SetRelationApplicationSettings records settings for a specific application
-// relation combination.
+// relation combination. Replaces all existing settings with the provided set.
 //
 // The following error types can be expected to be returned:
 //   - [relationerrors.ApplicationNotFoundForRelation] is returned if the
@@ -133,44 +163,6 @@ func (st *State) SetRelationApplicationSettings(
 	return nil
 }
 
-// DeleteImportedRelations deletes all imported relations in a model during
-// an import rollback.
-func (st *State) DeleteImportedRelations(
-	ctx context.Context,
-) error {
-	db, err := st.DB(ctx)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	tables := []string{
-		"relation_unit_setting",
-		"relation_unit_settings_hash",
-		"relation_unit",
-		"relation_application_setting",
-		"relation_application_settings_hash",
-		"relation_endpoint",
-		"relation_status",
-		"relation",
-	}
-
-	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		for _, table := range tables {
-			stmt, err := st.Prepare(fmt.Sprintf(`DELETE FROM %s`, table))
-			if err != nil {
-				return errors.Capture(err)
-			}
-
-			if err = tx.Query(ctx, stmt).Run(); err != nil {
-				return errors.Errorf("deleting table %q: %w", table, err)
-			}
-		}
-
-		return nil
-	})
-	return errors.Capture(err)
-}
-
 // ExportRelations returns all relation information to be exported for the
 // model.
 func (st *State) ExportRelations(ctx context.Context) ([]domainrelation.ExportRelation, error) {
@@ -179,20 +171,20 @@ func (st *State) ExportRelations(ctx context.Context) ([]domainrelation.ExportRe
 		return nil, errors.Capture(err)
 	}
 
-	var exportRelations []domainrelation.ExportRelation
-	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		type getRelation struct {
-			UUID corerelation.UUID `db:"uuid"`
-			ID   int               `db:"relation_id"`
-		}
-		stmt, err := st.Prepare(`
+	type getRelation struct {
+		UUID corerelation.UUID `db:"uuid"`
+		ID   int               `db:"relation_id"`
+	}
+	stmt, err := st.Prepare(`
 SELECT (r.uuid, r.relation_id) AS (&getRelation.*)
 FROM   relation r
 `, getRelation{})
-		if err != nil {
-			return errors.Capture(err)
-		}
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
 
+	var exportRelations []domainrelation.ExportRelation
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
 		var rels []getRelation
 		err = tx.Query(ctx, stmt).GetAll(&rels)
 		if errors.Is(err, sqlair.ErrNoRows) {

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju machine reference: compute resources on bare metal, VMs, and LXD containers. Understand machine provisioning and unit placement."
+---
+
 (machine)=
 # Machine
 

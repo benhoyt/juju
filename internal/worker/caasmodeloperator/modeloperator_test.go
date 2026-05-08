@@ -6,6 +6,7 @@ package caasmodeloperator_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/juju/errors"
 	"github.com/juju/tc"
@@ -141,6 +142,9 @@ func (m *ModelOperatorManagerSuite) TestModelOperatorManagerApplying(c *tc.C) {
 			c.Check(ac.OldPassword(), tc.Equals, password)
 			c.Check(ac.OldPassword(), tc.HasLen, 24)
 
+			c.Check(ac.OpenTelemetrySampleRatio(), tc.Equals, 0.1000)
+			c.Check(ac.OpenTelemetryTailSamplingThreshold(), tc.Equals, time.Millisecond)
+
 			return nil
 		},
 		modelOperatorExists: func(context.Context) (bool, error) {
@@ -162,7 +166,7 @@ func (m *ModelOperatorManagerSuite) TestModelOperatorManagerApplying(c *tc.C) {
 		api, broker, modelUUID, &mockAgentConfig{})
 	c.Assert(err, tc.ErrorIsNil)
 
-	for i := 0; i < n; i++ {
+	for range n {
 		changed <- struct{}{}
 	}
 

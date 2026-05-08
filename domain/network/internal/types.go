@@ -5,6 +5,7 @@ package internal
 
 import (
 	corenetwork "github.com/juju/juju/core/network"
+	"github.com/juju/juju/domain/network"
 )
 
 // ImportLinkLayerDevice represents a physical or virtual
@@ -20,7 +21,7 @@ type ImportLinkLayerDevice struct {
 	Name             string
 	ParentDeviceName string
 	ProviderID       *string
-	Type             corenetwork.LinkLayerDeviceType
+	Type             network.DeviceType
 	VirtualPortType  corenetwork.VirtualPortType
 	Addresses        []ImportIPAddress
 }
@@ -52,17 +53,55 @@ type SpaceName struct {
 	Name string
 }
 
-type ImportCloudService struct {
+// EndpointNetworkInfo represents unit addresses and selected ingress
+// addresses associated with an endpoint.
+type EndpointNetworkInfo struct {
+	// EndpointName specifies the name of the network endpoint.
+	EndpointName string
+
+	// Addresses is the set of unit addresses available on the endpoint.
+	Addresses []UnitAddress
+
+	// IngressAddresses is the ordered set of ingress addresses for the
+	// endpoint.
+	IngressAddresses []string
+}
+
+// UnitNetworkInfo represents unit addresses and selected ingress addresses
+// for a unit when endpoint bindings are not available.
+type UnitNetworkInfo struct {
+	// Addresses is the set of unit addresses available on the unit.
+	Addresses []UnitAddress
+
+	// IngressAddresses is the ordered set of ingress addresses for the unit.
+	IngressAddresses []string
+}
+
+// UnitAddress represents a unit address together with device metadata.
+type UnitAddress struct {
+	corenetwork.SpaceAddress
+
+	// DeviceName specifies the network device's human-readable identifier.
+	DeviceName string
+
+	// MACAddress specifies the device's hardware MAC address.
+	MACAddress string
+
+	// DeviceType specifies the link-layer type of the device.
+	DeviceType corenetwork.LinkLayerDeviceType
+}
+
+type ImportK8sService struct {
 	UUID        string // generated during import
 	DeviceUUID  string // generated during import
 	NetNodeUUID string // generated during import
 
 	ApplicationName string
 	ProviderID      string
-	Addresses       []ImportCloudServiceAddress
+	Addresses       []ImportK8sServiceAddress
 }
 
-type ImportCloudServiceAddress struct {
+type ImportK8sServiceAddress struct {
 	UUID string // generated during import
 
 	Value   string

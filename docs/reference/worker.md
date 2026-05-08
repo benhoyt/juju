@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju worker reference: background processes running in agents to manage controllers, models, machines, and units."
+---
+
 (worker)=
 # Worker
 

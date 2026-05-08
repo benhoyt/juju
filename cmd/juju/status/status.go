@@ -19,10 +19,10 @@ import (
 
 	"github.com/juju/juju/api/client/client"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/storage"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/output"
-	"github.com/juju/juju/internal/cmd"
 	internallogger "github.com/juju/juju/internal/logger"
 	"github.com/juju/juju/juju/osenv"
 	"github.com/juju/juju/rpc/params"
@@ -77,21 +77,13 @@ var usageSummary = `
 Report the status of the model, its machines, applications and units.`[1:]
 
 var usageDetails = `
-Report the model's status, optionally filtered by names of applications or
-units. When selectors are present, filter the report to exclude entities that
-do not match.
+Report the model's status, optionally filtered by exact machine,
+application, or unit names.
 
     juju status [<selector> [...]]
 
-` + "`<selector>`" + ` selects machines, units or applications from the model to display.
-Wildcard characters (` + "`*`" + `) enable multiple entities to be matched at the same
-time.
-
-    (<machine>|<unit>|<application>)[*]
-
-When an entity that matches <selector> is integrated with other applications, the
-status of those applications will also be presented. By default (without a
-` + "`<selector>`" + `) the status of all applications and their units will be displayed.
+When selectors are present, filter the report to exclude entities that do not
+match.
 
 
 ### Altering the output format
@@ -121,9 +113,9 @@ Report the status of the ` + "`mysql`" + ` application:
 
     juju status mysql
 
-Report the status for applications that start with ` + "`nova-`" + `:
+Report the status of the ` + "`mysql/0`" + ` unit:
 
-    juju status nova-*
+    juju status mysql/0
 
 Include information about storage and relations in output:
 
@@ -132,14 +124,6 @@ Include information about storage and relations in output:
 Provide output as valid ` + "`JSON`" + `:
 
     juju status --format=json
-
-Show only applications/units in active status:
-
-    juju status active
-
-Show only applications/units in error status:
-
-    juju status error
 `
 
 func (c *statusCommand) Info() *cmd.Info {
@@ -381,7 +365,7 @@ func (c *statusCommand) Run(ctx *cmd.Context) error {
 	return nil
 }
 
-func (c *statusCommand) formatYaml(writer io.Writer, value interface{}) error {
+func (c *statusCommand) formatYaml(writer io.Writer, value any) error {
 	var noColor bool
 
 	if _, ok := os.LookupEnv("NO_COLOR"); (ok || os.Getenv("TERM") == "dumb") && !c.color || c.noColor {
@@ -403,7 +387,7 @@ func (c *statusCommand) formatYaml(writer io.Writer, value interface{}) error {
 	return cmd.FormatYaml(writer, value)
 }
 
-func (c *statusCommand) formatOneline(writer io.Writer, value interface{}) error {
+func (c *statusCommand) formatOneline(writer io.Writer, value any) error {
 	if _, ok := os.LookupEnv("NO_COLOR"); (ok || os.Getenv("TERM") == "dumb") && !c.color || c.noColor {
 		return FormatOneline(writer, false, value)
 	}
@@ -423,7 +407,7 @@ func (c *statusCommand) formatOneline(writer io.Writer, value interface{}) error
 	return FormatOneline(writer, false, value)
 }
 
-func (c *statusCommand) formatJson(writer io.Writer, value interface{}) error {
+func (c *statusCommand) formatJson(writer io.Writer, value any) error {
 	if _, ok := os.LookupEnv("NO_COLOR"); (ok || os.Getenv("TERM") == "dumb") && !c.color || c.noColor {
 		return cmd.FormatJson(writer, value)
 	}
@@ -443,7 +427,7 @@ func (c *statusCommand) formatJson(writer io.Writer, value interface{}) error {
 	return cmd.FormatJson(writer, value)
 }
 
-func (c *statusCommand) FormatTabular(writer io.Writer, value interface{}) error {
+func (c *statusCommand) FormatTabular(writer io.Writer, value any) error {
 	if c.noColor {
 		if _, ok := os.LookupEnv("NO_COLOR"); !ok {
 			defer os.Unsetenv("NO_COLOR")

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju status reference: application and unit status values, workload status, agent status, and status transition diagrams."
+---
+
 (status)=
 # Status
 

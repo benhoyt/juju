@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Understand Juju concepts: architecture, security, performance, application modeling, and the evolution of charming frameworks."
+---
+
 (explanation)=
 # Explanation
 

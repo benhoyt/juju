@@ -5,6 +5,7 @@ package service
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/juju/collections/set"
@@ -13,7 +14,7 @@ import (
 	"github.com/juju/juju/core/os/ostype"
 	"github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
-	internalcharm "github.com/juju/juju/internal/charm"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -132,9 +133,9 @@ func encodeManifestBase(base internalcharm.Base) (charm.Base, []string, error) {
 		return charm.Base{}, nil, errors.Errorf("encode channel: %w", err)
 	}
 
-	arches := set.NewStrings()
+	arches := make(map[string]int)
 	unsupported := set.NewStrings()
-	for _, arch := range base.Architectures {
+	for i, arch := range base.Architectures {
 		// Ignore empty architectures (this should be done at the wire protocol
 		// level, but we do it here as well to be safe).
 		if arch == "" {
@@ -151,7 +152,11 @@ func encodeManifestBase(base internalcharm.Base) (charm.Base, []string, error) {
 			continue
 		}
 
-		arches.Add(arch)
+		if _, ok := arches[arch]; ok {
+			continue
+		}
+
+		arches[arch] = i
 	}
 
 	var warnings []string
@@ -160,10 +165,27 @@ func encodeManifestBase(base internalcharm.Base) (charm.Base, []string, error) {
 		warnings = append(warnings, fmt.Sprintf("unsupported architectures: %s for %q with channel: %q", arches, base.Name, base.Channel.String()))
 	}
 
+	type pair struct {
+		arch  string
+		index int
+	}
+	var archPairs []pair
+	for arch, index := range arches {
+		archPairs = append(archPairs, pair{arch: arch, index: index})
+	}
+	// Sort by the original index to preserve order.
+	sort.Slice(archPairs, func(i, j int) bool {
+		return archPairs[i].index < archPairs[j].index
+	})
+	sortedArches := make([]string, len(archPairs))
+	for i, p := range archPairs {
+		sortedArches[i] = p.arch
+	}
+
 	return charm.Base{
 		Name:          base.Name,
 		Channel:       channel,
-		Architectures: arches.SortedValues(),
+		Architectures: sortedArches,
 	}, warnings, nil
 }
 

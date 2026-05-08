@@ -12,7 +12,7 @@ import (
 
 	"github.com/juju/clock/testclock"
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/tc"
 
 	k8s "github.com/juju/juju/caas/kubernetes"
@@ -77,7 +77,7 @@ func (s *builtinSuite) SetUpTest(c *tc.C) {
 					Clouds: map[string]clientconfig.CloudConfig{
 						"microk8s": {
 							Endpoint: "http://1.1.1.1:8080",
-							Attributes: map[string]interface{}{
+							Attributes: map[string]any{
 								"CAData": "fakecadata1",
 							},
 						},

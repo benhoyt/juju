@@ -10,8 +10,8 @@ import (
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/core/secrets"
-	"github.com/juju/juju/internal/cmd"
 )
 
 type secretInfoGetCommand struct {
@@ -41,7 +41,7 @@ Either the ID or label can be used to identify the secret.
 	return jujucmd.Info(&cmd.Info{
 		Name:     "secret-info-get",
 		Args:     "<ID>",
-		Purpose:  "Get a secret's metadata info.",
+		Purpose:  "Gets a secret's metadata info.",
 		Doc:      doc,
 		Examples: examples,
 	})
@@ -53,7 +53,7 @@ func (c *secretInfoGetCommand) SetFlags(f *gnuflag.FlagSet) {
 		"yaml": cmd.FormatYaml,
 		"json": cmd.FormatJson,
 	})
-	f.StringVar(&c.label, "label", "", "a label used to identify the secret")
+	f.StringVar(&c.label, "label", "", "Specifies a label used to identify the secret.")
 }
 
 // Init implements cmd.Command.

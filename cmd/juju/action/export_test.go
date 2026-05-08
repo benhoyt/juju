@@ -10,8 +10,8 @@ import (
 
 	actionapi "github.com/juju/juju/api/client/action"
 	"github.com/juju/juju/api/jujuclient"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/modelcmd"
-	"github.com/juju/juju/internal/cmd"
 )
 
 var (
@@ -170,7 +170,7 @@ func NewExecCommandForTest(store jujuclient.ClientStore, clock clock.Clock, logM
 	return modelcmd.Wrap(c), &ExecCommand{c}
 }
 
-func ActionResultsToMap(results []actionapi.ActionResult) map[string]interface{} {
+func ActionResultsToMap(results []actionapi.ActionResult) map[string]any {
 	return resultsToMap(results)
 }
 

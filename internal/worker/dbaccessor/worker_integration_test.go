@@ -13,8 +13,8 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 
 	"github.com/juju/juju/agent"
@@ -142,7 +142,7 @@ func (s *integrationSuite) TestWorkerSetsNodeIDAndAddress(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 
 	c.Check(nodeID, tc.Not(tc.Equals), uint64(0))
-	c.Check(addr, tc.Equals, "127.0.0.1")
+	c.Check(addr, tc.HasPrefix, "127.")
 }
 
 func (s *integrationSuite) TestWorkerAccessingControllerDB(c *tc.C) {

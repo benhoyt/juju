@@ -9,7 +9,7 @@ import (
 	commoncharm "github.com/juju/juju/api/common/charm"
 	"github.com/juju/juju/core/base"
 	corecharm "github.com/juju/juju/core/charm"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 )
 
 // RefresherFactory contains a method to get a refresher.
@@ -53,7 +53,7 @@ type CharmRepository interface {
 // CommandLogger represents a logger which follows the logging
 // precepts of a cmd.Context.
 type CommandLogger interface {
-	Infof(format string, params ...interface{})
-	Warningf(format string, params ...interface{})
-	Verbosef(format string, params ...interface{})
+	Infof(format string, params ...any)
+	Warningf(format string, params ...any)
+	Verbosef(format string, params ...any)
 }

@@ -12,9 +12,9 @@ import (
 	corerelation "github.com/juju/juju/core/relation"
 	corestatus "github.com/juju/juju/core/status"
 	"github.com/juju/juju/core/unit"
+	"github.com/juju/juju/domain/deployment/charm"
 	domainlife "github.com/juju/juju/domain/life"
 	domainrelation "github.com/juju/juju/domain/relation"
-	"github.com/juju/juju/internal/charm"
 )
 
 // TODO (manadart 2025-07-08): entityUUID (type agnostic) should be used in
@@ -35,15 +35,17 @@ type applicationUUID struct {
 	UUID string `db:"application_uuid"`
 }
 
+type names []string
+
 type name struct {
 	Name string `db:"name"`
 }
 
 type relation struct {
-	UUID    corerelation.UUID `db:"uuid"`
-	ID      uint64            `db:"relation_id"`
-	LifeID  domainlife.Life   `db:"life_id"`
-	ScopeID uint8             `db:"scope_id"`
+	UUID    string          `db:"uuid"`
+	ID      uint64          `db:"relation_id"`
+	LifeID  domainlife.Life `db:"life_id"`
+	ScopeID uint8           `db:"scope_id"`
 }
 
 type relationIDAndUUID struct {
@@ -119,17 +121,6 @@ type getLife struct {
 	Life life.Value `db:"value"`
 }
 
-type getUnitApp struct {
-	ApplicationUUID string `db:"application_uuid"`
-	UnitUUID        string `db:"uuid"`
-}
-
-type getUnitRelAndApp struct {
-	ApplicationUUID  string `db:"application_uuid"`
-	RelationUnitUUID string `db:"uuid"`
-	RelationUUID     string `db:"relation_uuid"`
-}
-
 type scope struct {
 	Scope string `db:"scope"`
 }
@@ -165,6 +156,12 @@ type relationUnitSetting struct {
 	UUID  string `db:"relation_unit_uuid"`
 	Key   string `db:"key"`
 	Value string `db:"value"`
+}
+
+type relationUnitSettingName struct {
+	UnitName string `db:"name"`
+	Key      string `db:"key"`
+	Value    string `db:"value"`
 }
 
 type applicationSettingsHash struct {
@@ -294,14 +291,14 @@ func (e Endpoint) toEndpointIdentifier() corerelation.EndpointIdentifier {
 // to the table `relation_endpoint`
 type setRelationEndpoint struct {
 	UUID         corerelation.EndpointUUID `db:"uuid"`
-	RelationUUID corerelation.UUID         `db:"relation_uuid"`
+	RelationUUID string                    `db:"relation_uuid"`
 	EndpointUUID corerelation.EndpointUUID `db:"endpoint_uuid"`
 }
 
 // setRelationStatus represents the structure to insert the status of a relation.
 type setRelationStatus struct {
 	// RelationUUID is the unique identifier of the relation.
-	RelationUUID corerelation.UUID `db:"relation_uuid"`
+	RelationUUID string `db:"relation_uuid"`
 	// Status indicates the current state of a given relation.
 	Status corestatus.Status `db:"status"`
 	// UpdatedAt specifies the timestamp of the insertion
@@ -322,10 +319,10 @@ type watcherMapperData struct {
 	Suspended    bool   `db:"suspended"`
 }
 
-// applicationUUIDAndName is used to get the UUID and name of an application.
-type applicationUUIDAndName struct {
-	ID   application.UUID `db:"uuid"`
-	Name string           `db:"name"`
+// nameAndUUID is used to represent a UUID and name.
+type nameAndUUID struct {
+	UUID string `db:"uuid"`
+	Name string `db:"name"`
 }
 
 // rows is used to count the number of rows found.
@@ -349,4 +346,44 @@ type relationStatus struct {
 	StatusID     int        `db:"relation_status_type_id"`
 	Message      string     `db:"message"`
 	Since        *time.Time `db:"updated_at"`
+}
+
+type getRelation struct {
+	UUID      string     `db:"uuid"`
+	ID        int        `db:"relation_id"`
+	Life      life.Value `db:"value"`
+	Suspended bool       `db:"suspended"`
+}
+
+type relationWithDetails struct {
+	UUID      string     `db:"uuid"`
+	ID        int        `db:"relation_id"`
+	Life      life.Value `db:"life"`
+	Suspended bool       `db:"suspended"`
+}
+
+// endpointWithRelationUUID combines an Endpoint with its Relation UUID, needed
+// for returning relation endpoints mapped by relation.
+type endpointWithRelationUUID struct {
+	Endpoint
+	RelationUUID string `db:"relation_uuid"`
+}
+
+// countResultWithRelationUUID is used to return counts grouped by relation
+// UUID.
+type countResultWithRelationUUID struct {
+	RelationUUID string `db:"relation_uuid"`
+	Count        int    `db:"count"`
+}
+
+// machineIdentifier represents a machine's unique identifier values that can
+// be used to reference it within the model.
+type machineIdentifier struct {
+	Name        string `db:"name"`
+	NetNodeUUID string `db:"net_node_uuid"`
+	UUID        string `db:"uuid"`
+}
+
+type netNodeUUID struct {
+	NetNodeUUID string `db:"net_node_uuid"`
 }

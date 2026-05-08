@@ -6,15 +6,12 @@ package errors
 import (
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/bakery"
-	"github.com/juju/collections/transform"
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"gopkg.in/macaroon.v2"
 
-	"github.com/juju/juju/core/base"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/permission"
 )
@@ -84,17 +81,6 @@ func (e *DischargeRequiredError) SendError(w http.ResponseWriter) error {
 	return sendError(w, e)
 }
 
-// NewErrIncompatibleBase returns an error indicating that the base is not
-// supported by the charm.
-func NewErrIncompatibleBase(baseList []base.Base, b base.Base, charmName string) error {
-	return fmt.Errorf("base %q not supported by charm %q, supported bases are: %s%w",
-		b.DisplayString(),
-		charmName,
-		strings.Join(transform.Slice(baseList, func(b base.Base) string { return b.DisplayString() }), ", "),
-		errors.Hide(IncompatibleBaseError),
-	)
-}
-
 // RedirectError is the error returned when a model (previously accessible by
 // the user) has been migrated to a different controller.
 type RedirectError struct {
@@ -148,8 +134,8 @@ func (e *NotLeaderError) ServerID() string {
 
 // AsMap returns a map of the error. Useful when crossing the facade boundary
 // and wanting information in the client.
-func (e *NotLeaderError) AsMap() map[string]interface{} {
-	return map[string]interface{}{
+func (e *NotLeaderError) AsMap() map[string]any {
+	return map[string]any{
 		"server-address": e.serverAddress,
 		"server-id":      e.serverID,
 	}
@@ -171,8 +157,8 @@ type AccessRequiredError struct {
 }
 
 // AsMap returns the data for the info part of an error param struct.
-func (e *AccessRequiredError) AsMap() map[string]interface{} {
-	result := make(map[string]interface{})
+func (e *AccessRequiredError) AsMap() map[string]any {
+	result := make(map[string]any)
 	for t, a := range e.RequiredAccess {
 		result[t.String()] = a
 	}

@@ -11,11 +11,11 @@ import (
 
 	"github.com/juju/errors"
 	"github.com/juju/gnuflag"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/environs/simplestreams"
-	"github.com/juju/juju/internal/cmd"
 )
 
 func newSignMetadataCommand() cmd.Command {

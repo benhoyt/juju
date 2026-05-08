@@ -8,7 +8,7 @@ import (
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/cmd/cmd"
 )
 
 // CredentialGetCommand implements the leader-get command.
@@ -26,12 +26,12 @@ func NewCredentialGetCommand(ctx Context) (cmd.Command, error) {
 // Info is part of the cmd.Command interface.
 func (c *CredentialGetCommand) Info() *cmd.Info {
 	doc := `
-credential-get returns the cloud specification used by the unit's model.
+` + "`credential-get`" + ` returns the cloud specification used by the unit's model.
 `
 	return jujucmd.Info(&cmd.Info{
 		Name:    "credential-get",
 		Args:    "",
-		Purpose: "Access cloud credentials.",
+		Purpose: "Accesses cloud credentials.",
 		Doc:     doc,
 	})
 }

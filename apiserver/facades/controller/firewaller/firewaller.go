@@ -234,19 +234,6 @@ func (f *FirewallerAPI) WatchModelFirewallRules(ctx context.Context) (params.Not
 	return params.NotifyWatchResult{NotifyWatcherId: watcherId}, nil
 }
 
-// WatchEgressAddressesForRelations creates a watcher that notifies when addresses, from which
-// connections will originate for the relation, change.
-// Each event contains the entire set of addresses which are required for ingress for the relation.
-func (f *FirewallerAPI) WatchEgressAddressesForRelations(ctx context.Context, relations params.Entities) (params.StringsWatchResults, error) {
-	return params.StringsWatchResults{}, nil
-}
-
-// WatchIngressAddressesForRelations creates a watcher that returns the ingress networks
-// that have been recorded against the specified relations.
-func (f *FirewallerAPI) WatchIngressAddressesForRelations(ctx context.Context, relations params.Entities) (params.StringsWatchResults, error) {
-	return params.StringsWatchResults{}, nil
-}
-
 // MacaroonForRelations returns the macaroon for the specified relations.
 func (f *FirewallerAPI) MacaroonForRelations(ctx context.Context, args params.Entities) (params.MacaroonResults, error) {
 	var result params.MacaroonResults

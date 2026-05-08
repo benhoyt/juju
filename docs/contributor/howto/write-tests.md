@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "How to write tests for Juju using go test and gocheck, including unit and integration testing best practices for contributors."
+---
+
 (write-tests)=
 # Write tests
 

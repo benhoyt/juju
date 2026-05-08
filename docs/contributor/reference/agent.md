@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn about Juju agents, their types, dependency engines, and how they manage workers across different deployment environments."
+---
+
 (agent-cont)=
 # Agent
 > See first: {ref}`User docs | Agent <agent>`

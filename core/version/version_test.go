@@ -30,7 +30,6 @@ var isDevTests = []struct {
 	num: semversion.Number{Major: 0, Minor: 0, Patch: 2},
 }, {
 	num: semversion.Number{Major: 0, Minor: 1, Patch: 0},
-	dev: true,
 }, {
 	num: semversion.Number{Major: 0, Minor: 2, Patch: 3},
 }, {
@@ -39,10 +38,8 @@ var isDevTests = []struct {
 	num: semversion.Number{Major: 10, Minor: 234, Patch: 3456},
 }, {
 	num: semversion.Number{Major: 10, Minor: 234, Patch: 3456, Build: 1},
-	dev: true,
 }, {
 	num: semversion.Number{Major: 10, Minor: 234, Patch: 3456, Build: 64},
-	dev: true,
 }, {
 	num: semversion.Number{Major: 10, Minor: 235, Patch: 3456},
 }, {

@@ -12,10 +12,10 @@ import (
 
 	"github.com/juju/juju/api/jujuclient"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/common"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/output"
-	"github.com/juju/juju/internal/cmd"
 )
 
 var whoAmIDetails = `
@@ -72,7 +72,7 @@ type whoAmI struct {
 	UserName       string `yaml:"user" json:"user"`
 }
 
-func formatWhoAmITabular(writer io.Writer, value interface{}) error {
+func formatWhoAmITabular(writer io.Writer, value any) error {
 	details, ok := value.(whoAmI)
 	if !ok {
 		return errors.Errorf("expected value of type %T, got %T", details, value)

@@ -9,8 +9,8 @@ import (
 	"github.com/juju/clock"
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
 
 	"github.com/juju/juju/caas"
 	coredependency "github.com/juju/juju/core/dependency"
@@ -246,7 +246,7 @@ func manifoldOutput(in worker.Worker, out any) error {
 	case *storage.ProviderRegistry:
 		*result, err = w.Provider()
 	default:
-		err = errors.NotValidf("*environs.Environ, *caas.Broker, *storage.ProviderRegistry, or *environs.CloudDestroyer: %T", out)
+		err = errors.NotValidf("*providertracker.ProviderFactory, *environs.Environ, *caas.Broker, *storage.ProviderRegistry, or *environs.CloudDestroyer: %T", out)
 	}
 	return errors.Trace(err)
 }

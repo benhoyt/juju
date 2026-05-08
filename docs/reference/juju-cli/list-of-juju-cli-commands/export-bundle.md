@@ -20,7 +20,22 @@ Exports the current model configuration as a reusable bundle.
 
 ## Details
 
-Exports the current model configuration as a reusable bundle.
+Exports the current model's applications and relations as a reusable bundle.
+
+The bundle does not mirror the model configuration. It is a self-contained
+definition derived from the applications currently deployed in the model, so
+that the same set of applications and relations can be reproduced in another
+model.
+
+Juju may optimise how information is represented in the exported bundle.
+For example, if all applications share the same base, Juju may set a
+bundle-level default-base. 
+
+Exposure rules and application offers may
+also be captured in an overlay as a second YAML document within the same
+file (for example, using exposed-endpoints and offers entries). These
+optimisations change only how the bundle is expressed and do not affect
+the resulting deployment.
 
 If `--filename` is not used, the configuration is printed to `stdout`.
 ` --filename` specifies an output file.

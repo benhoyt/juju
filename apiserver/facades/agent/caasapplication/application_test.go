@@ -5,6 +5,7 @@ package caasapplication_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
@@ -15,7 +16,6 @@ import (
 	apiservertesting "github.com/juju/juju/apiserver/testing"
 	"github.com/juju/juju/controller"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/domain/application"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
@@ -55,7 +55,7 @@ func (s *CAASApplicationSuite) setupMocks(c *tc.C, authTag string) *gomock.Contr
 		Tag: tag,
 	}
 
-	s.modelUUID = modeltesting.GenModelUUID(c)
+	s.modelUUID = tc.Must0(c, coremodel.NewUUID)
 
 	s.controllerConfigService = caasapplication.NewMockControllerConfigService(ctrl)
 	s.controllerNodeService = caasapplication.NewMockControllerNodeService(ctrl)
@@ -119,13 +119,15 @@ func (s *CAASApplicationSuite) TestUnitIntroduction(c *tc.C) {
 				DataDir: "/var/lib/juju",
 				LogDir:  "/var/log/juju",
 			},
-			Tag:               names.NewUnitTag("gitlab/666"),
-			Controller:        names.NewControllerTag(coretesting.ControllerTag.Id()),
-			Model:             names.NewModelTag(s.modelUUID.String()),
-			APIAddresses:      []string{"10.6.6.6:17070"},
-			CACert:            coretesting.CACert,
-			Password:          "secret",
-			UpgradedToVersion: vers,
+			Tag:                                names.NewUnitTag("gitlab/666"),
+			Controller:                         names.NewControllerTag(coretesting.ControllerTag.Id()),
+			Model:                              names.NewModelTag(s.modelUUID.String()),
+			APIAddresses:                       []string{"10.6.6.6:17070"},
+			CACert:                             coretesting.CACert,
+			Password:                           "secret",
+			UpgradedToVersion:                  vers,
+			OpenTelemetrySampleRatio:           0.1000,
+			OpenTelemetryTailSamplingThreshold: time.Millisecond,
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
@@ -137,6 +139,7 @@ func (s *CAASApplicationSuite) TestUnitIntroduction(c *tc.C) {
 		PodUUID: "pod-uuid",
 	})
 	c.Assert(err, tc.ErrorIsNil)
+
 	c.Assert(result, tc.DeepEquals, params.CAASUnitIntroductionResult{
 		Result: &params.CAASUnitIntroduction{
 			UnitName:  "gitlab/666",

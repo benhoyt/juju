@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Explore the Go worker interface defining Kill() and Wait() methods implemented by all Juju workers for lifecycle management."
+---
+
 (worker-interface)=
 # Worker interface
 In Juju, the **`worker` interface** is a Go interface in {ref}`the Go worker package <worker-package>` that defines the

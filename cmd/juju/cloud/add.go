@@ -21,11 +21,11 @@ import (
 	"github.com/juju/juju/api/jujuclient"
 	jujucloud "github.com/juju/juju/cloud"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/common"
 	"github.com/juju/juju/cmd/juju/interact"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/environs"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -546,8 +546,8 @@ func addCertificate(data []byte) (string, []byte, error) {
 	return filename, alt, err
 }
 
-func ensureStringMaps(in string) (map[string]interface{}, error) {
-	userDataMap := make(map[string]interface{})
+func ensureStringMaps(in string) (map[string]any, error) {
+	userDataMap := make(map[string]any)
 	if err := yaml.Unmarshal([]byte(in), &userDataMap); err != nil {
 		return nil, errors.Annotate(err, "must be valid YAML")
 	}
@@ -555,7 +555,7 @@ func ensureStringMaps(in string) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	return out.(map[string]interface{}), nil
+	return out.(map[string]any), nil
 }
 
 func queryName(

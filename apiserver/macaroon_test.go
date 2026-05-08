@@ -13,7 +13,7 @@ import (
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/bakery"
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/httpbakery"
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
 	"gopkg.in/macaroon.v2"
@@ -401,9 +401,8 @@ func (s *macaroonLoginSuite) TestConnectStreamWithDischargedMacaroons(c *tc.C) {
 		host = info.Addrs[0]
 	}
 
-	bClient, ok := client.BakeryClient().(*httpbakery.Client)
-	c.Assert(ok, tc.IsTrue)
-	dischargedMacaroons := httpbakery.MacaroonsForURL(bClient.Jar, api.CookieURLFromHost(host))
+	bClient := client.BakeryClient()
+	dischargedMacaroons := httpbakery.MacaroonsForURL(bClient.CookieJar(), api.CookieURLFromHost(host))
 	c.Assert(len(dischargedMacaroons), tc.Equals, 1)
 
 	// Mirror the situation in migration logtransfer - the macaroon is

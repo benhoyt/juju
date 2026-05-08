@@ -20,9 +20,9 @@ import (
 
 // ModelService provides access to the model service.
 type ModelService interface {
-	// ListAllModels returns all models registered in the controller. If no
+	// GetAllModels returns all models registered in the controller. If no
 	// models exist a zero value slice will be returned.
-	ListAllModels(context.Context) ([]coremodel.Model, error)
+	GetAllModels(context.Context) ([]coremodel.Model, error)
 	// Model returns the model associated with the provided uuid.
 	Model(ctx context.Context, uuid coremodel.UUID) (coremodel.Model, error)
 }
@@ -45,9 +45,10 @@ type UpgradeService interface {
 
 // ApplicationService provides access to the application service.
 type ApplicationService interface {
-	// CheckAllApplicationsAndUnitsAreAlive checks that all applications and units
-	// in the model are alive, returning an error if any are not.
-	CheckAllApplicationsAndUnitsAreAlive(ctx context.Context) error
+	// CheckApplicationsForMigration checks that all applications are ready
+	// for migration. All applications and units in the model are alive and no
+	// units are in the process of upgrading.
+	CheckApplicationsForMigration(ctx context.Context) error
 
 	// GetUnitNamesForApplication returns a slice of the unit names for the given application
 	GetUnitNamesForApplication(ctx context.Context, appName string) ([]unit.Name, error)
@@ -65,6 +66,7 @@ type RelationService interface {
 		error)
 }
 
+// StatusService provides access to the statuses service.
 type StatusService interface {
 	// CheckUnitStatusesReadyForMigration returns true is the statuses of all units
 	// in the model indicate they can be migrated.
@@ -93,4 +95,12 @@ type MachineService interface {
 	// The following errors may be returned:
 	// - [machineerrors.MachineNotFound] if the machine does not exist.
 	GetMachineBase(ctx context.Context, mName machine.Name) (base.Base, error)
+}
+
+// CloudService provides access to the cloud service.
+type CloudService interface {
+	// Cloud returns the named cloud.
+	Cloud(ctx context.Context, name string) (*cloud.Cloud, error)
+	// ListAll returns all the clouds.
+	ListAll(ctx context.Context) ([]cloud.Cloud, error)
 }

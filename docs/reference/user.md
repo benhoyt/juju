@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju user reference: authentication, access levels, permissions, and user management for controllers, clouds, models, and offers."
+---
+
 (user)=
 # User
 

@@ -13,10 +13,10 @@ import (
 
 	"github.com/juju/juju/api/jujuclient"
 	"github.com/juju/juju/api/jujuclient/jujuclienttesting"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/storage"
 	"github.com/juju/juju/core/model"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	jujustorage "github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/internal/testhelpers"
 )
@@ -68,7 +68,7 @@ imported storage baz/0
 `[1:])
 
 	s.importer.CheckCalls(c, []testhelpers.StubCall{
-		{"ImportStorage", []interface{}{
+		{"ImportStorage", []any{
 			jujustorage.StorageKindFilesystem,
 			"foo", "bar", "baz", false,
 		}},
@@ -106,7 +106,7 @@ imported storage baz/0
 `[1:])
 
 	s.importer.CheckCalls(c, []testhelpers.StubCall{
-		{"ImportStorage", []interface{}{
+		{"ImportStorage", []any{
 			jujustorage.StorageKindFilesystem,
 			"foo", "bar", "baz", false,
 		}},
@@ -125,7 +125,7 @@ imported storage baz/0
 `[1:])
 
 	s.importer.CheckCalls(c, []testhelpers.StubCall{
-		{"ImportStorage", []interface{}{
+		{"ImportStorage", []any{
 			jujustorage.StorageKindFilesystem,
 			"foo", "bar", "baz", true,
 		}},

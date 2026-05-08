@@ -21,10 +21,10 @@ import (
 	"github.com/juju/juju/core/flightrecorder"
 	"github.com/juju/juju/core/trace"
 	jujuhttp "github.com/juju/juju/internal/http"
-	"github.com/juju/juju/internal/rpcreflect"
 	"github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc"
 	"github.com/juju/juju/rpc/jsoncodec"
+	"github.com/juju/juju/rpc/rpcreflect"
 )
 
 // Server represents a fake API server. It must be closed
@@ -35,7 +35,7 @@ type Server struct {
 	Addrs []string
 
 	*httptest.Server
-	newRoot func(modelUUID string) (interface{}, error)
+	newRoot func(modelUUID string) (any, error)
 }
 
 // NewAPIServer serves RPC methods on a localhost HTTP server.
@@ -51,7 +51,7 @@ type Server struct {
 // to host the server.
 //
 // The returned server must be closed after use.
-func NewAPIServer(newRoot func(modelUUID string) (interface{}, error)) *Server {
+func NewAPIServer(newRoot func(modelUUID string) (any, error)) *Server {
 	tlsCert, err := tls.X509KeyPair([]byte(testing.ServerCert), []byte(testing.ServerKey))
 	if err != nil {
 		panic("bad key pair")

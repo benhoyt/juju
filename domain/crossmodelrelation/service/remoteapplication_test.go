@@ -39,7 +39,7 @@ func (s *remoteApplicationServiceSuite) TestAddRemoteApplicationOfferer(c *tc.C)
 	defer s.setupMocks(c).Finish()
 
 	offerUUID := tc.Must(c, offer.NewUUID)
-	offererControllerUUID := ptr(tc.Must(c, uuid.NewUUID).String())
+	offererControllerUUID := new(tc.Must(c, uuid.NewUUID).String())
 	offererModelUUID := tc.Must(c, uuid.NewUUID).String()
 	macaroon := newMacaroon(c, "test")
 
@@ -168,7 +168,7 @@ func (s *remoteApplicationServiceSuite) TestAddRemoteApplicationOffererInvalidRo
 	defer s.setupMocks(c).Finish()
 
 	offerUUID := tc.Must(c, offer.NewUUID)
-	offererControllerUUID := ptr(tc.Must(c, uuid.NewUUID).String())
+	offererControllerUUID := new(tc.Must(c, uuid.NewUUID).String())
 	offererModelUUID := tc.Must(c, uuid.NewUUID).String()
 	macaroon := newMacaroon(c, "test")
 
@@ -189,6 +189,28 @@ func (s *remoteApplicationServiceSuite) TestAddRemoteApplicationOffererInvalidRo
 	})
 	c.Assert(err, tc.ErrorIs, errors.NotValid)
 
+}
+
+func (s *remoteApplicationServiceSuite) TestGetRemoteConsumerApplicationName(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	uuid := tc.Must(c, coreapplication.NewUUID)
+	s.modelState.EXPECT().GetRemoteConsumerApplicationName(gomock.Any(), uuid.String()).Return("foo", nil)
+
+	service := s.service(c)
+
+	got, err := service.GetRemoteConsumerApplicationName(c.Context(), uuid)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(got, tc.Equals, "foo")
+}
+
+func (s *remoteApplicationServiceSuite) TestGetRemoteConsumerApplicationNameInvalidUUID(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	service := s.service(c)
+
+	_, err := service.GetRemoteConsumerApplicationName(c.Context(), "invalid")
+	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationUUIDNotValid)
 }
 
 func (s *remoteApplicationServiceSuite) TestGetRemoteApplicationOfferers(c *tc.C) {
@@ -576,7 +598,7 @@ func (s *remoteApplicationServiceSuite) TestGetApplicationNameAndUUIDByOfferUUID
 	offerUUID := tc.Must(c, offer.NewUUID)
 	appUUID := tc.Must(c, coreapplication.NewUUID)
 
-	s.modelState.EXPECT().GetApplicationNameAndUUIDByOfferUUID(gomock.Any(), offerUUID.String()).Return("test-app", appUUID, nil)
+	s.modelState.EXPECT().GetApplicationNameAndUUIDByOfferUUID(gomock.Any(), offerUUID.String()).Return("test-app", appUUID.String(), nil)
 
 	service := s.service(c)
 
@@ -591,7 +613,7 @@ func (s *remoteApplicationServiceSuite) TestGetApplicationNameAndUUIDByOfferUUID
 
 	offerUUID := tc.Must(c, offer.NewUUID)
 
-	s.modelState.EXPECT().GetApplicationNameAndUUIDByOfferUUID(gomock.Any(), offerUUID.String()).Return("", coreapplication.UUID(""), crossmodelrelationerrors.OfferNotFound)
+	s.modelState.EXPECT().GetApplicationNameAndUUIDByOfferUUID(gomock.Any(), offerUUID.String()).Return("", "", crossmodelrelationerrors.OfferNotFound)
 
 	service := s.service(c)
 
@@ -615,11 +637,78 @@ func (s *remoteApplicationServiceSuite) TestGetApplicationNameAndUUIDByOfferUUID
 
 	offerUUID := tc.Must(c, offer.NewUUID)
 
-	s.modelState.EXPECT().GetApplicationNameAndUUIDByOfferUUID(gomock.Any(), offerUUID.String()).Return("", coreapplication.UUID(""), internalerrors.Errorf("boom"))
+	s.modelState.EXPECT().GetApplicationNameAndUUIDByOfferUUID(gomock.Any(), offerUUID.String()).Return("", "", internalerrors.Errorf("boom"))
 
 	service := s.service(c)
 
 	_, _, err := service.GetApplicationNameAndUUIDByOfferUUID(c.Context(), offerUUID)
+	c.Assert(err, tc.ErrorMatches, "boom")
+}
+
+func (s *remoteApplicationServiceSuite) TestGetSyntheticApplicationUUIDByRemoteToken(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	offerUUID := tc.Must(c, offer.NewUUID)
+	remoteRelationUUID := tc.Must(c, corerelation.NewUUID)
+	appUUID := tc.Must(c, coreapplication.NewUUID)
+
+	s.modelState.EXPECT().GetSyntheticApplicationUUIDByRemoteToken(gomock.Any(), offerUUID.String(), remoteRelationUUID.String()).Return(appUUID.String(), nil)
+
+	service := s.service(c)
+
+	gotUUID, err := service.GetSyntheticApplicationUUIDByRemoteToken(c.Context(), offerUUID, remoteRelationUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(gotUUID, tc.Equals, appUUID)
+}
+
+func (s *remoteApplicationServiceSuite) TestGetSyntheticApplicationUUIDByRemoteTokenNotFound(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	offerUUID := tc.Must(c, offer.NewUUID)
+	remoteRelationUUID := tc.Must(c, corerelation.NewUUID)
+
+	s.modelState.EXPECT().GetSyntheticApplicationUUIDByRemoteToken(gomock.Any(), offerUUID.String(), remoteRelationUUID.String()).Return("", crossmodelrelationerrors.OfferNotFound)
+
+	service := s.service(c)
+
+	_, err := service.GetSyntheticApplicationUUIDByRemoteToken(c.Context(), offerUUID, remoteRelationUUID)
+	c.Assert(err, tc.ErrorMatches, "offer not found")
+	c.Assert(err, tc.ErrorIs, crossmodelrelationerrors.OfferNotFound)
+}
+
+func (s *remoteApplicationServiceSuite) TestGetSyntheticApplicationUUIDByRemoteTokenInvalidOfferUUID(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	service := s.service(c)
+
+	remoteRelationUUID := tc.Must(c, corerelation.NewUUID)
+	_, err := service.GetSyntheticApplicationUUIDByRemoteToken(c.Context(), "invalid-uuid", remoteRelationUUID)
+	c.Assert(err, tc.ErrorMatches, `.*uuid "invalid-uuid" not valid`)
+	c.Assert(err, tc.ErrorIs, errors.NotValid)
+}
+
+func (s *remoteApplicationServiceSuite) TestGetSyntheticApplicationUUIDByRemoteTokenInvalidRelationUUID(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	service := s.service(c)
+
+	offerUUID := tc.Must(c, offer.NewUUID)
+	_, err := service.GetSyntheticApplicationUUIDByRemoteToken(c.Context(), offerUUID, "invalid-uuid")
+	c.Assert(err, tc.ErrorMatches, `.*relation uuid "invalid-uuid".*not valid`)
+	c.Assert(err, tc.ErrorIs, errors.NotValid)
+}
+
+func (s *remoteApplicationServiceSuite) TestGetSyntheticApplicationUUIDByRemoteTokenStateError(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	offerUUID := tc.Must(c, offer.NewUUID)
+	remoteRelationUUID := tc.Must(c, corerelation.NewUUID)
+
+	s.modelState.EXPECT().GetSyntheticApplicationUUIDByRemoteToken(gomock.Any(), offerUUID.String(), remoteRelationUUID.String()).Return("", internalerrors.Errorf("boom"))
+
+	service := s.service(c)
+
+	_, err := service.GetSyntheticApplicationUUIDByRemoteToken(c.Context(), offerUUID, remoteRelationUUID)
 	c.Assert(err, tc.ErrorMatches, "boom")
 }
 
@@ -853,4 +942,32 @@ func (s *remoteApplicationServiceSuite) TestCheckIsApplicationSyntheticError(c *
 	isLocal, err := service.IsApplicationSynthetic(c.Context(), "remote-app")
 	c.Assert(err, tc.ErrorMatches, "boom")
 	c.Check(isLocal, tc.IsFalse)
+}
+
+func (s *remoteApplicationServiceSuite) TestGetRelationRemoteModelUUID(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	relationUUID := tc.Must(c, corerelation.NewUUID)
+	expectedModelUUID := tc.Must(c, coremodel.NewUUID)
+
+	s.modelState.EXPECT().GetRelationRemoteModelUUID(gomock.Any(), relationUUID).Return(expectedModelUUID, nil)
+
+	service := s.service(c)
+
+	modelUUID, err := service.GetRelationRemoteModelUUID(c.Context(), relationUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(modelUUID, tc.Equals, expectedModelUUID)
+}
+
+func (s *remoteApplicationServiceSuite) TestGetRelationRemoteModelUUIDError(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	relationUUID := tc.Must(c, corerelation.NewUUID)
+
+	s.modelState.EXPECT().GetRelationRemoteModelUUID(gomock.Any(), relationUUID).Return(coremodel.UUID(""), internalerrors.Errorf("boom"))
+
+	service := s.service(c)
+
+	_, err := service.GetRelationRemoteModelUUID(c.Context(), relationUUID)
+	c.Assert(err, tc.ErrorMatches, "boom")
 }

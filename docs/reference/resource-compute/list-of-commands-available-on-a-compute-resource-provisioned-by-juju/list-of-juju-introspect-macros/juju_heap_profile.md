@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Monitor memory allocation and find memory leaks in Juju agents using juju_heap_profile introspect macro with heap profiling."
+---
+
 (juju_heap_profile)=
 # `juju_heap_profile`
 

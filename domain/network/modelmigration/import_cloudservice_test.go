@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/juju/collections/transform"
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
@@ -18,37 +18,34 @@ import (
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 )
 
-type importCloudServiceSuite struct {
-	importService    *MockImportService
-	migrationService *MockMigrationService
+type importK8sServiceSuite struct {
+	migrationService *MockK8sServiceMigrationService
 }
 
-func TestImportCloudServiceSuite(t *testing.T) {
-	tc.Run(t, &importCloudServiceSuite{})
+func TestImportK8sServiceSuite(t *testing.T) {
+	tc.Run(t, &importK8sServiceSuite{})
 }
 
-func (s *importCloudServiceSuite) setupMocks(c *tc.C) *gomock.Controller {
+func (s *importK8sServiceSuite) setupMocks(c *tc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 
-	s.importService = NewMockImportService(ctrl)
-	s.migrationService = NewMockMigrationService(ctrl)
+	s.migrationService = NewMockK8sServiceMigrationService(ctrl)
 
 	c.Cleanup(func() {
-		s.importService = nil
 		s.migrationService = nil
 	})
 
 	return ctrl
 }
 
-func (s *importCloudServiceSuite) newImportOperation(c *tc.C) *importCloudServiceOperation {
-	return &importCloudServiceOperation{
+func (s *importK8sServiceSuite) newImportOperation(c *tc.C) *importK8sServiceOperation {
+	return &importK8sServiceOperation{
 		migrationService: s.migrationService,
 		logger:           loggertesting.WrapCheckLog(c),
 	}
 }
 
-func (s *importCloudServiceSuite) TestImportCloudService(c *tc.C) {
+func (s *importK8sServiceSuite) TestImportK8sService(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	// Arrange
@@ -62,6 +59,9 @@ func (s *importCloudServiceSuite) TestImportCloudService(c *tc.C) {
 	app2 := model.AddApplication(description.ApplicationArgs{
 		Name: "app-2",
 	})
+	app3 := model.AddApplication(description.ApplicationArgs{
+		Name: "app-3",
+	})
 	app1.SetCloudService(description.CloudServiceArgs{
 		ProviderId: "app-1-service",
 		Addresses: []description.AddressArgs{
@@ -71,8 +71,7 @@ func (s *importCloudServiceSuite) TestImportCloudService(c *tc.C) {
 				Scope:   "public",
 				Origin:  "provider",
 				SpaceID: "space-1",
-			},
-			{
+			}, {
 				Value:   "2001:db8::1",
 				Type:    "ipv6",
 				Scope:   "public",
@@ -93,11 +92,14 @@ func (s *importCloudServiceSuite) TestImportCloudService(c *tc.C) {
 			},
 		},
 	})
-	args := []internal.ImportCloudService{
+	app3.SetCloudService(description.CloudServiceArgs{
+		ProviderId: "app-3-service",
+	})
+	args := []internal.ImportK8sService{
 		{
 			ApplicationName: "app-1",
 			ProviderID:      "app-1-service",
-			Addresses: []internal.ImportCloudServiceAddress{
+			Addresses: []internal.ImportK8sServiceAddress{
 				{
 					Value:   "192.0.2.1",
 					Type:    "ipv4",
@@ -113,20 +115,22 @@ func (s *importCloudServiceSuite) TestImportCloudService(c *tc.C) {
 					SpaceID: "space-1",
 				},
 			},
-		},
-		{
+		}, {
 			ApplicationName: "app-2",
 			ProviderID:      "app-2-service",
-			Addresses: []internal.ImportCloudServiceAddress{{
+			Addresses: []internal.ImportK8sServiceAddress{{
 				Value:   "192.0.2.2",
 				Type:    "ipv4",
 				Scope:   "public",
 				Origin:  "provider",
 				SpaceID: "space-2",
 			}},
+		}, {
+			ApplicationName: "app-3",
+			ProviderID:      "app-3-service",
 		},
 	}
-	s.migrationService.EXPECT().ImportCloudServices(gomock.Any(), cloudServiceMatcher{
+	s.migrationService.EXPECT().ImportK8sServices(gomock.Any(), k8sServiceMatcher{
 		c:        c,
 		expected: args,
 	}).Return(nil)
@@ -138,7 +142,7 @@ func (s *importCloudServiceSuite) TestImportCloudService(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 }
 
-func (s *importCloudServiceSuite) TestImportCloudServiceIaaS(c *tc.C) {
+func (s *importK8sServiceSuite) TestImportK8sServiceIaaS(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	// Arrange
@@ -146,7 +150,7 @@ func (s *importCloudServiceSuite) TestImportCloudServiceIaaS(c *tc.C) {
 		Type: description.IAAS,
 	})
 
-	// No expectations on ImportCloudServices since it shouldn't be called for IaaS
+	// No expectations on ImportK8sServices since it shouldn't be called for IaaS
 
 	// Act
 	err := s.newImportOperation(c).Execute(c.Context(), model)
@@ -155,7 +159,7 @@ func (s *importCloudServiceSuite) TestImportCloudServiceIaaS(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 }
 
-func (s *importCloudServiceSuite) TestImportCloudServiceError(c *tc.C) {
+func (s *importK8sServiceSuite) TestImportK8sServiceError(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	// Arrange
@@ -164,7 +168,7 @@ func (s *importCloudServiceSuite) TestImportCloudServiceError(c *tc.C) {
 	})
 
 	expectedError := errors.New("import cloud services failed")
-	s.migrationService.EXPECT().ImportCloudServices(gomock.Any(), gomock.Any()).Return(expectedError)
+	s.migrationService.EXPECT().ImportK8sServices(gomock.Any(), gomock.Any()).Return(expectedError)
 
 	// Act
 	err := s.newImportOperation(c).Execute(c.Context(), model)
@@ -173,21 +177,21 @@ func (s *importCloudServiceSuite) TestImportCloudServiceError(c *tc.C) {
 	c.Assert(err, tc.ErrorMatches, "importing cloud services: import cloud services failed")
 }
 
-type cloudServiceMatcher struct {
+type k8sServiceMatcher struct {
 	c        *tc.C
-	expected []internal.ImportCloudService
+	expected []internal.ImportK8sService
 }
 
-func (m cloudServiceMatcher) Matches(x interface{}) bool {
-	input, ok := x.([]internal.ImportCloudService)
+func (m k8sServiceMatcher) Matches(x any) bool {
+	input, ok := x.([]internal.ImportK8sService)
 	if !ok {
 		return false
 	}
-	noAddresses := func(in internal.ImportCloudService) internal.ImportCloudService {
+	noAddresses := func(in internal.ImportK8sService) internal.ImportK8sService {
 		in.Addresses = nil
 		return in
 	}
-	mapAddresses := func(in internal.ImportCloudService) (string, []internal.ImportCloudServiceAddress) {
+	mapAddresses := func(in internal.ImportK8sService) (string, []internal.ImportK8sServiceAddress) {
 		return in.ProviderID, in.Addresses
 	}
 	inputAddresses := transform.SliceToMap(input, mapAddresses)
@@ -197,7 +201,7 @@ func (m cloudServiceMatcher) Matches(x interface{}) bool {
 	for k, in := range inputAddresses {
 		// UUIDs are assigned in the code under test. Ensure they exist, then
 		// remove it to enable SameContents checks over the other fields.
-		in = transform.Slice(in, func(in internal.ImportCloudServiceAddress) internal.ImportCloudServiceAddress {
+		in = transform.Slice(in, func(in internal.ImportK8sServiceAddress) internal.ImportK8sServiceAddress {
 			m.c.Check(in.UUID, tc.Not(tc.Equals), "")
 			in.UUID = ""
 			return in
@@ -207,7 +211,7 @@ func (m cloudServiceMatcher) Matches(x interface{}) bool {
 
 	// UUIDs are assigned in the code under test. Ensure they exist, then
 	// remove it to enable SameContents checks over the other fields.
-	input = transform.Slice(input, func(in internal.ImportCloudService) internal.ImportCloudService {
+	input = transform.Slice(input, func(in internal.ImportK8sService) internal.ImportK8sService {
 		m.c.Check(in.UUID, tc.Not(tc.Equals), "")
 		m.c.Check(in.DeviceUUID, tc.Not(tc.Equals), "")
 		m.c.Check(in.NetNodeUUID, tc.Not(tc.Equals), "")
@@ -221,6 +225,6 @@ func (m cloudServiceMatcher) Matches(x interface{}) bool {
 		transform.Slice(m.expected, noAddresses))
 }
 
-func (cloudServiceMatcher) String() string {
-	return "matches args for ImportCloudService"
+func (k8sServiceMatcher) String() string {
+	return "matches args for ImportK8sService"
 }

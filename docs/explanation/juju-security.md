@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Comprehensive Juju security guide: threat modeling, access controls, encryption, authentication, audit logging, and secure operations."
+---
+
 (juju-security)=
 # Juju security
 
@@ -233,7 +239,7 @@ Controls: {ref}`controls-user-authentication`
 (assets-database)=
 ### Database
 
-Overview: Juju stores all its state and operational data in a database powered by Dqlite or MongoDB. This includes model configurations, status of applications, and historical logs. This database can only be accessed by authorized entities (controllers, agents, or administrators), following proper authentication. All passwords saved in the database are hashed and salted. Juju is careful not to store sensitive information in logs.
+Overview: Juju stores all its state and operational data in databases powered by Dqlite. The controller maintains separate databases: a global controller database (storing controller configuration, user accounts, and metadata about all models) and a database for each model (storing that model's applications, units, machines, relations, etc.). These databases can only be accessed by authorized entities (controllers, agents, or administrators) following proper authentication. All passwords saved in the databases are hashed and salted. The databases are not exposed on network ports accessible outside the controller.
 
 Owned by: Controller.
 
@@ -241,10 +247,14 @@ Used by: Controller and models.
 
 Example threats:
 - {ref}`threats-availability`: An attacker could overwhelm the database with requests, rendering it unavailable to legitimate users and disrupting the operations of the Juju-managed environment.
-- {ref}`threats-confidentiality`: If unauthorized users gain access to the Juju database, they can read sensitive data stored in it, such as configuration details, user credentials, or operational data.
-- {ref}`threats-integrity`: If unauthorized users gain access to the Juju database, they can read sensitive data stored in it, such as configuration details, user credentials, or operational data.
+- {ref}`threats-confidentiality`: If unauthorized users gain access to the Juju databases, they can read sensitive data stored in them, such as configuration details, user credentials, or operational data.
+- {ref}`threats-integrity`: If unauthorized users gain access to the Juju databases, they could modify or corrupt state data, leading to inconsistent or malicious behavior in managed environments.
 
 Controls: {ref}`controls-high-availability`, {ref}`controls-database-authentication`, {ref}`controls-filesystem-permissions`, {ref}`controls-no-plaintext-passwords-in-the-database`, {ref}`controls-regular-backups`
+
+```{ibnote}
+See more: {ref}`database`
+```
 
 (assets-image-registry)=
 ### Image registry
@@ -529,7 +539,7 @@ Controls: {ref}`controls-tls-encryption`
 (data-flows-database-database)=
 ### Database - Database
 
-Overview: The data flow between Juju databases occurs in high-availability (HA) configurations where multiple instances of the Juju controller are set up to ensure redundancy and fault tolerance. In an HA setup, each Juju controller has its own instance of the Juju database (usually backed by MongoDB or, more recently, Dqlite) that needs to stay synchronized with the others.
+Overview: The data flow between Juju databases occurs in high-availability (HA) configurations where multiple instances of the Juju controller are set up to ensure redundancy and fault tolerance. In an HA setup, each Juju controller has its own instance of the Juju database (backed by Dqlite) that needs to stay synchronized with the others.
 
 Example threats:
 - {ref}`threats-availability`: An attacker could overwhelm one or both Juju DB instances with excessive or malformed synchronization requests, effectively causing a DoS condition.
@@ -673,7 +683,7 @@ For machine controllers, Juju provides tools to help with controller backups. Th
 Canonical releases updates and security patches for Juju to address vulnerabilities, improve performance, and add new features.
 
 ```{ibnote}
-See more: {ref}`juju-roadmap-and-releases`
+See more: {ref}`releasenotes`
 ```
 
 (controls-rootless-charms)=

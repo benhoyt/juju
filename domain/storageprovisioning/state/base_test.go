@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 
 	"github.com/canonical/sqlair"
 	"github.com/juju/tc"
@@ -24,9 +25,6 @@ import (
 	domainsequence "github.com/juju/juju/domain/sequence"
 	sequencestate "github.com/juju/juju/domain/sequence/state"
 	domainstorage "github.com/juju/juju/domain/storage"
-	storagetesting "github.com/juju/juju/domain/storage/testing"
-	"github.com/juju/juju/domain/storageprovisioning"
-	domaintesting "github.com/juju/juju/domain/storageprovisioning/testing"
 	"github.com/juju/juju/internal/uuid"
 )
 
@@ -38,12 +36,13 @@ type baseSuite struct {
 
 // changeMachineLife is a utility function for updating the life value of a
 // machine.
-func (s *baseSuite) changeMachineLife(c *tc.C, machineUUID string, lifeID domainlife.Life) {
+func (s *baseSuite) changeMachineLife(
+	c *tc.C, machineUUID coremachine.UUID, lifeID domainlife.Life) {
 	_, err := s.DB().ExecContext(
 		c.Context(),
 		"UPDATE machine SET life_id = ? WHERE uuid = ?",
 		int(lifeID),
-		machineUUID,
+		machineUUID.String(),
 	)
 	c.Assert(err, tc.ErrorIsNil)
 }
@@ -100,7 +99,7 @@ VALUES (?, 'myapp')
 // name.
 func (s *baseSuite) newMachineWithNetNode(
 	c *tc.C, netNodeUUID domainnetwork.NetNodeUUID,
-) (string, coremachine.Name) {
+) (coremachine.UUID, coremachine.Name) {
 	machineUUID := machinetesting.GenUUID(c)
 	name := "mfoo-" + machineUUID.String()
 
@@ -113,11 +112,11 @@ func (s *baseSuite) newMachineWithNetNode(
 	)
 	c.Assert(err, tc.ErrorIsNil)
 
-	return machineUUID.String(), coremachine.Name(name)
+	return machineUUID, coremachine.Name(name)
 }
 
 func (s *baseSuite) newMachineCloudInstanceWithID(
-	c *tc.C, machineUUID, id string,
+	c *tc.C, machineUUID coremachine.UUID, id string,
 ) {
 	_, err := s.DB().ExecContext(
 		c.Context(),
@@ -125,7 +124,7 @@ func (s *baseSuite) newMachineCloudInstanceWithID(
 INSERT INTO machine_cloud_instance (machine_uuid, life_id, instance_id)
 VALUES (?, 0, ?)
 `,
-		machineUUID,
+		machineUUID.String(),
 		id,
 	)
 	c.Assert(err, tc.ErrorIsNil)
@@ -133,10 +132,9 @@ VALUES (?, 0, ?)
 
 // newMachineVolume creates a new volume in the model with machine
 // provision scope. Returned is the uuid and volume id of the entity.
-func (s *baseSuite) newMachineVolume(c *tc.C) (storageprovisioning.VolumeUUID, string) {
-	vsUUID := domaintesting.GenVolumeUUID(c)
-
-	vsID := fmt.Sprintf("foo/%s", vsUUID.String())
+func (s *baseSuite) newMachineVolume(c *tc.C) (domainstorage.VolumeUUID, string) {
+	vsUUID := tc.Must(c, domainstorage.NewVolumeUUID)
+	vsID := strconv.FormatUint(s.nextVolumeSequenceNumber(c), 10)
 
 	_, err := s.DB().Exec(`
 INSERT INTO storage_volume (uuid, volume_id, life_id, provision_scope_id)
@@ -153,10 +151,10 @@ VALUES (?, ?, 0, 1)
 // volume uuid and net node uuid.
 func (s *baseSuite) newMachineVolumeAttachment(
 	c *tc.C,
-	vsUUID storageprovisioning.VolumeUUID,
+	vsUUID domainstorage.VolumeUUID,
 	netNodeUUID domainnetwork.NetNodeUUID,
-) storageprovisioning.VolumeAttachmentUUID {
-	attachmentUUID := domaintesting.GenVolumeAttachmentUUID(c)
+) domainstorage.VolumeAttachmentUUID {
+	attachmentUUID := tc.Must(c, domainstorage.NewVolumeAttachmentUUID)
 
 	_, err := s.DB().ExecContext(
 		c.Context(),
@@ -177,9 +175,9 @@ VALUES (?, ?, ?, 0, 1)
 // newModelFilesystem creates a new filesystem in the model with model
 // provision scope. Return is the uuid and filesystem id of the entity.
 func (s *baseSuite) newModelFilesystem(c *tc.C) (
-	storageprovisioning.FilesystemUUID, string,
+	domainstorage.FilesystemUUID, string,
 ) {
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 
 	fsID := fmt.Sprintf("foo/%s", fsUUID.String())
 
@@ -193,12 +191,46 @@ VALUES (?, ?, 0, 0)
 	return fsUUID, fsID
 }
 
+// newModelFilesystemAttachmentWithMount creates a new filesystem attachment
+// that has model provision scope. The attachment is associated with the
+// provided filesystem uuid and net node uuid. This will also set the mount
+// point and readonly attributes of the filesystem attachment.
+func (s *baseSuite) newModelFilesystemAttachmentWithMount(
+	c *tc.C,
+	fsUUID domainstorage.FilesystemUUID,
+	netNodeUUID domainnetwork.NetNodeUUID,
+	mountPoint string,
+	readOnly bool,
+) domainstorage.FilesystemAttachmentUUID {
+	attachmentUUID := tc.Must(c, domainstorage.NewFilesystemAttachmentUUID)
+	_, err := s.DB().ExecContext(
+		c.Context(),
+		`
+INSERT INTO storage_filesystem_attachment (uuid,
+                                           storage_filesystem_uuid,
+                                           net_node_uuid,
+                                           life_id,
+                                           mount_point,
+                                           read_only,
+                                           provision_scope_id)
+VALUES (?, ?, ?, 0, ?, ?, 0)
+`,
+		attachmentUUID.String(),
+		fsUUID,
+		netNodeUUID.String(),
+		mountPoint,
+		readOnly,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	return attachmentUUID
+}
+
 // newModelVolume creates a new volume in the model with model
 // provision scope. Return is the uuid and volume id of the entity.
-func (s *baseSuite) newModelVolume(c *tc.C) (storageprovisioning.VolumeUUID, string) {
-	vsUUID := domaintesting.GenVolumeUUID(c)
-
-	vsID := fmt.Sprintf("foo/%s", vsUUID.String())
+func (s *baseSuite) newModelVolume(c *tc.C) (domainstorage.VolumeUUID, string) {
+	vsUUID := tc.Must(c, domainstorage.NewVolumeUUID)
+	vsID := strconv.FormatUint(s.nextVolumeSequenceNumber(c), 10)
 
 	_, err := s.DB().Exec(`
 INSERT INTO storage_volume (uuid, volume_id, life_id, provision_scope_id)
@@ -215,10 +247,10 @@ VALUES (?, ?, 0, 0)
 // volume uuid and net node uuid.
 func (s *baseSuite) newModelVolumeAttachment(
 	c *tc.C,
-	vsUUID storageprovisioning.VolumeUUID,
+	vsUUID domainstorage.VolumeUUID,
 	netNodeUUID domainnetwork.NetNodeUUID,
-) storageprovisioning.VolumeAttachmentUUID {
-	attachmentUUID := domaintesting.GenVolumeAttachmentUUID(c)
+) domainstorage.VolumeAttachmentUUID {
+	attachmentUUID := tc.Must(c, domainstorage.NewVolumeAttachmentUUID)
 
 	_, err := s.DB().ExecContext(
 		c.Context(),
@@ -269,8 +301,8 @@ func (s *baseSuite) newStorageAttachment(
 	c *tc.C,
 	storageInstanceUUID domainstorage.StorageInstanceUUID,
 	unitUUID coreunit.UUID,
-) storageprovisioning.StorageAttachmentUUID {
-	saUUID := domaintesting.GenStorageAttachmentUUID(c)
+) domainstorage.StorageAttachmentUUID {
+	saUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
 	_, err := s.DB().Exec(`
 INSERT INTO storage_attachment (uuid, storage_instance_uuid, unit_uuid, life_id)
 VALUES (?, ?, ?, ?)
@@ -279,11 +311,13 @@ VALUES (?, ?, ?, ?)
 	return saUUID
 }
 
+// newStorageInstanceForCharmWithPool creates a new storage instance in the
+// model referenced to the supplied charm and using the provided storage pool.
 func (s *baseSuite) newStorageInstanceForCharmWithPool(
 	c *tc.C, charmUUID, poolUUID, storageName string,
-) domainstorage.StorageInstanceUUID {
-	storageInstanceUUID := storagetesting.GenStorageInstanceUUID(c)
-	storageID := fmt.Sprintf("%s/%d", storageName, s.nextStorageSequenceNumber(c))
+) (domainstorage.StorageInstanceUUID, string) {
+	storageInstanceUUID := tc.Must(c, domainstorage.NewStorageInstanceUUID)
+	storageID := strconv.FormatUint(s.nextStorageSequenceNumber(c), 10)
 
 	var charmName string
 	err := s.DB().QueryRowContext(
@@ -307,13 +341,13 @@ VALUES (?, ?, ?, ?, 0, 100, ?, 1)
 	)
 	c.Assert(err, tc.ErrorIsNil)
 
-	return storageInstanceUUID
+	return storageInstanceUUID, storageID
 }
 
 func (s *baseSuite) newStorageInstanceBlockKindForCharmWithPool(
 	c *tc.C, charmUUID, poolUUID, storageName string,
 ) domainstorage.StorageInstanceUUID {
-	storageInstanceUUID := storagetesting.GenStorageInstanceUUID(c)
+	storageInstanceUUID := tc.Must(c, domainstorage.NewStorageInstanceUUID)
 	storageID := fmt.Sprintf("%s/%d", storageName, s.nextStorageSequenceNumber(c))
 
 	var charmName string
@@ -341,11 +375,24 @@ VALUES (?, ?, ?, ?, 0, 100, ?, 0)
 	return storageInstanceUUID
 }
 
+// nextFilesystemSequenceNumber retrieves the next sequence number in the
+// filesystem namespace.
+func (s *baseSuite) nextFilesystemSequenceNumber(c *tc.C) uint64 {
+	var id uint64
+	err := s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		var err error
+		id, err = sequencestate.NextValue(
+			ctx, preparer{}, tx, domainsequence.StaticNamespace("filesystem"),
+		)
+		return err
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	return id
+}
+
 // nextStorageSequenceNumber retrieves the next sequence number in the storage
 // namespace.
-func (s *baseSuite) nextStorageSequenceNumber(
-	c *tc.C,
-) uint64 {
+func (s *baseSuite) nextStorageSequenceNumber(c *tc.C) uint64 {
 	var id uint64
 	err := s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		var err error
@@ -358,9 +405,24 @@ func (s *baseSuite) nextStorageSequenceNumber(
 	return id
 }
 
+// nextVolumeSequenceNumber retrieves the next sequence number in the volume
+// namespace.
+func (s *baseSuite) nextVolumeSequenceNumber(c *tc.C) uint64 {
+	var id uint64
+	err := s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		var err error
+		id, err = sequencestate.NextValue(
+			ctx, preparer{}, tx, domainsequence.StaticNamespace("volume"),
+		)
+		return err
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	return id
+}
+
 func (s *baseSuite) newStorageInstanceVolume(
 	c *tc.C, instanceUUID domainstorage.StorageInstanceUUID,
-	volumeUUID storageprovisioning.VolumeUUID,
+	volumeUUID domainstorage.VolumeUUID,
 ) {
 	ctx := c.Context()
 	_, err := s.DB().ExecContext(ctx, `
@@ -371,7 +433,7 @@ VALUES (?, ?)`, instanceUUID.String(), volumeUUID.String())
 
 func (s *baseSuite) newStorageInstanceFilesystem(
 	c *tc.C, instanceUUID domainstorage.StorageInstanceUUID,
-	filesystemUUID storageprovisioning.FilesystemUUID,
+	filesystemUUID domainstorage.FilesystemUUID,
 ) {
 	ctx := c.Context()
 	_, err := s.DB().ExecContext(ctx, `
@@ -421,10 +483,10 @@ VALUES (?, ?)`, ownerUUID.String(), storageInstanceUUID.String())
 // plan is associated with the provided volume uuid and net node uuid.
 func (s *baseSuite) newVolumeAttachmentPlan(
 	c *tc.C,
-	volumeUUID storageprovisioning.VolumeUUID,
+	volumeUUID domainstorage.VolumeUUID,
 	netNodeUUID domainnetwork.NetNodeUUID,
-) storageprovisioning.VolumeAttachmentPlanUUID {
-	attachmentUUID := domaintesting.GenVolumeAttachmentPlanUUID(c)
+) domainstorage.VolumeAttachmentPlanUUID {
+	attachmentUUID := tc.Must(c, domainstorage.NewVolumeAttachmentPlanUUID)
 
 	_, err := s.DB().Exec(`
 INSERT INTO storage_volume_attachment_plan (uuid,
@@ -490,12 +552,44 @@ VALUES (?, ?, ?, ?, ?, ?)`, appUUID, charmUUID, storageName, storagePoolUUID, si
 // newCharmStorage creates a new charm storage for the given charm with fixed
 // values for min/max count of 0 -> 10.
 func (s *baseSuite) newCharmStorage(c *tc.C,
-	charmUUID string, name string, kind string, readOnly bool, location string,
+	charmUUID string,
+	name string,
+	kind string,
+	readOnly bool,
+	shared bool,
+	location string,
 ) {
 	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
-INSERT INTO charm_storage (charm_uuid, name, storage_kind_id, read_only, count_min, count_max, location)
-VALUES (?, ?, (SELECT id FROM charm_storage_kind WHERE kind = ?), ?, 0, 10, ?)`, charmUUID, name, kind, readOnly, location)
+INSERT INTO charm_storage (charm_uuid, name, storage_kind_id, read_only,
+                           count_min, count_max, location, shared)
+VALUES (?, ?, (SELECT id FROM charm_storage_kind WHERE kind = ?), ?, 0, 10, ?, ?)
+`,
+			charmUUID, name, kind, readOnly, location, shared)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+// newFilesystemCharmStorageWithLocationAndCount is a testing utility for
+// creating new charm filesystem storage instance with location and count
+// attributes.
+func (s *baseSuite) newFilesystemCharmStorageWithLocationAndCount(
+	c *tc.C, charmUUID, name, location string, countMin, countMax int,
+) {
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(
+			ctx,
+			`
+INSERT INTO charm_storage (charm_uuid, name, storage_kind_id, read_only,
+                           count_min, count_max, location, shared)
+VALUES (?, ?, 1, false, ?, ?, ?, false)
+`,
+			charmUUID, name, countMin, countMax, location,
+		)
 		if err != nil {
 			return err
 		}
@@ -507,7 +601,7 @@ VALUES (?, ?, (SELECT id FROM charm_storage_kind WHERE kind = ?), ?, 0, 10, ?)`,
 // newBlockDevice creates a new block device for the given machine.
 func (s *baseSuite) newBlockDevice(
 	c *tc.C,
-	machineUUID string,
+	machineUUID coremachine.UUID,
 	name string,
 	hardwareID string,
 	busAddress string,
@@ -516,20 +610,29 @@ func (s *baseSuite) newBlockDevice(
 	uuid := tc.Must(c, blockdevice.NewBlockDeviceUUID)
 	_, err := s.DB().Exec(
 		`INSERT INTO block_device(uuid, machine_uuid, name, hardware_id, bus_address) VALUES(?, ?, ?, ?, ?)`,
-		uuid, machineUUID, name, hardwareID, busAddress)
+		uuid, machineUUID.String(), name, hardwareID, busAddress)
 	c.Assert(err, tc.ErrorIsNil)
 	for _, deviceLink := range deviceLinks {
 		_, err := s.DB().Exec(
 			`INSERT INTO block_device_link_device(block_device_uuid, machine_uuid, name) VALUES(?, ?, ?)`,
-			uuid, machineUUID, deviceLink)
+			uuid, machineUUID.String(), deviceLink)
 		c.Assert(err, tc.ErrorIsNil)
 	}
 	return uuid
 }
 
+// newSimpleBlockDevice creates a new block device for the given machine and
+// name. This is a simplified version of [baseSuite.newBlockDevice] for when a
+// test just requires a block device to exist in the model.
+func (s *baseSuite) newSimpleBlockDevice(
+	c *tc.C, machineUUID coremachine.UUID, name string,
+) blockdevice.BlockDeviceUUID {
+	return s.newBlockDevice(c, machineUUID, name, "123", "123", nil)
+}
+
 func (s *baseSuite) changeVolumeAttachmentInfo(
 	c *tc.C,
-	uuid storageprovisioning.VolumeAttachmentUUID,
+	uuid domainstorage.VolumeAttachmentUUID,
 	blockDeviceUUID blockdevice.BlockDeviceUUID,
 	readOnly bool,
 ) {
@@ -541,8 +644,8 @@ func (s *baseSuite) changeVolumeAttachmentInfo(
 
 func (s *baseSuite) changeVolumeAttachmentPlanInfo(
 	c *tc.C,
-	uuid storageprovisioning.VolumeAttachmentPlanUUID,
-	deviceType storageprovisioning.PlanDeviceType,
+	uuid domainstorage.VolumeAttachmentPlanUUID,
+	deviceType domainstorage.VolumeDeviceType,
 	deviceAttrs map[string]string,
 ) {
 	_, err := s.DB().Exec(
@@ -563,7 +666,7 @@ func (s *baseSuite) changeVolumeAttachmentPlanInfo(
 
 func (s *baseSuite) changeVolumeInfo(
 	c *tc.C,
-	uuid storageprovisioning.VolumeUUID,
+	uuid domainstorage.VolumeUUID,
 	providerID string,
 	sizeMiB uint64,
 	hardwareID string,
@@ -578,7 +681,7 @@ func (s *baseSuite) changeVolumeInfo(
 
 func (s *baseSuite) changeVolumeProviderID(
 	c *tc.C,
-	uuid storageprovisioning.VolumeUUID,
+	uuid domainstorage.VolumeUUID,
 	providerID string,
 ) {
 	_, err := s.DB().Exec(
@@ -589,12 +692,24 @@ func (s *baseSuite) changeVolumeProviderID(
 
 func (s *baseSuite) removeVolumeWithObliterateValue(
 	c *tc.C,
-	uuid storageprovisioning.VolumeUUID,
+	uuid domainstorage.VolumeUUID,
 	obliterateValue bool,
 ) {
 	_, err := s.DB().Exec(
 		`UPDATE storage_volume SET life_id=?, obliterate_on_cleanup=? WHERE uuid=?`,
 		domainlife.Dying, obliterateValue, uuid)
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *baseSuite) newK8sPod(
+	c *tc.C,
+	unitUUID coreunit.UUID,
+	providerID string,
+) {
+	_, err := s.DB().Exec(
+		`INSERT INTO k8s_pod (unit_uuid, provider_id) VALUES(?, ?)`,
+		unitUUID.String(), providerID,
+	)
 	c.Assert(err, tc.ErrorIsNil)
 }
 

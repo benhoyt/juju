@@ -6,14 +6,15 @@ package secretbackends
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	"github.com/juju/errors"
 	"github.com/juju/gnuflag"
 
 	"github.com/juju/juju/api/client/secretbackends"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/modelcmd"
-	"github.com/juju/juju/internal/cmd"
 	_ "github.com/juju/juju/internal/secrets/provider/all"
 )
 
@@ -28,7 +29,7 @@ type updateSecretBackendCommand struct {
 	// Attributes from a file.
 	ConfigFile cmd.FileVar
 	// Attributes from key value args.
-	KeyValueAttrs map[string]interface{}
+	KeyValueAttrs map[string]any
 	Reset         []string
 }
 
@@ -131,9 +132,7 @@ func (c *updateSecretBackendCommand) Run(ctxt *cmd.Context) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	for k, v := range c.KeyValueAttrs {
-		attrs[k] = v
-	}
+	maps.Copy(attrs, c.KeyValueAttrs)
 
 	tokenRotateInterval, err := parseTokenRotate(attrs, true)
 	if err != nil {

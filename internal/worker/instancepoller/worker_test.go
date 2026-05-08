@@ -10,8 +10,8 @@ import (
 
 	"github.com/juju/clock/testclock"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/core/instance"
@@ -60,7 +60,7 @@ var (
 	testDevices = []domainnetwork.NetInterface{
 		{
 			Name:        "eth0",
-			MACAddress:  ptr("de:ad:be:ef:00:00"),
+			MACAddress:  new("de:ad:be:ef:00:00"),
 			IsAutoStart: true,
 			IsEnabled:   true,
 			Addrs: []domainnetwork.NetAddr{
@@ -692,7 +692,7 @@ func (s *workerSuite) assertWorkerCompletesLoops(c *tc.C, w *updaterWorker, numL
 	w.loopCompletedHook = func() { ch <- struct{}{} }
 	triggerFn()
 
-	for loop := 0; loop < numLoops; loop++ {
+	for range numLoops {
 		select {
 		case <-ch: // loop completed
 		case <-time.After(coretesting.ShortWait):

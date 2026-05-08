@@ -15,8 +15,8 @@ import (
 	reflect "reflect"
 
 	charm "github.com/juju/juju/core/charm"
-	charm0 "github.com/juju/juju/internal/charm"
-	resource "github.com/juju/juju/internal/charm/resource"
+	charm0 "github.com/juju/juju/domain/deployment/charm"
+	resource "github.com/juju/juju/domain/deployment/charm/resource"
 	charmhub "github.com/juju/juju/internal/charmhub"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -375,44 +375,6 @@ func (c *MockCharmArchiveConfigCall) Do(f func() *charm0.ConfigSpec) *MockCharmA
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockCharmArchiveConfigCall) DoAndReturn(f func() *charm0.ConfigSpec) *MockCharmArchiveConfigCall {
-	c.Call = c.Call.DoAndReturn(f)
-	return c
-}
-
-// LXDProfile mocks base method.
-func (m *MockCharmArchive) LXDProfile() *charm0.LXDProfile {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "LXDProfile")
-	ret0, _ := ret[0].(*charm0.LXDProfile)
-	return ret0
-}
-
-// LXDProfile indicates an expected call of LXDProfile.
-func (mr *MockCharmArchiveMockRecorder) LXDProfile() *MockCharmArchiveLXDProfileCall {
-	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LXDProfile", reflect.TypeOf((*MockCharmArchive)(nil).LXDProfile))
-	return &MockCharmArchiveLXDProfileCall{Call: call}
-}
-
-// MockCharmArchiveLXDProfileCall wrap *gomock.Call
-type MockCharmArchiveLXDProfileCall struct {
-	*gomock.Call
-}
-
-// Return rewrite *gomock.Call.Return
-func (c *MockCharmArchiveLXDProfileCall) Return(arg0 *charm0.LXDProfile) *MockCharmArchiveLXDProfileCall {
-	c.Call = c.Call.Return(arg0)
-	return c
-}
-
-// Do rewrite *gomock.Call.Do
-func (c *MockCharmArchiveLXDProfileCall) Do(f func() *charm0.LXDProfile) *MockCharmArchiveLXDProfileCall {
-	c.Call = c.Call.Do(f)
-	return c
-}
-
-// DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockCharmArchiveLXDProfileCall) DoAndReturn(f func() *charm0.LXDProfile) *MockCharmArchiveLXDProfileCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

@@ -42,6 +42,14 @@ type UnitStatusInfo[T UnitStatusID] struct {
 	Present bool
 }
 
+// MachineStatusInfo holds details about the status of a machine. This
+// indicates if the machine agent is present and currently active in the model.
+type MachineStatusInfo[T StatusID] struct {
+	StatusInfo[T]
+	// Present is true if the machine agent logged into the API server.
+	Present bool
+}
+
 // K8sPodStatusType represents the status of a cloud container
 // as recorded in the k8s_pod_status_value lookup table.
 type K8sPodStatusType int
@@ -51,6 +59,7 @@ const (
 	K8sPodStatusWaiting
 	K8sPodStatusBlocked
 	K8sPodStatusRunning
+	K8sPodStatusError
 )
 
 // EncodeK8sPodStatus encodes a K8sPodStatusType into it's integer
@@ -65,6 +74,8 @@ func EncodeK8sPodStatus(s K8sPodStatusType) (int, error) {
 		return 2, nil
 	case K8sPodStatusRunning:
 		return 3, nil
+	case K8sPodStatusError:
+		return 4, nil
 	default:
 		return -1, errors.Errorf("unknown status %d", s)
 	}
@@ -82,6 +93,8 @@ func DecodeK8sPodStatus(s int) (K8sPodStatusType, error) {
 		return K8sPodStatusBlocked, nil
 	case 3:
 		return K8sPodStatusRunning, nil
+	case 4:
+		return K8sPodStatusError, nil
 	default:
 		return -1, errors.Errorf("unknown status %d", s)
 	}
@@ -183,14 +196,14 @@ func RelationStatusTransitionValid(current, new StatusInfo[RelationStatusType]) 
 			validTransition = current.Status != RelationStatusTypeBroken
 		case RelationStatusTypeError:
 			if new.Message == "" {
-				return errors.Errorf("cannot set status %q without message", new.Status)
+				return errors.Errorf("cannot set status %v without message", new.Status)
 			}
 		default:
-			return errors.Errorf("cannot set invalid status %q", new.Status)
+			return errors.Errorf("cannot set invalid status %v", new.Status)
 		}
 		if !validTransition {
 			return errors.Errorf(
-				"cannot set status %q when relation has status %q: %w",
+				"cannot set status %v when relation has status %v: %w",
 				new.Status, current.Status, statuserrors.RelationStatusTransitionNotValid,
 			)
 		}
@@ -384,7 +397,7 @@ func EncodeMachineStatus(s MachineStatusType) (int, error) {
 	case MachineStatusDown:
 		result = 4
 	default:
-		return -1, errors.Errorf("unknown status %q", s)
+		return -1, errors.Errorf("unknown status %v", s)
 	}
 	return result, nil
 }
@@ -394,7 +407,7 @@ func EncodeMachineStatus(s MachineStatusType) (int, error) {
 type InstanceStatusType int
 
 const (
-	InstanceStatusUnset InstanceStatusType = iota
+	InstanceStatusUnknown InstanceStatusType = iota
 	InstanceStatusPending
 	InstanceStatusAllocating
 	InstanceStatusRunning
@@ -407,7 +420,7 @@ const (
 func EncodeCloudInstanceStatus(s InstanceStatusType) (int, error) {
 	var result int
 	switch s {
-	case InstanceStatusUnset:
+	case InstanceStatusUnknown:
 		result = 0
 	case InstanceStatusPending:
 		result = 1
@@ -418,7 +431,7 @@ func EncodeCloudInstanceStatus(s InstanceStatusType) (int, error) {
 	case InstanceStatusProvisioningError:
 		result = 4
 	default:
-		return -1, errors.Errorf("unknown status %q", s)
+		return -1, errors.Errorf("unknown status %v", s)
 	}
 	return result, nil
 }
@@ -430,7 +443,7 @@ func DecodeCloudInstanceStatus(s string) (InstanceStatusType, error) {
 	var result InstanceStatusType
 	switch s {
 	case "unknown", "":
-		result = InstanceStatusUnset
+		result = InstanceStatusUnknown
 	case "pending":
 		result = InstanceStatusPending
 	case "allocating":

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Troubleshoot Juju deployment issues: diagnose failures, check logs, analyze status, and resolve common errors in controllers and models."
+---
+
 (troubleshoot-your-deployment)=
 # Troubleshoot your Juju deployment
 

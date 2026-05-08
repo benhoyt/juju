@@ -20,13 +20,16 @@ import (
 func Register(registry facade.FacadeRegistry) {
 	registry.MustRegister("Uniter", 19, func(stdCtx context.Context, ctx facade.ModelContext) (facade.Facade, error) {
 		return newUniterAPIv19(stdCtx, ctx)
-	}, reflect.TypeOf((*UniterAPIv19)(nil)))
+	}, reflect.TypeFor[*UniterAPIv19]())
 	registry.MustRegister("Uniter", 20, func(stdCtx context.Context, ctx facade.ModelContext) (facade.Facade, error) {
 		return newUniterAPIv20(stdCtx, ctx)
-	}, reflect.TypeOf((*UniterAPIv20)(nil)))
+	}, reflect.TypeFor[*UniterAPIv20]())
 	registry.MustRegister("Uniter", 21, func(stdCtx context.Context, ctx facade.ModelContext) (facade.Facade, error) {
+		return newUniterAPIv21(stdCtx, ctx)
+	}, reflect.TypeFor[*UniterAPIv21]())
+	registry.MustRegister("Uniter", 22, func(stdCtx context.Context, ctx facade.ModelContext) (facade.Facade, error) {
 		return newUniterAPI(stdCtx, ctx)
-	}, reflect.TypeOf((*UniterAPI)(nil)))
+	}, reflect.TypeFor[*UniterAPI]())
 }
 
 func newUniterAPIv19(stdCtx context.Context, ctx facade.ModelContext) (*UniterAPIv19, error) {
@@ -38,11 +41,19 @@ func newUniterAPIv19(stdCtx context.Context, ctx facade.ModelContext) (*UniterAP
 }
 
 func newUniterAPIv20(stdCtx context.Context, ctx facade.ModelContext) (*UniterAPIv20, error) {
+	api, err := newUniterAPIv21(stdCtx, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &UniterAPIv20{UniterAPIv21: api}, nil
+}
+
+func newUniterAPIv21(stdCtx context.Context, ctx facade.ModelContext) (*UniterAPIv21, error) {
 	api, err := newUniterAPI(stdCtx, ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &UniterAPIv20{UniterAPI: api}, nil
+	return &UniterAPIv21{UniterAPI: api}, nil
 }
 
 // newUniterAPI creates a new instance of the core Uniter API.
@@ -58,6 +69,7 @@ func newUniterAPI(stdCtx context.Context, ctx facade.ModelContext) (*UniterAPI, 
 			StatusService:              domainServices.Status(),
 			ControllerConfigService:    domainServices.ControllerConfig(),
 			ControllerNodeService:      domainServices.ControllerNode(),
+			CrossModelRelationService:  domainServices.CrossModelRelation(),
 			MachineService:             domainServices.Machine(),
 			ModelConfigService:         domainServices.Config(),
 			ModelInfoService:           domainServices.ModelInfo(),
@@ -70,6 +82,7 @@ func newUniterAPI(stdCtx context.Context, ctx facade.ModelContext) (*UniterAPI, 
 			SecretService:              domainServices.Secret(),
 			StorageProvisioningService: domainServices.StorageProvisioning(),
 			UnitStateService:           domainServices.UnitState(),
+			TracingService:             domainServices.Tracing(),
 		},
 	)
 }
@@ -86,14 +99,6 @@ func newUniterAPIWithServices(
 	}
 	aClock := context.Clock()
 	watcherRegistry := context.WatcherRegistry()
-	leadershipChecker, err := context.LeadershipChecker()
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	leadershipRevoker, err := context.LeadershipRevoker()
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
 
 	accessUnit := unitcommon.UnitAccessor(authorizer, services.ApplicationService)
 	accessApplication := applicationAccessor(authorizer)
@@ -108,6 +113,7 @@ func newUniterAPIWithServices(
 	storageAPI, err := newStorageAPI(
 		services.BlockDeviceService,
 		services.ApplicationService,
+		services.RemovalService,
 		services.StorageProvisioningService,
 		watcherRegistry,
 		accessUnit,
@@ -122,13 +128,6 @@ func newUniterAPIWithServices(
 	)
 	logger := context.Logger().Child("uniter")
 
-	unitState := common.NewUnitStateAPI(
-		services.ControllerConfigService,
-		services.UnitStateService,
-		accessUnit,
-		logger,
-	)
-
 	extLXDProfile := NewExternalLXDProfileAPI(
 		services.MachineService,
 		watcherRegistry,
@@ -142,7 +141,6 @@ func newUniterAPIWithServices(
 	statusAPI := NewStatusAPI(
 		services.StatusService,
 		accessUnitOrApplication,
-		leadershipChecker,
 		aClock,
 	)
 
@@ -150,7 +148,6 @@ func newUniterAPIWithServices(
 		APIAddresser:       common.NewAPIAddresser(services.ControllerNodeService, watcherRegistry),
 		ModelConfigWatcher: modelConfigWatcher,
 		RebootRequester:    common.NewRebootRequester(services.MachineService, accessMachine),
-		UnitStateAPI:       unitState,
 		lxdProfileAPI:      extLXDProfile,
 		StatusAPI:          statusAPI,
 
@@ -158,8 +155,6 @@ func newUniterAPIWithServices(
 		modelType:               modelInfo.Type,
 		clock:                   aClock,
 		auth:                    authorizer,
-		leadershipChecker:       leadershipChecker,
-		leadershipRevoker:       leadershipRevoker,
 		accessUnit:              accessUnit,
 		accessApplication:       accessApplication,
 		accessUnitOrApplication: accessUnitOrApplication,
@@ -170,20 +165,23 @@ func newUniterAPIWithServices(
 		store:                   context.ObjectStore(),
 		watcherRegistry:         watcherRegistry,
 
-		applicationService:      services.ApplicationService,
-		controllerConfigService: services.ControllerConfigService,
-		machineService:          services.MachineService,
-		modelConfigService:      services.ModelConfigService,
-		modelInfoService:        services.ModelInfoService,
-		modelProviderService:    services.ModelProviderService,
-		networkService:          services.NetworkService,
-		operationService:        services.OperationService,
-		portService:             services.PortService,
-		relationService:         services.RelationService,
-		removalService:          services.RemovalService,
-		resolveService:          services.ResolveService,
-		statusService:           services.StatusService,
-		secretService:           services.SecretService,
-		unitStateService:        services.UnitStateService,
+		applicationService:        services.ApplicationService,
+		controllerConfigService:   services.ControllerConfigService,
+		controllerNodeService:     services.ControllerNodeService,
+		crossModelRelationService: services.CrossModelRelationService,
+		machineService:            services.MachineService,
+		modelConfigService:        services.ModelConfigService,
+		modelInfoService:          services.ModelInfoService,
+		modelProviderService:      services.ModelProviderService,
+		networkService:            services.NetworkService,
+		operationService:          services.OperationService,
+		portService:               services.PortService,
+		relationService:           services.RelationService,
+		removalService:            services.RemovalService,
+		resolveService:            services.ResolveService,
+		statusService:             services.StatusService,
+		secretService:             services.SecretService,
+		unitStateService:          services.UnitStateService,
+		tracingService:            services.TracingService,
 	}, nil
 }

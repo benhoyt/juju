@@ -110,7 +110,7 @@ func (b *CAASDeployer) AddCAASControllerApplication(ctx context.Context, info De
 			},
 			ApplicationStatus: &status.StatusInfo{
 				Status: status.Unset,
-				Since:  ptr(b.clock.Now()),
+				Since:  new(b.clock.Now()),
 			},
 			IsController: true,
 		},
@@ -144,7 +144,7 @@ func (d *CAASDeployer) CompleteCAASProcess(ctx context.Context) error {
 
 	// Insert the k8s service with its addresses.
 	d.logger.Debugf(ctx, "creating cloud service for k8s controller %q", providerID)
-	err = d.applicationService.UpdateCloudService(ctx, bootstrap.ControllerApplicationName, providerID, d.bootstrapAddresses)
+	err = d.applicationService.UpdateK8sService(ctx, bootstrap.ControllerApplicationName, providerID, d.bootstrapAddresses)
 	if err != nil {
 		return errors.Capture(err)
 	}

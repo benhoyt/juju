@@ -12,16 +12,16 @@ import (
 	"github.com/juju/utils/v4/keyvalues"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/model"
-	"github.com/juju/juju/internal/cmd"
 	k8sconstants "github.com/juju/juju/internal/provider/kubernetes/constants"
 )
 
 // PoolCreateAPI defines the API methods that pool create command uses.
 type PoolCreateAPI interface {
 	Close() error
-	CreatePool(ctx context.Context, pname, ptype string, pconfig map[string]interface{}) error
+	CreatePool(ctx context.Context, pname, ptype string, pconfig map[string]any) error
 }
 
 // disallowedAttrKeys defines storage attribute keys that users are not allowed to set
@@ -59,7 +59,7 @@ type poolCreateCommand struct {
 	// TODO(anastasiamac 2015-01-29) type will need to become optional
 	// if type is unspecified, use the environment's default provider type
 	provider string
-	attrs    map[string]interface{}
+	attrs    map[string]any
 }
 
 // Init implements Command.Init.
@@ -101,7 +101,7 @@ func (c *poolCreateCommand) Init(args []string) (err error) {
 		return err
 	}
 
-	c.attrs = make(map[string]interface{})
+	c.attrs = make(map[string]any)
 	if len(options) == 0 {
 		return nil
 	}

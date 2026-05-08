@@ -10,7 +10,7 @@ import (
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -49,17 +49,17 @@ func NewNetworkGetCommand(ctx Context) (_ cmd.Command, err error) {
 func (c *NetworkGetCommand) Info() *cmd.Info {
 	args := "<binding-name> [--ingress-address] [--bind-address] [--egress-subnets]"
 	doc := `
-network-get returns the network config for a given binding name. By default
+` + "`network-get`" + ` returns the network config for a given binding name. By default
 it returns the list of interfaces and associated addresses in the space for
 the binding, as well as the ingress address for the binding. If defined, any
 egress subnets are also returned.
 If one of the following flags are specified, just that value is returned.
 If more than one flag is specified, a map of values is returned.
 
-    --bind-address: the address the local unit should listen on to serve connections, as well
-                    as the address that should be advertised to its peers.
-    --ingress-address: the address the local unit should advertise as being used for incoming connections.
-    --egress-subnets: subnets (in CIDR notation) from which traffic on this relation will originate.
+ ` + "`--bind-address`" + `: the address the local unit should listen on to serve connections, as well
+                 as the address that should be advertised to its peers.
+ ` + "`--ingress-address`" + `: the address the local unit should advertise as being used for incoming connections.
+ ` + "`--egress-subnets`" + `: subnets (in CIDR notation) from which traffic on this relation will originate.
 `
 	examples := `
     network-get dbserver
@@ -71,7 +71,7 @@ If more than one flag is specified, a map of values is returned.
 	return jujucmd.Info(&cmd.Info{
 		Name:     "network-get",
 		Args:     args,
-		Purpose:  "Get network config.",
+		Purpose:  "Gets network config.",
 		Doc:      doc,
 		Examples: examples,
 	})
@@ -80,11 +80,11 @@ If more than one flag is specified, a map of values is returned.
 // SetFlags is part of the cmd.Command interface.
 func (c *NetworkGetCommand) SetFlags(f *gnuflag.FlagSet) {
 	c.out.AddFlags(f, "smart", cmd.DefaultFormatters.Formatters())
-	f.BoolVar(&c.primaryAddress, "primary-address", false, "(deprecated) get the primary address for the binding")
-	f.BoolVar(&c.bindAddress, "bind-address", false, "get the address for the binding on which the unit should listen")
-	f.BoolVar(&c.ingressAddress, "ingress-address", false, "get the ingress address for the binding")
-	f.BoolVar(&c.egressSubnets, "egress-subnets", false, "get the egress subnets for the binding")
-	f.Var(c.relationIdProxy, "r", "specify a relation by id")
+	f.BoolVar(&c.primaryAddress, "primary-address", false, "(DEPRECATED) Gets the primary address for the binding.")
+	f.BoolVar(&c.bindAddress, "bind-address", false, "Gets the address for the binding on which the unit should listen.")
+	f.BoolVar(&c.ingressAddress, "ingress-address", false, "Gets the ingress address for the binding.")
+	f.BoolVar(&c.egressSubnets, "egress-subnets", false, "Gets the egress subnets for the binding.")
+	f.Var(c.relationIdProxy, "r", "Specifies a relation by ID.")
 	f.Var(c.relationIdProxy, "relation", "")
 }
 
@@ -147,7 +147,7 @@ func (c *NetworkGetCommand) Run(ctx *cmd.Context) error {
 	}
 
 	// Write the specific articles requested.
-	keyValues := make(map[string]interface{})
+	keyValues := make(map[string]any)
 	if c.egressSubnets {
 		keyValues[egressSubnetsKey] = ni.EgressSubnets
 	}

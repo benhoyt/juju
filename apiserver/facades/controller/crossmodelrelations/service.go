@@ -28,18 +28,20 @@ type CrossModelRelationService interface {
 	// The CIDRs are added to the relation_network_ingress table.
 	AddRelationNetworkIngress(ctx context.Context, relationUUID corerelation.UUID, saasIngressAllow []string, cidrs []string) error
 
-	// AddConsumedRelation adds a new synthetic application representing
-	// the application on the consuming model, to this, the offering model.
-	// The synthetic application is used to create a relation with the
-	// provided charm.Relation from the consuming side and the offering
-	// application endpoint name in the current model.
+	// AddConsumedRelation adds a new synthetic application representing the
+	// application on the consuming model, to this, the offering model. The
+	// synthetic application is used to create a relation with the provided
+	// charm.Relation from the consuming side and the offering application
+	// endpoint name in the current model.
 	AddConsumedRelation(ctx context.Context, args crossmodelrelationservice.AddConsumedRelationArgs) error
 
-	// GetApplicationNameAndUUIDByOfferUUID returns the application name and UUID
-	// for the given offer UUID.
-	// Returns crossmodelrelationerrors.OfferNotFound if the offer or associated
-	// application is not found.
+	// GetApplicationNameAndUUIDByOfferUUID returns the application name and
+	// UUID for the given offer UUID.
 	GetApplicationNameAndUUIDByOfferUUID(ctx context.Context, offerUUID offer.UUID) (string, coreapplication.UUID, error)
+
+	// GetSyntheticApplicationUUIDByRemoteToken returns the synthetic application
+	// UUID for the given offer UUID and remote relation UUID.
+	GetSyntheticApplicationUUIDByRemoteToken(ctx context.Context, offerUUID offer.UUID, remoteRelationUUID corerelation.UUID) (coreapplication.UUID, error)
 
 	// GetOfferingApplicationToken returns the offering application token (uuid)
 	// for the given relation UUID.
@@ -53,14 +55,15 @@ type CrossModelRelationService interface {
 	// model.
 	EnsureUnitsExist(ctx context.Context, appUUID coreapplication.UUID, units []unit.Name) error
 
-	// WatchRemoteConsumedSecretsChanges watches secrets remotely consumed by any
-	// unit of the specified app and returns a watcher which notifies of secret URIs
-	// that have had a new revision added.
+	// WatchRemoteConsumedSecretsChanges watches secrets remotely consumed by
+	// any unit of the specified app and returns a watcher which notifies of
+	// secret URIs that have had a new revision added.
 	WatchRemoteConsumedSecretsChanges(ctx context.Context, appUUID coreapplication.UUID) (watcher.StringsWatcher, error)
 
 	// WatchRelationEgressNetworks watches for changes to the egress networks
-	// for the specified relation UUID. It watches changes on the relation-specific
-	// egress networks, model config (egress-subnets), and unit addresses.
+	// for the specified relation UUID. It watches changes on the
+	// relation-specific egress networks, model config (egress-subnets), and
+	// unit addresses.
 	WatchRelationEgressNetworks(ctx context.Context, relationUUID corerelation.UUID) (watcher.StringsWatcher, error)
 }
 
@@ -96,14 +99,6 @@ type StatusService interface {
 
 // RelationService provides access to relations.
 type RelationService interface {
-	// GetConsumerRelationUnitsChange returns the versions of the relation units
-	// settings and any departed units.
-	GetConsumerRelationUnitsChange(
-		context.Context,
-		corerelation.UUID,
-		coreapplication.UUID,
-	) (relation.ConsumerRelationUnitsChange, error)
-
 	// GetRelationUnits returns the current state of the relation units.
 	GetFullRelationUnitChange(
 		ctx context.Context,
@@ -115,7 +110,7 @@ type RelationService interface {
 	GetRelationDetails(ctx context.Context, relationUUID corerelation.UUID) (relation.RelationDetails, error)
 
 	// GetRelationKeyByUUID returns the relation key for the given UUID.
-	GetRelationKeyByUUID(ctx context.Context, relationUUID string) (corerelation.Key, error)
+	GetRelationKeyByUUID(ctx context.Context, relationUUID corerelation.UUID) (corerelation.Key, error)
 
 	// GetRelationLifeSuspendedStatus returns a life/suspended status change
 	// struct for a specified relation uuid.
@@ -172,11 +167,11 @@ type ApplicationService interface {
 
 // RemovalService provides the ability to remove remote relations.
 type RemovalService interface {
-	// RemoveRelation checks if a relation with the input UUID exists.
-	// If it does, the relation is guaranteed after this call to be:
+	// RemoveRelationWithRemoteConsumer checks if a relation with the input UUID
+	// exists. If it does, the relation is guaranteed after this call to be:
 	// - No longer alive.
 	// - Removed or scheduled to be removed with the input force qualification.
-	RemoveRemoteRelation(
+	RemoveRelationWithRemoteConsumer(
 		ctx context.Context, relUUID corerelation.UUID, force bool, wait time.Duration,
 	) (removal.UUID, error)
 

@@ -1,0 +1,6 @@
+// Copyright 2025 Canonical Ltd.
+// Licensed under the AGPLv3, see LICENCE file for details.
+
+package agentbinaryfetcher
+
+//go:generate go run go.uber.org/mock/mockgen -typed -package agentbinaryfetcher -destination service_mock_test.go github.com/juju/juju/internal/worker/agentbinaryfetcher ModelAgentService,AgentBinaryService

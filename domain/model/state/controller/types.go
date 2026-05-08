@@ -17,6 +17,10 @@ import (
 	"github.com/juju/juju/internal/errors"
 )
 
+type modelLife struct {
+	Life life.Life `db:"life_id"`
+}
+
 // dbModel represents the state of a model.
 type dbModel struct {
 	// Name is the human friendly name of the model.
@@ -351,4 +355,12 @@ type modelUUID struct {
 type ownerAndCloudName struct {
 	OwnerName string `db:"owner_name"`
 	CloudName string `db:"cloud_name"`
+}
+
+// dbTargetModelMigration represents a model that is being imported.
+type dbTargetModelMigration struct {
+	// UUID is the unique identifier for the migration.
+	UUID string `db:"uuid"`
+	// ModelUUID is the unique identifier for the model being imported.
+	ModelUUID string `db:"model_uuid"`
 }

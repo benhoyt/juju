@@ -12,9 +12,9 @@ import (
 
 	apisecretbackends "github.com/juju/juju/api/client/secretbackends"
 	"github.com/juju/juju/api/jujuclient"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/secretbackends"
 	"github.com/juju/juju/core/status"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/testhelpers"
 )
 
@@ -52,8 +52,8 @@ func (s *ShowSuite) TestShowYAML(c *tc.C) {
 			ID:                  "vault-id",
 			Name:                "myvault",
 			BackendType:         "vault",
-			TokenRotateInterval: ptr(666 * time.Minute),
-			Config:              map[string]interface{}{"endpoint": "http://vault"},
+			TokenRotateInterval: new(666 * time.Minute),
+			Config:              map[string]any{"endpoint": "http://vault"},
 			NumSecrets:          666,
 			Status:              status.Error,
 			Message:             "vault is sealed",

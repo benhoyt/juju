@@ -16,6 +16,7 @@ import (
 	"github.com/juju/juju/core/model"
 	coresecrets "github.com/juju/juju/core/secrets"
 	"github.com/juju/juju/core/watcher/watchertest"
+	"github.com/juju/juju/domain/secret"
 	secretservice "github.com/juju/juju/domain/secret/service"
 	backendservice "github.com/juju/juju/domain/secretbackend/service"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
@@ -111,11 +112,11 @@ func (s *secretsDrainSuite) assertGetSecretsToDrain(c *tc.C, expectedRevions ...
 	}
 	s.secretService.EXPECT().ListCharmSecretsToDrain(
 		gomock.Any(),
-		[]secretservice.CharmSecretOwner{{
-			Kind: secretservice.UnitOwner,
+		[]secret.CharmSecretOwner{{
+			Kind: secret.UnitCharmSecretOwner,
 			ID:   "mariadb/0",
 		}, {
-			Kind: secretservice.ApplicationOwner,
+			Kind: secret.ApplicationCharmSecretOwner,
 			ID:   "mariadb",
 		}}).Return([]*coresecrets.SecretMetadataForDrain{{
 		URI:       uri,
@@ -261,8 +262,8 @@ func (s *secretsDrainSuite) TestChangeSecretBackend(c *tc.C) {
 		gomock.Any(),
 		uri1, 666,
 		secretservice.ChangeSecretBackendParams{
-			Accessor: secretservice.SecretAccessor{
-				Kind: secretservice.UnitAccessor,
+			Accessor: secret.SecretAccessor{
+				Kind: secret.UnitAccessor,
 				ID:   s.authTag.Id(),
 			},
 			ValueRef: &coresecrets.ValueRef{
@@ -275,8 +276,8 @@ func (s *secretsDrainSuite) TestChangeSecretBackend(c *tc.C) {
 		gomock.Any(),
 		uri2, 888,
 		secretservice.ChangeSecretBackendParams{
-			Accessor: secretservice.SecretAccessor{
-				Kind: secretservice.UnitAccessor,
+			Accessor: secret.SecretAccessor{
+				Kind: secret.UnitAccessor,
 				ID:   s.authTag.Id(),
 			},
 			Data: map[string]string{"foo": "bar"},

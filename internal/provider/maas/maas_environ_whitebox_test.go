@@ -13,6 +13,7 @@ import (
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
 	"github.com/juju/gomaasapi/v2"
+	"github.com/juju/names/v6"
 	"github.com/juju/tc"
 	"github.com/juju/utils/v4"
 	goyaml "gopkg.in/yaml.v2"
@@ -33,6 +34,7 @@ import (
 	envtesting "github.com/juju/juju/environs/testing"
 	envtools "github.com/juju/juju/environs/tools"
 	"github.com/juju/juju/internal/cloudconfig/cloudinit"
+	internalstorage "github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/internal/testhelpers"
 	coretesting "github.com/juju/juju/internal/testing"
 	jujutesting "github.com/juju/juju/juju/testing"
@@ -494,7 +496,7 @@ func (suite *maasEnvironSuite) TestAcquireNodePassesPositiveAndNegativeTags(c *t
 	env, _ = suite.injectControllerWithSpacesAndCheck(c, nil, expected)
 	_, err := env.acquireNode(c.Context(),
 		"", "", "",
-		constraints.Value{Tags: stringslicep("tag1", "^tag2", "tag3", "^tag4")},
+		constraints.Value{Tags: &[]string{"tag1", "^tag2", "tag3", "^tag4"}},
 		nil, nil, nil,
 	)
 	c.Check(err, tc.ErrorIsNil)
@@ -535,7 +537,7 @@ func (suite *maasEnvironSuite) TestAcquireNodePassesPositiveAndNegativeSpaces(c 
 	}
 	env, _ := suite.injectControllerWithSpacesAndCheck(c, getFourSpaces(), expected)
 
-	cons := constraints.Value{Spaces: stringslicep("space-1", "^space-2", "space-3", "^space-4")}
+	cons := constraints.Value{Spaces: &[]string{"space-1", "^space-2", "space-3", "^space-4"}}
 	positiveSpaceIDs, negativeSpaceIDs, err := env.networkSpaceRequirements(c.Context(), nil, cons)
 	c.Check(err, tc.ErrorIsNil)
 
@@ -599,6 +601,71 @@ func (suite *maasEnvironSuite) TestAcquireNodeStorage(c *tc.C) {
 	}
 }
 
+// TestStartInstnaceIgnoresVolumesForNonMAASProvider tests that the MAAS start
+// instance call ignores volumes that are not for the MAAS storage provider.
+//
+// This is a regression test where previously start instance would try to
+// provision all volumes that were attached to a machine regardless of provider.
+func (suite *maasEnvironSuite) TestStartInstnaceIgnoresVolumesForNonMAASProvider(c *tc.C) {
+	var env *maasEnviron
+	suite.injectController(&fakeController{
+		allocateMachineArgsCheck: func(args gomaasapi.AllocateMachineArgs) {
+			c.Check(args.Storage, tc.DeepEquals, []gomaasapi.StorageSpec{
+				{
+					Label: "root",
+					Size:  0,
+				},
+				{
+					Label: "1",
+					Size:  1,
+				},
+			})
+		},
+		allocateMachine: newFakeMachine("Bruce Sterling", arch.HostArch(), ""),
+		allocateMachineMatches: gomaasapi.ConstraintMatches{
+			Storage: map[string][]gomaasapi.StorageDevice{
+				"root": {
+					&fakeBlockDevice{
+						name:   "sda",
+						idPath: "/dev/disk/by-dname/sda",
+						size:   250059350016,
+					},
+				},
+				"1": {
+					&fakeBlockDevice{
+						name:   "sdb",
+						idPath: "/dev/sdb",
+						size:   500059350016,
+					},
+				},
+			},
+		},
+		zones: []gomaasapi.Zone{&fakeZone{name: "foo"}},
+	})
+	suite.setupFakeTools(c)
+	env = suite.makeEnviron(c, nil)
+	params := environs.StartInstanceParams{
+		ControllerUUID:   suite.controllerUUID,
+		AvailabilityZone: "foo",
+		Constraints:      constraints.MustParse("mem=8G"),
+		Volumes: []internalstorage.VolumeParams{
+			{
+				Provider: internalstorage.ProviderType("notmaas"),
+				Tag:      tc.Must1(c, names.ParseVolumeTag, "volume-2"),
+				Size:     1024,
+			},
+			{
+				Provider: internalstorage.ProviderType("maas"),
+				Tag:      tc.Must1(c, names.ParseVolumeTag, "volume-1"),
+				Size:     1024,
+			},
+		},
+	}
+	result, err := jujutesting.StartInstanceWithParams(c, env, "1", params)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result.Instance.Id(), tc.Equals, instance.Id("Bruce Sterling"))
+}
+
 func (suite *maasEnvironSuite) TestAcquireNodeInterfaces(c *tc.C) {
 	var env *maasEnviron
 	var getNegatives func() []string
@@ -622,7 +689,7 @@ func (suite *maasEnvironSuite) TestAcquireNodeInterfaces(c *tc.C) {
 	// Add some constraints, including spaces to verify specified bindings
 	// always override any spaces constraints.
 	cons := constraints.Value{
-		Spaces: stringslicep("foo", "^bar"),
+		Spaces: &[]string{"foo", "^bar"},
 	}
 	// In the tests below Space 2 means foo, Space 3 means bar.
 	for i, test := range []struct {
@@ -1762,7 +1829,7 @@ func (suite *maasEnvironSuite) TestAllocateContainerAddressesMachinesError(c *tc
 	c.Assert(err, tc.ErrorMatches, "boom")
 }
 
-func getArgs(c *tc.C, calls []testhelpers.StubCall, callNum, argNum int) interface{} {
+func getArgs(c *tc.C, calls []testhelpers.StubCall, callNum, argNum int) any {
 	c.Assert(len(calls), tc.Not(tc.LessThan), callNum)
 	args := calls[callNum].Args
 	c.Assert(len(args), tc.Not(tc.LessThan), argNum)
@@ -2441,7 +2508,7 @@ func (suite *maasEnvironSuite) TestStartInstanceEndToEnd(c *tc.C) {
 		suite.controllerUUID,
 		"1",
 		constraints.Value{
-			ImageID: stringp("ubuntu-bf2"),
+			ImageID: new("ubuntu-bf2"),
 		})
 	c.Check(instance, tc.NotNil)
 	c.Assert(hc, tc.NotNil)

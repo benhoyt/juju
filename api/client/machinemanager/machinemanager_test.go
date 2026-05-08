@@ -15,7 +15,7 @@ import (
 
 	basemocks "github.com/juju/juju/api/base/mocks"
 	"github.com/juju/juju/api/client/machinemanager"
-	"github.com/juju/juju/internal/storage"
+	"github.com/juju/juju/core/storage"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -112,7 +112,7 @@ func (s *MachinemanagerSuite) TestAddMachinesResultCountInvalid(c *tc.C) {
 		}
 		res := new(params.AddMachinesResults)
 		var results []params.AddMachinesResult
-		for i := 0; i < n; i++ {
+		for range n {
 			results = append(results, params.AddMachinesResult{
 				Error: &params.Error{Message: "MSG", Code: "621"},
 			})

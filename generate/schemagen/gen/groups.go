@@ -5,12 +5,13 @@ package gen
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/juju/errors"
 
 	"github.com/juju/juju/apiserver/facade"
-	"github.com/juju/juju/internal/rpcreflect"
+	"github.com/juju/juju/rpc/rpcreflect"
 )
 
 // FacadeGroup defines the grouping you want to export.
@@ -168,11 +169,8 @@ func jimmFacades(facades []facade.Details) []facade.Details {
 			continue
 		}
 
-		for _, i := range versions {
-			if v.Version == i {
-				result = append(result, v)
-				break
-			}
+		if slices.Contains(versions, v.Version) {
+			result = append(result, v)
 		}
 	}
 	return result

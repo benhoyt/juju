@@ -4,6 +4,7 @@
 package podcfg
 
 import (
+	"maps"
 	"net"
 	"path"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"github.com/juju/juju/controller"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/model"
+	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/core/paths"
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/environs/config"
@@ -106,13 +108,14 @@ func (cfg *ControllerPodConfig) AgentConfig(tag names.Tag) (agent.ConfigSetterWr
 		Model:                              cfg.APIInfo.ModelTag,
 		QueryTracingEnabled:                cfg.Controller.QueryTracingEnabled(),
 		QueryTracingThreshold:              cfg.Controller.QueryTracingThreshold(),
+		DqliteBusyTimeout:                  cfg.Controller.DqliteBusyTimeout(),
 		OpenTelemetryEnabled:               cfg.Controller.OpenTelemetryEnabled(),
 		OpenTelemetryEndpoint:              cfg.Controller.OpenTelemetryEndpoint(),
 		OpenTelemetryInsecure:              cfg.Controller.OpenTelemetryInsecure(),
 		OpenTelemetryStackTraces:           cfg.Controller.OpenTelemetryStackTraces(),
 		OpenTelemetrySampleRatio:           cfg.Controller.OpenTelemetrySampleRatio(),
 		OpenTelemetryTailSamplingThreshold: cfg.Controller.OpenTelemetryTailSamplingThreshold(),
-		ObjectStoreType:                    cfg.Controller.ObjectStoreType(),
+		ObjectStoreType:                    objectstore.FileBackend,
 	}
 	return agent.NewStateMachineConfig(configParams, cfg.Bootstrap.ControllerAgentInfo)
 }
@@ -141,6 +144,13 @@ func (cfg *ControllerPodConfig) UnitAgentConfig() (agent.ConfigSetterWriter, err
 		Values:     cfg.AgentEnvironment,
 		Controller: cfg.ControllerTag,
 		Model:      cfg.APIInfo.ModelTag,
+
+		OpenTelemetryEnabled:               cfg.Controller.OpenTelemetryEnabled(),
+		OpenTelemetryEndpoint:              cfg.Controller.OpenTelemetryEndpoint(),
+		OpenTelemetryInsecure:              cfg.Controller.OpenTelemetryInsecure(),
+		OpenTelemetryStackTraces:           cfg.Controller.OpenTelemetryStackTraces(),
+		OpenTelemetrySampleRatio:           cfg.Controller.OpenTelemetrySampleRatio(),
+		OpenTelemetryTailSamplingThreshold: cfg.Controller.OpenTelemetryTailSamplingThreshold(),
 	}
 	conf, err := agent.NewAgentConfig(configParams)
 	if err != nil {
@@ -302,10 +312,8 @@ func NewBootstrapControllerPodConfig(
 	if err != nil {
 		return nil, err
 	}
-	pcfg.Controller = make(map[string]interface{})
-	for k, v := range config {
-		pcfg.Controller[k] = v
-	}
+	pcfg.Controller = make(map[string]any)
+	maps.Copy(pcfg.Controller, config)
 	pcfg.Bootstrap = &BootstrapConfig{
 		BootstrapConfig: instancecfg.BootstrapConfig{
 			StateInitializationParams: instancecfg.StateInitializationParams{
@@ -330,9 +338,7 @@ func FinishControllerPodConfig(pcfg *ControllerPodConfig, cfg *config.Config, ag
 		pcfg.AgentEnvironment = make(map[string]string)
 	}
 	pcfg.AgentEnvironment[agent.ProviderType] = cfg.Type()
-	for k, v := range agentEnvironment {
-		pcfg.AgentEnvironment[k] = v
-	}
+	maps.Copy(pcfg.AgentEnvironment, agentEnvironment)
 }
 
 // PodLabels returns the minimum set of tags that should be set on a

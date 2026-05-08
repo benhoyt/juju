@@ -6,16 +6,17 @@ package httpserver_test
 import (
 	"context"
 	"crypto/tls"
+	"maps"
 	"testing"
 	"time"
 
 	"github.com/juju/clock/testclock"
 	"github.com/juju/errors"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
-	dt "github.com/juju/worker/v4/dependency/testing"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
+	dt "github.com/juju/worker/v5/dependency/testing"
+	"github.com/juju/worker/v5/workertest"
 	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/juju/juju/apiserver/apiserverhttp"
@@ -63,7 +64,7 @@ func (s *ManifoldSuite) SetUpTest(c *tc.C) {
 	s.mux = &apiserverhttp.Mux{}
 	s.clock = testclock.NewClock(time.Now())
 	s.tlsConfig = &tls.Config{}
-	s.controllerConfig = map[string]interface{}{
+	s.controllerConfig = map[string]any{
 		"api-port":            1024,
 		"controller-api-port": 2048,
 		"api-port-open-delay": "5s",
@@ -95,16 +96,14 @@ func (s *ManifoldSuite) SetUpTest(c *tc.C) {
 	s.manifold = httpserver.Manifold(s.config)
 }
 
-func (s *ManifoldSuite) newGetter(overlay map[string]interface{}) dependency.Getter {
-	resources := map[string]interface{}{
+func (s *ManifoldSuite) newGetter(overlay map[string]any) dependency.Getter {
+	resources := map[string]any{
 		"authority":       s.authority,
 		"mux":             s.mux,
 		"api-server":      nil,
 		"domain-services": s.domainServices,
 	}
-	for k, v := range overlay {
-		resources[k] = v
-	}
+	maps.Copy(resources, overlay)
 	return dt.StubGetter(resources)
 }
 
@@ -150,7 +149,7 @@ func (s *ManifoldSuite) TestInputs(c *tc.C) {
 
 func (s *ManifoldSuite) TestMissingInputs(c *tc.C) {
 	for _, input := range expectedInputs {
-		getter := s.newGetter(map[string]interface{}{
+		getter := s.newGetter(map[string]any{
 			input: dependency.ErrMissing,
 		})
 		_, err := s.manifold.Start(c.Context(), getter)
@@ -169,14 +168,17 @@ func (s *ManifoldSuite) TestStart(c *tc.C) {
 	config := newWorkerArgs[0].(httpserver.Config)
 
 	c.Assert(config, tc.DeepEquals, httpserver.Config{
-		AgentName:       "machine-42",
-		Clock:           s.clock,
-		TLSConfig:       s.tlsConfig,
-		Mux:             s.mux,
-		APIPort:         1024,
-		MuxShutdownWait: 1 * time.Minute,
-		LogDir:          "log-dir",
-		Logger:          s.config.Logger,
+		AgentName:              "machine-42",
+		Clock:                  s.clock,
+		TLSConfig:              s.tlsConfig,
+		Mux:                    s.mux,
+		APIPort:                1024,
+		MuxShutdownWait:        1 * time.Minute,
+		LogDir:                 "log-dir",
+		Logger:                 s.config.Logger,
+		IdleConnectionTimeout:  30 * time.Second,
+		HTTPServerReadTimeout:  0 * time.Second,
+		HTTPServerWriteTimeout: 0 * time.Second,
 	})
 }
 
@@ -222,8 +224,10 @@ func (s *ManifoldSuite) TestValidate(c *tc.C) {
 		test.f(&config)
 		manifold := httpserver.Manifold(config)
 		w, err := manifold.Start(c.Context(), s.getter)
-		workertest.CheckNilOrKill(c, w)
 		c.Check(err, tc.ErrorMatches, test.expect)
+		if w != nil {
+			workertest.CleanKill(c, w)
+		}
 	}
 }
 

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Deploy on Oracle Cloud Infrastructure (OCI) with Juju, including httpsig authentication, user OCID setup, and cloud configuration."
+---
+
 (cloud-oci)=
 # The Oracle OCI cloud and Juju
 

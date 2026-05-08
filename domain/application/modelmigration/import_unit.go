@@ -6,7 +6,7 @@ package modelmigration
 import (
 	"context"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 
 	"github.com/juju/juju/core/machine"
 	coreunit "github.com/juju/juju/core/unit"
@@ -23,7 +23,7 @@ func (i *importOperation) importUnit(ctx context.Context, unit description.Unit)
 
 	var passwordHash *string
 	if hash := unit.PasswordHash(); hash != "" {
-		passwordHash = ptr(hash)
+		passwordHash = new(hash)
 	}
 
 	var principal coreunit.Name
@@ -35,16 +35,17 @@ func (i *importOperation) importUnit(ctx context.Context, unit description.Unit)
 	}
 
 	return service.ImportUnitArg{
-		UnitName:     unitName,
-		PasswordHash: passwordHash,
-		Principal:    principal,
+		UnitName:        unitName,
+		PasswordHash:    passwordHash,
+		Principal:       principal,
+		WorkloadVersion: unit.WorkloadVersion(),
 	}, nil
 }
 
-func (i *importOperation) importCAASUnit(ctx context.Context, unit description.Unit) (service.ImportUnitArg, error) {
+func (i *importOperation) importCAASUnit(ctx context.Context, unit description.Unit) (service.ImportCAASUnitArg, error) {
 	unitArgs, err := i.importUnit(ctx, unit)
 	if err != nil {
-		return service.ImportUnitArg{}, errors.Capture(err)
+		return service.ImportCAASUnitArg{}, errors.Capture(err)
 	}
 
 	var cloudContainer *application.CloudContainerParams
@@ -59,20 +60,24 @@ func (i *importOperation) importCAASUnit(ctx context.Context, unit description.U
 			cloudContainer.ProviderID = cc.ProviderId()
 		}
 		if len(cc.Ports()) > 0 {
-			cloudContainer.Ports = ptr(cc.Ports())
+			cloudContainer.Ports = new(cc.Ports())
 		}
 	}
-	unitArgs.CloudContainer = cloudContainer
 
-	return unitArgs, nil
+	return service.ImportCAASUnitArg{
+		ImportUnitArg:  unitArgs,
+		CloudContainer: cloudContainer,
+	}, nil
 }
 
-func (i *importOperation) importIAASUnit(ctx context.Context, unit description.Unit) (service.ImportUnitArg, error) {
+func (i *importOperation) importIAASUnit(ctx context.Context, unit description.Unit) (service.ImportIAASUnitArg, error) {
 	unitArgs, err := i.importUnit(ctx, unit)
 	if err != nil {
-		return service.ImportUnitArg{}, errors.Capture(err)
+		return service.ImportIAASUnitArg{}, errors.Capture(err)
 	}
 
-	unitArgs.Machine = machine.Name(unit.Machine())
-	return unitArgs, nil
+	return service.ImportIAASUnitArg{
+		ImportUnitArg: unitArgs,
+		Machine:       machine.Name(unit.Machine()),
+	}, nil
 }

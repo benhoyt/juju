@@ -5,13 +5,14 @@ package modellife
 
 import (
 	"context"
+	"maps"
 	"testing"
 
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
-	dt "github.com/juju/worker/v4/dependency/testing"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
+	dt "github.com/juju/worker/v5/dependency/testing"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 
@@ -106,9 +107,7 @@ func (s *ManifoldSuite) newGetter(c *tc.C, overlay map[string]any) dependency.Ge
 	resources := map[string]any{
 		"domainservices": s.modelService,
 	}
-	for k, v := range overlay {
-		resources[k] = v
-	}
+	maps.Copy(resources, overlay)
 	return dt.StubGetter(resources)
 }
 

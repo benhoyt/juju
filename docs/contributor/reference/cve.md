@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Navigate Juju's CVE security advisory process, from reporting vulnerabilities to private releases and embargo management."
+---
+
 (cve)=
 # CVEs
 [CVE Website]: https://www.cve.org/

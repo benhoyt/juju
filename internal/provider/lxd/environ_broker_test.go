@@ -50,7 +50,7 @@ type containerSpecMatcher struct {
 	check func(spec containerlxd.ContainerSpec) bool
 }
 
-func (m containerSpecMatcher) Matches(arg interface{}) bool {
+func (m containerSpecMatcher) Matches(arg any) bool {
 	if spec, ok := arg.(containerlxd.ContainerSpec); ok {
 		return m.check(spec)
 	}
@@ -203,6 +203,17 @@ func (s *environBrokerSuite) TestStartInstanceWithSubnetsInSpace(c *tc.C) {
 		// As the subnet IDs are map keys, the additional generated NIC
 		// indices depend on the key iteration order so we need to test
 		// both possible variants here.
+		// First check the hwaddr values. These are random with
+		// a fixed prefix.
+		for i := range 2 {
+			name := fmt.Sprintf("eth%d", i)
+			details, ok := spec.Devices[name]
+			c.Assert(ok, tc.IsTrue)
+			hwaddr := details["hwaddr"]
+			c.Assert(hwaddr, tc.HasPrefix, "00:16:3e:")
+			delete(details, "hwaddr")
+			spec.Devices[name] = details
+		}
 		matchedNICs := reflect.DeepEqual(spec.Devices, map[string]map[string]string{
 			"eno9": profileNICs["eno9"],
 			"eth0": {
@@ -630,17 +641,17 @@ func (s *environBrokerSuite) TestStartInstanceWithConstraintsAndVirtType(c *tc.C
 	c.Assert(*res.Hardware.AvailabilityZone, tc.DeepEquals, "node01")
 }
 
-func (s *environBrokerSuite) TestStartInstanceWithCharmLXDProfile(c *tc.C) {
+func (s *environBrokerSuite) TestStartInstanceWithDefaultProfiles(c *tc.C) {
 	ctrl := gomock.NewController(c)
 	defer ctrl.Finish()
 
 	svr := lxd.NewMockServer(ctrl)
 	invalidator := lxd.NewMockCredentialInvalidator(ctrl)
 
-	// Check that the lxd profile name was passed through to spec.Config.
+	// Profiles applied should be the default and the one for the model.
 	check := func(spec containerlxd.ContainerSpec) bool {
 		profiles := spec.Profiles
-		if len(profiles) != 3 {
+		if len(profiles) != 2 {
 			return false
 		}
 		if profiles[0] != "default" {
@@ -649,13 +660,21 @@ func (s *environBrokerSuite) TestStartInstanceWithCharmLXDProfile(c *tc.C) {
 		if profiles[1] != "juju-model-2d02ee" {
 			return false
 		}
-		return profiles[2] == "juju-model-2d02ee-test-0"
+		return true
 	}
 
 	exp := svr.EXPECT()
 	gomock.InOrder(
 		exp.HostArch().Return(arch.AMD64),
-		exp.FindImage(gomock.Any(), corebase.MakeDefaultBase("ubuntu", "24.04"), arch.AMD64, instance.InstanceTypeContainer, gomock.Any(), true, gomock.Any()).Return(containerlxd.SourcedImage{}, nil),
+		exp.FindImage(
+			gomock.Any(),
+			corebase.MakeDefaultBase("ubuntu", "24.04"),
+			arch.AMD64,
+			instance.InstanceTypeContainer,
+			gomock.Any(),
+			true,
+			gomock.Any(),
+		).Return(containerlxd.SourcedImage{}, nil),
 		exp.ServerVersion().Return("3.10.0"),
 		exp.GetNICsFromProfile("default").Return(s.defaultProfile.Devices, nil),
 		exp.CreateContainerFromSpec(matchesContainerSpec(check)).Return(&containerlxd.Container{
@@ -664,11 +683,8 @@ func (s *environBrokerSuite) TestStartInstanceWithCharmLXDProfile(c *tc.C) {
 		exp.HostArch().Return(arch.AMD64),
 	)
 
-	args := s.GetStartInstanceArgs(c)
-	args.CharmLXDProfiles = []string{"juju-model-2d02ee-test-0"}
-
 	env := s.NewEnviron(c, svr, nil, environscloudspec.CloudSpec{}, invalidator)
-	res, err := env.StartInstance(c.Context(), args)
+	res, err := env.StartInstance(c.Context(), s.GetStartInstanceArgs(c))
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(res, tc.NotNil)
 	c.Assert(*res.Hardware.AvailabilityZone, tc.DeepEquals, "node01")
@@ -753,7 +769,7 @@ func (s *environBrokerSuite) TestImageSourcesDefault(c *tc.C) {
 
 	s.checkSources(c, sources, []string{
 		"https://cloud-images.ubuntu.com/releases/",
-		"https://images.linuxcontainers.org",
+		"https://images.lxd.canonical.com",
 	})
 }
 
@@ -764,7 +780,7 @@ func (s *environBrokerSuite) TestImageMetadataURL(c *tc.C) {
 	svr := lxd.NewMockServer(ctrl)
 	invalidator := lxd.NewMockCredentialInvalidator(ctrl)
 
-	env := s.NewEnviron(c, svr, map[string]interface{}{
+	env := s.NewEnviron(c, svr, map[string]any{
 		"image-metadata-url": "https://my-test.com/images/",
 	}, environscloudspec.CloudSpec{}, invalidator)
 
@@ -774,7 +790,7 @@ func (s *environBrokerSuite) TestImageMetadataURL(c *tc.C) {
 	s.checkSources(c, sources, []string{
 		"https://my-test.com/images/",
 		"https://cloud-images.ubuntu.com/releases/",
-		"https://images.linuxcontainers.org",
+		"https://images.lxd.canonical.com",
 	})
 }
 
@@ -786,7 +802,7 @@ func (s *environBrokerSuite) TestImageMetadataURLEnsuresHTTPS(c *tc.C) {
 	invalidator := lxd.NewMockCredentialInvalidator(ctrl)
 
 	// HTTP should be converted to HTTPS.
-	env := s.NewEnviron(c, svr, map[string]interface{}{
+	env := s.NewEnviron(c, svr, map[string]any{
 		"image-metadata-url": "http://my-test.com/images/",
 	}, environscloudspec.CloudSpec{}, invalidator)
 
@@ -796,7 +812,7 @@ func (s *environBrokerSuite) TestImageMetadataURLEnsuresHTTPS(c *tc.C) {
 	s.checkSources(c, sources, []string{
 		"https://my-test.com/images/",
 		"https://cloud-images.ubuntu.com/releases/",
-		"https://images.linuxcontainers.org",
+		"https://images.lxd.canonical.com",
 	})
 }
 
@@ -807,7 +823,7 @@ func (s *environBrokerSuite) TestImageStreamReleased(c *tc.C) {
 	svr := lxd.NewMockServer(ctrl)
 	invalidator := lxd.NewMockCredentialInvalidator(ctrl)
 
-	env := s.NewEnviron(c, svr, map[string]interface{}{
+	env := s.NewEnviron(c, svr, map[string]any{
 		"image-stream": "released",
 	}, environscloudspec.CloudSpec{}, invalidator)
 
@@ -816,7 +832,7 @@ func (s *environBrokerSuite) TestImageStreamReleased(c *tc.C) {
 
 	s.checkSources(c, sources, []string{
 		"https://cloud-images.ubuntu.com/releases/",
-		"https://images.linuxcontainers.org",
+		"https://images.lxd.canonical.com",
 	})
 }
 
@@ -827,7 +843,7 @@ func (s *environBrokerSuite) TestImageStreamDaily(c *tc.C) {
 	svr := lxd.NewMockServer(ctrl)
 	invalidator := lxd.NewMockCredentialInvalidator(ctrl)
 
-	env := s.NewEnviron(c, svr, map[string]interface{}{
+	env := s.NewEnviron(c, svr, map[string]any{
 		"image-stream": "daily",
 	}, environscloudspec.CloudSpec{}, invalidator)
 
@@ -836,7 +852,7 @@ func (s *environBrokerSuite) TestImageStreamDaily(c *tc.C) {
 
 	s.checkSources(c, sources, []string{
 		"https://cloud-images.ubuntu.com/daily/",
-		"https://images.linuxcontainers.org",
+		"https://images.lxd.canonical.com",
 	})
 }
 

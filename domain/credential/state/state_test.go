@@ -9,13 +9,13 @@ import (
 	"regexp"
 	stdtesting "testing"
 
+	"github.com/juju/clock"
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/cloud"
 	corecredential "github.com/juju/juju/core/credential"
 	coreerrors "github.com/juju/juju/core/errors"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
@@ -543,7 +543,7 @@ func (s *credentialSuite) TestGetCloudCredentialNonExistent(c *tc.C) {
 func (s *credentialSuite) addOwner(c *tc.C, name user.Name) user.UUID {
 	userUUID, err := user.NewUUID()
 	c.Assert(err, tc.ErrorIsNil)
-	userState := userstate.NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+	userState := userstate.NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
 	err = userState.AddUserWithPermission(
 		c.Context(),
 		userUUID,
@@ -617,7 +617,7 @@ SELECT ?, ?, ?, 0, 0, true,
 		return nil
 	}
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		if err := insertOne(ctx, tx, modelUUID, "mymodel"); err != nil {
 			return err
@@ -641,7 +641,7 @@ SELECT ?, ?, ?, 0, 0, true,
 func (s *credentialSuite) TestInvalidateModelCloudCredentialNotFound(c *tc.C) {
 	st := NewState(s.TxnRunnerFactory())
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	err := st.InvalidateModelCloudCredential(c.Context(), modelUUID, "test reason")
 	c.Check(err, tc.ErrorIs, modelerrors.NotFound)
 }
@@ -677,7 +677,7 @@ SELECT ?, ?, ?, 0, 0, true,
 		return nil
 	}
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		if err := insertOne(ctx, tx, modelUUID, "mymodel"); err != nil {
 			return err
@@ -695,7 +695,7 @@ SELECT ?, ?, ?, 0, 0, true,
 // error satisfying [modelerrors.NotFound].
 func (s *credentialSuite) TestGetmodelCredentialStatusNotFound(c *tc.C) {
 	st := NewState(s.TxnRunnerFactory())
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	_, _, err := st.GetModelCredentialStatus(c.Context(), modelUUID)
 	c.Check(err, tc.ErrorIs, modelerrors.NotFound)
 }
@@ -729,7 +729,7 @@ SELECT ?, ?, ?, 0, 0, true,
 		return nil
 	}
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		if err := insertOne(ctx, tx, modelUUID, "mymodel"); err != nil {
 			return err
@@ -772,7 +772,7 @@ SELECT ?, ?, ?, 0, 0, true,
 		return nil
 	}
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		if err := insertOne(ctx, tx, modelUUID, "mymodel"); err != nil {
 			return err
@@ -821,7 +821,7 @@ SELECT ?, ?, ?, 0, 0, true,
 		return nil
 	}
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		if err := insertOne(ctx, tx, modelUUID, "mymodel"); err != nil {
 			return err

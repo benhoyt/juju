@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Set up MicroK8s cloud with Juju for localhost Kubernetes deployments, including snap installation and required service configuration."
+---
+
 (cloud-kubernetes-microk8s)=
 # The MicroK8s cloud and Juju
 

@@ -142,3 +142,41 @@ func (c *MockImportServiceAddPublicKeysForUserCall) DoAndReturn(f func(context.C
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
+
+// DeleteKeysForModel mocks base method.
+func (m *MockImportService) DeleteKeysForModel(arg0 context.Context) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteKeysForModel", arg0)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteKeysForModel indicates an expected call of DeleteKeysForModel.
+func (mr *MockImportServiceMockRecorder) DeleteKeysForModel(arg0 any) *MockImportServiceDeleteKeysForModelCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteKeysForModel", reflect.TypeOf((*MockImportService)(nil).DeleteKeysForModel), arg0)
+	return &MockImportServiceDeleteKeysForModelCall{Call: call}
+}
+
+// MockImportServiceDeleteKeysForModelCall wrap *gomock.Call
+type MockImportServiceDeleteKeysForModelCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockImportServiceDeleteKeysForModelCall) Return(arg0 error) *MockImportServiceDeleteKeysForModelCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockImportServiceDeleteKeysForModelCall) Do(f func(context.Context) error) *MockImportServiceDeleteKeysForModelCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockImportServiceDeleteKeysForModelCall) DoAndReturn(f func(context.Context) error) *MockImportServiceDeleteKeysForModelCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}

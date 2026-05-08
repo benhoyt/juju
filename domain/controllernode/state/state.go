@@ -178,10 +178,12 @@ WHERE controller_id = $controllerNodeAgentVersion.controller_id
 		return errors.Capture(err)
 	}
 
+	// We only update the version on upsert because there will never be a time
+	// the same controller node will change its architecture.
 	upsertControllerNodeAgentVerStmt, err := st.Prepare(`
 INSERT INTO controller_node_agent_version (*) VALUES ($controllerNodeAgentVersion.*)
 ON CONFLICT (controller_id) DO
-UPDATE SET version = excluded.version, architecture_id = excluded.architecture_id
+UPDATE SET version = excluded.version
 `, controllerNodeAgentVer)
 	if err != nil {
 		return errors.Capture(err)

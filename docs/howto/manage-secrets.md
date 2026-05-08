@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn to add, view, update, grant, revoke, and remove secrets in Juju for managing API keys, credentials, and sensitive application data."
+---
+
 (manage-secrets)=
 # How to manage secrets
 

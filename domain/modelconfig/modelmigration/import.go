@@ -7,7 +7,7 @@ import (
 	"context"
 
 	"github.com/juju/collections/set"
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 
 	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/logger"
@@ -15,6 +15,7 @@ import (
 	"github.com/juju/juju/domain/modelconfig/service"
 	"github.com/juju/juju/domain/modelconfig/state"
 	"github.com/juju/juju/environs/config"
+	"github.com/juju/juju/internal/configschema"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -43,6 +44,9 @@ type ImportService interface {
 		ctx context.Context,
 		cfg map[string]any,
 	) error
+
+	// GetModelConfigSchema returns the schema for the model config.
+	GetModelConfigSchemaForCloudType(ctx context.Context, cloudType string) (configschema.Fields, error)
 }
 
 type importOperation struct {
@@ -63,10 +67,12 @@ func (i *importOperation) Name() string {
 func (i *importOperation) Setup(scope modelmigration.Scope) error {
 	// We must not use a watcher during migration, so it's safe to pass a
 	// nil watcher factory.
+	st := state.NewState(scope.ModelDB())
 	i.service = service.NewService(
 		i.defaultsProvider,
 		config.NoControllerAttributesValidator(),
-		state.NewState(scope.ModelDB()))
+		service.ProviderModelConfigGetter(),
+		st)
 	return nil
 }
 
@@ -80,20 +86,25 @@ func (i *importOperation) Execute(ctx context.Context, model description.Model) 
 		return errors.Errorf("model config %w", coreerrors.NotValid)
 	}
 
+	cloudType, ok := attrs[config.TypeKey].(string)
+	if !ok {
+		return errors.Errorf("model config missing cloud type").Add(coreerrors.NotValid)
+	}
+
 	// Models imported from older controllers may contain config attributes
-	// which have since been removed from use. We filter these out by removing
-	// any incoming attributes not in the default list.
-	defaults, err := i.defaultsProvider.ModelDefaults(ctx)
+	// which have since been removed from use. Filter these out using the
+	// schema.
+	schema, err := i.service.GetModelConfigSchemaForCloudType(ctx, cloudType)
 	if err != nil {
 		return errors.Capture(err)
 	}
-	defaultAttrs := set.NewStrings()
-	for k := range defaults {
-		defaultAttrs.Add(k)
+	schemaAttrs := set.NewStrings()
+	for k := range schema {
+		schemaAttrs.Add(k)
 	}
 
 	for k, v := range attrs {
-		if !defaultAttrs.Contains(k) {
+		if !schemaAttrs.Contains(k) {
 			i.logger.Debugf(ctx, "model config attribute %s=%v is removed on import", k, v)
 			delete(attrs, k)
 		}

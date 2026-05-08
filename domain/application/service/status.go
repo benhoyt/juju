@@ -13,7 +13,8 @@ import (
 	"github.com/juju/juju/internal/statushistory"
 )
 
-// StatusHistory records status information into a generalized way.
+// StatusHistory records the status of a juju entity to display as its
+// status history when requested.
 type StatusHistory interface {
 	// RecordStatus records the given status information.
 	// If the status data cannot be marshalled, it will not be recorded, instead
@@ -33,6 +34,8 @@ func encodeK8sPodStatusType(s corestatus.Status) (status.K8sPodStatusType, error
 		return status.K8sPodStatusBlocked, nil
 	case corestatus.Running:
 		return status.K8sPodStatusRunning, nil
+	case corestatus.Error:
+		return status.K8sPodStatusError, nil
 	default:
 		return -1, errors.Errorf("unknown cloud container status %q", s)
 	}
@@ -79,7 +82,7 @@ func decodeUnitAgentStatusType(s status.UnitAgentStatusType) (corestatus.Status,
 	case status.UnitAgentStatusRebooting:
 		return corestatus.Rebooting, nil
 	default:
-		return "", errors.Errorf("unknown agent status %q", s)
+		return "", errors.Errorf("unknown agent status %v", s)
 	}
 }
 
@@ -129,7 +132,7 @@ func decodeWorkloadStatusType(s status.WorkloadStatusType) (corestatus.Status, e
 	case status.WorkloadStatusError:
 		return corestatus.Error, nil
 	default:
-		return "", errors.Errorf("unknown workload status %q", s)
+		return "", errors.Errorf("unknown workload status %v", s)
 	}
 }
 
@@ -231,7 +234,7 @@ func decodeUnitAgentStatus(s *status.UnitStatusInfo[status.UnitAgentStatusType])
 		return nil, err
 	}
 
-	var data map[string]interface{}
+	var data map[string]any
 	if len(s.Data) > 0 {
 		if err := json.Unmarshal(s.Data, &data); err != nil {
 			return nil, errors.Errorf("unmarshalling status data: %w", err)
@@ -302,7 +305,7 @@ func decodeUnitWorkloadStatus(s *status.UnitStatusInfo[status.WorkloadStatusType
 		return nil, err
 	}
 
-	var data map[string]interface{}
+	var data map[string]any
 	if len(s.Data) > 0 {
 		if err := json.Unmarshal(s.Data, &data); err != nil {
 			return nil, errors.Errorf("unmarshalling status data: %w", err)

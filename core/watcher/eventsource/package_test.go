@@ -51,7 +51,7 @@ func (*ImportTest) TestImports(c *tc.C) {
 		"core/unit",
 		"core/user",
 		"core/watcher",
-		"internal/charm/resource",
+		"domain/deployment/charm/resource",
 		"internal/errors",
 		"internal/logger",
 		"internal/uuid",
@@ -98,7 +98,7 @@ type subscriptionOptionMatcher struct {
 
 // Matches returns true if the argument is a changestream.SubscriptionOption,
 // and its namespace and mask match those of our member.
-func (m subscriptionOptionMatcher) Matches(arg interface{}) bool {
+func (m subscriptionOptionMatcher) Matches(arg any) bool {
 	optArg, ok := arg.(changestream.SubscriptionOption)
 	if !ok {
 		return false

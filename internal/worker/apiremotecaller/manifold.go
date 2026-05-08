@@ -8,8 +8,8 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
 
 	coreagent "github.com/juju/juju/agent"
 	"github.com/juju/juju/api"
@@ -25,6 +25,25 @@ type APIRemoteCallers interface {
 	// that the connection is still valid. The caller must not cache the
 	// connections as they may change over time.
 	GetAPIRemotes() ([]RemoteConnection, error)
+}
+
+// APIRemoteSubscriber is an interface that represents a subscriber to changes
+// in the set of API remotes.
+type APIRemoteSubscriber interface {
+	APIRemoteCallers
+
+	// Subscribe subscribes to changes in the set of API remotes.
+	Subscribe() (Subscription, error)
+}
+
+// Subscription represents a subscription to changes in the set of API remotes.
+type Subscription interface {
+	// Changes returns a channel that signals when the set of API remotes has
+	// changed.
+	Changes() <-chan struct{}
+
+	// Close closes the subscription.
+	Close()
 }
 
 // ManifoldConfig defines the names of the manifolds on which a Manifold will
@@ -108,7 +127,7 @@ func Manifold(config ManifoldConfig) dependency.Manifold {
 	}
 }
 
-func remoteOutput(in worker.Worker, out interface{}) error {
+func remoteOutput(in worker.Worker, out any) error {
 	if w, ok := in.(*common.CleanupWorker); ok {
 		in = w.Worker
 	}
@@ -121,8 +140,11 @@ func remoteOutput(in worker.Worker, out interface{}) error {
 	case *APIRemoteCallers:
 		var target APIRemoteCallers = w
 		*out = target
+	case *APIRemoteSubscriber:
+		var target APIRemoteSubscriber = w
+		*out = target
 	default:
-		return errors.Errorf("expected output of APIRemoteCallers, got %T", out)
+		return errors.Errorf("expected output of APIRemoteCallers or APIRemoteSubscriber, got %T", out)
 	}
 	return nil
 }

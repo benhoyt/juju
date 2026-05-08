@@ -133,7 +133,7 @@ func (s *storageSuite) TestCreateFilesystems(c *tc.C) {
 		ResourceTags: map[string]string{
 			"key": "value",
 		},
-		Attributes: map[string]interface{}{
+		Attributes: map[string]any{
 			"lxd-pool": "radiance",
 			"driver":   "btrfs",
 		},
@@ -169,7 +169,7 @@ func (s *storageSuite) TestCreateFilesystemsPoolExists(c *tc.C) {
 		ResourceTags: map[string]string{
 			"key": "value",
 		},
-		Attributes: map[string]interface{}{
+		Attributes: map[string]any{
 			"lxd-pool": "radiance",
 			"driver":   "dir",
 		},
@@ -208,7 +208,7 @@ func (s *storageSuite) TestCreateFilesystemsInvalidCredentials(c *tc.C) {
 		ResourceTags: map[string]string{
 			"key": "value",
 		},
-		Attributes: map[string]interface{}{
+		Attributes: map[string]any{
 			"lxd-pool": "radiance",
 			"driver":   "btrfs",
 		},
@@ -236,8 +236,8 @@ func (s *storageSuite) TestDestroyFilesystems(c *tc.C) {
 	c.Check(results[2], tc.ErrorMatches, "boom")
 
 	s.Stub.CheckCalls(c, []testhelpers.StubCall{
-		{FuncName: "DeleteStoragePoolVolume", Args: []interface{}{"pool0", "custom", "filesystem-0"}},
-		{FuncName: "DeleteStoragePoolVolume", Args: []interface{}{"pool1", "custom", "filesystem-1"}},
+		{FuncName: "DeleteStoragePoolVolume", Args: []any{"pool0", "custom", "filesystem-0"}},
+		{FuncName: "DeleteStoragePoolVolume", Args: []any{"pool1", "custom", "filesystem-1"}},
 	})
 }
 
@@ -298,10 +298,10 @@ func (s *storageSuite) TestReleaseFilesystems(c *tc.C) {
 	}
 
 	s.Stub.CheckCalls(c, []testhelpers.StubCall{
-		{FuncName: "GetStoragePoolVolume", Args: []interface{}{"foo", "custom", "filesystem-0"}},
-		{FuncName: "UpdateStoragePoolVolume", Args: []interface{}{"foo", "custom", "filesystem-0", update0, "eTag"}},
-		{FuncName: "GetStoragePoolVolume", Args: []interface{}{"foo", "custom", "filesystem-1"}},
-		{FuncName: "UpdateStoragePoolVolume", Args: []interface{}{"foo", "custom", "filesystem-1", update1, "eTag"}},
+		{FuncName: "GetStoragePoolVolume", Args: []any{"foo", "custom", "filesystem-0"}},
+		{FuncName: "UpdateStoragePoolVolume", Args: []any{"foo", "custom", "filesystem-0", update0, "eTag"}},
+		{FuncName: "GetStoragePoolVolume", Args: []any{"foo", "custom", "filesystem-1"}},
+		{FuncName: "UpdateStoragePoolVolume", Args: []any{"foo", "custom", "filesystem-1", update1, "eTag"}},
 	})
 }
 
@@ -321,7 +321,7 @@ func (s *storageSuite) TestReleaseFilesystemsInvalidCredentials(c *tc.C) {
 	c.Check(results[0], tc.ErrorMatches, "not authorized")
 
 	s.Stub.CheckCalls(c, []testhelpers.StubCall{
-		{FuncName: "GetStoragePoolVolume", Args: []interface{}{"foo", "custom", "filesystem-0"}},
+		{FuncName: "GetStoragePoolVolume", Args: []any{"foo", "custom", "filesystem-0"}},
 	})
 }
 
@@ -348,9 +348,9 @@ func (s *storageSuite) TestAttachFilesystems(c *tc.C) {
 			InstanceId: "inst-0",
 			ReadOnly:   true,
 		},
-		Filesystem: names.NewFilesystemTag("0"),
-		ProviderId: "pool:filesystem-0",
-		Path:       "/mnt/path",
+		Filesystem:           names.NewFilesystemTag("0"),
+		FilesystemProviderId: "pool:filesystem-0",
+		Path:                 "/mnt/path",
 	}, {
 		AttachmentParams: storage.AttachmentParams{
 			Provider:   "lxd",
@@ -358,18 +358,18 @@ func (s *storageSuite) TestAttachFilesystems(c *tc.C) {
 			InstanceId: "inst-0",
 			ReadOnly:   true,
 		},
-		Filesystem: names.NewFilesystemTag("1"),
-		ProviderId: "pool:filesystem-1",
-		Path:       "/mnt/socio",
+		Filesystem:           names.NewFilesystemTag("1"),
+		FilesystemProviderId: "pool:filesystem-1",
+		Path:                 "/mnt/socio",
 	}, {
 		AttachmentParams: storage.AttachmentParams{
 			Provider:   "lxd",
 			Machine:    names.NewMachineTag("42"),
 			InstanceId: "inst-42",
 		},
-		Filesystem: names.NewFilesystemTag("2"),
-		ProviderId: "pool:filesystem-2",
-		Path:       "/mnt/psycho",
+		Filesystem:           names.NewFilesystemTag("2"),
+		FilesystemProviderId: "pool:filesystem-2",
+		Path:                 "/mnt/psycho",
 	}})
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results, tc.HasLen, 3)
@@ -394,10 +394,10 @@ func (s *storageSuite) TestAttachFilesystems(c *tc.C) {
 	// container as config.
 	s.Stub.CheckCalls(c, []testhelpers.StubCall{{
 		FuncName: "AliveContainers",
-		Args:     []interface{}{"juju-f75cba-"},
+		Args:     []any{"juju-f75cba-"},
 	}, {
 		FuncName: "WriteContainer",
-		Args:     []interface{}{&s.Client.Containers[0]},
+		Args:     []any{&s.Client.Containers[0]},
 	}})
 }
 
@@ -428,9 +428,9 @@ func (s *storageSuite) TestAttachFilesystemsInvalidCredentialsInstanceError(c *t
 			InstanceId: "inst-0",
 			ReadOnly:   true,
 		},
-		Filesystem: names.NewFilesystemTag("0"),
-		ProviderId: "pool:filesystem-0",
-		Path:       "/mnt/path",
+		Filesystem:           names.NewFilesystemTag("0"),
+		FilesystemProviderId: "pool:filesystem-0",
+		Path:                 "/mnt/path",
 	}})
 	c.Assert(err, tc.ErrorMatches, "not authorized")
 	c.Assert(results, tc.HasLen, 0)
@@ -463,9 +463,9 @@ func (s *storageSuite) TestAttachFilesystemsInvalidCredentialsAttachingFilesyste
 			InstanceId: "inst-0",
 			ReadOnly:   true,
 		},
-		Filesystem: names.NewFilesystemTag("0"),
-		ProviderId: "pool:filesystem-0",
-		Path:       "/mnt/path",
+		Filesystem:           names.NewFilesystemTag("0"),
+		FilesystemProviderId: "pool:filesystem-0",
+		Path:                 "/mnt/path",
 	}})
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results, tc.HasLen, 1)
@@ -495,24 +495,24 @@ func (s *storageSuite) TestDetachFilesystems(c *tc.C) {
 			Machine:    names.NewMachineTag("123"),
 			InstanceId: "inst-0",
 		},
-		Filesystem: names.NewFilesystemTag("0"),
-		ProviderId: "pool:filesystem-0",
+		Filesystem:           names.NewFilesystemTag("0"),
+		FilesystemProviderId: "pool:filesystem-0",
 	}, {
 		AttachmentParams: storage.AttachmentParams{
 			Provider:   "lxd",
 			Machine:    names.NewMachineTag("123"),
 			InstanceId: "inst-0",
 		},
-		Filesystem: names.NewFilesystemTag("1"),
-		ProviderId: "pool:filesystem-1",
+		Filesystem:           names.NewFilesystemTag("1"),
+		FilesystemProviderId: "pool:filesystem-1",
 	}, {
 		AttachmentParams: storage.AttachmentParams{
 			Provider:   "lxd",
 			Machine:    names.NewMachineTag("42"),
 			InstanceId: "inst-42",
 		},
-		Filesystem: names.NewFilesystemTag("2"),
-		ProviderId: "pool:filesystem-2",
+		Filesystem:           names.NewFilesystemTag("2"),
+		FilesystemProviderId: "pool:filesystem-2",
 	}})
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results, tc.HasLen, 3)
@@ -524,13 +524,13 @@ func (s *storageSuite) TestDetachFilesystems(c *tc.C) {
 	// ensure it represents the removed device.
 	s.Stub.CheckCalls(c, []testhelpers.StubCall{{
 		FuncName: "AliveContainers",
-		Args:     []interface{}{"juju-f75cba-"},
+		Args:     []any{"juju-f75cba-"},
 	}, {
 		FuncName: "WriteContainer",
-		Args:     []interface{}{&s.Client.Containers[0]},
+		Args:     []any{&s.Client.Containers[0]},
 	}, {
 		FuncName: "WriteContainer",
-		Args:     []interface{}{&s.Client.Containers[0]},
+		Args:     []any{&s.Client.Containers[0]},
 	}})
 }
 
@@ -548,8 +548,8 @@ func (s *storageSuite) TestDetachFilesystemsInvalidCredentialsInstanceErrors(c *
 			Machine:    names.NewMachineTag("123"),
 			InstanceId: "inst-0",
 		},
-		Filesystem: names.NewFilesystemTag("0"),
-		ProviderId: "pool:filesystem-0",
+		Filesystem:           names.NewFilesystemTag("0"),
+		FilesystemProviderId: "pool:filesystem-0",
 	}})
 	c.Assert(err, tc.ErrorMatches, "not authorized")
 	c.Assert(results, tc.HasLen, 0)
@@ -581,8 +581,8 @@ func (s *storageSuite) TestDetachFilesystemsInvalidCredentialsDetachFilesystem(c
 			Machine:    names.NewMachineTag("123"),
 			InstanceId: "inst-0",
 		},
-		Filesystem: names.NewFilesystemTag("0"),
-		ProviderId: "pool:filesystem-0",
+		Filesystem:           names.NewFilesystemTag("0"),
+		FilesystemProviderId: "pool:filesystem-0",
 	}})
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results, tc.HasLen, 1)
@@ -605,10 +605,13 @@ func (s *storageSuite) TestImportFilesystem(c *tc.C) {
 		}},
 	}
 
-	info, err := importer.ImportFilesystem(c.Context(),
-		"foo:bar", map[string]string{
-			"baz": "qux",
-		})
+	info, err := importer.ImportFilesystem(
+		c.Context(),
+		"foo:bar",
+		"mydata",
+		map[string]string{"baz": "qux"},
+		false,
+	)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(info, tc.DeepEquals, storage.FilesystemInfo{
 		ProviderId: "foo:bar",
@@ -622,8 +625,8 @@ func (s *storageSuite) TestImportFilesystem(c *tc.C) {
 		},
 	}
 	s.Stub.CheckCalls(c, []testhelpers.StubCall{
-		{FuncName: "GetStoragePoolVolume", Args: []interface{}{"foo", "custom", "bar"}},
-		{FuncName: "UpdateStoragePoolVolume", Args: []interface{}{"foo", "custom", "bar", update, "eTag"}},
+		{FuncName: "GetStoragePoolVolume", Args: []any{"foo", "custom", "bar"}},
+		{FuncName: "UpdateStoragePoolVolume", Args: []any{"foo", "custom", "bar", update, "eTag"}},
 	})
 }
 
@@ -638,10 +641,15 @@ func (s *storageSuite) TestImportFilesystemInvalidCredentialsGetPool(c *tc.C) {
 	c.Assert(source, tc.Implements, new(storage.FilesystemImporter))
 	importer := source.(storage.FilesystemImporter)
 
-	info, err := importer.ImportFilesystem(c.Context(),
-		"foo:bar", map[string]string{
+	info, err := importer.ImportFilesystem(
+		c.Context(),
+		"foo:bar",
+		"mydata",
+		map[string]string{
 			"baz": "qux",
-		})
+		},
+		false,
+	)
 	c.Assert(err, tc.ErrorMatches, ".*not authorized")
 	c.Assert(info, tc.DeepEquals, storage.FilesystemInfo{})
 }
@@ -666,10 +674,15 @@ func (s *storageSuite) TestImportFilesystemInvalidCredentialsUpdatePool(c *tc.C)
 		}},
 	}
 
-	info, err := importer.ImportFilesystem(c.Context(),
-		"foo:bar", map[string]string{
+	info, err := importer.ImportFilesystem(
+		c.Context(),
+		"foo:bar",
+		"mydata",
+		map[string]string{
 			"baz": "qux",
-		})
+		},
+		false,
+	)
 	c.Assert(err, tc.ErrorMatches, ".*not authorized")
 	c.Assert(info, tc.DeepEquals, storage.FilesystemInfo{})
 }

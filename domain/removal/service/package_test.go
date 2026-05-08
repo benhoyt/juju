@@ -10,7 +10,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	provider "github.com/juju/juju/internal/secrets/provider"
 	"github.com/juju/juju/internal/testhelpers"
@@ -55,7 +54,7 @@ func (s *baseSuite) newService(c *tc.C) *Service {
 func (s *baseSuite) setupMocks(c *tc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 
-	s.modelUUID = modeltesting.GenModelUUID(c)
+	s.modelUUID = tc.Must0(c, model.NewUUID)
 
 	s.controllerState = NewMockControllerDBState(ctrl)
 	s.modelState = NewMockModelDBState(ctrl)

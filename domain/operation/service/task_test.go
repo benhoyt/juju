@@ -13,6 +13,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	coreerrors "github.com/juju/juju/core/errors"
+	"github.com/juju/juju/core/objectstore"
 	corestatus "github.com/juju/juju/core/status"
 	"github.com/juju/juju/domain/operation"
 	operationerrors "github.com/juju/juju/domain/operation/errors"
@@ -87,7 +88,7 @@ func (s *serviceSuite) TestGetPendingTaskByTaskID(c *tc.C) {
 		TaskInfo: operation.TaskInfo{
 			ID:         taskID,
 			ActionName: "fortune",
-			Parameters: map[string]interface{}{
+			Parameters: map[string]any{
 				"key": "value",
 			},
 			Status: corestatus.Pending,
@@ -98,7 +99,7 @@ func (s *serviceSuite) TestGetPendingTaskByTaskID(c *tc.C) {
 
 	expectedTaskArgs := operation.TaskArgs{
 		ActionName: "fortune",
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"key": "value",
 		},
 	}
@@ -196,7 +197,10 @@ func (s *serviceSuite) TestGetTaskWithOutput(c *tc.C) {
 	s.state.EXPECT().GetTask(gomock.Any(), taskID).Return(expectedTask, &outputPath, nil)
 	s.mockObjectStoreGetter.EXPECT().GetObjectStore(gomock.Any()).Return(s.mockObjectStore, nil)
 	s.mockObjectStore.EXPECT().Get(gomock.Any(), outputPath).Return(
-		io.NopCloser(strings.NewReader(outputJSON)), int64(len(outputJSON)), nil)
+		io.NopCloser(strings.NewReader(outputJSON)), objectstore.Digest{
+			SHA256: "fab5b76e7c234d9c929014d46ef0a5db9c8b6e9fd63bdc3ba9c2b903471bc77e",
+			Size:   int64(len(outputJSON)),
+		}, nil)
 
 	task, err := s.service(c).GetTask(c.Context(), taskID)
 	c.Assert(err, tc.IsNil)
@@ -289,7 +293,7 @@ func (s *serviceSuite) TestFinishTask(c *tc.C) {
 		TaskID:  taskID,
 		Message: "done",
 		Status:  corestatus.Completed.String(),
-		Results: map[string]interface{}{"foo": "bar"},
+		Results: map[string]any{"foo": "bar"},
 	}
 
 	// Act
@@ -382,7 +386,7 @@ func (s *serviceSuite) TestFinishTaskError(c *tc.C) {
 		TaskID:  taskID,
 		Message: "done",
 		Status:  corestatus.Completed.String(),
-		Results: map[string]interface{}{"foo": "bar"},
+		Results: map[string]any{"foo": "bar"},
 	}
 
 	// Act
@@ -398,7 +402,7 @@ func (s *serviceSuite) TestFinishTaskInputStatusNotValid(c *tc.C) {
 		TaskID:  "42",
 		Message: "done",
 		Status:  corestatus.Pending.String(),
-		Results: map[string]interface{}{"foo": "bar"},
+		Results: map[string]any{"foo": "bar"},
 	}
 
 	// Act
@@ -435,7 +439,7 @@ func (s *serviceSuite) TestFinishTaskFailStorePut(c *tc.C) {
 		TaskID:  taskID,
 		Message: "done",
 		Status:  corestatus.Completed.String(),
-		Results: map[string]interface{}{"foo": "bar"},
+		Results: map[string]any{"foo": "bar"},
 	}
 
 	// Act
@@ -472,7 +476,7 @@ func (s *serviceSuite) TestFinishTaskFailState(c *tc.C) {
 		TaskID:  taskID,
 		Message: "done",
 		Status:  corestatus.Completed.String(),
-		Results: map[string]interface{}{"foo": "bar"},
+		Results: map[string]any{"foo": "bar"},
 	}
 
 	// Act
@@ -496,7 +500,7 @@ func (s *serviceSuite) TestFinishTaskNoStore(c *tc.C) {
 		TaskID:  taskID,
 		Message: "done",
 		Status:  corestatus.Completed.String(),
-		Results: map[string]interface{}{"foo": "bar"},
+		Results: map[string]any{"foo": "bar"},
 	}
 
 	// Act

@@ -93,9 +93,9 @@ AND    life_id = 0;`, machineUUID)
 	selectContainerMachines, err := st.Prepare(`
 SELECT    mp.machine_uuid AS &entityUUID.uuid
 FROM      machine_parent AS mp
-JOIN      machine AS m ON mp.parent_uuid = m.uuid
+JOIN      machine AS m ON mp.machine_uuid = m.uuid
 WHERE     mp.parent_uuid = $entityUUID.uuid
-AND       m.life_id = 0;`, machineUUID)
+AND       m.life_id < 2;`, machineUUID)
 	if err != nil {
 		return cascaded, errors.Errorf("preparing container machine selection query: %w", err)
 	}
@@ -124,7 +124,7 @@ SELECT u.uuid AS &entityUUID.uuid
 FROM   unit AS u
 JOIN   machine  AS m ON m.net_node_uuid = u.net_node_uuid
 WHERE  m.uuid IN ($uuids[:])
-AND    u.life_id = 0;`, machineUUID, uuids{})
+AND    u.life_id < 2;`, machineUUID, uuids{})
 	if err != nil {
 		return cascaded, errors.Errorf("preparing unit selection query: %w", err)
 	}
@@ -189,7 +189,9 @@ AND    u.life_id = 0;`, machineUUID, uuids{})
 			}
 		}
 
-		cascaded.CascadedStorageLives, err = st.ensureMachineStorageInstancesNotAliveCascade(ctx, tx, mUUID)
+		cascaded.CascadedStorageInstanceLives, err = st.ensureMachineStorageInstancesNotAliveCascade(
+			ctx, tx, mUUID,
+		)
 		if err != nil {
 			return errors.Errorf("advancing machine storage entity lives: %w", err)
 		}
@@ -201,19 +203,24 @@ AND    u.life_id = 0;`, machineUUID, uuids{})
 
 		const (
 			checkEmptyMachine = false
-			destroyStorage    = false
+			// N.B. storage instances that are NOT machine owned must not be
+			// removed here, since direct machine removal does not yet support
+			// passing a destroy flag. Once this is supported, it can be plumbed
+			// in to here to ensure storage attached to the units on this
+			// machine are removed.
+			destroyStorage = false
 		)
 		cascaded.UnitUUIDs = transform.Slice(append(parentUnitUUIDs, childUnitUUIDs...), func(u entityUUID) string {
 			return u.UUID
 		})
 		for _, u := range cascaded.UnitUUIDs {
-			uc, err := st.ensureUnitNotAliveCascade(ctx, tx, u, checkEmptyMachine, destroyStorage)
+			uc, err := st.ensureUnitNotAliveCascade(
+				ctx, tx, u, checkEmptyMachine, destroyStorage,
+			)
 			if err != nil {
 				return errors.Errorf("cascading unit %q life advancement: %w", u, err)
 			}
-			// We don't expect storage instances to advance because we pass
-			// destroyStorage as false, but we can have dying unit attachments.
-			cascaded.StorageAttachmentUUIDs = append(cascaded.StorageAttachmentUUIDs, uc.StorageAttachmentUUIDs...)
+			cascaded.CascadedStorageLives = cascaded.CascadedStorageLives.Merge(uc.CascadedStorageLives)
 		}
 
 		return nil
@@ -224,56 +231,70 @@ AND    u.life_id = 0;`, machineUUID, uuids{})
 	return cascaded, nil
 }
 
-// ensureMachineStorageInstancesNotAliveCascade transitions any "alive"
-// storage instances attached to this machine to "dying" along with said
-// attachments. If any attached file-systems or volumes were provisioned
-// with machine scope, those will be "dying" too.
+// ensureMachineStorageInstancesNotAliveCascade transitions any non-dead
+// storage instances that are provisioned by the machine to "dying" and to be
+// obliterated.
+//
+// It does not cause detachment of those storage instances, this must be
+// handled by the the removal of a unit.
+//
+// It does not transition to "dying" any storage instance with a non-machine
+// owned filesystem or volume. Critically if a machine owned filesystem is
+// backed by a non-machine owned volume, it will not go to "dying", even if this
+// state is impossible, we protect against it.
 func (st *State) ensureMachineStorageInstancesNotAliveCascade(
 	ctx context.Context, tx *sqlair.TX, mUUID string,
-) (internal.CascadedStorageLives, error) {
-	var cascaded internal.CascadedStorageLives
+) (internal.CascadedStorageInstanceLives, error) {
+	var cascaded internal.CascadedStorageInstanceLives
 	machineUUID := entityUUID{UUID: mUUID}
 
 	q := `
 WITH all_instances AS (
-    SELECT iv.storage_instance_uuid
-    FROM   storage_instance i 
-           JOIN storage_instance_volume iv ON i.uuid = iv.storage_instance_uuid
-           JOIN storage_volume_attachment va ON iv.storage_volume_uuid = va.storage_volume_uuid
-           JOIN machine m ON va.net_node_uuid = m.net_node_uuid
-    WHERE  m.uuid = $entityUUID.uuid
-    AND    i.life_id = 0
+    SELECT iv.storage_instance_uuid AS uuid
+    FROM   storage_instance i
+    JOIN   storage_instance_volume iv ON i.uuid = iv.storage_instance_uuid
+    JOIN   machine_volume mv ON iv.storage_volume_uuid = mv.volume_uuid
+    WHERE  mv.machine_uuid = $entityUUID.uuid AND
+           i.life_id < 2
     UNION
-    SELECT if.storage_instance_uuid
-    FROM   storage_instance i 
-           JOIN storage_instance_filesystem if ON i.uuid = if.storage_instance_uuid
-           JOIN storage_filesystem_attachment fa ON if.storage_filesystem_uuid = fa.storage_filesystem_uuid
-           JOIN machine m ON fa.net_node_uuid = m.net_node_uuid
-    WHERE  m.uuid = $entityUUID.uuid
-    AND    i.life_id = 0
+    SELECT if.storage_instance_uuid AS uuid
+    FROM   storage_instance i
+    JOIN   storage_instance_filesystem if ON i.uuid = if.storage_instance_uuid
+    JOIN   machine_filesystem mf ON if.storage_filesystem_uuid = mf.filesystem_uuid
+    LEFT JOIN storage_instance_volume iv ON i.uuid = iv.storage_instance_uuid
+    WHERE  mf.machine_uuid = $entityUUID.uuid AND
+           i.life_id < 2 AND
+           iv.storage_instance_uuid IS NULL
 )
-SELECT storage_instance_uuid as &entityUUID.uuid FROM all_instances`
+SELECT &entityUUID.* FROM all_instances`
 
-	stmt, err := st.Prepare(q, machineUUID)
+	stmt, err := st.Prepare(q, entityUUID{})
 	if err != nil {
-		return cascaded, errors.Errorf("preparing machine storage instance query: %w", err)
+		return cascaded, errors.Errorf(
+			"preparing machine storage instance query: %w", err,
+		)
 	}
 
-	var sUUIDs []entityUUID
+	var sUUIDs entityUUIDs
 	if err := tx.Query(ctx, stmt, machineUUID).GetAll(&sUUIDs); err != nil {
 		if errors.Is(err, sqlair.ErrNoRows) {
 			return cascaded, nil
 		}
-		return cascaded, errors.Errorf("running machine storage instance query: %w", err)
+		return cascaded, errors.Errorf(
+			"running machine storage instance query: %w", err,
+		)
 	}
 
-	for _, sUUID := range sUUIDs {
-		c, err := st.ensureStorageInstanceNotAliveCascade(ctx, tx, sUUID)
-		if err != nil {
-			return cascaded, errors.Errorf("killing storage instance %q: %w", sUUID.UUID, err)
-		}
-		cascaded.StorageInstanceUUIDs = append(cascaded.StorageInstanceUUIDs, sUUID.UUID)
-		cascaded = cascaded.MergeInstance(c)
+	// Machine owned volumes and filesystems are fine to be obliterated as the
+	// machine will cease to exist too.
+	obliterate := true
+	cascaded, err = st.ensureStorageInstancesNotAliveCascade(
+		ctx, tx, sUUIDs, obliterate,
+	)
+	if err != nil {
+		return cascaded, errors.Errorf(
+			"ensuring %d storage instances not alive: %w", len(sUUIDs), err,
+		)
 	}
 	return cascaded, nil
 }
@@ -395,6 +416,7 @@ AND     lld.mac_address IS NOT NULL;`, entityUUID{UUID: machineUUID}, linkLayerD
 // - [removalerrors.EntityStillAlive] if the machine is alive.
 // - [removalerrors.MachineHasContainers] if the machine hosts containers.
 // - [removalerrors.MachineHasUnits] if the machine hosts units.
+// - [removalerrors.MachineHasStorage] if the machine hosts storage.
 func (st *State) MarkMachineAsDead(ctx context.Context, mUUID string) error {
 	db, err := st.DB(ctx)
 	if err != nil {
@@ -419,8 +441,7 @@ AND    life_id = 1`, machineUUID)
 			return removalerrors.EntityStillAlive
 		}
 
-		err = st.checkNoMachineDependents(ctx, tx, machineUUID)
-		if err != nil {
+		if err := st.checkNoMachineDependents(ctx, tx, machineUUID); err != nil {
 			return errors.Capture(err)
 		}
 
@@ -464,8 +485,7 @@ AND    life_id = 1`, machineUUID)
 			return removalerrors.EntityStillAlive
 		}
 
-		err = st.checkNoMachineDependents(ctx, tx, machineUUID)
-		if err != nil {
+		if err := st.checkNoMachineDependents(ctx, tx, machineUUID); err != nil {
 			return errors.Capture(err)
 		}
 
@@ -479,7 +499,7 @@ AND    life_id = 1`, machineUUID)
 }
 
 // DeleteMachine deletes the specified machine and any dependent child records.
-func (st *State) DeleteMachine(ctx context.Context, mUUID string) error {
+func (st *State) DeleteMachine(ctx context.Context, mUUID string, force bool) error {
 	db, err := st.DB(ctx)
 	if err != nil {
 		return errors.Capture(err)
@@ -517,7 +537,10 @@ WHERE uuid = $machine.uuid;
 		} else if mLife == life.Alive {
 			return errors.Errorf("cannot delete machine %q, machine is still alive", machineUUIDParam.UUID).
 				Add(removalerrors.EntityStillAlive)
-		} else if mLife == life.Dying {
+		}
+
+		// Check to see if the machine is in the dying state only if not forced.
+		if !force && mLife == life.Dying {
 			return errors.Errorf("waiting for machine to be dead before deletion").
 				Add(removalerrors.RemovalJobIncomplete)
 		}
@@ -537,13 +560,20 @@ WHERE uuid = $machine.uuid;
 			return errors.Errorf("getting machine instance life: %w", err)
 		} else if iLife == life.Alive {
 			return errors.Errorf("cannot delete machine %q, instance is still alive", machineUUIDParam.UUID)
-		} else if iLife == life.Dying {
-			return errors.Errorf("waiting for instance to be dead before deletion").Add(removalerrors.RemovalJobIncomplete)
 		}
 
-		err = st.checkNoMachineDependents(ctx, tx, machineUUIDParam)
-		if err != nil {
-			return errors.Errorf("checking for dependents: %w", err).Add(removalerrors.RemovalJobIncomplete)
+		if !force {
+			// Check to see if the machine instance is in the dying state only if
+			// not forced.
+			if iLife == life.Dying {
+				return errors.Errorf("waiting for instance to be dead before deletion").Add(removalerrors.RemovalJobIncomplete)
+			}
+
+			// If force is not set, check for dependents before allowing deletion.
+			// This prevents accidental data loss.
+			if err := st.checkNoMachineDependents(ctx, tx, machineUUIDParam); err != nil {
+				return errors.Errorf("checking for dependents: %w", err).Add(removalerrors.RemovalJobIncomplete)
+			}
 		}
 
 		// Remove all basic machine data associated with the machine.
@@ -555,6 +585,32 @@ WHERE uuid = $machine.uuid;
 		var node node
 		if err := tx.Query(ctx, getNodeStmt, machine(machineUUIDParam)).Get(&node); err != nil {
 			return errors.Errorf("getting net node: %w", err)
+		}
+
+		// Before proceeding, check that no units (including dead ones) still
+		// reference this machine's net node. Dead units that have not yet been
+		// deleted from the DB hold a FK reference to net_node, so attempting to
+		// delete the net_node while they exist will cause a constraint
+		// violation. Return RemovalJobIncomplete so the machine removal job
+		// retries once the unit removal job has finished.
+		// This applies unconditionally: even force removals cascade separate
+		// removal jobs for units, so by the time this runs those jobs must have
+		// completed.
+		countUnitsOnNetNodeStmt, err := st.Prepare(`
+SELECT COUNT(*) AS &count.count
+FROM   unit
+WHERE  net_node_uuid = $node.uuid`, count{}, node)
+		if err != nil {
+			return errors.Capture(err)
+		}
+		var unitNodeCount count
+		if err := tx.Query(ctx, countUnitsOnNetNodeStmt, node).Get(&unitNodeCount); err != nil {
+			return errors.Errorf("checking units on net node: %w", err)
+		} else if unitNodeCount.Count > 0 {
+			return errors.Errorf(
+				"machine net node still referenced by %d unit(s), waiting for unit removal",
+				unitNodeCount.Count,
+			).Add(removalerrors.RemovalJobIncomplete)
 		}
 
 		// Remove the machine entry
@@ -596,6 +652,42 @@ AND unit.life_id != 2
 		return errors.Capture(err)
 	}
 
+	countFilesystemsOnMachine, err := st.Prepare(`
+SELECT SUM(count) AS &count.count FROM (
+	SELECT    COUNT(*) AS count
+	FROM      machine_filesystem mf
+	WHERE     mf.machine_uuid = $entityUUID.uuid
+	UNION
+	SELECT    COUNT(*) AS count
+	FROM      storage_filesystem_attachment sfa
+	JOIN      machine m ON m.net_node_uuid = sfa.net_node_uuid
+	LEFT JOIN machine_filesystem mf ON mf.machine_uuid = m.uuid
+	WHERE     m.uuid = $entityUUID.uuid AND
+	          mf.filesystem_uuid IS NULL
+)
+`, count{}, machineUUIDParam)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	countVolumesOnMachine, err := st.Prepare(`
+SELECT SUM(count) AS &count.count FROM (
+	SELECT    COUNT(*) AS count
+	FROM      machine_volume mv
+	WHERE     mv.machine_uuid = $entityUUID.uuid
+	UNION
+	SELECT    COUNT(*) AS count
+	FROM      storage_volume_attachment sva
+	JOIN      machine m ON m.net_node_uuid = sva.net_node_uuid
+	LEFT JOIN machine_volume mv ON mv.machine_uuid = m.uuid
+	WHERE     m.uuid = $entityUUID.uuid AND
+	          mv.volume_uuid IS NULL
+)
+`, count{}, machineUUIDParam)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
 	var containerCount count
 	err = tx.Query(ctx, countContainersOnMachine, machineUUIDParam).Get(&containerCount)
 	if err != nil {
@@ -612,6 +704,25 @@ AND unit.life_id != 2
 	} else if unitCount.Count > 0 {
 		return errors.Errorf("cannot delete machine %q, it hosts has %d unit(s)", machineUUIDParam.UUID, unitCount.Count).
 			Add(removalerrors.MachineHasUnits)
+	}
+
+	var filesystemCount count
+	err = tx.Query(ctx, countFilesystemsOnMachine, machineUUIDParam).Get(
+		&filesystemCount)
+	if err != nil {
+		return errors.Errorf("getting filesystem count: %w", err)
+	}
+	var volumeCount count
+	err = tx.Query(ctx, countVolumesOnMachine, machineUUIDParam).Get(
+		&volumeCount)
+	if err != nil {
+		return errors.Errorf("getting volume count: %w", err)
+	}
+	if filesystemCount.Count > 0 || volumeCount.Count > 0 {
+		return errors.Errorf(
+			"cannot delete machine %q, has %d filesystems(s) and %d volume(s)",
+			machineUUIDParam.UUID, filesystemCount.Count, volumeCount.Count,
+		).Add(removalerrors.MachineHasStorage)
 	}
 
 	return nil
@@ -639,9 +750,6 @@ func (st *State) removeBasicMachineData(ctx context.Context, tx *sqlair.TX, mUUI
 		"DELETE FROM machine_parent WHERE machine_uuid = $entityUUID.uuid",
 		"DELETE FROM block_device_link_device WHERE machine_uuid = $entityUUID.uuid",
 		"DELETE FROM block_device WHERE machine_uuid = $entityUUID.uuid",
-		// TODO(storage): remove these once storage removal is complete.
-		"DELETE FROM machine_filesystem WHERE machine_uuid = $entityUUID.uuid",
-		"DELETE FROM machine_volume WHERE machine_uuid = $entityUUID.uuid",
 	}
 
 	for _, table := range tables {
@@ -722,6 +830,23 @@ WHERE  net_node_uuid = $node.uuid`
 				removeErr = removeErr.Add(removalerrors.RemovalJobIncomplete)
 			}
 			return removeErr
+		}
+	}
+
+	// Delete the net node fqdn and hostname addresses before deleting the net node.
+	deleteNetNodeAddresses := []string{
+		"DELETE FROM net_node_fqdn_address WHERE net_node_uuid = $node.uuid",
+		"DELETE FROM net_node_hostname_address WHERE net_node_uuid = $node.uuid",
+	}
+
+	for _, query := range deleteNetNodeAddresses {
+		stmt, err := st.Prepare(query, node{})
+		if err != nil {
+			return errors.Capture(err)
+		}
+
+		if err := tx.Query(ctx, stmt, netNodeUUIDRec).Run(); err != nil {
+			return errors.Errorf("deleting net node addresses in query %q: %w", query, err)
 		}
 	}
 

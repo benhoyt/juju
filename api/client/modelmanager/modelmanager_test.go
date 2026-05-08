@@ -49,7 +49,7 @@ func (s *modelmanagerSuite) TestCreateModel(c *tc.C) {
 	args := params.ModelCreateArgs{
 		Name:        "new-model",
 		Qualifier:   "prod",
-		Config:      map[string]interface{}{"abc": 123},
+		Config:      map[string]any{"abc": 123},
 		CloudTag:    "cloud-nimbus",
 		CloudRegion: "catbus",
 	}
@@ -77,7 +77,7 @@ func (s *modelmanagerSuite) TestCreateModel(c *tc.C) {
 		"nimbus",
 		"catbus",
 		names.CloudCredentialTag{},
-		map[string]interface{}{"abc": 123},
+		map[string]any{"abc": 123},
 	)
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -92,7 +92,7 @@ func (s *modelmanagerSuite) TestCreateModel(c *tc.C) {
 		Qualifier:      "prod",
 		Life:           "alive",
 		Status: base.Status{
-			Data: make(map[string]interface{}),
+			Data: make(map[string]any),
 		},
 		Users:    []base.UserInfo{},
 		Machines: []base.Machine{},
@@ -108,7 +108,7 @@ func (s *modelmanagerSuite) TestCreateModelLegacy(c *tc.C) {
 	args := params.ModelCreateArgsLegacy{
 		Name:        "new-model",
 		OwnerTag:    owner.String(),
-		Config:      map[string]interface{}{"abc": 123},
+		Config:      map[string]any{"abc": 123},
 		CloudTag:    "cloud-nimbus",
 		CloudRegion: "catbus",
 	}
@@ -137,7 +137,7 @@ func (s *modelmanagerSuite) TestCreateModelLegacy(c *tc.C) {
 		"nimbus",
 		"catbus",
 		names.CloudCredentialTag{},
-		map[string]interface{}{"abc": 123},
+		map[string]any{"abc": 123},
 	)
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -149,10 +149,10 @@ func (s *modelmanagerSuite) TestCreateModelLegacy(c *tc.C) {
 		ProviderType:   "C-123",
 		Cloud:          "nimbus",
 		CloudRegion:    "catbus",
-		Qualifier:      model.Qualifier("alice-domain-com"),
+		Qualifier:      model.Qualifier("alice@domain.com"),
 		Life:           "alive",
 		Status: base.Status{
-			Data: make(map[string]interface{}),
+			Data: make(map[string]any),
 		},
 		Users:    []base.UserInfo{},
 		Machines: []base.Machine{},
@@ -269,9 +269,9 @@ func (s *modelmanagerSuite) TestModelDefaults(c *tc.C) {
 	res := new(params.ModelDefaultsResults)
 	ress := params.ModelDefaultsResults{
 		Results: []params.ModelDefaultsResult{{Config: map[string]params.ModelDefaults{
-			"foo": {"bar", "model", []params.RegionDefaults{{
-				"dummy-region",
-				"dummy-value"}}},
+			"foo": {Default: "bar", Controller: "model", Regions: []params.RegionDefaults{{
+				RegionName: "dummy-region",
+				Value:      "dummy-value"}}},
 		}}},
 	}
 
@@ -283,9 +283,9 @@ func (s *modelmanagerSuite) TestModelDefaults(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 
 	c.Assert(result, tc.DeepEquals, config.ModelDefaultAttributes{
-		"foo": {"bar", "model", []config.RegionDefaultValue{{
-			"dummy-region",
-			"dummy-value"}}},
+		"foo": {Default: "bar", Controller: "model", Regions: []config.RegionDefaultValue{{
+			Name:  "dummy-region",
+			Value: "dummy-value"}}},
 	})
 }
 
@@ -297,7 +297,7 @@ func (s *modelmanagerSuite) TestSetModelDefaults(c *tc.C) {
 		Config: []params.ModelDefaultValues{{
 			CloudTag:    "cloud-mycloud",
 			CloudRegion: "region",
-			Config: map[string]interface{}{
+			Config: map[string]any{
 				"some-name":  "value",
 				"other-name": true,
 			},
@@ -312,7 +312,7 @@ func (s *modelmanagerSuite) TestSetModelDefaults(c *tc.C) {
 	mockFacadeCaller.EXPECT().FacadeCall(gomock.Any(), "SetModelDefaults", args, res).SetArg(3, ress).Return(nil)
 	client := modelmanager.NewClientFromCaller(mockFacadeCaller)
 
-	err := client.SetModelDefaults(c.Context(), "mycloud", "region", map[string]interface{}{
+	err := client.SetModelDefaults(c.Context(), "mycloud", "region", map[string]any{
 		"some-name":  "value",
 		"other-name": true,
 	})
@@ -492,7 +492,7 @@ func (s *modelmanagerSuite) TestListModelSummaries(c *tc.C) {
 		Life:            "alive",
 		Status: base.Status{
 			Status: status.Active,
-			Data:   map[string]interface{}{},
+			Data:   map[string]any{},
 		},
 		ModelUserAccess: "admin",
 		Counts:          []base.EntityCount{},
@@ -668,17 +668,17 @@ func (s *dumpModelSuite) TestDumpModelDB(c *tc.C) {
 	ctrl := gomock.NewController(c)
 	defer ctrl.Finish()
 
-	expected := map[string]interface{}{
-		"models": []map[string]interface{}{{
+	expected := map[string]any{
+		"models": []map[string]any{{
 			"name": "admin",
 			"uuid": "some-uuid",
 		}},
-		"machines": []map[string]interface{}{{
+		"machines": []map[string]any{{
 			"id":   "0",
 			"life": 0,
 		}},
 	}
-	args := params.Entities{[]params.Entity{{coretesting.ModelTag.String()}}}
+	args := params.Entities{Entities: []params.Entity{{Tag: coretesting.ModelTag.String()}}}
 
 	res := new(params.MapResults)
 	ress := params.MapResults{Results: []params.MapResult{{
@@ -698,7 +698,7 @@ func (s *dumpModelSuite) TestDumpModelDBError(c *tc.C) {
 	ctrl := gomock.NewController(c)
 	defer ctrl.Finish()
 
-	args := params.Entities{[]params.Entity{{coretesting.ModelTag.String()}}}
+	args := params.Entities{Entities: []params.Entity{{Tag: coretesting.ModelTag.String()}}}
 
 	res := new(params.MapResults)
 	ress := params.MapResults{Results: []params.MapResult{{
@@ -710,6 +710,56 @@ func (s *dumpModelSuite) TestDumpModelDBError(c *tc.C) {
 	client := modelmanager.NewClientFromCaller(mockFacadeCaller)
 
 	out, err := client.DumpModelDB(c.Context(), coretesting.ModelTag)
+	c.Assert(err, tc.ErrorMatches, "fake error")
+	c.Assert(out, tc.IsNil)
+}
+
+func (s *dumpModelSuite) TestDumpModel(c *tc.C) {
+	ctrl := gomock.NewController(c)
+	defer ctrl.Finish()
+
+	args := params.DumpModelRequest{
+		Entities: []params.Entity{{Tag: coretesting.ModelTag.String()}},
+	}
+
+	res := new(params.StringResults)
+	ress := params.StringResults{Results: []params.StringResult{{
+		Result: "version: 4.0.4\npayload:\n  agent_binary_store:\n  - version: 4.0.4\n",
+	}}}
+
+	mockFacadeCaller := basemocks.NewMockFacadeCaller(ctrl)
+	mockFacadeCaller.EXPECT().FacadeCall(
+		gomock.Any(), "DumpModels", args, res,
+	).SetArg(3, ress).Return(nil)
+	client := modelmanager.NewClientFromCaller(mockFacadeCaller)
+
+	out, err := client.DumpModel(c.Context(), coretesting.ModelTag)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(out["version"], tc.Equals, "4.0.4")
+	_, ok := out["payload"]
+	c.Check(ok, tc.IsTrue)
+}
+
+func (s *dumpModelSuite) TestDumpModelError(c *tc.C) {
+	ctrl := gomock.NewController(c)
+	defer ctrl.Finish()
+
+	args := params.DumpModelRequest{
+		Entities: []params.Entity{{Tag: coretesting.ModelTag.String()}},
+	}
+
+	res := new(params.StringResults)
+	ress := params.StringResults{Results: []params.StringResult{{
+		Error: &params.Error{Message: "fake error"},
+	}}}
+
+	mockFacadeCaller := basemocks.NewMockFacadeCaller(ctrl)
+	mockFacadeCaller.EXPECT().FacadeCall(
+		gomock.Any(), "DumpModels", args, res,
+	).SetArg(3, ress).Return(nil)
+	client := modelmanager.NewClientFromCaller(mockFacadeCaller)
+
+	out, err := client.DumpModel(c.Context(), coretesting.ModelTag)
 	c.Assert(err, tc.ErrorMatches, "fake error")
 	c.Assert(out, tc.IsNil)
 }

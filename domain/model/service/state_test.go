@@ -27,6 +27,8 @@ import (
 	jujutesting "github.com/juju/juju/internal/testing"
 )
 
+const deletedID = "7a53b695-4cb6-4c1d-86da-c2dca65ed957"
+
 type dummyStateCloud struct {
 	Credentials map[string]credential.Key
 	Regions     []string
@@ -45,6 +47,11 @@ type dummyState struct {
 func (d *dummyState) CheckModelExists(ctx context.Context, uuid coremodel.UUID) (bool, error) {
 	_, exists := d.models[uuid]
 	return exists, nil
+}
+
+func (d *dummyState) ClearControllerImportingStatus(ctx context.Context, uuid coremodel.UUID) error {
+	// Stub implementation for testing
+	return nil
 }
 
 type dummyDeleter struct {
@@ -84,6 +91,74 @@ func (d *dummyState) ListModelUUIDsForUser(_ context.Context, _ user.UUID) ([]co
 }
 
 func (d *dummyState) Create(
+	_ context.Context,
+	modelID coremodel.UUID,
+	modelType coremodel.ModelType,
+	args model.GlobalModelCreationArgs,
+) error {
+	if _, exists := d.models[modelID]; exists {
+		return errors.Errorf("%w %q", modelerrors.AlreadyExists, modelID)
+	}
+
+	for _, v := range d.models {
+		if v.Name == args.Name && v.Qualifier == args.Qualifier {
+			return errors.Errorf("%w for name %s/%s", modelerrors.AlreadyExists, v.Qualifier, v.Name)
+		}
+	}
+
+	cloud, exists := d.clouds[args.Cloud]
+	if !exists {
+		return errors.Errorf("%w cloud %q", coreerrors.NotFound, args.Cloud)
+	}
+
+	for _, u := range args.AdminUsers {
+		_, exists = d.users[u]
+		if !exists {
+			return errors.Errorf("%w for creator %q", usererrors.UserNotFound, u)
+		}
+	}
+
+	hasRegion := false
+	for _, region := range cloud.Regions {
+		if region == args.CloudRegion {
+			hasRegion = true
+		}
+	}
+	if !hasRegion {
+		return errors.Errorf("%w cloud %q region %q", coreerrors.NotFound, args.Cloud, args.CloudRegion)
+	}
+
+	if !args.Credential.IsZero() {
+		if _, exists := cloud.Credentials[args.Credential.String()]; !exists {
+			return errors.Errorf("%w credential %q", coreerrors.NotFound, args.Credential.String())
+		}
+	}
+
+	secretBackendFound := false
+	for _, backend := range d.secretBackends {
+		if backend == args.SecretBackend {
+			secretBackendFound = true
+		}
+	}
+
+	if !secretBackendFound {
+		return secretbackenderrors.NotFound
+	}
+
+	d.nonActivatedModels[modelID] = coremodel.Model{
+		Name:        args.Name,
+		Qualifier:   args.Qualifier,
+		UUID:        modelID,
+		ModelType:   modelType,
+		Cloud:       args.Cloud,
+		CloudRegion: args.CloudRegion,
+		Credential:  args.Credential,
+		Life:        life.Alive,
+	}
+	return nil
+}
+
+func (d *dummyState) ImportModel(
 	_ context.Context,
 	modelID coremodel.UUID,
 	modelType coremodel.ModelType,
@@ -223,7 +298,7 @@ func (d *dummyState) Delete(
 	return nil
 }
 
-func (d *dummyState) ListAllModels(
+func (d *dummyState) GetAllModels(
 	_ context.Context,
 ) ([]coremodel.Model, error) {
 	rval := make([]coremodel.Model, 0, len(d.models))
@@ -252,11 +327,25 @@ func (d *dummyState) ListModelsForUser(
 	return rval, nil
 }
 
-func (d *dummyState) ListModelUUIDs(
+func (d *dummyState) GetModelUUIDs(
 	_ context.Context,
 ) ([]coremodel.UUID, error) {
 	rval := make([]coremodel.UUID, 0, len(d.models))
 	for k := range d.models {
+		rval = append(rval, k)
+	}
+
+	return rval, nil
+}
+
+func (d *dummyState) GetHostedModelUUIDs(
+	_ context.Context,
+) ([]coremodel.UUID, error) {
+	rval := make([]coremodel.UUID, 0, len(d.models))
+	for k := range d.models {
+		if k == d.controllerModelUUID {
+			continue
+		}
 		rval = append(rval, k)
 	}
 

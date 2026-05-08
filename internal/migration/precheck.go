@@ -10,7 +10,7 @@ import (
 
 	"github.com/juju/collections/set"
 	"github.com/juju/collections/transform"
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/errors"
 
 	"github.com/juju/juju/core/credential"
@@ -166,6 +166,7 @@ func TargetPrecheck(
 	statusService StatusService,
 	modelAgentService ModelAgentService,
 	machineService MachineService,
+	cloudService CloudService,
 	modelMigrationServiceGetter func(context.Context, coremodel.UUID) (ModelMigrationService, error),
 ) error {
 	if err := modelInfo.Validate(); err != nil {
@@ -187,6 +188,22 @@ func TargetPrecheck(
 			modelInfo.ControllerAgentVersion, controllerVersion)
 	}
 
+	clouds, err := cloudService.ListAll(ctx)
+	if err != nil {
+		return errors.Annotate(err, "retrieving clouds")
+	}
+	descCloud := modelInfo.ModelDescription.Cloud()
+	cloudFound := false
+	for _, cloud := range clouds {
+		if cloud.Name == descCloud {
+			cloudFound = true
+			break
+		}
+	}
+	if !cloudFound {
+		return errors.Errorf("model's cloud %q not found on target controller", descCloud)
+	}
+
 	controllerCtx := newPrecheckController(
 		upgradeService,
 		statusService,
@@ -197,7 +214,7 @@ func TargetPrecheck(
 	}
 
 	// Check for conflicts with existing models
-	models, err := modelService.ListAllModels(ctx)
+	models, err := modelService.GetAllModels(ctx)
 	if err != nil {
 		return errors.Annotate(err, "retrieving models")
 	}
@@ -374,11 +391,9 @@ func (c *precheckModel) checkApplications(ctx context.Context) error {
 		return errors.Trace(err)
 	}
 
-	if err := c.applicationService.CheckAllApplicationsAndUnitsAreAlive(ctx); err != nil {
+	if err := c.applicationService.CheckApplicationsForMigration(ctx); err != nil {
 		return internalerrors.Errorf("pre-checking applications for migration: %w", err)
 	}
-
-	// TODO(aflynn): 2025-05-24 check if any units are mid-upgrade.
 
 	return nil
 }
@@ -415,11 +430,8 @@ func (c *precheckModel) checkRelations(ctx context.Context) error {
 				}
 				if !ok {
 					// means the unit is not in scope
-					key, err := relation.NewKey(transform.Slice(rel.Endpoints,
+					key := relation.Key(transform.Slice(rel.Endpoints,
 						domainrelation.Endpoint.EndpointIdentifier))
-					if err != nil {
-						return errors.Trace(err)
-					}
 					return errors.Errorf("unit %s hasn't joined relation %q yet", unitName, key)
 				}
 			}
@@ -475,7 +487,7 @@ const (
 
 // checkNoFanConfig makes sure that no fan config was used in the config of the
 // model being migrated.
-func checkNoFanConfig(modelConfig map[string]interface{}) error {
+func checkNoFanConfig(modelConfig map[string]any) error {
 	if modelConfig[fanConfigKey] != nil && modelConfig[fanConfigKey] != "" {
 		return errors.Errorf("fan networking not supported, remove fan-config %q from migrating model config", modelConfig[fanConfigKey])
 	}

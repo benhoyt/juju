@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "High availability in Juju: multi-replica controllers, database replication, and resilient application deployment on machines and Kubernetes."
+---
+
 (high-availability)=
 # High availability (HA)
 
@@ -8,7 +14,7 @@ See also:
 - {ref}`make-an-application-highly-available`
 ```
 
-In the context of a cloud deployment in general, **high availability (HA)** is the concept of making software resilient to failures by means of running multiple replicas with shared and synchronised software context -- something usually achieved through coordinated {ref}`scaling (horizontally and up) <scaling>`. In Juju, it is supported for controllers on machine clouds and for regular applications on both machine and Kubernetes clouds
+In the context of a cloud deployment in general, **high availability (HA)** is the concept of making software resilient to failures by means of running multiple replicas with shared and synchronised software context -- something usually achieved through coordinated {ref}`scaling (out and up) <scaling>`. In Juju, it is supported for controllers on machine clouds and for regular applications on both machine and Kubernetes clouds
 
 
 ![Juju - Controller high availability (machines)](high-availability.png)

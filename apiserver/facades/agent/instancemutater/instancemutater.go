@@ -11,69 +11,13 @@ import (
 
 	"github.com/juju/juju/apiserver/facade"
 	"github.com/juju/juju/apiserver/internal"
-	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/life"
-	coremachine "github.com/juju/juju/core/machine"
-	"github.com/juju/juju/core/model"
-	"github.com/juju/juju/core/watcher"
-	applicationcharm "github.com/juju/juju/domain/application/charm"
-	"github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/rpc/params"
 )
 
-// InstanceMutaterV2 defines the methods on the instance mutater API facade, version 2.
-type InstanceMutaterV2 interface {
-	Life(ctx context.Context, args params.Entities) (params.LifeResults, error)
-
-	CharmProfilingInfo(ctx context.Context, arg params.Entity) (params.CharmProfilingInfoResult, error)
-	ContainerType(ctx context.Context, arg params.Entity) (params.ContainerTypeResult, error)
-	SetCharmProfiles(ctx context.Context, args params.SetProfileArgs) (params.ErrorResults, error)
-	SetModificationStatus(ctx context.Context, args params.SetStatus) (params.ErrorResults, error)
-	WatchMachines(ctx context.Context) (params.StringsWatchResult, error)
-	WatchLXDProfileVerificationNeeded(ctx context.Context, args params.Entities) (params.NotifyWatchResults, error)
-}
-
-// MachineService defines the methods that the facade assumes from the Machine
-// service.
-type MachineService interface {
-	// GetMachineUUID returns the UUID of a machine identified by its name.
-	GetMachineUUID(ctx context.Context, name coremachine.Name) (coremachine.UUID, error)
-
-	// InstanceID returns the cloud specific instance id for this machine.
-	InstanceID(ctx context.Context, machineUUID coremachine.UUID) (instance.Id, error)
-
-	// AppliedLXDProfileNames returns the names of the LXD profiles on the machine.
-	AppliedLXDProfileNames(ctx context.Context, machineUUID coremachine.UUID) ([]string, error)
-
-	// SetAppliedLXDProfileNames sets the list of LXD profile names to the
-	// lxd_profile table for the given machine. This method will overwrite the list
-	// of profiles for the given machine without any checks.
-	SetAppliedLXDProfileNames(ctx context.Context, machineUUID coremachine.UUID, profileNames []string) error
-
-	// WatchLXDProfiles returns a NotifyWatcher that is subscribed to the changes in
-	// the machine_cloud_instance table in the model, for the given machine UUID.
-	WatchLXDProfiles(ctx context.Context, machineUUID coremachine.UUID) (watcher.NotifyWatcher, error)
-}
-
-// ApplicationService is an interface for the application domain service.
-type ApplicationService interface {
-	// GetCharmLXDProfile returns the LXD profile along with the revision of the
-	// charm using the charm name, source and revision.
-	//
-	// If the charm does not exist, a [applicationerrors.CharmNotFound] error is
-	// returned.
-	GetCharmLXDProfile(ctx context.Context, locator applicationcharm.CharmLocator) (charm.LXDProfile, applicationcharm.Revision, error)
-	// WatchCharms returns a watcher that observes changes to charms.
-	WatchCharms(context.Context) (watcher.StringsWatcher, error)
-}
-
-// ModelInfoService provides access to information about the model.
-type ModelInfoService interface {
-	// GetModelInfo returns information about the current model.
-	GetModelInfo(context.Context) (model.ModelInfo, error)
-}
-
+// InstanceMutaterAPI exists only to allow migrations from Juju 3.6.
+// It effectively does nothing.
 type InstanceMutaterAPI struct {
 	watcherRegistry facade.WatcherRegistry
 }

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Install, configure, and manage the Juju CLI client on Linux, Windows, and macOS. Learn to handle authentication, upgrades, and plugins."
+---
+
 (manage-juju)=
 # How to manage the `juju` CLI client
 

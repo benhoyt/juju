@@ -36,7 +36,7 @@ func (s *DiskManagerSuite) TestSetMachineBlockDevices(c *tc.C) {
 	}}
 
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "DiskManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -47,9 +47,11 @@ func (s *DiskManagerSuite) TestSetMachineBlockDevices(c *tc.C) {
 				BlockDevices: []params.BlockDevice{{
 					DeviceName: "sda",
 					SizeMiB:    123,
+					Provenance: params.BlockDeviceProvenanceProvider,
 				}, {
 					DeviceName: "sdb",
 					UUID:       "asdadasdasdas",
+					Provenance: params.BlockDeviceProvenanceProvider,
 				}},
 			}},
 		})
@@ -71,7 +73,7 @@ func (s *DiskManagerSuite) TestSetMachineBlockDevices(c *tc.C) {
 
 func (s *DiskManagerSuite) TestSetMachineBlockDevicesNil(c *tc.C) {
 	var callCount int
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(arg, tc.DeepEquals, params.SetMachineBlockDevices{
 			MachineBlockDevices: []params.MachineBlockDevices{{
 				Machine: "machine-123",
@@ -93,7 +95,7 @@ func (s *DiskManagerSuite) TestSetMachineBlockDevicesNil(c *tc.C) {
 }
 
 func (s *DiskManagerSuite) TestSetMachineBlockDevicesClientError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		return errors.New("blargh")
 	})
 	st := diskmanager.NewState(apiCaller, names.NewMachineTag("123"))
@@ -102,7 +104,7 @@ func (s *DiskManagerSuite) TestSetMachineBlockDevicesClientError(c *tc.C) {
 }
 
 func (s *DiskManagerSuite) TestSetMachineBlockDevicesServerError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		*(result.(*params.ErrorResults)) = params.ErrorResults{
 			Results: []params.ErrorResult{{
 				Error: &params.Error{Message: "MSG", Code: "621"},
@@ -115,11 +117,51 @@ func (s *DiskManagerSuite) TestSetMachineBlockDevicesServerError(c *tc.C) {
 	c.Check(err, tc.ErrorMatches, "MSG")
 }
 
+func (s *DiskManagerSuite) TestSetMachineBlockDevicesProvenance(c *tc.C) {
+	devices := []blockdevice.BlockDevice{{
+		DeviceName: "sda",
+		Provenance: blockdevice.ProviderProvenance,
+	}, {
+		DeviceName: "sdb",
+		Provenance: blockdevice.MachineProvenance,
+	}, {
+		DeviceName: "sdc",
+		Provenance: blockdevice.Provenance(99),
+	}}
+
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
+		c.Check(arg, tc.DeepEquals, params.SetMachineBlockDevices{
+			MachineBlockDevices: []params.MachineBlockDevices{{
+				Machine: "machine-123",
+				BlockDevices: []params.BlockDevice{{
+					DeviceName: "sda",
+					Provenance: params.BlockDeviceProvenanceProvider,
+				}, {
+					DeviceName: "sdb",
+					Provenance: params.BlockDeviceProvenanceMachine,
+				}, {
+					DeviceName: "sdc",
+					Provenance: params.BlockDeviceProvenanceUnknown,
+				}},
+			}},
+		})
+		c.Assert(result, tc.FitsTypeOf, &params.ErrorResults{})
+		*(result.(*params.ErrorResults)) = params.ErrorResults{
+			Results: []params.ErrorResult{{Error: nil}},
+		}
+		return nil
+	})
+
+	st := diskmanager.NewState(apiCaller, names.NewMachineTag("123"))
+	err := st.SetMachineBlockDevices(c.Context(), devices)
+	c.Check(err, tc.ErrorIsNil)
+}
+
 func (s *DiskManagerSuite) TestSetMachineBlockDevicesResultCountInvalid(c *tc.C) {
 	for _, n := range []int{0, 2} {
-		apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+		apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 			var results []params.ErrorResult
-			for i := 0; i < n; i++ {
+			for range n {
 				results = append(results, params.ErrorResult{
 					Error: &params.Error{Message: "MSG", Code: "621"},
 				})

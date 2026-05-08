@@ -22,7 +22,6 @@ import (
 	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/semversion"
-	"github.com/juju/juju/internal/proxy"
 	"github.com/juju/juju/rpc/jsoncodec"
 	"github.com/juju/juju/rpc/params"
 )
@@ -89,7 +88,7 @@ type Info struct {
 
 	// Proxier describes a proxier to use to for establing an API connection
 	// A nil proxier means that it will not be used.
-	Proxier proxy.Proxier
+	Proxier Proxier
 }
 
 // Ports returns the unique ports for the api addresses.
@@ -198,6 +197,8 @@ type LoginProvider interface {
 	// can be performed.
 	// Other errors are also possible indicating an internal error in the provider.
 	AuthHeader() (http.Header, error)
+	// String returns a string representation of the login provider.
+	String() string
 }
 
 // DialOpts holds configuration parameters that control the
@@ -265,6 +266,14 @@ type DialOpts struct {
 	// automatically verified. If the callback returns a non-nil error then
 	// the connection attempt will be aborted.
 	VerifyCA func(host, endpoint string, caCert *x509.Certificate) error
+
+	// PingPeriod is the period between API pings used to detect broken
+	// connections. If nil, a default value is used.
+	PingPeriod *time.Duration
+
+	// PingTimeout is the timeout for each API ping. If nil, a default value is
+	// used.
+	PingTimeout *time.Duration
 }
 
 // IPAddrResolver implements a resolved from host name to the
@@ -364,7 +373,7 @@ type Connection interface {
 	// Proxy returns the Proxier used to establish the connection if one was
 	// used at all. If no Proxier was used then it's expected that returned
 	// Proxier will be nil. Use IsProxied() to test for the presence of a proxy.
-	Proxy() proxy.Proxier
+	Proxy() Proxier
 
 	// PublicDNSName returns the host name for which an officially
 	// signed certificate will be used for TLS connection to the server.

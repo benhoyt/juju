@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/juju/collections/transform"
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/mock/gomock"
 	"gopkg.in/macaroon.v2"
 
@@ -24,9 +24,9 @@ import (
 	"github.com/juju/juju/apiserver/facades/controller/migrationmaster/mocks"
 	apiservertesting "github.com/juju/juju/apiserver/testing"
 	"github.com/juju/juju/controller"
+	coreerrors "github.com/juju/juju/core/errors"
 	coremigration "github.com/juju/juju/core/migration"
 	"github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/semversion"
 	usertesting "github.com/juju/juju/core/user/testing"
 	jujuversion "github.com/juju/juju/core/version"
@@ -41,7 +41,6 @@ import (
 type Suite struct {
 	coretesting.BaseSuite
 
-	modelExporter   *mocks.MockModelExporter
 	store           *mocks.MockObjectStore
 	watcherRegistry *facademocks.MockWatcherRegistry
 
@@ -73,7 +72,7 @@ func TestSuite(t *testing.T) {
 func (s *Suite) SetUpTest(c *tc.C) {
 	s.BaseSuite.SetUpTest(c)
 
-	s.controllerModelUUID = modeltesting.GenModelUUID(c)
+	s.controllerModelUUID = tc.Must0(c, model.NewUUID)
 	s.controllerUUID = uuid.MustNewUUID().String()
 	s.modelUUID = uuid.MustNewUUID().String()
 
@@ -184,9 +183,6 @@ func (s *Suite) TestModelInfo(c *tc.C) {
 		AgentVersion:    semversion.MustParse("1.2.3"),
 	}, nil)
 
-	modelDescription := description.NewModel(description.ModelArgs{})
-	s.modelExporter.EXPECT().ExportModel(gomock.Any(), gomock.Any()).Return(modelDescription, nil)
-
 	mod, err := s.mustMakeAPI(c).ModelInfo(c.Context())
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -194,10 +190,6 @@ func (s *Suite) TestModelInfo(c *tc.C) {
 	c.Check(mod.Name, tc.Equals, "model-name")
 	c.Check(mod.Qualifier, tc.Equals, "production")
 	c.Check(mod.AgentVersion, tc.Equals, semversion.MustParse("1.2.3"))
-
-	bytes, err := description.Serialize(modelDescription)
-	c.Assert(err, tc.ErrorIsNil)
-	c.Check(mod.ModelDescription, tc.DeepEquals, bytes)
 }
 
 func (s *Suite) TestSourceControllerInfo(c *tc.C) {
@@ -294,7 +286,7 @@ func (s *Suite) TestExportIAAS(c *tc.C) {
 func (s *Suite) TestExportCAAS(c *tc.C) {
 	s.model = description.NewModel(description.ModelArgs{
 		Type:               "caas",
-		Config:             map[string]interface{}{"uuid": s.modelUUID},
+		Config:             map[string]any{"uuid": s.modelUUID},
 		Owner:              "admin",
 		LatestToolsVersion: jujuversion.Current.String(),
 	})
@@ -304,80 +296,9 @@ func (s *Suite) TestExportCAAS(c *tc.C) {
 func (s *Suite) assertExport(c *tc.C, modelType string) {
 	defer s.setupMocks(c).Finish()
 
-	app := s.model.AddApplication(description.ApplicationArgs{
-		Name:     "foo",
-		CharmURL: "ch:foo-0",
-	})
+	_, err := s.mustMakeAPI(c).Export(c.Context())
+	c.Assert(err, tc.ErrorIs, coreerrors.NotSupported)
 
-	const tools0 = "2.0.0-ubuntu-amd64"
-	const tools1 = "2.0.1-ubuntu-amd64"
-	const tools2 = "2.0.2-ubuntu-amd64"
-	m := s.model.AddMachine(description.MachineArgs{Id: "9"})
-	m.SetTools(description.AgentToolsArgs{
-		Version: tools1,
-		SHA256:  "439c9ea02f8561c5a152d7cf4818d72cd5f2916b555d82c5eee599f5e8f3d09e",
-	})
-	c1 := m.AddContainer(description.MachineArgs{Id: "9/lxd/0"})
-	c1.SetTools(description.AgentToolsArgs{
-		Version: tools2,
-		SHA256:  "439c9ea02f8561c5a152d7cf4818d72cd5f2916b555d82c5eee599f5e8f3daaa",
-	})
-	c2 := m.AddContainer(description.MachineArgs{Id: "9/lxd/1"})
-	c2.SetTools(description.AgentToolsArgs{
-		Version: tools1,
-		SHA256:  "439c9ea02f8561c5a152d7cf4818d72cd5f2916b555d82c5eee599f5e8f3d09e",
-	})
-
-	res := app.AddResource(description.ResourceArgs{Name: "bin"})
-	appRev := res.SetApplicationRevision(description.ResourceRevisionArgs{
-		Revision:    2,
-		Type:        "file",
-		Origin:      "upload",
-		SHA384:      "abcd",
-		Size:        123,
-		Timestamp:   time.Now(),
-		RetrievedBy: "bob",
-	})
-
-	unit := app.AddUnit(description.UnitArgs{
-		Name: "foo/0",
-	})
-	unit.SetTools(description.AgentToolsArgs{
-		Version: tools0,
-		SHA256:  "439c9ea02f8561c5a152d7cf4818d72cd5f2916b555d82c5eee599f5e8f3dbbb",
-	})
-
-	s.modelExporter.EXPECT().ExportModel(gomock.Any(), s.store).Return(s.model, nil)
-
-	serialized, err := s.mustMakeAPI(c).Export(c.Context())
-	c.Assert(err, tc.ErrorIsNil)
-
-	// We don't want to tie this test the serialisation output (that's
-	// tested elsewhere). Just check that at least one thing we expect
-	// is in the serialised output.
-	c.Check(string(serialized.Bytes), tc.Contains, jujuversion.Current.String())
-
-	c.Check(serialized.Charms, tc.DeepEquals, []string{"ch:foo-0"})
-	if modelType == "caas" {
-		c.Check(serialized.Tools, tc.HasLen, 0)
-	} else {
-		c.Check(serialized.Tools, tc.SameContents, []params.SerializedModelTools{
-			{Version: tools0, URI: "/tools/" + tools0, SHA256: "439c9ea02f8561c5a152d7cf4818d72cd5f2916b555d82c5eee599f5e8f3dbbb"},
-			{Version: tools1, URI: "/tools/" + tools1, SHA256: "439c9ea02f8561c5a152d7cf4818d72cd5f2916b555d82c5eee599f5e8f3d09e"},
-			{Version: tools2, URI: "/tools/" + tools2, SHA256: "439c9ea02f8561c5a152d7cf4818d72cd5f2916b555d82c5eee599f5e8f3daaa"},
-		})
-	}
-	c.Check(serialized.Resources, tc.DeepEquals, []params.SerializedModelResource{{
-		Application:    "foo",
-		Name:           "bin",
-		Revision:       appRev.Revision(),
-		Type:           appRev.Type(),
-		Origin:         appRev.Origin(),
-		FingerprintHex: appRev.SHA384(),
-		Size:           appRev.Size(),
-		Timestamp:      appRev.Timestamp(),
-		Username:       appRev.RetrievedBy(),
-	}})
 }
 
 func (s *Suite) TestReap(c *tc.C) {
@@ -500,7 +421,6 @@ func (s *Suite) setupMocks(c *tc.C) *gomock.Controller {
 	s.controllerNodeService = mocks.NewMockControllerNodeService(ctrl)
 	s.credentialService = mocks.NewMockCredentialService(ctrl)
 	s.machineService = mocks.NewMockMachineService(ctrl)
-	s.modelExporter = mocks.NewMockModelExporter(ctrl)
 	s.modelInfoService = mocks.NewMockModelInfoService(ctrl)
 	s.modelMigrationService = mocks.NewMockModelMigrationService(ctrl)
 	s.modelService = mocks.NewMockModelService(ctrl)
@@ -517,7 +437,6 @@ func (s *Suite) setupMocks(c *tc.C) *gomock.Controller {
 		s.controllerNodeService = nil
 		s.credentialService = nil
 		s.machineService = nil
-		s.modelExporter = nil
 		s.modelInfoService = nil
 		s.modelMigrationService = nil
 		s.modelService = nil
@@ -538,7 +457,6 @@ func (s *Suite) mustMakeAPI(c *tc.C) *migrationmaster.API {
 
 func (s *Suite) makeAPI() (*migrationmaster.API, error) {
 	return migrationmaster.NewAPI(
-		s.modelExporter,
 		s.store,
 		s.controllerModelUUID,
 		s.watcherRegistry,

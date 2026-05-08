@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Configure and manage secret backends in Juju, including Vault integration for secure storage of credentials and sensitive data."
+---
+
 (manage-secret-backends)=
 # How to manage secret backends
 

@@ -14,8 +14,8 @@ import (
 	internalhttp "github.com/juju/juju/apiserver/internal/http"
 	"github.com/juju/juju/core/logger"
 	coreresource "github.com/juju/juju/core/resource"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/domain/resource"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	internalerrors "github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/rpc/params"
 )
@@ -23,16 +23,19 @@ import (
 // resourcesMigrationUploadHandler handles resources uploads for model migrations.
 type resourcesMigrationUploadHandler struct {
 	resourceServiceGetter ResourceServiceGetter
+	modelService          ModelServiceGetter
 	logger                logger.Logger
 }
 
 // NewResourceMigrationUploadHandler returns a new HTTP handler for resources
 // uploads during model migrations.
 func NewResourceMigrationUploadHandler(
+	modelService ModelServiceGetter,
 	resourceServiceGetter ResourceServiceGetter,
 	logger logger.Logger,
 ) *resourcesMigrationUploadHandler {
 	return &resourcesMigrationUploadHandler{
+		modelService:          modelService,
 		resourceServiceGetter: resourceServiceGetter,
 		logger:                logger,
 	}
@@ -58,10 +61,16 @@ func (h *resourcesMigrationUploadHandler) ServeHTTP(w http.ResponseWriter, r *ht
 // ServePost handles the POST request for resource uploads, including
 // validation, authentication, processing, and response.
 func (h *resourcesMigrationUploadHandler) servePost(w http.ResponseWriter, r *http.Request) error {
-	// todo(gfouillet): This call should be authenticated. When model domain will
-	//  provide authentication checks, we will need to ensure here that
-	//  the request has been authenticated, and that the targeted model is in
-	//  `importing` state.
+	modelService, err := h.modelService.Model(r)
+	if err != nil {
+		return internalerrors.Capture(err)
+	}
+
+	if isImporting, err := modelService.IsImportingModel(r.Context()); err != nil {
+		return internalerrors.Capture(err)
+	} else if !isImporting {
+		return errors.BadRequestf("importing resources while model is not importing")
+	}
 
 	resourceService, err := h.resourceServiceGetter.Resource(r)
 	if err != nil {
@@ -73,7 +82,7 @@ func (h *resourcesMigrationUploadHandler) servePost(w http.ResponseWriter, r *ht
 		return internalerrors.Capture(err)
 	}
 	return internalhttp.SendStatusAndJSON(w, http.StatusOK, &params.ResourceUploadResult{
-		ID:        res.UUID.String(),
+		ID:        res.ID,
 		Timestamp: res.Timestamp,
 	})
 }
@@ -145,8 +154,7 @@ func (h *resourcesMigrationUploadHandler) processPost(
 	// body matches the hash and size in the headers. However, there is a bug
 	// for container resources exported from 3.6 where the hash the header does
 	// not match the hash in the body. For this reason, we do not check it here.
-
-	err = resourceService.StoreResource(ctx, resource.StoreResourceArgs{
+	return resourceService.StoreResource(ctx, resource.StoreResourceArgs{
 		ResourceUUID:    resUUID,
 		Reader:          r.Body,
 		RetrievedBy:     retrievedBy,
@@ -154,11 +162,6 @@ func (h *resourcesMigrationUploadHandler) processPost(
 		Size:            details.size,
 		Fingerprint:     details.fingerprint,
 	})
-	if err != nil {
-		return empty, internalerrors.Capture(err)
-	}
-
-	return resourceService.GetResource(ctx, resUUID)
 }
 
 // determineRetrievedBy determines the entity that retrieved the resource using

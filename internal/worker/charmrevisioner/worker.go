@@ -5,6 +5,7 @@ package charmrevisioner
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -13,8 +14,8 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"github.com/juju/retry"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 
 	coreapplication "github.com/juju/juju/core/application"
 	"github.com/juju/juju/core/arch"
@@ -31,11 +32,11 @@ import (
 	applicationcharm "github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	"github.com/juju/juju/domain/deployment"
+	"github.com/juju/juju/domain/deployment/charm"
+	"github.com/juju/juju/domain/deployment/charm/repository"
+	"github.com/juju/juju/domain/deployment/charm/resource"
 	domainresource "github.com/juju/juju/domain/resource"
 	"github.com/juju/juju/environs/config"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/charm/repository"
-	"github.com/juju/juju/internal/charm/resource"
 	"github.com/juju/juju/internal/charmhub"
 	"github.com/juju/juju/internal/charmhub/transport"
 	internalerrors "github.com/juju/juju/internal/errors"
@@ -243,44 +244,19 @@ func (w *revisionUpdateWorker) loop() error {
 	// Report the initial started state.
 	w.reportInternalState(stateStarted)
 
+	// Create the update timer outside the loop to prevent config changes
+	// from resetting it.
+	updateTimer := w.config.Clock.NewTimer(jitter(w.config.Period))
+	defer updateTimer.Stop()
+
 	for {
 		select {
 		case <-w.catacomb.Dying():
 			return w.catacomb.ErrDying()
 
-		case <-w.config.Clock.After(jitter(w.config.Period)):
-			w.config.Logger.Debugf(ctx, "%v elapsed, performing work", w.config.Period)
-
-			// This worker is responsible for updating the latest revision of
-			// applications in the model. It does this by fetching the latest
-			// revision from the charmhub and updating the model with the
-			// information.
-			// If the update fails, the worker will log an error and continue
-			// to the next application.
-
-			latestInfo, err := w.fetch(ctx, charmhubClient)
-			if errors.Is(err, ErrFailedToSendMetrics) {
-				logger.Warningf(ctx, "failed to send metrics: %v", err)
-				continue
-			} else if err != nil {
-				logger.Errorf(ctx, "failed to fetch revisions: %v", err)
-				continue
-			} else if len(latestInfo) == 0 {
-				if err := w.recordNoApplications(ctx, charmhubClient); err != nil {
-					logger.Warningf(ctx, "failed to record no applications: %v", err)
-				}
-				logger.Debugf(ctx, "no new application revisions")
-				continue
-			}
-
-			logger.Debugf(ctx, "revisions fetched for %d applications", len(latestInfo))
-
-			if err := w.storeNewRevisions(ctx, latestInfo); err != nil {
-				logger.Warningf(ctx, "failed to store revisions: %v", err)
-				continue
-			}
-
-			logger.Debugf(ctx, "revisions stored for %d applications", len(latestInfo))
+		case <-updateTimer.Chan():
+			w.processUpdate(ctx, charmhubClient)
+			updateTimer.Reset(jitter(w.config.Period))
 
 		case changes, ok := <-configWatcher.Changes():
 			if !ok {
@@ -288,11 +264,8 @@ func (w *revisionUpdateWorker) loop() error {
 			}
 
 			var refresh bool
-			for _, key := range changes {
-				if key == config.CharmHubURLKey {
-					refresh = true
-					break
-				}
+			if slices.Contains(changes, config.CharmHubURLKey) {
+				refresh = true
 			}
 
 			if !refresh {
@@ -307,6 +280,43 @@ func (w *revisionUpdateWorker) loop() error {
 			}
 		}
 	}
+}
+
+// processUpdate performs the charm revision update cycle.
+// It fetches the latest charm information from charmhub and stores any new revisions.
+func (w *revisionUpdateWorker) processUpdate(ctx context.Context, charmhubClient CharmhubClient) {
+	logger := w.config.Logger
+	logger.Debugf(ctx, "%v elapsed, performing work", w.config.Period)
+
+	// This worker is responsible for updating the latest revision of
+	// applications in the model. It does this by fetching the latest
+	// revision from the charmhub and updating the model with the
+	// information.
+	// If the update fails, the worker will log an error and return.
+
+	latestInfo, err := w.fetch(ctx, charmhubClient)
+	if errors.Is(err, ErrFailedToSendMetrics) {
+		logger.Warningf(ctx, "failed to send metrics: %v", err)
+		return
+	} else if err != nil {
+		logger.Errorf(ctx, "failed to fetch revisions: %v", err)
+		return
+	} else if len(latestInfo) == 0 {
+		if err := w.recordNoApplications(ctx, charmhubClient); err != nil {
+			logger.Warningf(ctx, "failed to record no applications: %v", err)
+		}
+		logger.Debugf(ctx, "no new application revisions")
+		return
+	}
+
+	logger.Debugf(ctx, "revisions fetched for %d applications", len(latestInfo))
+
+	if err := w.storeNewRevisions(ctx, latestInfo); err != nil {
+		logger.Warningf(ctx, "failed to store revisions: %v", err)
+		return
+	}
+
+	logger.Debugf(ctx, "revisions stored for %d applications", len(latestInfo))
 }
 
 func (w *revisionUpdateWorker) fetch(ctx context.Context, client CharmhubClient) ([]latestCharmInfo, error) {

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Understand Juju workers, their interface implementation, and role in the dependency engine for managing concurrent operations."
+---
+
 (worker-cont)=
 # Worker
 <!---To see previous major version of this doc, see version 13.-->

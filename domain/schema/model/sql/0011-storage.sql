@@ -225,7 +225,8 @@ INSERT INTO storage_volume_status_value VALUES
 (3, 'attached'),
 (4, 'detaching'),
 (5, 'detached'),
-(6, 'destroying');
+(6, 'destroying'),
+(7, 'tombstone');
 
 CREATE TABLE storage_volume_status (
     volume_uuid TEXT NOT NULL PRIMARY KEY,
@@ -306,6 +307,7 @@ CREATE TABLE storage_volume_attachment (
     net_node_uuid TEXT NOT NULL,
     life_id INT NOT NULL,
     provision_scope_id INT NOT NULL,
+    provider_id TEXT,
     block_device_uuid TEXT,
     read_only BOOLEAN,
     CONSTRAINT fk_storage_volume_attachment_vol
@@ -351,7 +353,8 @@ INSERT INTO storage_filesystem_status_value VALUES
 (3, 'attached'),
 (4, 'detaching'),
 (5, 'detached'),
-(6, 'destroying');
+(6, 'destroying'),
+(7, 'tombstone');
 
 CREATE TABLE storage_filesystem_status (
     filesystem_uuid TEXT NOT NULL PRIMARY KEY,
@@ -417,6 +420,7 @@ CREATE TABLE storage_filesystem_attachment (
     storage_filesystem_uuid TEXT NOT NULL,
     net_node_uuid TEXT NOT NULL,
     provision_scope_id INT NOT NULL,
+    provider_id TEXT,
     life_id INT NOT NULL,
     mount_point TEXT,
     read_only BOOLEAN,

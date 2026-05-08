@@ -75,10 +75,28 @@ func (s *netConfigSuite) TestSetMachineNetConfigSetCallError(c *tc.C) {
 
 	exp := s.st.EXPECT()
 	exp.GetMachineNetNodeUUID(gomock.Any(), mUUID.String()).Return(nUUID, nil)
-	exp.SetMachineNetConfig(gomock.Any(), nUUID, nics).Return(errors.New("boom"))
+	exp.IsMachineUnmanaged(gomock.Any(), mUUID.String()).Return(false, nil)
+	exp.SetMachineNetConfig(gomock.Any(), nUUID, nics, false).Return(errors.New("boom"))
 
 	err = s.service(c).SetMachineNetConfig(c.Context(), mUUID, nics)
 	c.Assert(err, tc.ErrorMatches, "setting net config for machine .* boom")
+}
+
+func (s *netConfigSuite) TestSetMachineNetConfigUnmanagedCheckError(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	nUUID := "set-node-uuid"
+	mUUID, err := machine.NewUUID()
+	c.Assert(err, tc.ErrorIsNil)
+
+	nics := []network.NetInterface{{Name: "eth0"}}
+
+	exp := s.st.EXPECT()
+	exp.GetMachineNetNodeUUID(gomock.Any(), mUUID.String()).Return(nUUID, nil)
+	exp.IsMachineUnmanaged(gomock.Any(), mUUID.String()).Return(false, errors.New("boom"))
+
+	err = s.service(c).SetMachineNetConfig(c.Context(), mUUID, nics)
+	c.Assert(err, tc.ErrorMatches, "checking machine .* unmanaged status: boom")
 }
 
 func (s *netConfigSuite) TestSetMachineNetConfigEmpty(c *tc.C) {
@@ -118,7 +136,28 @@ func (s *netConfigSuite) TestSetMachineNetConfig(c *tc.C) {
 
 	exp := s.st.EXPECT()
 	exp.GetMachineNetNodeUUID(gomock.Any(), mUUID.String()).Return(nUUID, nil)
-	exp.SetMachineNetConfig(gomock.Any(), nUUID, nics).Return(nil)
+	exp.IsMachineUnmanaged(gomock.Any(), mUUID.String()).Return(false, nil)
+	exp.SetMachineNetConfig(gomock.Any(), nUUID, nics, false).Return(nil)
+
+	err = s.service(c).SetMachineNetConfig(ctx, mUUID, nics)
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *netConfigSuite) TestSetMachineNetConfigUnmanagedAddsMissingSubnets(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	ctx := c.Context()
+
+	nUUID := "set-node-uuid"
+	mUUID, err := machine.NewUUID()
+	c.Assert(err, tc.ErrorIsNil)
+
+	nics := []network.NetInterface{{Name: "eth0"}}
+
+	exp := s.st.EXPECT()
+	exp.GetMachineNetNodeUUID(gomock.Any(), mUUID.String()).Return(nUUID, nil)
+	exp.IsMachineUnmanaged(gomock.Any(), mUUID.String()).Return(true, nil)
+	exp.SetMachineNetConfig(gomock.Any(), nUUID, nics, true).Return(nil)
 
 	err = s.service(c).SetMachineNetConfig(ctx, mUUID, nics)
 	c.Assert(err, tc.ErrorIsNil)
@@ -198,9 +237,9 @@ func (s *netConfigSuite) TestGetAllDevicesByMachineNamesMultipleMachinesWithDevi
 	// Arrange
 	defer s.setupMocks(c).Finish()
 
-	eth01 := network.NetInterface{Name: "eth0", MACAddress: ptr("00:11:22:33:44:55")}
-	eth02 := network.NetInterface{Name: "eth0", MACAddress: ptr("aa:bb:cc:dd:ee:ff")}
-	eth1 := network.NetInterface{Name: "eth1", MACAddress: ptr("00:11:22:33:44:66")}
+	eth01 := network.NetInterface{Name: "eth0", MACAddress: new("00:11:22:33:44:55")}
+	eth02 := network.NetInterface{Name: "eth0", MACAddress: new("aa:bb:cc:dd:ee:ff")}
+	eth1 := network.NetInterface{Name: "eth1", MACAddress: new("00:11:22:33:44:66")}
 
 	// Mock AllMachinesAndNetNodes to return a map of machine names to node UUIDs
 	s.st.EXPECT().AllMachinesAndNetNodes(gomock.Any()).Return(map[string]string{
@@ -255,7 +294,7 @@ func (s *netConfigSuite) TestGetAllDevicesByMachineNamesMachinesWithNoDevices(c 
 	// Arrange
 	defer s.setupMocks(c).Finish()
 
-	eth0 := network.NetInterface{Name: "eth0", MACAddress: ptr("00:11:22:33:44:55")}
+	eth0 := network.NetInterface{Name: "eth0", MACAddress: new("00:11:22:33:44:55")}
 	// Mock AllMachinesAndNetNodes to return a map with machines
 	s.st.EXPECT().AllMachinesAndNetNodes(gomock.Any()).Return(map[string]string{
 		"machine-0": "node-uuid-1",
@@ -330,7 +369,7 @@ func (s *netConfigSuite) TestGetAllDevicesByMachineNamesNodeUUIDNotFound(c *tc.C
 	// Mock GetAllLinkLayerDevicesByNetNodeUUIDs to return devices for a different node UUID
 	s.st.EXPECT().GetAllLinkLayerDevicesByNetNodeUUIDs(gomock.Any()).Return(map[string][]network.NetInterface{
 		"node-uuid-3": {
-			{Name: "eth0", MACAddress: ptr("00:11:22:33:44:55")},
+			{Name: "eth0", MACAddress: new("00:11:22:33:44:55")},
 		},
 	}, nil)
 
@@ -342,8 +381,4 @@ func (s *netConfigSuite) TestGetAllDevicesByMachineNamesNodeUUIDNotFound(c *tc.C
 	c.Assert(result, tc.HasLen, 2)
 	c.Assert(result["machine-0"], tc.HasLen, 0) // Empty slice for machine-0
 	c.Assert(result["machine-1"], tc.HasLen, 0) // Empty slice for machine-1
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }

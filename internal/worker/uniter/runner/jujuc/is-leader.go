@@ -8,7 +8,7 @@ import (
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/cmd/cmd"
 )
 
 // isLeaderCommand implements the is-leader command.
@@ -26,8 +26,8 @@ func NewIsLeaderCommand(ctx Context) (cmd.Command, error) {
 // Info is part of the cmd.Command interface.
 func (c *isLeaderCommand) Info() *cmd.Info {
 	doc := `
-is-leader prints a boolean indicating whether the local unit is guaranteed to
-be application leader for at least 30 seconds. If it fails, you should assume that
+` + "`is-leader`" + ` prints a boolean indicating whether the local unit is guaranteed to
+be application leader for at least 30 seconds;  if it fails, you should assume that
 there is no such guarantee.
 `
 	examples := `
@@ -38,7 +38,7 @@ there is no such guarantee.
 `
 	return jujucmd.Info(&cmd.Info{
 		Name:     "is-leader",
-		Purpose:  "Print application leadership status.",
+		Purpose:  "Prints application leadership status.",
 		Doc:      doc,
 		Examples: examples,
 	})

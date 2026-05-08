@@ -6,6 +6,7 @@ package machinemanager
 import (
 	"context"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/juju/clock"
@@ -120,6 +121,8 @@ func (mm *MachineManagerAPI) AddMachines(ctx context.Context, args params.AddMac
 	return results, nil
 }
 
+// addOneMachine processes a single machine addition.
+// TODO (manadart 2025-11-12): This should all be inside the service layer.
 func (mm *MachineManagerAPI) addOneMachine(ctx context.Context, p params.AddMachineParams) (coremachine.Name, error) {
 	if p.ParentId != "" && p.ContainerType == "" {
 		return "", internalerrors.New("parent machine specified without container type")
@@ -135,6 +138,9 @@ func (mm *MachineManagerAPI) addOneMachine(ctx context.Context, p params.AddMach
 		p.Nonce = ""
 		p.HardwareCharacteristics = instance.HardwareCharacteristics{}
 		p.Addrs = nil
+	}
+	if p.ContainerType != "" && p.ContainerType != instance.LXD {
+		return "", internalerrors.New("invalid container type")
 	}
 
 	var base corebase.Base
@@ -161,10 +167,34 @@ func (mm *MachineManagerAPI) addOneMachine(ctx context.Context, p params.AddMach
 		return "", internalerrors.Errorf("invalid model id %q", parsedPlacement.Directive)
 	}
 
+	// Prior to Juju 4, the logic was to populate ContainerType and ParentId
+	// from placement, and then call a specific state method to add a container
+	// inside another machine.
+	//
+	// This is now inverted. We only have one method and it handles all forms of
+	// placement, so we back-fill placement from ContainerType and ParentId.
+	// Validation above ensures we have an empty placement at this point.
+	//
+	// This actually makes ContainerType and ParentId redundant if bundle
+	// deployment were to populate placement instead. However, given that
+	// bundles and the current client API are to be phased out, we need not
+	// undertake that work as a priority.
+	if p.ContainerType != "" {
+		parsedPlacement.Type = deployment.PlacementTypeContainer
+		parsedPlacement.Container = deployment.ContainerTypeLXD
+		parsedPlacement.Directive = p.ParentId
+	}
+
 	var n *string
 	if p.Nonce != "" {
 		n = &p.Nonce
 	}
+
+	var instanceID *instance.Id
+	if p.InstanceId != "" {
+		instanceID = &p.InstanceId
+	}
+
 	osType, err := encodeOSType(base.OS)
 	if err != nil {
 		return "", internalerrors.Errorf("invalid placement: %w", err)
@@ -177,9 +207,13 @@ func (mm *MachineManagerAPI) addOneMachine(ctx context.Context, p params.AddMach
 			OSType:  osType,
 		},
 		Directive:               parsedPlacement,
+		InstanceID:              instanceID,
 		HardwareCharacteristics: p.HardwareCharacteristics,
 	})
 
+	if addedMachine.ChildMachineName != nil {
+		return *addedMachine.ChildMachineName, err
+	}
 	return addedMachine.MachineName, err
 }
 
@@ -286,14 +320,14 @@ func (mm *MachineManagerAPI) RetryProvisioning(ctx context.Context, p params.Ret
 		if !p.All && !wanted.Contains(machineName.String()) {
 			continue
 		}
-		if err := mm.maybeUpdateInstanceStatus(ctx, p.All, machineName, map[string]interface{}{"transient": true}); err != nil {
+		if err := mm.maybeUpdateInstanceStatus(ctx, p.All, machineName, map[string]any{"transient": true}); err != nil {
 			result.Results = append(result.Results, params.ErrorResult{Error: apiservererrors.ServerError(err)})
 		}
 	}
 	return result, nil
 }
 
-func (mm *MachineManagerAPI) maybeUpdateInstanceStatus(ctx context.Context, all bool, machineName coremachine.Name, data map[string]interface{}) error {
+func (mm *MachineManagerAPI) maybeUpdateInstanceStatus(ctx context.Context, all bool, machineName coremachine.Name, data map[string]any) error {
 	existingStatusInfo, err := mm.statusService.GetInstanceStatus(ctx, machineName)
 	if errors.Is(err, machineerrors.MachineNotFound) {
 		return errors.NotFoundf("machine %q", machineName)
@@ -305,9 +339,7 @@ func (mm *MachineManagerAPI) maybeUpdateInstanceStatus(ctx context.Context, all 
 	if newData == nil {
 		newData = data
 	} else {
-		for k, v := range data {
-			newData[k] = v
-		}
+		maps.Copy(newData, data)
 	}
 	if len(newData) > 0 && existingStatusInfo.Status != status.Error && existingStatusInfo.Status != status.ProvisioningError {
 		// If a specifc machine has been asked for and it's not in error, that's a problem.
@@ -480,7 +512,7 @@ func (a ModelAuthorizer) CanWrite(ctx context.Context) error {
 	return a.checkAccess(ctx, permission.WriteAccess)
 }
 
-// AuthClient returns true if the entity is an external user.
+// AuthClient returns true if the entity is a user.
 func (a ModelAuthorizer) AuthClient() bool {
 	return a.Authorizer.AuthClient()
 }

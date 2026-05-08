@@ -10,7 +10,9 @@ import (
 	"github.com/juju/tc"
 
 	corenetwork "github.com/juju/juju/core/network"
-	"github.com/juju/juju/domain/network"
+	networkinternal "github.com/juju/juju/domain/network/internal"
+	relationerrors "github.com/juju/juju/domain/relation/errors"
+	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/internal/uuid"
 )
 
@@ -23,154 +25,252 @@ func TestInfoSuite(t *testing.T) {
 	tc.Run(t, &infoSuite{})
 }
 
-// TestGetUnitEndpointNetworks tests the main function that retrieves network information for unit endpoints
-func (s *infoSuite) TestGetUnitEndpointNetworks(c *tc.C) {
-	// Arrange
+func (s *infoSuite) TestGetUnitEndpointNetworkInfo(c *tc.C) {
 	nodeUUID := s.addNetNode(c)
-	deviceUUID := s.addLinkLayerDevice(c, nodeUUID, "eth0", "00:11:22:33:44:55", corenetwork.EthernetDevice)
+	deviceUUID := s.addLinkLayerDevice(
+		c, nodeUUID, "eth0", "00:11:22:33:44:55", corenetwork.EthernetDevice,
+	)
 	spaceUUID := corenetwork.AlphaSpaceId.String()
 	cidr := "10.0.0.0/24"
 	subnetUUID := s.addSubnet(c, cidr, spaceUUID)
 	expectedAddr := "10.0.0.1"
-	s.addIPAddressWithSubnetAndScope(c, deviceUUID, nodeUUID, subnetUUID, expectedAddr, corenetwork.ScopeCloudLocal)
+	s.addIPAddressWithSubnetAndScope(
+		c, deviceUUID, nodeUUID, subnetUUID, expectedAddr, corenetwork.ScopeCloudLocal,
+	)
 
 	charmUUID := s.addCharm(c)
 	appUUID := s.addApplication(c, charmUUID, spaceUUID)
 	unitUUID := s.addUnit(c, appUUID, charmUUID, nodeUUID)
 
-	// Add endpoint
 	endpointName := "endpoint1"
 	s.addApplicationEndpoint(c, appUUID, charmUUID, endpointName, "")
 
-	// Act
-	networks, err := s.state.GetUnitEndpointNetworks(c.Context(), string(unitUUID), []string{endpointName})
+	info, err := s.state.GetUnitEndpointNetworkInfo(
+		c.Context(), string(unitUUID), []string{endpointName},
+	)
 
-	// Assert
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(networks, tc.DeepEquals, []network.UnitNetwork{{
+	c.Check(normaliseEndpointNetworkInfo(info), tc.DeepEquals, []networkinternal.EndpointNetworkInfo{{
 		EndpointName: endpointName,
-		DeviceInfos: []network.DeviceInfo{{
-			Name:       "eth0",
+		Addresses: []networkinternal.UnitAddress{{
+			SpaceAddress: corenetwork.SpaceAddress{
+				MachineAddress: corenetwork.MachineAddress{
+					Value: expectedAddr,
+					CIDR:  cidr,
+					Scope: corenetwork.ScopeCloudLocal,
+				},
+				SpaceID: corenetwork.SpaceUUID(spaceUUID),
+			},
+			DeviceName: "eth0",
 			MACAddress: "00:11:22:33:44:55",
-			Addresses: []network.AddressInfo{{
-				Hostname: expectedAddr,
-				Value:    expectedAddr,
-				CIDR:     cidr,
-			}},
+			DeviceType: corenetwork.EthernetDevice,
 		}},
 		IngressAddresses: []string{expectedAddr},
 	}})
 }
 
-// TestGetUnitEndpointNetworksMultipleEndpoints tests retrieving network information for multiple endpoints
-func (s *infoSuite) TestGetUnitEndpointNetworksMultipleEndpoints(c *tc.C) {
-	// Arrange
+func (s *infoSuite) TestGetUnitEndpointNetworkInfoOrdersIngress(c *tc.C) {
 	nodeUUID := s.addNetNode(c)
-	deviceUUID := s.addLinkLayerDevice(c, nodeUUID, "eth0", "00:11:22:33:44:55", corenetwork.EthernetDevice)
-	space1UUID := s.addSpace(c)
-	space2UUID := s.addSpace(c)
-	subnet1UUID := s.addSubnet(c, "10.0.0.0/24", space1UUID)
-	subnet2UUID := s.addSubnet(c, "10.0.1.0/24", space2UUID)
-
-	s.addIPAddressWithSubnetAndScope(c, deviceUUID, nodeUUID, subnet1UUID, "10.0.0.1", corenetwork.ScopeCloudLocal)
-	s.addIPAddressWithSubnetAndScope(c, deviceUUID, nodeUUID, subnet2UUID, "10.0.1.1", corenetwork.ScopeCloudLocal)
+	deviceUUID := s.addLinkLayerDevice(
+		c, nodeUUID, "eth0", "00:11:22:33:44:55", corenetwork.EthernetDevice,
+	)
+	spaceUUID := corenetwork.AlphaSpaceId.String()
+	subnetUUID := s.addSubnet(c, "198.51.100.0/24", spaceUUID)
+	s.addIPAddressWithSubnetAndOrigin(
+		c, deviceUUID, nodeUUID, subnetUUID, "198.51.100.20", 0,
+	)
+	s.query(c, `
+UPDATE ip_address
+SET scope_id = (SELECT id FROM ip_address_scope WHERE name = 'public')
+WHERE uuid = ?
+`, "address-198.51.100.20-uuid")
+	s.addIPAddressWithSubnetAndOrigin(
+		c, deviceUUID, nodeUUID, subnetUUID, "198.51.100.10", 1,
+	)
+	s.query(c, `
+UPDATE ip_address
+SET scope_id = (SELECT id FROM ip_address_scope WHERE name = 'public')
+WHERE uuid = ?
+`, "address-198.51.100.10-uuid")
 
 	charmUUID := s.addCharm(c)
-	appUUID := s.addApplication(c, charmUUID, space1UUID)
+	appUUID := s.addApplication(c, charmUUID, spaceUUID)
 	unitUUID := s.addUnit(c, appUUID, charmUUID, nodeUUID)
 
-	// Add endpoints
-	s.addApplicationEndpoint(c, appUUID, charmUUID, "endpoint1", space1UUID)
-	s.addApplicationEndpoint(c, appUUID, charmUUID, "endpoint2", space2UUID)
+	endpointName := "endpoint1"
+	s.addApplicationEndpoint(c, appUUID, charmUUID, endpointName, "")
 
-	// Act
-	networks, err := s.state.GetUnitEndpointNetworks(c.Context(), string(unitUUID), []string{"endpoint1", "endpoint2"})
+	info, err := s.state.GetUnitEndpointNetworkInfo(
+		c.Context(), string(unitUUID), []string{endpointName},
+	)
 
-	// Assert
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(networks, tc.SameContents, []network.UnitNetwork{{
+	c.Assert(info, tc.HasLen, 1)
+	c.Check(
+		info[0].IngressAddresses,
+		tc.DeepEquals,
+		[]string{"198.51.100.10", "198.51.100.20"},
+	)
+}
+
+func (s *infoSuite) TestGetUnitEndpointNetworkInfoPrioritisesPrimaryIngress(c *tc.C) {
+	nodeUUID := s.addNetNode(c)
+	deviceUUID := s.addLinkLayerDevice(
+		c, nodeUUID, "eth0", "00:11:22:33:44:55", corenetwork.EthernetDevice,
+	)
+	spaceUUID := corenetwork.AlphaSpaceId.String()
+	subnetUUID := s.addSubnet(c, "10.0.0.0/24", spaceUUID)
+	s.addIPAddressWithSubnetAndScope(
+		c, deviceUUID, nodeUUID, subnetUUID, "10.0.0.20", corenetwork.ScopeCloudLocal,
+	)
+	secondaryUUID := s.addIPAddressWithSubnetAndScope(
+		c, deviceUUID, nodeUUID, subnetUUID, "10.0.0.10", corenetwork.ScopeCloudLocal,
+	)
+	s.markIPAddressSecondary(c, secondaryUUID)
+
+	charmUUID := s.addCharm(c)
+	appUUID := s.addApplication(c, charmUUID, spaceUUID)
+	unitUUID := s.addUnit(c, appUUID, charmUUID, nodeUUID)
+
+	endpointName := "endpoint1"
+	s.addApplicationEndpoint(c, appUUID, charmUUID, endpointName, "")
+
+	info, err := s.state.GetUnitEndpointNetworkInfo(
+		c.Context(), string(unitUUID), []string{endpointName},
+	)
+
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(info, tc.HasLen, 1)
+	c.Check(
+		info[0].IngressAddresses,
+		tc.DeepEquals,
+		[]string{"10.0.0.20", "10.0.0.10"},
+	)
+}
+
+func (s *infoSuite) TestGetUnitEndpointNetworkInfoMultipleEndpointsSameSpace(c *tc.C) {
+	nodeUUID := s.addNetNode(c)
+	deviceUUID := s.addLinkLayerDevice(
+		c, nodeUUID, "eth0", "00:11:22:33:44:55", corenetwork.EthernetDevice,
+	)
+	spaceUUID := corenetwork.AlphaSpaceId.String()
+	cidr := "10.0.0.0/24"
+	subnetUUID := s.addSubnet(c, cidr, spaceUUID)
+	s.addIPAddressWithSubnetAndScope(
+		c, deviceUUID, nodeUUID, subnetUUID, "10.0.0.1", corenetwork.ScopeCloudLocal,
+	)
+
+	charmUUID := s.addCharm(c)
+	appUUID := s.addApplication(c, charmUUID, spaceUUID)
+	unitUUID := s.addUnit(c, appUUID, charmUUID, nodeUUID)
+
+	s.addApplicationEndpoint(c, appUUID, charmUUID, "endpoint1", "")
+	s.addApplicationEndpoint(c, appUUID, charmUUID, "endpoint2", "")
+
+	info, err := s.state.GetUnitEndpointNetworkInfo(
+		c.Context(), string(unitUUID), []string{"endpoint1", "endpoint2"},
+	)
+
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(normaliseEndpointNetworkInfo(info), tc.DeepEquals, []networkinternal.EndpointNetworkInfo{{
 		EndpointName: "endpoint1",
-		DeviceInfos: []network.DeviceInfo{{
-			Name:       "eth0",
+		Addresses: []networkinternal.UnitAddress{{
+			SpaceAddress: corenetwork.SpaceAddress{
+				MachineAddress: corenetwork.MachineAddress{
+					Value: "10.0.0.1",
+					CIDR:  cidr,
+					Scope: corenetwork.ScopeCloudLocal,
+				},
+				SpaceID: corenetwork.SpaceUUID(spaceUUID),
+			},
+			DeviceName: "eth0",
 			MACAddress: "00:11:22:33:44:55",
-			Addresses: []network.AddressInfo{{
-				Hostname: "10.0.0.1",
-				Value:    "10.0.0.1",
-				CIDR:     "10.0.0.0/24",
-			}},
+			DeviceType: corenetwork.EthernetDevice,
 		}},
 		IngressAddresses: []string{"10.0.0.1"},
 	}, {
 		EndpointName: "endpoint2",
-		DeviceInfos: []network.DeviceInfo{{
-			Name:       "eth0",
+		Addresses: []networkinternal.UnitAddress{{
+			SpaceAddress: corenetwork.SpaceAddress{
+				MachineAddress: corenetwork.MachineAddress{
+					Value: "10.0.0.1",
+					CIDR:  cidr,
+					Scope: corenetwork.ScopeCloudLocal,
+				},
+				SpaceID: corenetwork.SpaceUUID(spaceUUID),
+			},
+			DeviceName: "eth0",
 			MACAddress: "00:11:22:33:44:55",
-			Addresses: []network.AddressInfo{{
-				Hostname: "10.0.1.1",
-				Value:    "10.0.1.1",
-				CIDR:     "10.0.1.0/24",
-			}},
+			DeviceType: corenetwork.EthernetDevice,
 		}},
-		IngressAddresses: []string{"10.0.1.1"},
+		IngressAddresses: []string{"10.0.0.1"},
 	}})
 }
 
-// TestGetUnitEndpointNetworksCaasUnit tests retrieving network information for a CAAS unit
-func (s *infoSuite) TestGetUnitEndpointNetworksCaasUnit(c *tc.C) {
-	// Arrange
+func (s *infoSuite) TestGetUnitEndpointNetworkInfoCaasUnit(c *tc.C) {
 	podNodeUUID := s.addNetNode(c)
 	svcNodeUUID := s.addNetNode(c)
-	deviceUUID := s.addLinkLayerDevice(c, podNodeUUID, "eth0", "00:11:22:33:44:55", corenetwork.EthernetDevice)
+	deviceUUID := s.addLinkLayerDevice(
+		c, podNodeUUID, "eth0", "00:11:22:33:44:55", corenetwork.EthernetDevice,
+	)
 	spaceUUID := s.addSpace(c)
 	cidr := "10.0.0.0/24"
 	subnetUUID := s.addSubnet(c, cidr, spaceUUID)
+	s.addIPAddressWithSubnetAndScope(
+		c, deviceUUID, podNodeUUID, subnetUUID, "10.0.0.1", corenetwork.ScopeMachineLocal,
+	)
 
-	// Add pod address (machine local)
-	s.addIPAddressWithSubnetAndScope(c, deviceUUID, podNodeUUID, subnetUUID, "10.0.0.1", corenetwork.ScopeMachineLocal)
-
-	// Add service address (public)
-	svcDeviceUUID := s.addLinkLayerDevice(c, svcNodeUUID, "eth1", "00:11:22:33:44:66", corenetwork.EthernetDevice)
-	s.addIPAddressWithSubnetAndScope(c, svcDeviceUUID, svcNodeUUID, subnetUUID, "10.0.0.2",
-		corenetwork.ScopeCloudLocal)
+	svcDeviceUUID := s.addLinkLayerDevice(
+		c, svcNodeUUID, "eth1", "00:11:22:33:44:66", corenetwork.EthernetDevice,
+	)
+	s.addIPAddressWithSubnetAndScope(
+		c, svcDeviceUUID, svcNodeUUID, subnetUUID, "10.0.0.2", corenetwork.ScopeCloudLocal,
+	)
 
 	charmUUID := s.addCharm(c)
 	appUUID := s.addApplication(c, charmUUID, spaceUUID)
 	unitUUID := s.addUnit(c, appUUID, charmUUID, podNodeUUID)
 	s.addK8sService(c, svcNodeUUID, appUUID)
 
-	// Add endpoint
 	endpointName := "endpoint1"
 	s.addApplicationEndpoint(c, appUUID, charmUUID, endpointName, spaceUUID)
 
-	// Act
-	networks, err := s.state.GetUnitEndpointNetworks(c.Context(), string(unitUUID), []string{endpointName})
+	info, err := s.state.GetUnitEndpointNetworkInfo(
+		c.Context(), string(unitUUID), []string{endpointName},
+	)
 
-	// Assert
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(networks, tc.HasLen, 1)
-	c.Assert(networks[0].EndpointName, tc.Equals, endpointName)
-
-	// For CAAS units, machine local addresses should be included in device info
-	devices := transform.SliceToMap(networks[0].DeviceInfos, func(d network.DeviceInfo) (string, network.DeviceInfo) {
-		return d.Name, d
-	})
-	c.Assert(devices, tc.HasLen, 2)
-	c.Assert(devices["eth0"].Addresses, tc.SameContents, []network.AddressInfo{{
-		Hostname: "10.0.0.1",
-		Value:    "10.0.0.1",
-		CIDR:     "10.0.0.0/24",
+	c.Assert(info, tc.HasLen, 1)
+	c.Check(info[0].EndpointName, tc.Equals, endpointName)
+	c.Check(info[0].IngressAddresses, tc.DeepEquals, []string{"10.0.0.2"})
+	c.Check(normaliseUnitAddresses(info[0].Addresses), tc.SameContents, []networkinternal.UnitAddress{{
+		SpaceAddress: corenetwork.SpaceAddress{
+			MachineAddress: corenetwork.MachineAddress{
+				Value: "10.0.0.1",
+				CIDR:  cidr,
+				Scope: corenetwork.ScopeMachineLocal,
+			},
+			SpaceID: corenetwork.SpaceUUID(spaceUUID),
+		},
+		DeviceName: "eth0",
+		MACAddress: "00:11:22:33:44:55",
+		DeviceType: corenetwork.EthernetDevice,
+	}, {
+		SpaceAddress: corenetwork.SpaceAddress{
+			MachineAddress: corenetwork.MachineAddress{
+				Value: "10.0.0.2",
+				CIDR:  cidr,
+				Scope: corenetwork.ScopeCloudLocal,
+			},
+			SpaceID: corenetwork.SpaceUUID(spaceUUID),
+		},
+		DeviceName: "eth1",
+		MACAddress: "00:11:22:33:44:66",
+		DeviceType: corenetwork.EthernetDevice,
 	}})
-	c.Assert(devices["eth0"].MACAddress, tc.Equals, "00:11:22:33:44:55")
-	c.Assert(devices["eth1"].Addresses, tc.HasLen, 0)
-	c.Assert(devices["eth0"].MACAddress, tc.Equals, "00:11:22:33:44:55")
-
-	// For CAAS units, only non-machine-local addresses should be in ingress addresses
-	c.Assert(networks[0].IngressAddresses, tc.DeepEquals, []string{"10.0.0.2"})
 }
 
-// TestGetUnitEndpointNetworksNoAddresses tests retrieving network information when no addresses are available
-func (s *infoSuite) TestGetUnitEndpointNetworksNoAddresses(c *tc.C) {
-	// Arrange
+func (s *infoSuite) TestGetUnitEndpointNetworkInfoNoAddresses(c *tc.C) {
 	nodeUUID := s.addNetNode(c)
 	spaceUUID := s.addSpace(c)
 
@@ -178,119 +278,245 @@ func (s *infoSuite) TestGetUnitEndpointNetworksNoAddresses(c *tc.C) {
 	appUUID := s.addApplication(c, charmUUID, spaceUUID)
 	unitUUID := s.addUnit(c, appUUID, charmUUID, nodeUUID)
 
-	// Add endpoint
 	endpointName := "endpoint1"
 	s.addApplicationEndpoint(c, appUUID, charmUUID, endpointName, spaceUUID)
 
-	// Act
-	networks, err := s.state.GetUnitEndpointNetworks(c.Context(), string(unitUUID), []string{endpointName})
+	info, err := s.state.GetUnitEndpointNetworkInfo(
+		c.Context(), string(unitUUID), []string{endpointName},
+	)
 
-	// Assert
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(networks, tc.SameContents, []network.UnitNetwork{{
+	c.Check(info, tc.DeepEquals, []networkinternal.EndpointNetworkInfo{{
 		EndpointName: endpointName,
-		// No devices nor ingresses
 	}})
 }
 
-// TestGetAllSpacesForEndpoints tests retrieving space information for endpoints
-func (s *infoSuite) TestGetAllSpacesForEndpoints(c *tc.C) {
-	// Arrange
+func (s *infoSuite) TestGetUnitNetworkInfo(c *tc.C) {
 	nodeUUID := s.addNetNode(c)
-	defaultSpace := s.addSpace(c)
-	specificSpace := s.addSpace(c)
+	ethDeviceUUID := s.addLinkLayerDevice(
+		c, nodeUUID, "eth0", "00:11:22:33:44:55", corenetwork.EthernetDevice,
+	)
+	vethDeviceUUID := s.addLinkLayerDevice(
+		c, nodeUUID, "veth0", "00:11:22:33:44:66", corenetwork.VirtualEthernetDevice,
+	)
+	spaceUUID := corenetwork.AlphaSpaceId.String()
+	subnetUUID := s.addSubnet(c, "198.51.100.0/24", spaceUUID)
+
+	s.addIPAddressWithSubnetAndOrigin(
+		c, ethDeviceUUID, nodeUUID, subnetUUID, "198.51.100.20", 0,
+	)
+	s.query(c, `
+UPDATE ip_address
+SET scope_id = (SELECT id FROM ip_address_scope WHERE name = 'public')
+WHERE uuid = ?
+`, "address-198.51.100.20-uuid")
+
+	s.addIPAddressWithSubnetAndOrigin(
+		c, ethDeviceUUID, nodeUUID, subnetUUID, "198.51.100.10", 1,
+	)
+	s.query(c, `
+UPDATE ip_address
+SET scope_id = (SELECT id FROM ip_address_scope WHERE name = 'public')
+WHERE uuid = ?
+`, "address-198.51.100.10-uuid")
+
+	s.addIPAddressWithSubnetAndOrigin(
+		c, vethDeviceUUID, nodeUUID, subnetUUID, "198.51.100.30", 1,
+	)
+	s.query(c, `
+UPDATE ip_address
+SET scope_id = (SELECT id FROM ip_address_scope WHERE name = 'public')
+WHERE uuid = ?
+`, "address-198.51.100.30-uuid")
 
 	charmUUID := s.addCharm(c)
-	appUUID := s.addApplication(c, charmUUID, defaultSpace)
+	appUUID := s.addApplication(c, charmUUID, spaceUUID)
 	unitUUID := s.addUnit(c, appUUID, charmUUID, nodeUUID)
 
-	// Add endpoints
-	endpoint1Name := "endpoint1"
-	endpoint2Name := "endpoint2"
-	s.addApplicationEndpoint(c, appUUID, charmUUID, endpoint1Name, "")
-	s.addApplicationEndpoint(c, appUUID, charmUUID, endpoint2Name, specificSpace)
+	info, err := s.state.GetUnitNetworkInfo(c.Context(), string(unitUUID))
 
-	// Act
-	spaces, err := s.state.getAllSpacesForEndpoints(c.Context(), string(unitUUID), []string{endpoint1Name, endpoint2Name})
-
-	// Assert
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(spaces, tc.HasLen, 2)
-
-	// Verify both endpoints are returned with correct space
-	c.Assert(spaces, tc.SameContents, []spaceEndpoint{{
-		EndpointName: endpoint1Name,
-		SpaceUUID:    defaultSpace,
-	}, {
-		EndpointName: endpoint2Name,
-		SpaceUUID:    specificSpace,
-	}})
-}
-
-// TestGetAllUnitAddressesInSpaces tests retrieving addresses for a unit in specified spaces
-func (s *infoSuite) TestGetAllUnitAddressesInSpaces(c *tc.C) {
-	// Arrange
-	nodeUUID := s.addNetNode(c)
-	deviceUUID := s.addLinkLayerDevice(c, nodeUUID, "eth0", "00:11:22:33:44:55", corenetwork.EthernetDevice)
-
-	// First expected address
-	spaceUUID1 := s.addSpace(c)
-	subnetUUID1 := s.addSubnet(c, "10.0.0.0/24", spaceUUID1)
-	s.addIPAddressWithSubnet(c, deviceUUID, nodeUUID, subnetUUID1, "10.0.0.1")
-
-	// second expected address
-	spaceUUID2 := s.addSpace(c)
-	subnetUUID2 := s.addSubnet(c, "10.1.0.0/24", spaceUUID2)
-	s.addIPAddressWithSubnet(c, deviceUUID, nodeUUID, subnetUUID2, "10.1.0.1")
-
-	// Not expected address
-	s.addIPAddressWithSubnet(c, deviceUUID, nodeUUID, s.addSubnet(c, "10.2.0.0/24", s.addSpace(c)), "10.2.0.1")
-
-	charmUUID := s.addCharm(c)
-	appUUID := s.addApplication(c, charmUUID, corenetwork.AlphaSpaceId.String())
-	unitUUID := s.addUnit(c, appUUID, charmUUID, nodeUUID)
-
-	// Act
-	addresses, err := s.state.getAllUnitAddressesInSpaces(c.Context(), string(unitUUID), []string{spaceUUID1, spaceUUID2})
-
-	// Assert
-	// Clean addresses to only check what we have setted in test
-	//(we don't test spaceaddress functionnalities)
-	addresses = transform.Slice(addresses, func(addr unitAddress) unitAddress {
-		return unitAddress{
-			SpaceAddress: corenetwork.SpaceAddress{
-				MachineAddress: corenetwork.MachineAddress{
-					Value: addr.Value,
-					CIDR:  addr.CIDR,
-				},
-				SpaceID: addr.SpaceID,
+	c.Check(
+		info.IngressAddresses,
+		tc.DeepEquals,
+		[]string{"198.51.100.10", "198.51.100.20", "198.51.100.30"},
+	)
+	c.Check(normaliseUnitAddresses(info.Addresses), tc.SameContents, []networkinternal.UnitAddress{{
+		SpaceAddress: corenetwork.SpaceAddress{
+			MachineAddress: corenetwork.MachineAddress{
+				Value: "198.51.100.20",
+				CIDR:  "198.51.100.0/24",
+				Scope: corenetwork.ScopePublic,
 			},
-			Device: addr.Device,
-			MAC:    addr.MAC,
-		}
-	})
+			SpaceID: corenetwork.SpaceUUID(spaceUUID),
+		},
+		DeviceName: "eth0",
+		MACAddress: "00:11:22:33:44:55",
+		DeviceType: corenetwork.EthernetDevice,
+	}, {
+		SpaceAddress: corenetwork.SpaceAddress{
+			MachineAddress: corenetwork.MachineAddress{
+				Value: "198.51.100.10",
+				CIDR:  "198.51.100.0/24",
+				Scope: corenetwork.ScopePublic,
+			},
+			SpaceID: corenetwork.SpaceUUID(spaceUUID),
+		},
+		DeviceName: "eth0",
+		MACAddress: "00:11:22:33:44:55",
+		DeviceType: corenetwork.EthernetDevice,
+	}, {
+		SpaceAddress: corenetwork.SpaceAddress{
+			MachineAddress: corenetwork.MachineAddress{
+				Value: "198.51.100.30",
+				CIDR:  "198.51.100.0/24",
+				Scope: corenetwork.ScopePublic,
+			},
+			SpaceID: corenetwork.SpaceUUID(spaceUUID),
+		},
+		DeviceName: "veth0",
+		MACAddress: "00:11:22:33:44:66",
+		DeviceType: corenetwork.VirtualEthernetDevice,
+	}})
+}
+
+func (s *infoSuite) TestGetUnitNetworkInfoPrioritisesPrimaryIngress(c *tc.C) {
+	nodeUUID := s.addNetNode(c)
+	deviceUUID := s.addLinkLayerDevice(
+		c, nodeUUID, "eth0", "00:11:22:33:44:55", corenetwork.EthernetDevice,
+	)
+	spaceUUID := corenetwork.AlphaSpaceId.String()
+	subnetUUID := s.addSubnet(c, "10.0.0.0/24", spaceUUID)
+	s.addIPAddressWithSubnetAndScope(
+		c, deviceUUID, nodeUUID, subnetUUID, "10.0.0.20", corenetwork.ScopeCloudLocal,
+	)
+	secondaryUUID := s.addIPAddressWithSubnetAndScope(
+		c, deviceUUID, nodeUUID, subnetUUID, "10.0.0.10", corenetwork.ScopeCloudLocal,
+	)
+	s.markIPAddressSecondary(c, secondaryUUID)
+
+	charmUUID := s.addCharm(c)
+	appUUID := s.addApplication(c, charmUUID, spaceUUID)
+	unitUUID := s.addUnit(c, appUUID, charmUUID, nodeUUID)
+
+	info, err := s.state.GetUnitNetworkInfo(c.Context(), string(unitUUID))
+
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(addresses, tc.SameContents, []unitAddress{{
+	c.Check(
+		info.IngressAddresses,
+		tc.DeepEquals,
+		[]string{"10.0.0.20", "10.0.0.10"},
+	)
+}
+
+func (s *infoSuite) TestGetUnitNetworkInfoCaasUnit(c *tc.C) {
+	podNodeUUID := s.addNetNode(c)
+	svcNodeUUID := s.addNetNode(c)
+	deviceUUID := s.addLinkLayerDevice(
+		c, podNodeUUID, "eth0", "00:11:22:33:44:55", corenetwork.EthernetDevice,
+	)
+	spaceUUID := corenetwork.AlphaSpaceId.String()
+	cidr := "10.0.0.0/24"
+	subnetUUID := s.addSubnet(c, cidr, spaceUUID)
+	s.addIPAddressWithSubnetAndScope(
+		c, deviceUUID, podNodeUUID, subnetUUID, "10.0.0.1", corenetwork.ScopeMachineLocal,
+	)
+
+	svcVethUUID := s.addLinkLayerDevice(
+		c, svcNodeUUID, "veth0", "00:11:22:33:44:66", corenetwork.VirtualEthernetDevice,
+	)
+	s.addIPAddressWithSubnetAndScope(
+		c, svcVethUUID, svcNodeUUID, subnetUUID, "10.0.0.3", corenetwork.ScopeCloudLocal,
+	)
+
+	svcEthUUID := s.addLinkLayerDevice(
+		c, svcNodeUUID, "eth1", "00:11:22:33:44:77", corenetwork.EthernetDevice,
+	)
+	s.addIPAddressWithSubnetAndScope(
+		c, svcEthUUID, svcNodeUUID, subnetUUID, "10.0.0.2", corenetwork.ScopeCloudLocal,
+	)
+
+	charmUUID := s.addCharm(c)
+	appUUID := s.addApplication(c, charmUUID, spaceUUID)
+	unitUUID := s.addUnit(c, appUUID, charmUUID, podNodeUUID)
+	s.addK8sService(c, svcNodeUUID, appUUID)
+
+	info, err := s.state.GetUnitNetworkInfo(c.Context(), string(unitUUID))
+
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(info.IngressAddresses, tc.DeepEquals, []string{"10.0.0.2", "10.0.0.3"})
+	c.Check(normaliseUnitAddresses(info.Addresses), tc.SameContents, []networkinternal.UnitAddress{{
 		SpaceAddress: corenetwork.SpaceAddress{
 			MachineAddress: corenetwork.MachineAddress{
 				Value: "10.0.0.1",
-				CIDR:  "10.0.0.0/24",
+				CIDR:  cidr,
+				Scope: corenetwork.ScopeMachineLocal,
 			},
-			SpaceID: corenetwork.SpaceUUID(spaceUUID1),
+			SpaceID: corenetwork.SpaceUUID(spaceUUID),
 		},
-		Device: "eth0",
-		MAC:    "00:11:22:33:44:55",
+		DeviceName: "eth0",
+		MACAddress: "00:11:22:33:44:55",
+		DeviceType: corenetwork.EthernetDevice,
 	}, {
 		SpaceAddress: corenetwork.SpaceAddress{
 			MachineAddress: corenetwork.MachineAddress{
-				Value: "10.1.0.1",
-				CIDR:  "10.1.0.0/24",
+				Value: "10.0.0.2",
+				CIDR:  cidr,
+				Scope: corenetwork.ScopeCloudLocal,
 			},
-			SpaceID: corenetwork.SpaceUUID(spaceUUID2),
+			SpaceID: corenetwork.SpaceUUID(spaceUUID),
 		},
-		Device: "eth0",
-		MAC:    "00:11:22:33:44:55",
+		DeviceName: "eth1",
+		MACAddress: "00:11:22:33:44:77",
+		DeviceType: corenetwork.EthernetDevice,
+	}, {
+		SpaceAddress: corenetwork.SpaceAddress{
+			MachineAddress: corenetwork.MachineAddress{
+				Value: "10.0.0.3",
+				CIDR:  cidr,
+				Scope: corenetwork.ScopeCloudLocal,
+			},
+			SpaceID: corenetwork.SpaceUUID(spaceUUID),
+		},
+		DeviceName: "veth0",
+		MACAddress: "00:11:22:33:44:66",
+		DeviceType: corenetwork.VirtualEthernetDevice,
 	}})
+}
+
+func (s *infoSuite) TestGetUnitRelationEndpointName(c *tc.C) {
+	nodeUUID := s.addNetNode(c)
+	charmUUID := s.addCharm(c)
+	spaceUUID := s.addSpace(c)
+	appUUID := s.addApplication(c, charmUUID, spaceUUID)
+	unitUUID := s.addUnit(c, appUUID, charmUUID, nodeUUID)
+
+	endpointName := "database"
+	endpointUUID := s.addApplicationEndpoint(
+		c, appUUID, charmUUID, endpointName, spaceUUID,
+	)
+	relationUUID := s.addRelation(c)
+	s.addRelationEndpoint(c, relationUUID, endpointUUID)
+
+	name, err := s.state.GetUnitRelationEndpointName(
+		c.Context(), string(unitUUID), relationUUID,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(name, tc.Equals, endpointName)
+}
+
+func (s *infoSuite) TestGetUnitRelationEndpointNameRelationNotFound(c *tc.C) {
+	nodeUUID := s.addNetNode(c)
+	charmUUID := s.addCharm(c)
+	spaceUUID := s.addSpace(c)
+	appUUID := s.addApplication(c, charmUUID, spaceUUID)
+	unitUUID := s.addUnit(c, appUUID, charmUUID, nodeUUID)
+
+	name, err := s.state.GetUnitRelationEndpointName(
+		c.Context(), string(unitUUID), uuid.MustNewUUID().String(),
+	)
+	c.Assert(err, tc.ErrorIs, relationerrors.RelationNotFound)
+	c.Check(name, tc.Equals, "")
 }
 
 // TestIsCaasUnit tests checking if a unit is a CAAS unit
@@ -307,9 +533,9 @@ func (s *infoSuite) TestIsCaasUnit(c *tc.C) {
 	s.addK8sService(c, svcNodeUUID, caasAppUUID)
 
 	// Act - Check both Caas and Iaas Apps
-	isCaasIaaS, err := s.state.isCaasUnit(c.Context(), string(iaasUnitUUID))
+	isCaasIaaS, err := s.state.IsCaasUnit(c.Context(), string(iaasUnitUUID))
 	c.Assert(err, tc.ErrorIsNil)
-	isCaasCaas, err := s.state.isCaasUnit(c.Context(), string(caasUnitUUID))
+	isCaasCaas, err := s.state.IsCaasUnit(c.Context(), string(caasUnitUUID))
 	c.Assert(err, tc.ErrorIsNil)
 
 	// Assert
@@ -345,7 +571,7 @@ func (s *infoSuite) TestGetUnitEgressSubnetsWithMultipleCIDRs(c *tc.C) {
 	s.addRelationNetworkEgress(c, relation2UUID, "10.0.3.0/24")
 
 	// Act
-	cidrs, err := s.state.getUnitEgressSubnets(c.Context(), string(unitUUID))
+	cidrs, err := s.state.GetUnitEgressSubnets(c.Context(), string(unitUUID))
 
 	// Assert
 	c.Assert(err, tc.ErrorIsNil)
@@ -363,7 +589,7 @@ func (s *infoSuite) TestGetUnitEgressSubnetsWithNoRelations(c *tc.C) {
 	unitUUID := s.addUnit(c, appUUID, charmUUID, nodeUUID)
 
 	// Act
-	cidrs, err := s.state.getUnitEgressSubnets(c.Context(), string(unitUUID))
+	cidrs, err := s.state.GetUnitEgressSubnets(c.Context(), string(unitUUID))
 
 	// Assert
 	c.Assert(err, tc.ErrorIsNil)
@@ -386,7 +612,7 @@ func (s *infoSuite) TestGetUnitEgressSubnetsWithRelationsButNoEgress(c *tc.C) {
 	s.addRelationUnit(c, relationEndpointUUID, string(unitUUID))
 
 	// Act
-	cidrs, err := s.state.getUnitEgressSubnets(c.Context(), string(unitUUID))
+	cidrs, err := s.state.GetUnitEgressSubnets(c.Context(), string(unitUUID))
 
 	// Assert
 	c.Assert(err, tc.ErrorIsNil)
@@ -420,7 +646,7 @@ func (s *infoSuite) TestGetUnitEgressSubnetsDeduplicated(c *tc.C) {
 	s.addRelationNetworkEgress(c, relation2UUID, "10.0.1.0/24")
 
 	// Act
-	cidrs, err := s.state.getUnitEgressSubnets(c.Context(), string(unitUUID))
+	cidrs, err := s.state.GetUnitEgressSubnets(c.Context(), string(unitUUID))
 
 	// Assert
 	c.Assert(err, tc.ErrorIsNil)
@@ -428,44 +654,144 @@ func (s *infoSuite) TestGetUnitEgressSubnetsDeduplicated(c *tc.C) {
 	c.Check(cidrs, tc.DeepEquals, []string{"10.0.1.0/24"})
 }
 
-// TestGetUnitEndpointNetworksWithEgressSubnets tests the integration of egress subnets in GetUnitEndpointNetworks
-func (s *infoSuite) TestGetUnitEndpointNetworksWithEgressSubnets(c *tc.C) {
-	// Arrange
+func (s *infoSuite) TestGetRelationEgressSubnets(c *tc.C) {
+	relationUUID := s.addRelation(c)
+
+	s.addRelationNetworkEgress(c, relationUUID, "10.0.1.0/24")
+	s.addRelationNetworkEgress(c, relationUUID, "10.0.2.0/24")
+
+	cidrs, err := s.state.GetRelationEgressSubnets(c.Context(), relationUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(cidrs, tc.SameContents, []string{"10.0.1.0/24", "10.0.2.0/24"})
+}
+
+func (s *infoSuite) TestGetRelationEgressSubnetsEmpty(c *tc.C) {
+	relationUUID := s.addRelation(c)
+
+	cidrs, err := s.state.GetRelationEgressSubnets(c.Context(), relationUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(cidrs, tc.HasLen, 0)
+}
+
+func (s *infoSuite) TestGetUnitPublicAddressForEgress(c *tc.C) {
 	nodeUUID := s.addNetNode(c)
-	deviceUUID := s.addLinkLayerDevice(c, nodeUUID, "eth0", "00:11:22:33:44:55", corenetwork.EthernetDevice)
+	deviceUUID := s.addLinkLayerDevice(
+		c, nodeUUID, "eth0", "00:11:22:33:44:55", corenetwork.EthernetDevice,
+	)
 	spaceUUID := corenetwork.AlphaSpaceId.String()
-	cidr := "10.0.0.0/24"
-	subnetUUID := s.addSubnet(c, cidr, spaceUUID)
-	expectedAddr := "10.0.0.1"
-	s.addIPAddressWithSubnetAndScope(c, deviceUUID, nodeUUID, subnetUUID, expectedAddr, corenetwork.ScopeCloudLocal)
+	subnetUUID := s.addSubnet(c, "198.51.100.0/24", spaceUUID)
+	s.addIPAddressWithSubnetAndScope(
+		c, deviceUUID, nodeUUID, subnetUUID, "10.0.0.10/24",
+		corenetwork.ScopeCloudLocal,
+	)
+	secondaryUUID := s.addIPAddressWithSubnetAndOrigin(
+		c, deviceUUID, nodeUUID, subnetUUID, "198.51.100.1/24", 1,
+	)
+	s.query(c, `
+UPDATE ip_address
+SET scope_id = (SELECT id FROM ip_address_scope WHERE name = 'public')
+WHERE uuid = ?
+`, secondaryUUID)
+	s.markIPAddressSecondary(c, secondaryUUID)
+	publicUUID := s.addIPAddressWithSubnetAndOrigin(
+		c, deviceUUID, nodeUUID, subnetUUID, "198.51.100.10/24", 1,
+	)
+	s.query(c, `
+UPDATE ip_address
+SET scope_id = (SELECT id FROM ip_address_scope WHERE name = 'public')
+WHERE uuid = ?
+`, publicUUID)
 
 	charmUUID := s.addCharm(c)
 	appUUID := s.addApplication(c, charmUUID, spaceUUID)
 	unitUUID := s.addUnit(c, appUUID, charmUUID, nodeUUID)
 
-	// Add endpoint
-	endpointName := "endpoint1"
-	endpointUUID := s.addApplicationEndpoint(c, appUUID, charmUUID, endpointName, "")
+	address, err := s.state.GetUnitPublicAddressForEgress(
+		c.Context(), string(unitUUID),
+	)
 
-	// Add relation with egress
-	relationUUID := s.addRelation(c)
-	relationEndpointUUID := s.addRelationEndpoint(c, relationUUID, endpointUUID)
-	s.addRelationUnit(c, relationEndpointUUID, string(unitUUID))
-	s.addRelationNetworkEgress(c, relationUUID, "192.168.1.0/24")
-	s.addRelationNetworkEgress(c, relationUUID, "192.168.2.0/24")
-
-	// Act
-	networks, err := s.state.GetUnitEndpointNetworks(c.Context(), string(unitUUID), []string{endpointName})
-
-	// Assert
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(networks, tc.HasLen, 1)
-	c.Check(networks[0].EgressSubnets, tc.SameContents, []string{"192.168.1.0/24", "192.168.2.0/24"})
-	c.Check(networks[0].EndpointName, tc.Equals, endpointName)
-	c.Check(networks[0].IngressAddresses, tc.DeepEquals, []string{expectedAddr})
+	c.Check(address, tc.Equals, "198.51.100.10/24")
+}
+
+func (s *infoSuite) TestGetUnitPublicAddressForEgressWithoutPublicAddress(c *tc.C) {
+	nodeUUID := s.addNetNode(c)
+	deviceUUID := s.addLinkLayerDevice(
+		c, nodeUUID, "eth0", "00:11:22:33:44:55", corenetwork.EthernetDevice,
+	)
+	spaceUUID := corenetwork.AlphaSpaceId.String()
+	subnetUUID := s.addSubnet(c, "10.0.0.0/24", spaceUUID)
+	s.addIPAddressWithSubnetAndScope(
+		c, deviceUUID, nodeUUID, subnetUUID, "10.0.0.10/24",
+		corenetwork.ScopeCloudLocal,
+	)
+	s.addIPAddressWithSubnetAndOrigin(
+		c, deviceUUID, nodeUUID, subnetUUID, "198.51.100.10/24", 1,
+	)
+
+	charmUUID := s.addCharm(c)
+	appUUID := s.addApplication(c, charmUUID, spaceUUID)
+	unitUUID := s.addUnit(c, appUUID, charmUUID, nodeUUID)
+
+	address, err := s.state.GetUnitPublicAddressForEgress(
+		c.Context(), string(unitUUID),
+	)
+
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(address, tc.Equals, "")
+}
+
+func (s *infoSuite) TestGetModelEgressSubnets(c *tc.C) {
+	s.query(c, `INSERT INTO model_config VALUES (?, ?)`,
+		config.EgressSubnets, "10.0.1.0/24, 10.0.2.0/24")
+
+	cidrs, err := s.state.GetModelEgressSubnets(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(cidrs, tc.DeepEquals, []string{"10.0.1.0/24", "10.0.2.0/24"})
+}
+
+func (s *infoSuite) TestGetModelEgressSubnetsEmpty(c *tc.C) {
+	cidrs, err := s.state.GetModelEgressSubnets(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(cidrs, tc.HasLen, 0)
 }
 
 // Helper methods
+
+func normaliseEndpointNetworkInfo(
+	addresses []networkinternal.EndpointNetworkInfo,
+) []networkinternal.EndpointNetworkInfo {
+	return transform.Slice(addresses, func(addr networkinternal.EndpointNetworkInfo) networkinternal.EndpointNetworkInfo {
+		addr.Addresses = normaliseUnitAddresses(addr.Addresses)
+		return addr
+	})
+}
+
+func normaliseUnitAddresses(addresses []networkinternal.UnitAddress) []networkinternal.UnitAddress {
+	return transform.Slice(addresses, func(addr networkinternal.UnitAddress) networkinternal.UnitAddress {
+		return networkinternal.UnitAddress{
+			SpaceAddress: corenetwork.SpaceAddress{
+				MachineAddress: corenetwork.MachineAddress{
+					Value: addr.Value,
+					CIDR:  addr.CIDR,
+					Scope: addr.Scope,
+				},
+				SpaceID: addr.SpaceID,
+			},
+			DeviceName: addr.DeviceName,
+			MACAddress: addr.MACAddress,
+			DeviceType: addr.DeviceType,
+		}
+	})
+}
+
+func (s *infoSuite) markIPAddressSecondary(c *tc.C, addressUUID string) {
+	s.query(c, `
+UPDATE ip_address
+SET is_secondary = true
+WHERE uuid = ?
+`, addressUUID)
+}
 
 // addApplicationEndpoint creates a charm relation and an application endpoint
 // in the database, returning its UUID.

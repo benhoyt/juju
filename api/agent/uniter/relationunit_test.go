@@ -13,7 +13,7 @@ import (
 	basetesting "github.com/juju/juju/api/base/testing"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/watcher/watchertest"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc/params"
 )
@@ -32,7 +32,7 @@ func (s *relationUnitSuite) getRelationUnit(c *tc.C) *uniter.RelationUnit {
 			{Relation: "relation-wordpress.db#mysql.server", Unit: "unit-mysql-0"},
 		},
 	}
-	apiCaller := basetesting.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := basetesting.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Assert(objType, tc.Equals, "Uniter")
 		switch request {
 		case "Relation":
@@ -163,7 +163,7 @@ func (s *relationUnitSuite) TestApplicationSettings(c *tc.C) {
 }
 
 func (s *relationUnitSuite) TestWatchRelationUnits(c *tc.C) {
-	apiCaller := basetesting.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := basetesting.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		if request == "Stop" || request == "Next" {
 			return nil
 		}

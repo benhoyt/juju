@@ -90,7 +90,10 @@ type remoteRelationWatcherSuite struct {
 	testhelpers.IsolationSuite
 
 	relationService *MockRelationService
-	watcher         *MockRelationChangesWatcher
+	watcher         *MockNotifyWatcher
+
+	appUUID application.UUID
+	relUUID relation.UUID
 
 	api *srvRemoteRelationWatcher
 }
@@ -99,11 +102,16 @@ func (s *remoteRelationWatcherSuite) setupMocks(c *tc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 
 	s.relationService = NewMockRelationService(ctrl)
-	s.watcher = NewMockRelationChangesWatcher(ctrl)
+	s.watcher = NewMockNotifyWatcher(ctrl)
+
+	s.appUUID = tc.Must(c, application.NewUUID)
+	s.relUUID = tc.Must(c, relation.NewUUID)
 
 	s.api = &srvRemoteRelationWatcher{
 		relationService: s.relationService,
 		watcher:         s.watcher,
+		applicationUUID: s.appUUID,
+		relationUUID:    s.relUUID,
 	}
 
 	c.Cleanup(func() {
@@ -119,35 +127,46 @@ func (s *remoteRelationWatcherSuite) TestNext(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	appUUID := tc.Must(c, application.NewUUID)
-	relUUID := tc.Must(c, relation.NewUUID)
-
-	changes := make(chan params.RelationUnitsChange, 1)
-	changes <- params.RelationUnitsChange{
-		Changed: map[string]params.UnitSettings{
-			"foo/1": {Version: 1},
-			"foo/2": {Version: 2},
-		},
-		AppChanged: map[string]int64{
-			"foo": 1,
-		},
-		Departed: []string{"foo/0"},
-	}
+	changes := make(chan struct{}, 1)
+	changes <- struct{}{}
 	s.watcher.EXPECT().Changes().Return(changes)
-	s.watcher.EXPECT().ApplicationToken().Return(appUUID)
-	s.watcher.EXPECT().RelationToken().Return(relUUID)
+
+	s.api.data = domainrelation.ConsumerRelationUnitsChange{
+		UnitsSettingsVersions: map[string]int64{
+			"foo/1": 0,
+			"foo/2": 1,
+		},
+		AppSettingsVersion: map[string]int64{
+			"foo": 0,
+		},
+	}
+
+	s.relationService.EXPECT().GetConsumerRelationUnitsChange(gomock.Any(), s.relUUID, s.appUUID).Return(
+		domainrelation.ConsumerRelationUnitsChange{
+			UnitsSettingsVersions: map[string]int64{
+				"foo/1": 1,
+				"foo/2": 2,
+			},
+			AppSettingsVersion: map[string]int64{
+				"foo": 1,
+			},
+			DepartedUnits: []string{"foo/0"},
+		}, nil)
 
 	inScopeUnitNames := []unit.Name{"foo/1", "foo/2", "foo/3"}
-	s.relationService.EXPECT().GetInScopeUnits(gomock.Any(), appUUID, relUUID).Return(inScopeUnitNames, nil)
+	s.relationService.EXPECT().GetInScopeUnits(gomock.Any(), s.appUUID, s.relUUID).Return(inScopeUnitNames, nil)
 
-	unitSettings := map[unit.Name]map[string]interface{}{
-		"foo/1": {"thing": 1},
-		"foo/2": {"thing": 2},
-	}
-	s.relationService.EXPECT().GetUnitSettingsForUnits(gomock.Any(), gomock.InAnyOrder([]unit.Name{"foo/1", "foo/2"})).Return(unitSettings, nil)
+	unitSettings := []domainrelation.UnitSettings{{
+		UnitID:   1,
+		Settings: map[string]string{"thing1": "thing2"},
+	}, {
+		UnitID:   2,
+		Settings: map[string]string{"thing2": "thing1"},
+	}}
+	s.relationService.EXPECT().GetUnitSettingsForUnits(gomock.Any(), s.relUUID, gomock.InAnyOrder([]unit.Name{"foo/1", "foo/2"})).Return(unitSettings, nil)
 
-	appSettings := map[string]interface{}{"foo": 1}
-	s.relationService.EXPECT().GetSettingsForApplication(gomock.Any(), appUUID).Return(appSettings, nil)
+	appSettings := map[string]string{"foo": "bar"}
+	s.relationService.EXPECT().GetRelationApplicationSettings(gomock.Any(), s.relUUID, s.appUUID).Return(appSettings, nil)
 
 	res, err := s.api.Next(c.Context())
 	c.Assert(err, tc.ErrorIsNil)
@@ -157,18 +176,18 @@ func (s *remoteRelationWatcherSuite) TestNext(c *tc.C) {
 		return res.Changes.ChangedUnits[i].UnitId < res.Changes.ChangedUnits[j].UnitId
 	})
 	c.Check(res.Changes, tc.DeepEquals, params.RemoteRelationChangeEvent{
-		RelationToken:           relUUID.String(),
-		ApplicationOrOfferToken: appUUID.String(),
+		RelationToken:           s.relUUID.String(),
+		ApplicationOrOfferToken: s.appUUID.String(),
 		DepartedUnits:           []int{0},
 		InScopeUnits:            []int{1, 2, 3},
 		UnitCount:               3,
-		ApplicationSettings:     appSettings,
+		ApplicationSettings:     map[string]any{"foo": "bar"},
 		ChangedUnits: []params.RemoteRelationUnitChange{{
 			UnitId:   1,
-			Settings: unitSettings["foo/1"],
+			Settings: map[string]any{"thing1": "thing2"},
 		}, {
 			UnitId:   2,
-			Settings: unitSettings["foo/2"],
+			Settings: map[string]any{"thing2": "thing1"},
 		}},
 	})
 }
@@ -177,29 +196,43 @@ func (s *remoteRelationWatcherSuite) TestNextNoApplicationSettingsChange(c *tc.C
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	appUUID := tc.Must(c, application.NewUUID)
-	relUUID := tc.Must(c, relation.NewUUID)
-
-	changes := make(chan params.RelationUnitsChange, 1)
-	changes <- params.RelationUnitsChange{
-		Changed: map[string]params.UnitSettings{
-			"foo/1": {Version: 1},
-			"foo/2": {Version: 2},
-		},
-		Departed: []string{"foo/0"},
-	}
+	changes := make(chan struct{}, 1)
+	changes <- struct{}{}
 	s.watcher.EXPECT().Changes().Return(changes)
-	s.watcher.EXPECT().ApplicationToken().Return(appUUID)
-	s.watcher.EXPECT().RelationToken().Return(relUUID)
+
+	s.api.data = domainrelation.ConsumerRelationUnitsChange{
+		UnitsSettingsVersions: map[string]int64{
+			"foo/1": 0,
+			"foo/2": 1,
+		},
+		AppSettingsVersion: map[string]int64{
+			"foo": 1,
+		},
+	}
+
+	s.relationService.EXPECT().GetConsumerRelationUnitsChange(gomock.Any(), s.relUUID, s.appUUID).Return(
+		domainrelation.ConsumerRelationUnitsChange{
+			UnitsSettingsVersions: map[string]int64{
+				"foo/1": 1,
+				"foo/2": 2,
+			},
+			AppSettingsVersion: map[string]int64{
+				"foo": 1,
+			},
+			DepartedUnits: []string{"foo/0"},
+		}, nil)
 
 	inScopeUnitNames := []unit.Name{"foo/1", "foo/2", "foo/3"}
-	s.relationService.EXPECT().GetInScopeUnits(gomock.Any(), appUUID, relUUID).Return(inScopeUnitNames, nil)
+	s.relationService.EXPECT().GetInScopeUnits(gomock.Any(), s.appUUID, s.relUUID).Return(inScopeUnitNames, nil)
 
-	unitSettings := map[unit.Name]map[string]interface{}{
-		"foo/1": {"thing": 1},
-		"foo/2": {"thing": 2},
-	}
-	s.relationService.EXPECT().GetUnitSettingsForUnits(gomock.Any(), gomock.InAnyOrder([]unit.Name{"foo/1", "foo/2"})).Return(unitSettings, nil)
+	unitSettings := []domainrelation.UnitSettings{{
+		UnitID:   1,
+		Settings: map[string]string{"thing1": "thing2"},
+	}, {
+		UnitID:   2,
+		Settings: map[string]string{"thing2": "thing1"},
+	}}
+	s.relationService.EXPECT().GetUnitSettingsForUnits(gomock.Any(), s.relUUID, gomock.InAnyOrder([]unit.Name{"foo/1", "foo/2"})).Return(unitSettings, nil)
 
 	res, err := s.api.Next(c.Context())
 	c.Assert(err, tc.ErrorIsNil)
@@ -209,18 +242,86 @@ func (s *remoteRelationWatcherSuite) TestNextNoApplicationSettingsChange(c *tc.C
 		return res.Changes.ChangedUnits[i].UnitId < res.Changes.ChangedUnits[j].UnitId
 	})
 	c.Check(res.Changes, tc.DeepEquals, params.RemoteRelationChangeEvent{
-		RelationToken:           relUUID.String(),
-		ApplicationOrOfferToken: appUUID.String(),
+		RelationToken:           s.relUUID.String(),
+		ApplicationOrOfferToken: s.appUUID.String(),
 		DepartedUnits:           []int{0},
 		InScopeUnits:            []int{1, 2, 3},
 		UnitCount:               3,
 		ApplicationSettings:     nil,
 		ChangedUnits: []params.RemoteRelationUnitChange{{
 			UnitId:   1,
-			Settings: unitSettings["foo/1"],
+			Settings: map[string]any{"thing1": "thing2"},
 		}, {
 			UnitId:   2,
-			Settings: unitSettings["foo/2"],
+			Settings: map[string]any{"thing2": "thing1"},
+		}},
+	})
+}
+
+func (s *remoteRelationWatcherSuite) TestNextNoChangeThenChange(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	changes := make(chan struct{}, 2)
+	changes <- struct{}{}
+	changes <- struct{}{}
+	s.watcher.EXPECT().Changes().Return(changes).MinTimes(1)
+
+	s.api.data = domainrelation.ConsumerRelationUnitsChange{
+		UnitsSettingsVersions: map[string]int64{
+			"foo/1": 0,
+			"foo/2": 1,
+		},
+		AppSettingsVersion: map[string]int64{
+			"foo": 1,
+		},
+	}
+
+	s.relationService.EXPECT().GetConsumerRelationUnitsChange(gomock.Any(), s.relUUID, s.appUUID).Return(s.api.data, nil)
+	s.relationService.EXPECT().GetConsumerRelationUnitsChange(gomock.Any(), s.relUUID, s.appUUID).Return(
+		domainrelation.ConsumerRelationUnitsChange{
+			UnitsSettingsVersions: map[string]int64{
+				"foo/1": 1,
+				"foo/2": 2,
+			},
+			AppSettingsVersion: map[string]int64{
+				"foo": 1,
+			},
+			DepartedUnits: []string{"foo/0"},
+		}, nil)
+
+	inScopeUnitNames := []unit.Name{"foo/1", "foo/2", "foo/3"}
+	s.relationService.EXPECT().GetInScopeUnits(gomock.Any(), s.appUUID, s.relUUID).Return(inScopeUnitNames, nil)
+
+	unitSettings := []domainrelation.UnitSettings{{
+		UnitID:   1,
+		Settings: map[string]string{"thing1": "thing2"},
+	}, {
+		UnitID:   2,
+		Settings: map[string]string{"thing2": "thing1"},
+	}}
+	s.relationService.EXPECT().GetUnitSettingsForUnits(gomock.Any(), s.relUUID, gomock.InAnyOrder([]unit.Name{"foo/1", "foo/2"})).Return(unitSettings, nil)
+
+	res, err := s.api.Next(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(res.Error, tc.IsNil)
+
+	sort.Slice(res.Changes.ChangedUnits, func(i, j int) bool {
+		return res.Changes.ChangedUnits[i].UnitId < res.Changes.ChangedUnits[j].UnitId
+	})
+	c.Check(res.Changes, tc.DeepEquals, params.RemoteRelationChangeEvent{
+		RelationToken:           s.relUUID.String(),
+		ApplicationOrOfferToken: s.appUUID.String(),
+		DepartedUnits:           []int{0},
+		InScopeUnits:            []int{1, 2, 3},
+		UnitCount:               3,
+		ApplicationSettings:     nil,
+		ChangedUnits: []params.RemoteRelationUnitChange{{
+			UnitId:   1,
+			Settings: map[string]any{"thing1": "thing2"},
+		}, {
+			UnitId:   2,
+			Settings: map[string]any{"thing2": "thing1"},
 		}},
 	})
 }

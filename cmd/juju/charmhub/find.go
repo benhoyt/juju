@@ -12,9 +12,9 @@ import (
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/internal/charmhub"
 	"github.com/juju/juju/internal/charmhub/transport"
-	"github.com/juju/juju/internal/cmd"
 )
 
 const (
@@ -197,7 +197,7 @@ func (c *findCommand) output(ctx *cmd.Context, results []transport.FindResponse,
 	return nil
 }
 
-func (c *findCommand) formatter(writer io.Writer, value interface{}) error {
+func (c *findCommand) formatter(writer io.Writer, value any) error {
 	results, ok := value.([]FindResponse)
 	if !ok {
 		return errors.Errorf("unexpected results")

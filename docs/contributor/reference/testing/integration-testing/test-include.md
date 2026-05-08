@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Utilize bash test includes for Juju integration testing, including check functions, cleanup utilities, and juju command helpers."
+---
+
 (test-include)=
 # Test include
 > Source: https://github.com/juju/juju/tree/main/tests/includes

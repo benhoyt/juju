@@ -7,16 +7,18 @@ import (
 	"testing"
 
 	"github.com/juju/tc"
-	gomock "go.uber.org/mock/gomock"
+	"go.uber.org/mock/gomock"
 
 	coreapplication "github.com/juju/juju/core/application"
 	corerelation "github.com/juju/juju/core/relation"
 	corerelationtesting "github.com/juju/juju/core/relation/testing"
 	coreunit "github.com/juju/juju/core/unit"
 	coreunittesting "github.com/juju/juju/core/unit/testing"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/domain/relation"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/relation/internal"
 	"github.com/juju/juju/internal/errors"
+	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/testhelpers"
 )
 
@@ -41,6 +43,7 @@ func (s *migrationServiceSuite) TestImportRelations(c *tc.C) {
 
 	args := relation.ImportRelationsArgs{
 		{
+			UUID:  tc.Must(c, corerelation.NewUUID),
 			ID:    7,
 			Key:   key1,
 			Scope: charm.ScopeContainer,
@@ -48,13 +51,14 @@ func (s *migrationServiceSuite) TestImportRelations(c *tc.C) {
 				{
 					ApplicationName:     ep1[0].ApplicationName,
 					EndpointName:        ep1[0].EndpointName,
-					ApplicationSettings: map[string]interface{}{"five": "six"},
-					UnitSettings: map[string]map[string]interface{}{
+					ApplicationSettings: map[string]any{"five": "six"},
+					UnitSettings: map[string]map[string]any{
 						"ubuntu/0": {"one": "two"},
 					},
 				},
 			},
 		}, {
+			UUID:  tc.Must(c, corerelation.NewUUID),
 			ID:    8,
 			Key:   key2,
 			Scope: charm.ScopeGlobal,
@@ -62,23 +66,27 @@ func (s *migrationServiceSuite) TestImportRelations(c *tc.C) {
 				{
 					ApplicationName:     ep2[0].ApplicationName,
 					EndpointName:        ep2[0].EndpointName,
-					ApplicationSettings: map[string]interface{}{"foo": "six"},
-					UnitSettings: map[string]map[string]interface{}{
+					ApplicationSettings: map[string]any{"foo": "six"},
+					UnitSettings: map[string]map[string]any{
 						"ubuntu/0": {"test": "two"},
 					},
 				}, {
 					ApplicationName:     ep2[1].ApplicationName,
 					EndpointName:        ep2[1].EndpointName,
-					ApplicationSettings: map[string]interface{}{"three": "four"},
-					UnitSettings: map[string]map[string]interface{}{
+					ApplicationSettings: map[string]any{"three": "four"},
+					UnitSettings: map[string]map[string]any{
 						"ntp/0": {"seven": "six"},
 					},
 				},
 			},
 		},
 	}
-	peerRelUUID := s.expectGetPeerRelationUUIDByEndpointIdentifiers(c, ep1[0])
-	relUUID := s.expectImportRelation(c, ep2[0], ep2[1], uint64(8), charm.ScopeGlobal)
+
+	peerRelUUID := args[0].UUID
+	relUUID := args[1].UUID
+
+	s.expectImportPeerRelation(peerRelUUID, ep1[0], uint64(7), charm.ScopeContainer)
+	s.expectImportRelation(relUUID, ep2[0], ep2[1], uint64(8), charm.ScopeGlobal)
 	app1ID := s.expectGetApplicationUUIDByName(c, args[0].Endpoints[0].ApplicationName)
 	app2ID := s.expectGetApplicationUUIDByName(c, args[1].Endpoints[0].ApplicationName)
 	app3ID := s.expectGetApplicationUUIDByName(c, args[1].Endpoints[1].ApplicationName)
@@ -97,18 +105,6 @@ func (s *migrationServiceSuite) TestImportRelations(c *tc.C) {
 
 	// Assert
 	c.Assert(err, tc.ErrorIsNil)
-}
-
-func (s *migrationServiceSuite) TestDeleteImportedRelationsError(c *tc.C) {
-	// Arrange
-	defer s.setupMocks(c).Finish()
-	s.state.EXPECT().DeleteImportedRelations(gomock.Any()).Return(errors.New("boom"))
-
-	// Act
-	err := s.service.DeleteImportedRelations(c.Context())
-
-	// Assert
-	c.Assert(err, tc.ErrorMatches, "boom")
 }
 
 func (s *migrationServiceSuite) TestExportRelations(c *tc.C) {
@@ -159,34 +155,64 @@ func (s *migrationServiceSuite) TestExportRelationsStateError(c *tc.C) {
 	c.Assert(err, tc.ErrorIs, boom)
 }
 
+func (s *migrationServiceSuite) TestImportNoEmptySettingsValues(c *tc.C) {
+	// Arrange
+	in := map[string]any{
+		"one":   "two",
+		"three": "",
+	}
+	expected := map[string]string{
+		"one": "two",
+	}
+
+	// Act
+	obtained, err := settingsMap(func(string) {}, in)
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(obtained, tc.DeepEquals, expected)
+}
+
+func (s *migrationServiceSuite) TestImportSettingsValuesMustBeStrings(c *tc.C) {
+	// Arrange
+	in := map[string]any{
+		"one":   "two",
+		"three": map[string]string{"foo": "bar"},
+	}
+
+	// Act
+	_, err := settingsMap(func(string) {}, in)
+
+	// Assert
+	c.Assert(err, tc.ErrorMatches, ".* not a string")
+}
+
 func (s *migrationServiceSuite) setupMocks(c *tc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 
 	s.state = NewMockMigrationState(ctrl)
 
-	s.service = NewMigrationService(s.state)
+	s.service = NewMigrationService(s.state, loggertesting.WrapCheckLog(c))
 
 	return ctrl
 }
 
-func (s *migrationServiceSuite) expectGetPeerRelationUUIDByEndpointIdentifiers(
-	c *tc.C,
+func (s *migrationServiceSuite) expectImportPeerRelation(
+	relUUID corerelation.UUID,
 	endpoint corerelation.EndpointIdentifier,
-) corerelation.UUID {
-	relUUID := corerelationtesting.GenRelationUUID(c)
-	s.state.EXPECT().GetPeerRelationUUIDByEndpointIdentifiers(gomock.Any(), endpoint).Return(relUUID, nil)
-	return relUUID
+	id uint64,
+	scope charm.RelationScope,
+) {
+	s.state.EXPECT().ImportPeerRelation(gomock.Any(), relUUID.String(), endpoint, id, scope).Return(nil)
 }
 
 func (s *migrationServiceSuite) expectImportRelation(
-	c *tc.C,
+	relUUID corerelation.UUID,
 	ep2, ep3 corerelation.EndpointIdentifier,
 	id uint64,
 	scope charm.RelationScope,
-) corerelation.UUID {
-	relUUID := corerelationtesting.GenRelationUUID(c)
-	s.state.EXPECT().ImportRelation(gomock.Any(), ep2, ep3, id, scope).Return(relUUID, nil)
-	return relUUID
+) {
+	s.state.EXPECT().ImportRelation(gomock.Any(), relUUID.String(), ep2, ep3, id, scope).Return(nil)
 }
 
 func (s *migrationServiceSuite) expectGetApplicationUUIDByName(c *tc.C, name string) coreapplication.UUID {
@@ -198,17 +224,18 @@ func (s *migrationServiceSuite) expectGetApplicationUUIDByName(c *tc.C, name str
 func (s *migrationServiceSuite) expectSetRelationApplicationSettings(
 	uuid corerelation.UUID,
 	id coreapplication.UUID,
-	settings map[string]interface{},
+	settings map[string]any,
 ) {
-	appSettings, _ := settingsMap(settings)
+	appSettings, _ := settingsMap(func(string) {}, settings)
 	s.state.EXPECT().SetRelationApplicationSettings(gomock.Any(), uuid, id, appSettings).Return(nil)
 }
 
 func (s *migrationServiceSuite) expectEnterScope(
 	uuid corerelation.UUID,
 	name coreunit.Name,
-	settings map[string]interface{},
+	settings map[string]any,
 ) {
-	unitSettings, _ := settingsMap(settings)
-	s.state.EXPECT().EnterScope(gomock.Any(), uuid, name, unitSettings).Return(nil)
+	unitSettings, _ := settingsMap(func(string) {}, settings)
+	data := internal.SubordinateUnitStatusHistoryData{}
+	s.state.EXPECT().EnterScope(gomock.Any(), uuid, name, unitSettings).Return(data, nil)
 }

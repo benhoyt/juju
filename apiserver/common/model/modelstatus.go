@@ -43,12 +43,17 @@ type ModelInfoService interface {
 
 // ModelService provides access to information about the models within the controller.
 type ModelService interface {
-	// ListModelUUIDs returns a list of all model UUIDs in the controller.
-	ListModelUUIDs(context.Context) ([]coremodel.UUID, error)
+	// GetModelUUIDs returns a list of all model UUIDs in the controller.
+	GetModelUUIDs(context.Context) ([]coremodel.UUID, error)
 
 	// ModelRedirection returns redirection information for the current model. If it
 	// is not redirected, [modelmigrationerrors.ModelNotRedirected] is returned.
 	ModelRedirection(ctx context.Context, modelUUID coremodel.UUID) (model.ModelRedirection, error)
+
+	// Model returns the model associated with the provided uuid.
+	// The following error types can be expected to be returned:
+	// - [modelerrors.NotFound]: When the model does not exist.
+	Model(ctx context.Context, uuid coremodel.UUID) (coremodel.Model, error)
 }
 
 // ModelStatusAPI implements the ModelStatus() API.
@@ -184,11 +189,15 @@ func (c *ModelStatusAPI) modelStatus(ctx context.Context, tag string) (params.Mo
 	// TODO(gfouillet) - 2025-07-25: Implements listing filesystem from domain dqlite
 	var modelFilesystems []params.ModelFilesystemInfo
 
-	// TODO: add life and qualifier values when they are supported in model DB
+	m, err := c.modelService.Model(ctx, modelUUID)
+	if err != nil {
+		return status, errors.Trace(err)
+	}
+
 	result := params.ModelStatus{
 		ModelTag:           tag,
-		Qualifier:          "foobar",
-		Life:               "",
+		Qualifier:          m.Qualifier.String(),
+		Life:               m.Life,
 		Type:               modelInfo.Type.String(),
 		HostedMachineCount: len(modelMachines),
 		ApplicationCount:   len(applications),

@@ -4,6 +4,7 @@
 package storageprovisioner_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -11,8 +12,8 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/workertest"
 
 	"github.com/juju/juju/core/blockdevice"
 	"github.com/juju/juju/core/life"
@@ -116,7 +117,7 @@ func (s *storageProvisionerSuite) TestVolumeAdded(c *tc.C) {
 		},
 	}}
 
-	volumeInfoSet := make(chan interface{})
+	volumeInfoSet := make(chan any)
 	volumeAccessor := newMockVolumeAccessor()
 	volumeAccessor.provisionedMachines["machine-1"] = "already-provisioned-1"
 	volumeAccessor.setVolumeInfo = func(volumes []params.Volume) ([]params.ErrorResult, error) {
@@ -125,13 +126,13 @@ func (s *storageProvisionerSuite) TestVolumeAdded(c *tc.C) {
 		return nil, nil
 	}
 
-	volumeAttachmentInfoSet := make(chan interface{})
+	volumeAttachmentInfoSet := make(chan any)
 	volumeAccessor.setVolumeAttachmentInfo = func(volumeAttachments []params.VolumeAttachment) ([]params.ErrorResult, error) {
 		defer close(volumeAttachmentInfoSet)
 		c.Assert(volumeAttachments, tc.SameContents, expectedVolumeAttachments)
 		return nil, nil
 	}
-	volumeAttachmentPlansCreate := make(chan interface{})
+	volumeAttachmentPlansCreate := make(chan any)
 	volumeAccessor.createVolumeAttachmentPlans = func(volumeAttachmentPlans []params.VolumeAttachmentPlan) ([]params.ErrorResult, error) {
 		defer close(volumeAttachmentPlansCreate)
 		return make([]params.ErrorResult, len(volumeAttachmentPlans)), nil
@@ -160,12 +161,12 @@ func (s *storageProvisionerSuite) TestCreateVolumeCreatesAttachment(c *tc.C) {
 	volumeAccessor := newMockVolumeAccessor()
 	volumeAccessor.provisionedMachines["machine-1"] = "already-provisioned-1"
 
-	volumeAttachmentInfoSet := make(chan interface{})
+	volumeAttachmentInfoSet := make(chan any)
 	volumeAccessor.setVolumeAttachmentInfo = func(volumeAttachments []params.VolumeAttachment) ([]params.ErrorResult, error) {
 		defer close(volumeAttachmentInfoSet)
 		return make([]params.ErrorResult, len(volumeAttachments)), nil
 	}
-	volumeAttachmentPlansCreate := make(chan interface{})
+	volumeAttachmentPlansCreate := make(chan any)
 	volumeAccessor.createVolumeAttachmentPlans = func(volumeAttachmentPlans []params.VolumeAttachmentPlan) ([]params.ErrorResult, error) {
 		defer close(volumeAttachmentPlansCreate)
 		return make([]params.ErrorResult, len(volumeAttachmentPlans)), nil
@@ -193,7 +194,7 @@ func (s *storageProvisionerSuite) TestCreateVolumeCreatesAttachment(c *tc.C) {
 		}}, nil
 	}
 
-	attachVolumesCalled := make(chan interface{})
+	attachVolumesCalled := make(chan any)
 	s.provider.attachVolumesFunc = func(args []storage.VolumeAttachmentParams) ([]storage.AttachVolumesResult, error) {
 		defer close(attachVolumesCalled)
 		return nil, errors.New("should not be called")
@@ -216,7 +217,7 @@ func (s *storageProvisionerSuite) TestCreateVolumeCreatesAttachment(c *tc.C) {
 }
 
 func (s *storageProvisionerSuite) TestCreateVolumeRetry(c *tc.C) {
-	volumeInfoSet := make(chan interface{})
+	volumeInfoSet := make(chan any)
 	volumeAccessor := newMockVolumeAccessor()
 	volumeAccessor.provisionedMachines["machine-1"] = "already-provisioned-1"
 	volumeAccessor.setVolumeInfo = func(volumes []params.Volume) ([]params.ErrorResult, error) {
@@ -285,7 +286,7 @@ func (s *storageProvisionerSuite) TestCreateVolumeRetry(c *tc.C) {
 }
 
 func (s *storageProvisionerSuite) TestCreateFilesystemRetry(c *tc.C) {
-	filesystemInfoSet := make(chan interface{})
+	filesystemInfoSet := make(chan any)
 	filesystemAccessor := newMockFilesystemAccessor()
 	filesystemAccessor.provisionedMachines["machine-1"] = "already-provisioned-1"
 	filesystemAccessor.setFilesystemInfo = func(filesystems []params.Filesystem) ([]params.ErrorResult, error) {
@@ -365,7 +366,7 @@ func (s *storageProvisionerSuite) TestFilesystemChannelReceivedOrder(c *tc.C) {
 		},
 	}
 
-	filesystemAttachInfoSet := make(chan interface{})
+	filesystemAttachInfoSet := make(chan any)
 	filesystemAccessor := newMockFilesystemAccessor()
 	filesystemAccessor.provisionedMachines["machine-1"] = "already-provisioned-1"
 	filesystemAccessor.provisionedFilesystems["filesystem-1"] = fileSystem
@@ -421,14 +422,14 @@ func (s *storageProvisionerSuite) TestFilesystemChannelReceivedOrder(c *tc.C) {
 }
 
 func (s *storageProvisionerSuite) TestAttachVolumeRetry(c *tc.C) {
-	volumeInfoSet := make(chan interface{})
+	volumeInfoSet := make(chan any)
 	volumeAccessor := newMockVolumeAccessor()
 	volumeAccessor.provisionedMachines["machine-1"] = "already-provisioned-1"
 	volumeAccessor.setVolumeInfo = func(volumes []params.Volume) ([]params.ErrorResult, error) {
 		defer close(volumeInfoSet)
 		return make([]params.ErrorResult, len(volumes)), nil
 	}
-	volumeAttachmentInfoSet := make(chan interface{})
+	volumeAttachmentInfoSet := make(chan any)
 	volumeAccessor.setVolumeAttachmentInfo = func(volumeAttachments []params.VolumeAttachment) ([]params.ErrorResult, error) {
 		defer close(volumeAttachmentInfoSet)
 		return make([]params.ErrorResult, len(volumeAttachments)), nil
@@ -503,14 +504,14 @@ func (s *storageProvisionerSuite) TestAttachVolumeRetry(c *tc.C) {
 }
 
 func (s *storageProvisionerSuite) TestAttachFilesystemRetry(c *tc.C) {
-	filesystemInfoSet := make(chan interface{})
+	filesystemInfoSet := make(chan any)
 	filesystemAccessor := newMockFilesystemAccessor()
 	filesystemAccessor.provisionedMachines["machine-1"] = "already-provisioned-1"
 	filesystemAccessor.setFilesystemInfo = func(filesystems []params.Filesystem) ([]params.ErrorResult, error) {
 		defer close(filesystemInfoSet)
 		return make([]params.ErrorResult, len(filesystems)), nil
 	}
-	filesystemAttachmentInfoSet := make(chan interface{})
+	filesystemAttachmentInfoSet := make(chan any)
 	filesystemAccessor.setFilesystemAttachmentInfo = func(filesystemAttachments []params.FilesystemAttachment) ([]params.ErrorResult, error) {
 		defer close(filesystemAttachmentInfoSet)
 		return make([]params.ErrorResult, len(filesystemAttachments)), nil
@@ -584,6 +585,51 @@ func (s *storageProvisionerSuite) TestAttachFilesystemRetry(c *tc.C) {
 	})
 }
 
+func (s *storageProvisionerSuite) TestAttachFilesystemIncomplete(c *tc.C) {
+	filesystemInfoSet := make(chan any)
+	filesystemAccessor := newMockFilesystemAccessor()
+	filesystemAccessor.provisionedMachines["machine-1"] = "already-provisioned-1"
+	filesystemAccessor.setFilesystemInfo = func(filesystems []params.Filesystem) ([]params.ErrorResult, error) {
+		defer close(filesystemInfoSet)
+		return make([]params.ErrorResult, len(filesystems)), nil
+	}
+	filesystemAttachmentInfoSet := make(chan any)
+	filesystemAccessor.setFilesystemAttachmentInfo = func(filesystemAttachments []params.FilesystemAttachment) ([]params.ErrorResult, error) {
+		defer close(filesystemAttachmentInfoSet)
+		return make([]params.ErrorResult, len(filesystemAttachments)), nil
+	}
+
+	// mockFunc's After will progress the current time by the specified
+	// duration and signal the channel immediately.
+	clock := &mockClock{}
+	attachFilesystemCh := make(chan time.Time, 1)
+
+	s.provider.attachFilesystemsFunc = func(args []storage.FilesystemAttachmentParams) ([]storage.AttachFilesystemsResult, error) {
+		attachFilesystemCh <- clock.Now()
+		return []storage.AttachFilesystemsResult{{Error: storage.FilesystemAttachParamsIncomplete}}, nil
+	}
+
+	args := &workerArgs{filesystems: filesystemAccessor, clock: clock, registry: s.registry}
+	worker := newStorageProvisioner(c, args)
+	defer func() { c.Assert(worker.Wait(), tc.IsNil) }()
+	defer worker.Kill()
+
+	filesystemAccessor.attachmentsWatcher.changes <- []watcher.MachineStorageID{{
+		MachineTag: "machine-1", AttachmentTag: "filesystem-1",
+	}}
+	filesystemAccessor.filesystemsWatcher.changes <- []string{"1"}
+	waitChannel(c, filesystemInfoSet, "waiting for filesystem info to be set")
+	assertNoEvent(c, filesystemAttachmentInfoSet, "filesystem attachment info set event")
+
+	// The first attempt should have been immediate: T0.
+	c.Assert(<-attachFilesystemCh, tc.Equals, time.Time{})
+
+	c.Assert(args.statusSetter.args, tc.DeepEquals, []params.EntityStatusArgs{
+		{Tag: "filesystem-1", Status: "attaching", Info: ""}, // CreateFilesystems
+		// No update since the filesystem is missing attachment parameters.
+	})
+}
+
 func (s *storageProvisionerSuite) TestValidateVolumeParams(c *tc.C) {
 	volumeAccessor := newMockVolumeAccessor()
 	volumeAccessor.provisionedMachines["machine-1"] = "already-provisioned-1"
@@ -593,7 +639,7 @@ func (s *storageProvisionerSuite) TestValidateVolumeParams(c *tc.C) {
 	}
 
 	var validateCalls int
-	validated := make(chan interface{}, 1)
+	validated := make(chan any, 1)
 	s.provider.validateVolumeParamsFunc = func(p storage.VolumeParams) error {
 		validateCalls++
 		validated <- p
@@ -617,7 +663,7 @@ func (s *storageProvisionerSuite) TestValidateVolumeParams(c *tc.C) {
 		return results, nil
 	}
 
-	createdVolumes := make(chan interface{}, 1)
+	createdVolumes := make(chan any, 1)
 	s.provider.createVolumesFunc = func(args []storage.VolumeParams) ([]storage.CreateVolumesResult, error) {
 		createdVolumes <- args
 		if len(args) != 1 {
@@ -628,7 +674,7 @@ func (s *storageProvisionerSuite) TestValidateVolumeParams(c *tc.C) {
 		}}, nil
 	}
 
-	destroyedVolumes := make(chan interface{}, 1)
+	destroyedVolumes := make(chan any, 1)
 	s.provider.destroyVolumesFunc = func(volumeIds []string) ([]error, error) {
 		destroyedVolumes <- volumeIds
 		return make([]error, len(volumeIds)), nil
@@ -687,7 +733,7 @@ func (s *storageProvisionerSuite) TestValidateFilesystemParams(c *tc.C) {
 	}
 
 	var validateCalls int
-	validated := make(chan interface{}, 1)
+	validated := make(chan any, 1)
 	s.provider.validateFilesystemParamsFunc = func(p storage.FilesystemParams) error {
 		validateCalls++
 		validated <- p
@@ -711,7 +757,7 @@ func (s *storageProvisionerSuite) TestValidateFilesystemParams(c *tc.C) {
 		return results, nil
 	}
 
-	createdFilesystems := make(chan interface{}, 1)
+	createdFilesystems := make(chan any, 1)
 	s.provider.createFilesystemsFunc = func(args []storage.FilesystemParams) ([]storage.CreateFilesystemsResult, error) {
 		createdFilesystems <- args
 		if len(args) != 1 {
@@ -722,7 +768,7 @@ func (s *storageProvisionerSuite) TestValidateFilesystemParams(c *tc.C) {
 		}}, nil
 	}
 
-	destroyedFilesystems := make(chan interface{}, 1)
+	destroyedFilesystems := make(chan any, 1)
 	s.provider.destroyFilesystemsFunc = func(filesystemIds []string) ([]error, error) {
 		destroyedFilesystems <- filesystemIds
 		return make([]error, len(filesystemIds)), nil
@@ -772,6 +818,47 @@ func (s *storageProvisionerSuite) TestValidateFilesystemParams(c *tc.C) {
 	})
 }
 
+func (s *storageProvisionerSuite) TestValidateFilesystemParamsIncomplete(c *tc.C) {
+	filesystemAccessor := newMockFilesystemAccessor()
+	filesystemAccessor.provisionedMachines["machine-1"] = "already-provisioned-1"
+
+	validated := make(chan any)
+	s.provider.validateFilesystemParamsFunc = func(p storage.FilesystemParams) error {
+		close(validated)
+		return storage.FilesystemCreateParamsIncomplete
+	}
+
+	life := func(tags []names.Tag) ([]params.LifeResult, error) {
+		results := make([]params.LifeResult, len(tags))
+		for i := range results {
+			results[i].Life = life.Alive
+		}
+		return results, nil
+	}
+
+	args := &workerArgs{
+		filesystems: filesystemAccessor,
+		life: &mockLifecycleManager{
+			life: life,
+		},
+		registry: s.registry,
+	}
+	worker := newStorageProvisioner(c, args)
+	defer func() { c.Assert(worker.Wait(), tc.IsNil) }()
+	defer worker.Kill()
+
+	filesystemAccessor.attachmentsWatcher.changes <- []watcher.MachineStorageID{{
+		MachineTag: "machine-1", AttachmentTag: "filesystem-1",
+	}}
+	filesystemAccessor.filesystemsWatcher.changes <- []string{"1"}
+	waitChannel(c, validated, "waiting for filesystem parameter validation")
+
+	c.Assert(args.statusSetter.args, tc.DeepEquals, []params.EntityStatusArgs{
+		// No status update for pending filesystem due to incomplete create
+		// parameters.
+	})
+}
+
 func (s *storageProvisionerSuite) TestFilesystemAdded(c *tc.C) {
 	expectedFilesystems := []params.Filesystem{{
 		FilesystemTag: "filesystem-1",
@@ -787,7 +874,7 @@ func (s *storageProvisionerSuite) TestFilesystemAdded(c *tc.C) {
 		},
 	}}
 
-	filesystemInfoSet := make(chan interface{})
+	filesystemInfoSet := make(chan any)
 	filesystemAccessor := newMockFilesystemAccessor()
 	filesystemAccessor.setFilesystemInfo = func(filesystems []params.Filesystem) ([]params.ErrorResult, error) {
 		defer close(filesystemInfoSet)
@@ -806,7 +893,7 @@ func (s *storageProvisionerSuite) TestFilesystemAdded(c *tc.C) {
 }
 
 func (s *storageProvisionerSuite) TestVolumeNeedsInstance(c *tc.C) {
-	volumeInfoSet := make(chan interface{})
+	volumeInfoSet := make(chan any)
 	volumeAccessor := newMockVolumeAccessor()
 	volumeAccessor.setVolumeInfo = func([]params.Volume) ([]params.ErrorResult, error) {
 		defer close(volumeInfoSet)
@@ -845,13 +932,13 @@ func (s *storageProvisionerSuite) TestVolumeIncoherent(c *tc.C) {
 	// The third send guarantees we've sent at least the 2nd one
 	// through, which means at least the 1st has been processed
 	// (and ignored).
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		volumeAccessor.volumesWatcher.changes <- []string{noAttachmentVolumeId}
 	}
 }
 
 func (s *storageProvisionerSuite) TestVolumeNonDynamic(c *tc.C) {
-	volumeInfoSet := make(chan interface{})
+	volumeInfoSet := make(chan any)
 	volumeAccessor := newMockVolumeAccessor()
 	volumeAccessor.setVolumeInfo = func([]params.Volume) ([]params.ErrorResult, error) {
 		defer close(volumeInfoSet)
@@ -894,7 +981,7 @@ func (s *storageProvisionerSuite) TestVolumeAttachmentAdded(c *tc.C) {
 	}}
 
 	var allVolumeAttachments []params.VolumeAttachment
-	volumeAttachmentInfoSet := make(chan interface{})
+	volumeAttachmentInfoSet := make(chan any)
 	volumeAccessor := newMockVolumeAccessor()
 	volumeAccessor.setVolumeAttachmentInfo = func(volumeAttachments []params.VolumeAttachment) ([]params.ErrorResult, error) {
 		allVolumeAttachments = append(allVolumeAttachments, volumeAttachments...)
@@ -954,7 +1041,7 @@ func (s *storageProvisionerSuite) TestVolumeAttachmentNoStaticReattachment(c *tc
 	// Static storage should never be reattached.
 	s.provider.dynamic = false
 
-	volumeAttachmentInfoSet := make(chan interface{})
+	volumeAttachmentInfoSet := make(chan any)
 	volumeAccessor := newMockVolumeAccessor()
 	volumeAccessor.setVolumeAttachmentInfo = func(volumeAttachments []params.VolumeAttachment) ([]params.ErrorResult, error) {
 		volumeAttachmentInfoSet <- nil
@@ -1017,7 +1104,7 @@ func (s *storageProvisionerSuite) TestFilesystemAttachmentAdded(c *tc.C) {
 	}}
 
 	var allFilesystemAttachments []params.FilesystemAttachment
-	filesystemAttachmentInfoSet := make(chan interface{})
+	filesystemAttachmentInfoSet := make(chan any)
 	filesystemAccessor := newMockFilesystemAccessor()
 	filesystemAccessor.setFilesystemAttachmentInfo = func(filesystemAttachments []params.FilesystemAttachment) ([]params.ErrorResult, error) {
 		allFilesystemAttachments = append(allFilesystemAttachments, filesystemAttachments...)
@@ -1074,7 +1161,7 @@ func (s *storageProvisionerSuite) TestFilesystemAttachmentAdded(c *tc.C) {
 }
 
 func (s *storageProvisionerSuite) TestCreateVolumeBackedFilesystem(c *tc.C) {
-	filesystemInfoSet := make(chan interface{})
+	filesystemInfoSet := make(chan any)
 	filesystemAccessor := newMockFilesystemAccessor()
 	filesystemAccessor.setFilesystemInfo = func(filesystems []params.Filesystem) ([]params.ErrorResult, error) {
 		filesystemInfoSet <- filesystems
@@ -1090,17 +1177,38 @@ func (s *storageProvisionerSuite) TestCreateVolumeBackedFilesystem(c *tc.C) {
 	defer func() { c.Assert(worker.Wait(), tc.IsNil) }()
 	defer worker.Kill()
 
-	args.volumes.blockDevices[params.MachineStorageId{
-		MachineTag:    "machine-0",
-		AttachmentTag: "volume-0-0",
-	}] = params.BlockDevice{
-		DeviceName: "xvdf1",
-		SizeMiB:    123,
-	}
+	// Block device exists but provenance is Provider — not yet confirmed
+	// by the machine agent, so no filesystem should be created.
+	args.volumes.setBlockDevice(
+		params.MachineStorageId{
+			MachineTag:    "machine-0",
+			AttachmentTag: "volume-0-0",
+		},
+		params.BlockDevice{
+			DeviceName: "xvdf1",
+			SizeMiB:    123,
+			Provenance: params.BlockDeviceProvenanceProvider,
+		},
+	)
 	filesystemAccessor.filesystemsWatcher.changes <- []string{"0/0", "0/1"}
+	assertNoEvent(
+		c, filesystemInfoSet,
+		"filesystem info set with provider provenance",
+	)
 
-	// Only the block device for volume 0/0 is attached at the moment,
-	// so only the corresponding filesystem will be created.
+	// Update provenance to Machine — now filesystem 0/0 should be created.
+	args.volumes.setBlockDevice(
+		params.MachineStorageId{
+			MachineTag:    "machine-0",
+			AttachmentTag: "volume-0-0",
+		},
+		params.BlockDevice{
+			DeviceName: "xvdf1",
+			SizeMiB:    123,
+			Provenance: params.BlockDeviceProvenanceMachine,
+		},
+	)
+	args.volumes.blockDevicesWatcher.changes <- struct{}{}
 	filesystemInfo := waitChannel(
 		c, filesystemInfoSet,
 		"waiting for filesystem info to be set",
@@ -1113,16 +1221,37 @@ func (s *storageProvisionerSuite) TestCreateVolumeBackedFilesystem(c *tc.C) {
 		},
 	}})
 
-	// If we now attach the block device for volume 0/1 and trigger the
-	// notification, then the storage provisioner will wake up and create
-	// the filesystem.
-	args.volumes.blockDevices[params.MachineStorageId{
-		MachineTag:    "machine-0",
-		AttachmentTag: "volume-0-1",
-	}] = params.BlockDevice{
-		DeviceName: "xvdf2",
-		SizeMiB:    246,
-	}
+	// Block device for volume 0/1 arrives with Provider provenance first;
+	// no filesystem should be created yet.
+	args.volumes.setBlockDevice(
+		params.MachineStorageId{
+			MachineTag:    "machine-0",
+			AttachmentTag: "volume-0-1",
+		},
+		params.BlockDevice{
+			DeviceName: "xvdf2",
+			SizeMiB:    246,
+			Provenance: params.BlockDeviceProvenanceProvider,
+		},
+	)
+	args.volumes.blockDevicesWatcher.changes <- struct{}{}
+	assertNoEvent(
+		c, filesystemInfoSet,
+		"filesystem info set with provider provenance",
+	)
+
+	// Once provenance transitions to Machine, filesystem 0/1 is created.
+	args.volumes.setBlockDevice(
+		params.MachineStorageId{
+			MachineTag:    "machine-0",
+			AttachmentTag: "volume-0-1",
+		},
+		params.BlockDevice{
+			DeviceName: "xvdf2",
+			SizeMiB:    246,
+			Provenance: params.BlockDeviceProvenanceMachine,
+		},
+	)
 	args.volumes.blockDevicesWatcher.changes <- struct{}{}
 	filesystemInfo = waitChannel(
 		c, filesystemInfoSet,
@@ -1138,7 +1267,7 @@ func (s *storageProvisionerSuite) TestCreateVolumeBackedFilesystem(c *tc.C) {
 }
 
 func (s *storageProvisionerSuite) TestAttachVolumeBackedFilesystem(c *tc.C) {
-	infoSet := make(chan interface{})
+	infoSet := make(chan any)
 	filesystemAccessor := newMockFilesystemAccessor()
 	filesystemAccessor.setFilesystemAttachmentInfo = func(attachments []params.FilesystemAttachment) ([]params.ErrorResult, error) {
 		infoSet <- attachments
@@ -1164,19 +1293,42 @@ func (s *storageProvisionerSuite) TestAttachVolumeBackedFilesystem(c *tc.C) {
 	}
 	filesystemAccessor.provisionedMachines["machine-0"] = "already-provisioned-0"
 
-	args.volumes.blockDevices[params.MachineStorageId{
-		MachineTag:    "machine-0",
-		AttachmentTag: "volume-0-0",
-	}] = params.BlockDevice{
-		DeviceName: "xvdf1",
-		SizeMiB:    123,
-	}
+	// Block device exists but provenance is Provider — not yet confirmed
+	// by the machine agent, so no attachment should be created.
+	args.volumes.setBlockDevice(
+		params.MachineStorageId{
+			MachineTag:    "machine-0",
+			AttachmentTag: "volume-0-0",
+		},
+		params.BlockDevice{
+			DeviceName: "xvdf1",
+			SizeMiB:    123,
+			Provenance: params.BlockDeviceProvenanceProvider,
+		},
+	)
 	filesystemAccessor.attachmentsWatcher.changes <- []watcher.MachineStorageID{{
 		MachineTag:    "machine-0",
 		AttachmentTag: "filesystem-0-0",
 	}}
 	filesystemAccessor.filesystemsWatcher.changes <- []string{"0/0"}
+	assertNoEvent(
+		c, infoSet,
+		"attachment info set with provider provenance",
+	)
 
+	// Update provenance to Machine — now the attachment should be created.
+	args.volumes.setBlockDevice(
+		params.MachineStorageId{
+			MachineTag:    "machine-0",
+			AttachmentTag: "volume-0-0",
+		},
+		params.BlockDevice{
+			DeviceName: "xvdf1",
+			SizeMiB:    123,
+			Provenance: params.BlockDeviceProvenanceMachine,
+		},
+	)
+	args.volumes.blockDevicesWatcher.changes <- struct{}{}
 	info := waitChannel(
 		c, infoSet, "waiting for filesystem attachment info to be set",
 	).([]params.FilesystemAttachment)
@@ -1190,15 +1342,19 @@ func (s *storageProvisionerSuite) TestAttachVolumeBackedFilesystem(c *tc.C) {
 	}})
 
 	// Update the UUID of the block device and check attachment update.
-	args.volumes.blockDevices[params.MachineStorageId{
-		MachineTag:    "machine-0",
-		AttachmentTag: "volume-0-0",
-	}] = params.BlockDevice{
-		DeviceName: "xvdf1",
-		SizeMiB:    123,
-		UUID:       "deadbeaf",
-	}
-	s.managedFilesystemSource.attachedFilesystems = make(chan interface{}, 1)
+	args.volumes.setBlockDevice(
+		params.MachineStorageId{
+			MachineTag:    "machine-0",
+			AttachmentTag: "volume-0-0",
+		},
+		params.BlockDevice{
+			DeviceName: "xvdf1",
+			SizeMiB:    123,
+			UUID:       "deadbeaf",
+			Provenance: params.BlockDeviceProvenanceMachine,
+		},
+	)
+	s.managedFilesystemSource.attachedFilesystems = make(chan any, 1)
 	args.volumes.blockDevicesWatcher.changes <- struct{}{}
 	attachInfo := waitChannel(
 		c, s.managedFilesystemSource.attachedFilesystems,
@@ -1217,7 +1373,7 @@ func (s *storageProvisionerSuite) TestAttachVolumeBackedFilesystem(c *tc.C) {
 }
 
 func (s *storageProvisionerSuite) TestResourceTags(c *tc.C) {
-	volumeInfoSet := make(chan interface{})
+	volumeInfoSet := make(chan any)
 	volumeAccessor := newMockVolumeAccessor()
 	volumeAccessor.provisionedMachines["machine-1"] = "already-provisioned-1"
 	volumeAccessor.setVolumeInfo = func(volumes []params.Volume) ([]params.ErrorResult, error) {
@@ -1225,7 +1381,7 @@ func (s *storageProvisionerSuite) TestResourceTags(c *tc.C) {
 		return nil, nil
 	}
 
-	filesystemInfoSet := make(chan interface{})
+	filesystemInfoSet := make(chan any)
 	filesystemAccessor := newMockFilesystemAccessor()
 	filesystemAccessor.provisionedMachines["machine-1"] = "already-provisioned-1"
 	filesystemAccessor.setFilesystemInfo = func(filesystems []params.Filesystem) ([]params.ErrorResult, error) {
@@ -1260,7 +1416,7 @@ func (s *storageProvisionerSuite) TestResourceTags(c *tc.C) {
 		Tag:          names.NewVolumeTag("1"),
 		Size:         1024,
 		Provider:     "dummy",
-		Attributes:   map[string]interface{}{"persistent": true},
+		Attributes:   map[string]any{"persistent": true},
 		ResourceTags: map[string]string{"very": "fancy"},
 		Attachment: &storage.VolumeAttachmentParams{
 			Volume: names.NewVolumeTag("1"),
@@ -1292,7 +1448,7 @@ func (s *storageProvisionerSuite) TestSetVolumeInfoErrorStopsWorker(c *tc.C) {
 	defer worker.Wait()
 	defer worker.Kill()
 
-	done := make(chan interface{})
+	done := make(chan any)
 	go func() {
 		defer close(done)
 		err := worker.Wait()
@@ -1318,7 +1474,7 @@ func (s *storageProvisionerSuite) TestSetVolumeInfoErrorResultDoesNotStopWorker(
 	}()
 	defer worker.Kill()
 
-	done := make(chan interface{})
+	done := make(chan any)
 	go func() {
 		defer close(done)
 		worker.Wait()
@@ -1329,7 +1485,7 @@ func (s *storageProvisionerSuite) TestSetVolumeInfoErrorResultDoesNotStopWorker(
 }
 
 func (s *storageProvisionerSuite) TestDetachVolumesUnattached(c *tc.C) {
-	removed := make(chan interface{})
+	removed := make(chan any)
 	removeAttachments := func(ids []params.MachineStorageId) ([]params.ErrorResult, error) {
 		defer close(removed)
 		c.Assert(ids, tc.DeepEquals, []params.MachineStorageId{{
@@ -1355,7 +1511,7 @@ func (s *storageProvisionerSuite) TestDetachVolumesUnattached(c *tc.C) {
 
 func (s *storageProvisionerSuite) TestDetachVolumes(c *tc.C) {
 	var attached bool
-	volumeAttachmentInfoSet := make(chan interface{})
+	volumeAttachmentInfoSet := make(chan any)
 	volumeAccessor := newMockVolumeAccessor()
 	volumeAccessor.setVolumeAttachmentInfo = func(volumeAttachments []params.VolumeAttachment) ([]params.ErrorResult, error) {
 		close(volumeAttachmentInfoSet)
@@ -1383,7 +1539,7 @@ func (s *storageProvisionerSuite) TestDetachVolumes(c *tc.C) {
 		return []params.LifeResult{{Life: value}}, nil
 	}
 
-	detached := make(chan interface{})
+	detached := make(chan any)
 	s.provider.detachVolumesFunc = func(args []storage.VolumeAttachmentParams) ([]error, error) {
 		c.Assert(args, tc.HasLen, 1)
 		c.Assert(args[0].Machine.String(), tc.Equals, expectedAttachmentIds[0].MachineTag)
@@ -1392,7 +1548,7 @@ func (s *storageProvisionerSuite) TestDetachVolumes(c *tc.C) {
 		return make([]error, len(args)), nil
 	}
 
-	removed := make(chan interface{})
+	removed := make(chan any)
 	removeAttachments := func(ids []params.MachineStorageId) ([]params.ErrorResult, error) {
 		c.Assert(ids, tc.DeepEquals, expectedAttachmentIds)
 		close(removed)
@@ -1469,7 +1625,7 @@ func (s *storageProvisionerSuite) TestDetachVolumesRetry(c *tc.C) {
 		return []error{nil}, nil
 	}
 
-	removed := make(chan interface{})
+	removed := make(chan any)
 	removeAttachments := func(ids []params.MachineStorageId) ([]params.ErrorResult, error) {
 		close(removed)
 		return make([]params.ErrorResult, len(ids)), nil
@@ -1533,7 +1689,7 @@ func (s *storageProvisionerSuite) TestDetachVolumesNotFound(c *tc.C) {
 	// This test just checks that there are no unexpected api calls
 	// if a volume attachment is deleted from state.
 	var attached bool
-	volumeAttachmentInfoSet := make(chan interface{})
+	volumeAttachmentInfoSet := make(chan any)
 	volumeAccessor := newMockVolumeAccessor()
 	volumeAccessor.setVolumeAttachmentInfo = func(volumeAttachments []params.VolumeAttachment) ([]params.ErrorResult, error) {
 		close(volumeAttachmentInfoSet)
@@ -1610,7 +1766,7 @@ func (s *storageProvisionerSuite) TestDetachVolumesNotFound(c *tc.C) {
 }
 
 func (s *storageProvisionerSuite) TestDetachFilesystemsUnattached(c *tc.C) {
-	removed := make(chan interface{})
+	removed := make(chan any)
 	removeAttachments := func(ids []params.MachineStorageId) ([]params.ErrorResult, error) {
 		defer close(removed)
 		c.Assert(ids, tc.DeepEquals, []params.MachineStorageId{{
@@ -1636,7 +1792,7 @@ func (s *storageProvisionerSuite) TestDetachFilesystemsUnattached(c *tc.C) {
 
 func (s *storageProvisionerSuite) TestDetachFilesystems(c *tc.C) {
 	var attached bool
-	filesystemAttachmentInfoSet := make(chan interface{})
+	filesystemAttachmentInfoSet := make(chan any)
 	filesystemAccessor := newMockFilesystemAccessor()
 	filesystemAccessor.setFilesystemAttachmentInfo = func(filesystemAttachments []params.FilesystemAttachment) ([]params.ErrorResult, error) {
 		close(filesystemAttachmentInfoSet)
@@ -1664,7 +1820,7 @@ func (s *storageProvisionerSuite) TestDetachFilesystems(c *tc.C) {
 		return []params.LifeResult{{Life: value}}, nil
 	}
 
-	detached := make(chan interface{})
+	detached := make(chan any)
 	s.provider.detachFilesystemsFunc = func(args []storage.FilesystemAttachmentParams) ([]error, error) {
 		c.Assert(args, tc.HasLen, 1)
 		c.Assert(args[0].Machine.String(), tc.Equals, expectedAttachmentIds[0].MachineTag)
@@ -1673,7 +1829,7 @@ func (s *storageProvisionerSuite) TestDetachFilesystems(c *tc.C) {
 		return make([]error, len(args)), nil
 	}
 
-	removed := make(chan interface{})
+	removed := make(chan any)
 	removeAttachments := func(ids []params.MachineStorageId) ([]params.ErrorResult, error) {
 		c.Assert(ids, tc.DeepEquals, expectedAttachmentIds)
 		close(removed)
@@ -1717,7 +1873,7 @@ func (s *storageProvisionerSuite) TestDetachFilesystemsNotFound(c *tc.C) {
 	// This test just checks that there are no unexpected api calls
 	// if a volume attachment is deleted from state.
 	var attached bool
-	filesystemAttachmentInfoSet := make(chan interface{})
+	filesystemAttachmentInfoSet := make(chan any)
 	filesystemAccessor := newMockFilesystemAccessor()
 	filesystemAccessor.setFilesystemAttachmentInfo = func(filesystemAttachments []params.FilesystemAttachment) ([]params.ErrorResult, error) {
 		close(filesystemAttachmentInfoSet)
@@ -1810,19 +1966,19 @@ func (s *storageProvisionerSuite) TestDestroyVolumes(c *tc.C) {
 		return results, nil
 	}
 
-	destroyedChan := make(chan interface{}, 1)
+	destroyedChan := make(chan any, 1)
 	s.provider.destroyVolumesFunc = func(volumeIds []string) ([]error, error) {
 		destroyedChan <- volumeIds
 		return make([]error, len(volumeIds)), nil
 	}
 
-	releasedChan := make(chan interface{}, 1)
+	releasedChan := make(chan any, 1)
 	s.provider.releaseVolumesFunc = func(volumeIds []string) ([]error, error) {
 		releasedChan <- volumeIds
 		return make([]error, len(volumeIds)), nil
 	}
 
-	removedChan := make(chan interface{}, 1)
+	removedChan := make(chan any, 1)
 	remove := func(tags []names.Tag) ([]params.ErrorResult, error) {
 		removedChan <- tags
 		return make([]params.ErrorResult, len(tags)), nil
@@ -1892,7 +2048,7 @@ func (s *storageProvisionerSuite) TestDestroyVolumesRetry(c *tc.C) {
 		return []error{nil}, nil
 	}
 
-	removedChan := make(chan interface{}, 1)
+	removedChan := make(chan any, 1)
 	remove := func(tags []names.Tag) ([]params.ErrorResult, error) {
 		removedChan <- tags
 		return make([]params.ErrorResult, len(tags)), nil
@@ -1964,19 +2120,19 @@ func (s *storageProvisionerSuite) TestDestroyFilesystems(c *tc.C) {
 		return results, nil
 	}
 
-	destroyedChan := make(chan interface{}, 1)
+	destroyedChan := make(chan any, 1)
 	s.provider.destroyFilesystemsFunc = func(filesystemIds []string) ([]error, error) {
 		destroyedChan <- filesystemIds
 		return make([]error, len(filesystemIds)), nil
 	}
 
-	releasedChan := make(chan interface{}, 1)
+	releasedChan := make(chan any, 1)
 	s.provider.releaseFilesystemsFunc = func(filesystemIds []string) ([]error, error) {
 		releasedChan <- filesystemIds
 		return make([]error, len(filesystemIds)), nil
 	}
 
-	removedChan := make(chan interface{}, 1)
+	removedChan := make(chan any, 1)
 	remove := func(tags []names.Tag) ([]params.ErrorResult, error) {
 		removedChan <- tags
 		return make([]params.ErrorResult, len(tags)), nil
@@ -2046,7 +2202,7 @@ func (s *storageProvisionerSuite) TestDestroyFilesystemsRetry(c *tc.C) {
 		return []error{nil}, nil
 	}
 
-	removedChan := make(chan interface{}, 1)
+	removedChan := make(chan any, 1)
 	remove := func(tags []names.Tag) ([]params.ErrorResult, error) {
 		removedChan <- tags
 		return make([]params.ErrorResult, len(tags)), nil
@@ -2125,7 +2281,7 @@ func (s *caasStorageProvisionerSuite) SetUpTest(c *tc.C) {
 }
 
 func (s *caasStorageProvisionerSuite) TestDetachVolumesUnattached(c *tc.C) {
-	removed := make(chan interface{})
+	removed := make(chan any)
 	removeAttachments := func(ids []params.MachineStorageId) ([]params.ErrorResult, error) {
 		defer close(removed)
 		c.Assert(ids, tc.DeepEquals, []params.MachineStorageId{{
@@ -2160,7 +2316,7 @@ func (s *caasStorageProvisionerSuite) TestDetachVolumes(c *tc.C) {
 		return []params.LifeResult{{Life: life.Dying}}, nil
 	}
 
-	detached := make(chan interface{})
+	detached := make(chan any)
 	s.provider.detachVolumesFunc = func(args []storage.VolumeAttachmentParams) ([]error, error) {
 		c.Assert(args, tc.HasLen, 1)
 		c.Assert(args[0].Machine.String(), tc.Equals, expectedAttachmentIds[0].MachineTag)
@@ -2201,7 +2357,7 @@ func (s *caasStorageProvisionerSuite) TestRemoveVolumes(c *tc.C) {
 		return []params.LifeResult{{Life: life.Dying}}, nil
 	}
 
-	removed := make(chan interface{})
+	removed := make(chan any)
 	removeAttachments := func(ids []params.MachineStorageId) ([]params.ErrorResult, error) {
 		c.Assert(ids, tc.DeepEquals, expectedAttachmentIds)
 		close(removed)
@@ -2227,7 +2383,7 @@ func (s *caasStorageProvisionerSuite) TestRemoveVolumes(c *tc.C) {
 }
 
 func (s *caasStorageProvisionerSuite) TestDetachFilesystems(c *tc.C) {
-	removed := make(chan interface{})
+	removed := make(chan any)
 	removeAttachments := func(ids []params.MachineStorageId) ([]params.ErrorResult, error) {
 		defer close(removed)
 		c.Assert(ids, tc.DeepEquals, []params.MachineStorageId{{
@@ -2258,16 +2414,41 @@ func (s *caasStorageProvisionerSuite) TestRemoveFilesystems(c *tc.C) {
 		MachineTag: "unit-mariadb-1", AttachmentTag: "filesystem-1",
 	}}
 
+	expectedFilesystems := []names.Tag{
+		names.NewFilesystemTag("1"),
+	}
+
 	attachmentLife := func(ids []params.MachineStorageId) ([]params.LifeResult, error) {
-		c.Assert(ids, tc.DeepEquals, expectedAttachmentIds)
+		c.Check(ids, tc.DeepEquals, expectedAttachmentIds)
 		return []params.LifeResult{{Life: life.Dying}}, nil
 	}
 
-	removed := make(chan interface{})
+	detached := make(chan any)
+	var detachedOnce sync.Once
+	fsLife := life.Dying
 	removeAttachments := func(ids []params.MachineStorageId) ([]params.ErrorResult, error) {
-		c.Assert(ids, tc.DeepEquals, expectedAttachmentIds)
-		close(removed)
+		c.Check(ids, tc.DeepEquals, expectedAttachmentIds)
+		detachedOnce.Do(func() {
+			close(detached)
+		})
+		fsLife = life.Dead
 		return make([]params.ErrorResult, len(ids)), nil
+	}
+
+	removed := make(chan any)
+	var removedOnce sync.Once
+	remove := func(t []names.Tag) ([]params.ErrorResult, error) {
+		c.Check(t, tc.DeepEquals, expectedFilesystems)
+		removedOnce.Do(func() {
+			close(removed)
+		})
+		return make([]params.ErrorResult, len(t)), nil
+	}
+	life := func(t []names.Tag) ([]params.LifeResult, error) {
+		c.Check(t, tc.DeepEquals, expectedFilesystems)
+		return []params.LifeResult{{
+			Life: fsLife,
+		}}, nil
 	}
 
 	args := &workerArgs{
@@ -2275,6 +2456,8 @@ func (s *caasStorageProvisionerSuite) TestRemoveFilesystems(c *tc.C) {
 		life: &mockLifecycleManager{
 			attachmentLife:    attachmentLife,
 			removeAttachments: removeAttachments,
+			life:              life,
+			remove:            remove,
 		},
 		registry: s.registry,
 	}
@@ -2282,9 +2465,12 @@ func (s *caasStorageProvisionerSuite) TestRemoveFilesystems(c *tc.C) {
 	defer func() { c.Assert(w.Wait(), tc.IsNil) }()
 	defer w.Kill()
 
+	filesystemAccessor.filesystemsWatcher.changes <- []string{"1"}
 	filesystemAccessor.attachmentsWatcher.changes <- []watcher.MachineStorageID{{
 		MachineTag: "unit-mariadb-1", AttachmentTag: "filesystem-1",
 	}}
+	waitChannel(c, detached, "waiting for filesystem to be detached")
+	filesystemAccessor.filesystemsWatcher.changes <- []string{"1"}
 	waitChannel(c, removed, "waiting for filesystem to be removed")
 }
 
@@ -2345,7 +2531,7 @@ type workerArgs struct {
 	statusSetter *mockStatusSetter
 }
 
-func waitChannel(c *tc.C, ch <-chan interface{}, activity string) interface{} {
+func waitChannel(c *tc.C, ch <-chan any, activity string) any {
 	select {
 	case v := <-ch:
 		return v
@@ -2355,7 +2541,7 @@ func waitChannel(c *tc.C, ch <-chan interface{}, activity string) interface{} {
 	}
 }
 
-func assertNoEvent(c *tc.C, ch <-chan interface{}, event string) {
+func assertNoEvent(c *tc.C, ch <-chan any, event string) {
 	select {
 	case <-ch:
 		c.Fatalf("unexpected %s", event)

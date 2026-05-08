@@ -24,12 +24,16 @@ import (
 	intobjectstoreerrors "github.com/juju/juju/internal/objectstore/errors"
 )
 
+// AgentBinaryStore provides methods to manage agent binaries in the object
+// store and their metadata in the database.
 type AgentBinaryStore struct {
 	logger            logger.Logger
 	st                AgentBinaryStoreState
 	objectStoreGetter objectstore.NamespacedObjectStoreGetter
 }
 
+// AgentBinaryStoreState defines the methods required from the state layer
+// for managing agent binaries.
 type AgentBinaryStoreState interface {
 	// CheckAgentBinarySHA256Exists checks that the given sha256 sum exists as an agent
 	// binary in the object store. This sha256 sum could exist as an object in
@@ -53,7 +57,7 @@ type AgentBinaryStoreState interface {
 
 	// GetAgentBinarySHA256 retrieves the SHA256 value for the specified agent binary version.
 	// It returns false and an empty string if no matching record exists.
-	GetAgentBinarySHA256(ctx context.Context, version coreagentbinary.Version, stream agentbinary.Stream) (bool, string, error)
+	GetAgentBinarySHA256(ctx context.Context, version coreagentbinary.Version, stream agentbinary.Stream) (string, bool, error)
 }
 
 // NewAgentBinaryStore returns a new instance of AgentBinaryStore.
@@ -85,7 +89,8 @@ func generatePath(version coreagentbinary.Version, sha384 string) string {
 	return fmt.Sprintf("agent-binaries/%s-%s-%s", numberStr, version.Arch, sha384)
 }
 
-// AddAgentBinaryWithSHA256 adds a new agent binary to the object store and saves its metadata to the database.
+// AddAgentBinaryWithSHA256 adds a new agent binary to the object store and
+// saves its metadata to the database.
 // The following errors can be returned:
 // - [coreerrors.NotSupported] if the architecture is not supported.
 // - [agentbinaryerrors.AlreadyExists] if an agent binary already exists for
@@ -206,10 +211,11 @@ func (s *AgentBinaryStore) add(
 		agentbinaryerrors.AgentBinaryImmutable,
 		agentbinaryerrors.ObjectNotFound,
 		coreerrors.NotSupported) {
-		// We need to clean up the newly added binary from the object store.
-		// But we don't want to accidentally remove an existing binary if any unexpected errors occur.
-		// The best we can do is to clean up the binary for certain unknown errors.
-		// If there is a retry, the uploaded binary will be picked up again and recorded in the database.
+		// We need to clean up the newly added binary from the object store. But
+		// we don't want to accidentally remove an existing binary if any
+		// unexpected errors occur. The best we can do is to clean up the binary
+		// for certain unknown errors. If there is a retry, the uploaded binary
+		// will be picked up again and recorded in the database.
 		if err := objectStore.Remove(ctx, path); err != nil && !errors.Is(err, objectstoreerrors.ErrNotFound) {
 			s.logger.Errorf(ctx,
 				"saving agent binary metadata %q failed, removing the binary from object store: %v",
@@ -239,37 +245,37 @@ func (s *AgentBinaryStore) GetAgentBinaryUsingSHA256(
 	// non-related objects out of the store via this interface.
 	exists, err := s.st.CheckAgentBinarySHA256Exists(ctx, sha256Sum)
 	if err != nil {
-		return nil, 0, errors.Errorf(
+		return nil, -1, errors.Errorf(
 			"checking if agent binaries exist for sha256 %q: %w", sha256Sum, err,
 		)
 	}
 
 	if !exists {
-		return nil, 0, errors.Errorf(
+		return nil, -1, errors.Errorf(
 			"no agent binaries exist for sha256 %q", sha256Sum,
 		).Add(agentbinaryerrors.NotFound)
 	}
 
 	store, err := s.objectStoreGetter.GetObjectStore(ctx)
 	if err != nil {
-		return nil, 0, errors.Errorf("getting object store for agent binary %q: %w", sha256Sum, err)
+		return nil, -1, errors.Errorf("getting object store for agent binary %q: %w", sha256Sum, err)
 	}
-	reader, size, err := store.GetBySHA256(ctx, sha256Sum)
+	reader, digest, err := store.GetBySHA256(ctx, sha256Sum)
 	if errors.Is(err, intobjectstoreerrors.ObjectNotFound) {
-		return nil, 0, errors.Errorf(
+		return nil, -1, errors.Errorf(
 			"no agent binaries exist for sha256 %q", sha256Sum,
 		).Add(agentbinaryerrors.NotFound)
 	} else if err != nil {
-		return nil, 0, errors.Errorf(
+		return nil, -1, errors.Errorf(
 			"getting object with sha256 sum %q: %w", sha256Sum, err,
 		)
 	}
 
-	return reader, size, nil
+	return reader, digest.Size, nil
 }
 
-// GetAgentBinaryWithSHA256 retrieves the agent binary corresponding to the given version
-// and stream from simple stream.
+// GetAgentBinaryWithSHA256 retrieves the agent binary corresponding to the
+// given version and stream from simple stream.
 // The caller is responsible for closing the returned reader.
 //
 // The following errors may be returned:
@@ -281,27 +287,26 @@ func (s *AgentBinaryStore) GetAgentBinaryWithSHA256(
 ) (io.ReadCloser, int64, string, error) {
 	s.logger.Debugf(ctx, "retrieving agent binary from agent binary store for ver %q and stream %q", ver.String(), stream.String())
 
-	hasAgentBinary, sha256Sum, err := s.st.GetAgentBinarySHA256(ctx, ver, stream)
+	sha256Sum, hasAgentBinary, err := s.st.GetAgentBinarySHA256(ctx, ver, stream)
 	if err != nil {
-		return nil, 0, "", errors.Errorf("checking availability of agent binary in controller store: %w", err)
+		return nil, -1, "", errors.Errorf("checking availability of agent binary in agent binary store: %w", err)
 	}
 
 	if !hasAgentBinary {
-		return nil, 0, "", errors.Errorf("no agent binary found for version %q", ver.String())
+		return nil, -1, "", errors.Errorf("no agent binary found for version %q", ver.String()).Add(agentbinaryerrors.NotFound)
 	}
 
 	store, err := s.objectStoreGetter.GetObjectStore(ctx)
 	if err != nil {
-		return nil, 0, "", errors.Errorf("getting object store for agent binary %q: %w", sha256Sum, err)
+		return nil, -1, "", errors.Errorf("getting object store for agent binary %q: %w", sha256Sum, err)
 	}
-	reader, size, err := store.GetBySHA256(ctx, sha256Sum)
+	reader, digest, err := store.GetBySHA256(ctx, sha256Sum)
 	if errors.Is(err, intobjectstoreerrors.ObjectNotFound) {
-		return nil, 0, "", errors.New("agent binary not found in controller store").Add(agentbinaryerrors.NotFound)
+		return nil, -1, "", errors.New("agent binary not found in agent binary object store").Add(agentbinaryerrors.NotFound)
 	} else if err != nil {
-		return nil, 0, "", errors.Errorf("getting agent binary with sha %q from controller object store: %w", sha256Sum, err)
-
+		return nil, -1, "", errors.Errorf("getting agent binary with sha %q from agent binary object store: %w", sha256Sum, err)
 	}
-	return reader, size, sha256Sum, nil
+	return reader, digest.Size, sha256Sum, nil
 }
 
 func tmpCacheAndHash(r io.Reader, size int64) (_ io.ReadCloser, _ string, _ string, err error) {

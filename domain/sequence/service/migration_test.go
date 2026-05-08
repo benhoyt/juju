@@ -41,15 +41,6 @@ func (s *serviceSuite) TestImportSequences(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 }
 
-func (s *serviceSuite) TestRemoveAllSequences(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	s.state.EXPECT().RemoveAllSequences(gomock.Any()).Return(nil)
-
-	err := s.state.RemoveAllSequences(c.Context())
-	c.Assert(err, tc.ErrorIsNil)
-}
-
 func (s *serviceSuite) setupMocks(c *tc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 

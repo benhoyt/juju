@@ -29,7 +29,8 @@ import (
 	"github.com/juju/juju/internal/uuid"
 )
 
-// StatusHistory records status information into a generalized way.
+// StatusHistory records the status of a juju entity to display as its
+// status history when requested.
 type StatusHistory interface {
 	// RecordStatus records the given status information.
 	// If the status data cannot be marshalled, it will not be recorded, instead
@@ -196,6 +197,20 @@ func (w *WatchableService) WatchRemoteApplicationOfferers(ctx context.Context) (
 	)
 }
 
+// WatchDyingModel returns a watcher that emits when the model lifecycle
+// changes. This is used to notify the offering model that the consuming model
+// is going away.
+func (w *WatchableService) WatchDyingModel(ctx context.Context) (watcher.NotifyWatcher, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	return w.watcherFactory.NewNotifyWatcher(
+		ctx,
+		"watch model dying",
+		eventsource.NamespaceFilter("model_life", changestream.All),
+	)
+}
+
 // WatchRemoteConsumedSecretsChanges watches secrets remotely consumed by any
 // unit of the specified app and returns a watcher which notifies of secret URIs
 // that have had a new revision added.
@@ -218,8 +233,8 @@ func (s *WatchableService) WatchRemoteConsumedSecretsChanges(ctx context.Context
 	if err != nil {
 		return nil, errors.Capture(err)
 	}
-	processChanges := func(ctx context.Context, secretIDs ...string) ([]string, error) {
-		return s.modelState.GetRemoteConsumedSecretURIsWithChangesFromOfferingSide(ctx, appUUID.String(), secretIDs...)
+	processChanges := func(ctx context.Context, revisionUUIDs ...string) ([]string, error) {
+		return s.modelState.GetRemoteConsumedSecretURIsWithChangesFromOfferingSide(ctx, appUUID.String(), revisionUUIDs...)
 	}
 	return secret.NewSecretStringWatcher(w, s.logger, processChanges)
 }
@@ -533,8 +548,4 @@ func (w *WatchableService) filterPublicAddresses(unitAddresses map[string]networ
 	}
 
 	return allPublicAddresses
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }

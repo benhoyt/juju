@@ -6,22 +6,27 @@ package service
 import (
 	"context"
 
+	"github.com/juju/clock"
+
 	"github.com/juju/juju/core/logger"
+	"github.com/juju/juju/core/providertracker"
 	corestorage "github.com/juju/juju/core/storage"
 	"github.com/juju/juju/core/trace"
 	coreunit "github.com/juju/juju/core/unit"
 	domainstorage "github.com/juju/juju/domain/storage"
-	domainstorageprovisioning "github.com/juju/juju/domain/storageprovisioning"
+	"github.com/juju/juju/domain/storage/internal"
 	"github.com/juju/juju/internal/errors"
 	internalstorage "github.com/juju/juju/internal/storage"
 )
 
 // State defines an interface for interacting with the underlying state.
 type State interface {
+	AdoptState
+	FilesystemState
 	StoragePoolState
-	StorageState
+	VolumeState
 
-	// GetStorageAttachmentUUIDForStorageIDAndUnit returns the
+	// GetStorageAttachmentUUIDForStorageInstanceAndUnit returns the
 	// [domainstorageprovisioning.StorageAttachmentUUID] associated with the given
 	// storage instance uuid and unit uuid.
 	//
@@ -34,7 +39,7 @@ type State interface {
 		context.Context,
 		domainstorage.StorageInstanceUUID,
 		coreunit.UUID,
-	) (domainstorageprovisioning.StorageAttachmentUUID, error)
+	) (domainstorage.StorageAttachmentUUID, error)
 
 	// GetStorageInstanceAttachments returns the set of attachments a storage
 	// instance has. If the storage instance has no attachments then an empty
@@ -46,7 +51,17 @@ type State interface {
 	GetStorageInstanceAttachments(
 		context.Context,
 		domainstorage.StorageInstanceUUID,
-	) ([]domainstorageprovisioning.StorageAttachmentUUID, error)
+	) ([]domainstorage.StorageAttachmentUUID, error)
+
+	// GetStorageInstanceInfo returns the information about a single Storage
+	// Instance in the model.
+	//
+	// The following errors may be returned:
+	// - [github.com/juju/juju/domain/storage/errors.StorageInstanceNotFound]
+	// when no Storage Instance exists for the supplied uuid.
+	GetStorageInstanceInfo(
+		context.Context, domainstorage.StorageInstanceUUID,
+	) (internal.StorageInstanceInfo, error)
 
 	// GetStorageInstanceUUIDByID retrieves the UUID of a storage instance by
 	// its ID.
@@ -57,12 +72,21 @@ type State interface {
 	GetStorageInstanceUUIDByID(
 		ctx context.Context, storageID string,
 	) (domainstorage.StorageInstanceUUID, error)
+
+	// GetStorageInstanceUUIDsByIDs retrieves the UUIDs of storage instances by
+	// their IDs.
+	GetStorageInstanceUUIDsByIDs(
+		ctx context.Context,
+		storageIDs []string,
+	) (map[string]domainstorage.StorageInstanceUUID, error)
 }
 
 // Service defines a service for interacting with the underlying state.
 type Service struct {
-	*StoragePoolService
-	*StorageService
+	FilesystemService
+	StoragePoolService
+	StorageService
+	VolumeService
 
 	logger logger.Logger
 	st     State
@@ -72,19 +96,44 @@ type Service struct {
 func NewService(
 	st State,
 	logger logger.Logger,
+	clock clock.Clock,
 	registryGetter corestorage.ModelStorageRegistryGetter,
 ) *Service {
 	return &Service{
-		StoragePoolService: &StoragePoolService{
+		FilesystemService: FilesystemService{
+			st: st,
+		},
+		StoragePoolService: StoragePoolService{
 			st:             st,
+			registryGetter: registryGetter,
+			logger:         logger,
+		},
+		StorageService: StorageService{
+			st:             st,
+			clock:          clock,
 			registryGetter: registryGetter,
 		},
-		StorageService: &StorageService{
-			st:             st,
-			registryGetter: registryGetter,
+		VolumeService: VolumeService{
+			st: st,
 		},
 		logger: logger,
 		st:     st,
+	}
+}
+
+// NewImportService returns a new StorageImportService for interacting with the underlying state
+// during model migration import.
+func NewImportService(
+	st StorageImportState,
+	logger logger.Logger,
+	registryGetter corestorage.ModelStorageRegistryGetter,
+	ephemeralProviderRunner providertracker.EphemeralProviderRunnerGetter[internalstorage.FilesystemModelMigration],
+) *StorageImportService {
+	return &StorageImportService{
+		registryGetter:          registryGetter,
+		ephemeralProviderRunner: ephemeralProviderRunner,
+		st:                      st,
+		logger:                  logger,
 	}
 }
 

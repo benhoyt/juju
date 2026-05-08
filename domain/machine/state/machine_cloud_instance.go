@@ -24,50 +24,68 @@ import (
 // exist.
 func (st *State) GetHardwareCharacteristics(
 	ctx context.Context,
-	machineUUID string,
+	mUUID string,
 ) (instance.HardwareCharacteristics, error) {
 	db, err := st.DB(ctx)
 	if err != nil {
 		return instance.HardwareCharacteristics{}, errors.Capture(err)
 	}
+	machineUUID := machineUUID{
+		UUID: mUUID,
+	}
 
 	query := `
 SELECT    &instanceDataResult.*
 FROM      v_hardware_characteristics AS v
-WHERE     v.machine_uuid = $instanceDataResult.machine_uuid`
-	machineUUIDQuery := instanceDataResult{
-		MachineUUID: machineUUID,
-	}
-	stmt, err := st.Prepare(query, machineUUIDQuery)
+WHERE     v.machine_uuid = $machineUUID.machine_uuid`
+	stmt, err := st.Prepare(query, instanceDataResult{}, machineUUID)
 	if err != nil {
 		return instance.HardwareCharacteristics{}, errors.Errorf("preparing retrieve hardware characteristics statement: %w", err)
 	}
 
-	var row instanceDataResult
+	tagsQuery := `
+SELECT    &tag.tag
+FROM      instance_tag
+WHERE     machine_uuid = $machineUUID.machine_uuid`
+	tagsStmt, err := st.Prepare(tagsQuery, tag{}, machineUUID)
+	if err != nil {
+		return instance.HardwareCharacteristics{}, errors.Errorf("preparing retrieve instance tags statement: %w", err)
+	}
+
+	var (
+		row     instanceDataResult
+		tagRows []tag
+	)
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		exists, err := st.checkMachineExists(ctx, tx, machineUUID)
+		exists, err := st.checkMachineExists(ctx, tx, mUUID)
 		if err != nil {
-			return errors.Errorf("checking machine %q exists: %w", machineUUID, err)
+			return errors.Errorf("checking machine %q exists: %w", mUUID, err)
 		}
 		if !exists {
 			return errors.Errorf(
-				"machine %q does not exist in the model", machineUUID,
+				"machine %q does not exist in the model", mUUID,
 			).Add(machineerrors.MachineNotFound)
 		}
 
-		err = tx.Query(ctx, stmt, machineUUIDQuery).Get(&row)
-		if errors.Is(err, sql.ErrNoRows) {
-			// Hardware characteristics is a struct of pointers, the reality is
-			// if the record doesn't exist return the empty struct. The reocrd
-			// is always created with the machine.
-			return nil
+		err = tx.Query(ctx, stmt, machineUUID).Get(&row)
+		// Hardware characteristics is a struct of pointers, the reality is
+		// if the record doesn't exist return the empty struct. The record
+		// is always created with the machine.
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return errors.Errorf("querying hardware characteristics for machine %q: %w", mUUID, err)
 		}
-		return err
+
+		err = tx.Query(ctx, tagsStmt, machineUUID).GetAll(&tagRows)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return errors.Errorf("querying instance tags for machine %q: %w", mUUID, err)
+		}
+
+		return nil
 	})
 	if err != nil {
 		return instance.HardwareCharacteristics{}, errors.Capture(err)
 	}
-	return row.toHardwareCharacteristics(), nil
+	return row.toHardwareCharacteristics(tagRows), nil
 }
 
 // AvailabilityZone returns the availability zone for the specified machine.

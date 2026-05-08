@@ -15,6 +15,7 @@ import (
 	"github.com/juju/juju/apiserver/common/model"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	apiservertesting "github.com/juju/juju/apiserver/testing"
+	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/machine"
 	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/status"
@@ -79,7 +80,8 @@ func (s *modelStatusSuite) TestModelStatusRunsForAllModels(c *tc.C) {
 				Error: apiservererrors.ServerError(errors.New(`"fail.me" is not a valid tag`))},
 			{
 				ModelTag:  modelTag,
-				Qualifier: "foobar",
+				Qualifier: "prod",
+				Life:      life.Alive,
 				Type:      coremodel.IAAS.String(),
 			},
 		},
@@ -89,8 +91,15 @@ func (s *modelStatusSuite) TestModelStatusRunsForAllModels(c *tc.C) {
 		Type: coremodel.IAAS,
 	}, nil)
 
-	s.machineService.EXPECT().AllMachineNames(gomock.Any()).Return([]machine.Name{}, nil)
-	s.statusService.EXPECT().GetAllMachineStatuses(gomock.Any()).Return(map[machine.Name]status.StatusInfo{}, nil)
+	s.machineService.EXPECT().AllMachineNames(gomock.Any()).
+		Return([]machine.Name{}, nil)
+	s.statusService.EXPECT().GetAllMachineStatuses(gomock.Any()).
+		Return(map[machine.Name]status.StatusInfo{}, nil)
+	s.modelService.EXPECT().Model(gomock.Any(), coremodel.UUID(s.modelUUID)).
+		Return(coremodel.Model{
+			Qualifier: "prod",
+			Life:      life.Alive,
+		}, nil)
 
 	modelStatusAPI := model.NewModelStatusAPI(
 		s.controllerUUID,

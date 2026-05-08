@@ -1,7 +1,7 @@
 // Copyright 2015 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-package machiner_test
+package machiner
 
 import (
 	"context"
@@ -9,11 +9,9 @@ import (
 	"github.com/juju/names/v6"
 
 	"github.com/juju/juju/core/life"
-	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/internal/testhelpers"
-	"github.com/juju/juju/internal/worker/machiner"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -32,7 +30,7 @@ func (w *mockWatcher) Wait() error {
 }
 
 type mockMachine struct {
-	machiner.Machine
+	Machine
 	testhelpers.Stub
 	watcher mockWatcher
 	life    life.Value
@@ -53,17 +51,12 @@ func (m *mockMachine) EnsureDead(context.Context) error {
 	return m.NextErr()
 }
 
-func (m *mockMachine) SetMachineAddresses(_ context.Context, addresses []network.MachineAddress) error {
-	m.MethodCall(m, "SetMachineAddresses", addresses)
-	return m.NextErr()
-}
-
 func (m *mockMachine) SetObservedNetworkConfig(_ context.Context, netConfig []params.NetworkConfig) error {
 	m.MethodCall(m, "SetObservedNetworkConfig", netConfig)
 	return m.NextErr()
 }
 
-func (m *mockMachine) SetStatus(_ context.Context, status status.Status, info string, data map[string]interface{}) error {
+func (m *mockMachine) SetStatus(_ context.Context, status status.Status, info string, data map[string]any) error {
 	m.MethodCall(m, "SetStatus", status, info, data)
 	return m.NextErr()
 }
@@ -81,7 +74,7 @@ type mockMachineAccessor struct {
 	machine mockMachine
 }
 
-func (a *mockMachineAccessor) Machine(_ context.Context, tag names.MachineTag) (machiner.Machine, error) {
+func (a *mockMachineAccessor) Machine(_ context.Context, tag names.MachineTag) (Machine, error) {
 	a.MethodCall(a, "Machine", tag)
 	if err := a.NextErr(); err != nil {
 		return nil, err

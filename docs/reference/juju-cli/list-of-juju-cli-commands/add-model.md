@@ -17,6 +17,7 @@ Adds a workload model.
 | `--credential` |  | Specify the credential to be used by the model |
 | `--no-switch` | false | Choose not to switch to the newly created model |
 | `--owner` |  | Specify the user who will own the model, if not the current user |
+| `--target-controller` |  | The name of a JAAS managed controller to add a model to |
 
 ## Examples
 

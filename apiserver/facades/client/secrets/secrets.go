@@ -19,7 +19,6 @@ import (
 	secreterrors "github.com/juju/juju/domain/secret/errors"
 	secretservice "github.com/juju/juju/domain/secret/service"
 	"github.com/juju/juju/internal/secrets"
-	"github.com/juju/juju/internal/secrets/provider/juju"
 	"github.com/juju/juju/internal/secrets/provider/kubernetes"
 	"github.com/juju/juju/rpc/params"
 )
@@ -78,7 +77,7 @@ func (s *SecretsAPI) ListSecrets(ctx context.Context, arg params.ListSecretsArgs
 		err    error
 		uri    *coresecrets.URI
 		labels domainsecret.Labels
-		owner  *secretservice.CharmSecretOwner
+		owner  *domainsecret.CharmSecretOwner
 	)
 	if arg.Filter.URI != nil {
 		uri, err = coresecrets.ParseURI(*arg.Filter.URI)
@@ -96,13 +95,13 @@ func (s *SecretsAPI) ListSecrets(ctx context.Context, arg params.ListSecretsArgs
 		}
 		switch kind := tag.Kind(); kind {
 		case names.ApplicationTagKind:
-			owner = &secretservice.CharmSecretOwner{
-				Kind: secretservice.ApplicationOwner,
+			owner = &domainsecret.CharmSecretOwner{
+				Kind: domainsecret.ApplicationCharmSecretOwner,
 				ID:   tag.Id(),
 			}
 		case names.UnitTagKind:
-			owner = &secretservice.CharmSecretOwner{
-				Kind: secretservice.UnitOwner,
+			owner = &domainsecret.CharmSecretOwner{
+				Kind: domainsecret.UnitCharmSecretOwner,
 				ID:   tag.Id(),
 			}
 		default:
@@ -160,17 +159,17 @@ func (s *SecretsAPI) ListSecrets(ctx context.Context, arg params.ListSecretsArgs
 			})
 		}
 		for _, r := range revisionMetadata[i] {
+			// We want to maintain the behavior that if the backend is kubernetes,
+			// we return the built-in name, even though the backend name is now populated.
+			// Backend name should always be non-nil here.
 			backendName := r.BackendName
 			if backendName == nil {
-				if r.ValueRef != nil {
-					if r.ValueRef.BackendID == s.modelUUID {
-						name := kubernetes.BuiltInName(s.modelName)
-						backendName = &name
-					}
-				} else {
-					name := juju.BackendName
-					backendName = &name
-				}
+				return params.ListSecretResults{}, errors.New("retrieving secret revision backend name for secret " + m.Label)
+			}
+			if *r.BackendName == kubernetes.BackendName {
+				name := kubernetes.BuiltInName(s.modelName)
+				backendName = &name
+
 			}
 			secretResult.Revisions = append(secretResult.Revisions, params.SecretRevision{
 				Revision:    r.Revision,
@@ -199,28 +198,28 @@ func (s *SecretsAPI) ListSecrets(ctx context.Context, arg params.ListSecretsArgs
 	return result, nil
 }
 
-func tagFromSubject(access secretservice.SecretAccessor) (names.Tag, error) {
+func tagFromSubject(access domainsecret.SecretAccessor) (names.Tag, error) {
 	switch kind := access.Kind; kind {
-	case secretservice.UnitAccessor:
+	case domainsecret.UnitAccessor:
 		return names.NewUnitTag(access.ID), nil
-	case secretservice.ApplicationAccessor:
+	case domainsecret.ApplicationAccessor:
 		return names.NewApplicationTag(access.ID), nil
-	case secretservice.ModelAccessor:
+	case domainsecret.ModelAccessor:
 		return names.NewModelTag(access.ID), nil
 	default:
 		return nil, errors.NotValidf("subject kind %q", kind)
 	}
 }
 
-func tagFromAccessScope(access secretservice.SecretAccessScope) (names.Tag, error) {
+func tagFromAccessScope(access domainsecret.SecretAccessScope) (names.Tag, error) {
 	switch kind := access.Kind; kind {
-	case secretservice.UnitAccessScope:
+	case domainsecret.UnitAccessScope:
 		return names.NewUnitTag(access.ID), nil
-	case secretservice.ApplicationAccessScope:
+	case domainsecret.ApplicationAccessScope:
 		return names.NewApplicationTag(access.ID), nil
-	case secretservice.ModelAccessScope:
+	case domainsecret.ModelAccessScope:
 		return names.NewModelTag(access.ID), nil
-	case secretservice.RelationAccessScope:
+	case domainsecret.RelationAccessScope:
 		return names.NewRelationTag(access.ID), nil
 	default:
 		return nil, errors.NotValidf("access scope kind %q", kind)
@@ -289,7 +288,7 @@ func (s *SecretsAPI) createSecret(ctx context.Context, arg params.CreateSecretAr
 
 func fromUpsertParams(modelUUID string, autoPrune *bool, p params.UpsertSecretArg) secretservice.UpdateUserSecretParams {
 	return secretservice.UpdateUserSecretParams{
-		Accessor:    secretservice.SecretAccessor{Kind: secretservice.ModelAccessor, ID: modelUUID},
+		Accessor:    domainsecret.SecretAccessor{Kind: domainsecret.ModelAccessor, ID: modelUUID},
 		AutoPrune:   autoPrune,
 		Description: p.Description,
 		Label:       p.Label,
@@ -377,8 +376,8 @@ func (s *SecretsAPI) RemoveSecrets(ctx context.Context, args params.DeleteSecret
 			result.Results[i].Error = apiservererrors.ServerError(err)
 			continue
 		}
-		err = s.secretService.DeleteSecret(ctx, uri, secretservice.DeleteSecretParams{
-			Accessor:  secretservice.SecretAccessor{Kind: secretservice.ModelAccessor, ID: s.modelUUID},
+		err = s.secretService.DeleteSecret(ctx, uri, domainsecret.DeleteSecretParams{
+			Accessor:  domainsecret.SecretAccessor{Kind: domainsecret.ModelAccessor, ID: s.modelUUID},
 			Revisions: arg.Revisions,
 		})
 		if err != nil {
@@ -405,7 +404,7 @@ func (s *SecretsAPI) RevokeSecret(ctx context.Context, arg params.GrantRevokeUse
 	return s.secretsGrantRevoke(ctx, arg, s.secretService.RevokeSecretAccess)
 }
 
-type grantRevokeFunc func(context.Context, *coresecrets.URI, secretservice.SecretAccessParams) error
+type grantRevokeFunc func(context.Context, *coresecrets.URI, domainsecret.SecretAccessParams) error
 
 func (s *SecretsAPI) secretsGrantRevoke(ctx context.Context, arg params.GrantRevokeUserSecretArg, op grantRevokeFunc) (params.ErrorResults, error) {
 	results := params.ErrorResults{
@@ -426,10 +425,10 @@ func (s *SecretsAPI) secretsGrantRevoke(ctx context.Context, arg params.GrantRev
 	}
 
 	one := func(appName string) error {
-		if err := op(ctx, uri, secretservice.SecretAccessParams{
-			Accessor: secretservice.SecretAccessor{Kind: secretservice.ModelAccessor, ID: s.modelUUID},
-			Scope:    secretservice.SecretAccessScope{Kind: secretservice.ModelAccessScope, ID: s.modelUUID},
-			Subject:  secretservice.SecretAccessor{Kind: secretservice.ApplicationAccessor, ID: appName},
+		if err := op(ctx, uri, domainsecret.SecretAccessParams{
+			Accessor: domainsecret.SecretAccessor{Kind: domainsecret.ModelAccessor, ID: s.modelUUID},
+			Scope:    domainsecret.SecretAccessScope{Kind: domainsecret.ModelAccessScope, ID: s.modelUUID},
+			Subject:  domainsecret.SecretAccessor{Kind: domainsecret.ApplicationAccessor, ID: appName},
 			Role:     coresecrets.RoleView,
 		}); err != nil {
 			return errors.Annotatef(err, "cannot change access to %q for %q", uri, appName)

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Merge bug fixes and patches forward across Juju version branches, handling conflicts and maintaining version compatibility."
+---
+
 # Merge forward
 
 Juju generally has multiple versions in concurrent development, and we keep a separate Git branch for each. Often, a bug

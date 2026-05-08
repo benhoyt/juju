@@ -20,6 +20,7 @@ import (
 	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/instance"
 	coremachine "github.com/juju/juju/core/machine"
+	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
 	corestorage "github.com/juju/juju/core/storage"
 	"github.com/juju/juju/core/unit"
@@ -32,6 +33,7 @@ import (
 	applicationstorageservice "github.com/juju/juju/domain/application/service/storage"
 	"github.com/juju/juju/domain/application/state"
 	"github.com/juju/juju/domain/deployment"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
 	domainmachine "github.com/juju/juju/domain/machine"
 	machineservice "github.com/juju/juju/domain/machine/service"
 	machinestate "github.com/juju/juju/domain/machine/state"
@@ -40,10 +42,9 @@ import (
 	"github.com/juju/juju/domain/resolve"
 	resolvestate "github.com/juju/juju/domain/resolve/state"
 	"github.com/juju/juju/domain/status"
-	statusstate "github.com/juju/juju/domain/status/state"
+	statusstate "github.com/juju/juju/domain/status/state/model"
 	domaintesting "github.com/juju/juju/domain/testing"
 	changestreamtesting "github.com/juju/juju/internal/changestream/testing"
-	internalcharm "github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	internalstorage "github.com/juju/juju/internal/storage"
@@ -53,6 +54,8 @@ import (
 
 type watcherSuite struct {
 	changestreamtesting.ModelSuite
+
+	modelUUID model.UUID
 }
 
 func TestWatcherSuite(t *stdtesting.T) {
@@ -62,12 +65,12 @@ func TestWatcherSuite(t *stdtesting.T) {
 func (s *watcherSuite) SetUpTest(c *tc.C) {
 	s.ModelSuite.SetUpTest(c)
 
-	modelUUID := uuid.MustNewUUID()
+	s.modelUUID = tc.Must0(c, model.NewUUID)
 	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO model (uuid, controller_uuid, name, qualifier, type, cloud, cloud_type)
 			VALUES (?, ?, "test", "prod",  "iaas", "test-model", "ec2")
-		`, modelUUID.String(), testing.ControllerTag.Id())
+		`, s.modelUUID.String(), testing.ControllerTag.Id())
 		return err
 	})
 	c.Assert(err, tc.ErrorIsNil)
@@ -77,13 +80,15 @@ func (s *watcherSuite) TestWatchCharm(c *tc.C) {
 	factory := changestream.NewWatchableDBFactoryForNamespace(s.GetWatchableDB, "charm")
 
 	svc := s.setupService(c, factory)
+
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchCharms(c.Context())
 	c.Assert(err, tc.ErrorIsNil)
 
 	modelDB := func(ctx context.Context) (database.TxnRunner, error) {
 		return s.ModelTxnRunner(), nil
 	}
-	st := state.NewState(modelDB, clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := state.NewState(modelDB, s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	harness := watchertest.NewHarness(s, watchertest.NewWatcherC(c, watcher))
 
@@ -129,7 +134,9 @@ func (s *watcherSuite) TestWatchCharm(c *tc.C) {
 
 	removalSt := removalstatemodel.NewState(modelDB, loggertesting.WrapCheckLog(c))
 	harness.AddTest(c, func(c *tc.C) {
-		_, err := removalSt.EnsureApplicationNotAliveCascade(c.Context(), appID.String(), false, false)
+		_, err := removalSt.EnsureApplicationNotAliveCascade(c.Context(), appID.String(), false)
+		c.Assert(err, tc.ErrorIsNil)
+		err = removalSt.MarkApplicationAsDead(c.Context(), appID.String())
 		c.Assert(err, tc.ErrorIsNil)
 		err = removalSt.DeleteApplication(c.Context(), appID.String(), false)
 		c.Assert(err, tc.ErrorIsNil)
@@ -176,6 +183,7 @@ func (s *watcherSuite) TestWatchApplicationUnitLife(c *tc.C) {
 		c.Assert(err, tc.ErrorIsNil)
 	}
 
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchApplicationUnitLife(c.Context(), "foo")
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -349,6 +357,7 @@ func (s *watcherSuite) TestWatchApplicationUnitLifeInitial(c *tc.C) {
 
 	}
 
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchApplicationUnitLife(c.Context(), "foo")
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -370,6 +379,7 @@ func (s *watcherSuite) TestWatchUnitLife(c *tc.C) {
 	svc := s.setupService(c, factory)
 	s.createIAASApplication(c, svc, "foo", service.AddIAASUnitArg{}, service.AddIAASUnitArg{})
 
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchUnitLife(c.Context(), unit.Name("foo/0"))
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -450,6 +460,7 @@ func (s *watcherSuite) TestWatchApplicationScale(c *tc.C) {
 	s.createCAASApplication(c, svc, "bar")
 
 	ctx := c.Context()
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchApplicationScale(ctx, "foo")
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -492,6 +503,7 @@ func (s *watcherSuite) TestWatchApplicationsWithPendingCharms(c *tc.C) {
 	svc := s.setupService(c, factory)
 
 	ctx := c.Context()
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchApplicationsWithPendingCharms(ctx)
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -572,6 +584,7 @@ func (s *watcherSuite) TestWatchApplication(c *tc.C) {
 	appUUID := s.createIAASApplication(c, svc, appName)
 
 	ctx := c.Context()
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchApplication(ctx, appName)
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -634,6 +647,7 @@ func (s *watcherSuite) TestWatchApplicationConfig(c *tc.C) {
 	appUUID := s.createIAASApplication(c, svc, appName)
 
 	ctx := c.Context()
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchApplicationConfig(ctx, appName)
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -711,6 +725,7 @@ func (s *watcherSuite) TestWatchApplicationConfigHash(c *tc.C) {
 	appUUID := s.createIAASApplication(c, svc, appName)
 
 	ctx := c.Context()
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchApplicationConfigHash(ctx, appName)
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -790,6 +805,7 @@ func (s *watcherSuite) TestWatchApplicationSettings(c *tc.C) {
 	appUUID := s.createIAASApplication(c, svc, appName)
 
 	ctx := c.Context()
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchApplicationSettings(ctx, appName)
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -844,6 +860,7 @@ func (s *watcherSuite) TestWatchUnitAddressesHashEmptyInitial(c *tc.C) {
 	_ = s.createIAASApplication(c, svc, appName, service.AddIAASUnitArg{})
 
 	ctx := c.Context()
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchUnitAddressesHash(ctx, "foo/0")
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -916,6 +933,7 @@ func (s *watcherSuite) TestWatchUnitAddressesHash(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 
 	ctx := c.Context()
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchUnitAddressesHash(ctx, "foo/0")
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -945,7 +963,7 @@ func (s *watcherSuite) TestWatchUnitAddressesHash(c *tc.C) {
 	harness.Run(c, []string{"eb27bc0dd239e03fd70690f95e3cb9b55013da43cd7606e6c972fb2c3d576f38"})
 }
 
-func (s *watcherSuite) TestWatchCloudServiceAddressesHash(c *tc.C) {
+func (s *watcherSuite) TestWatchK8sServiceAddressesHash(c *tc.C) {
 	factory := changestream.NewWatchableDBFactoryForNamespace(s.GetWatchableDB, "unit_addresses_hash")
 	svc := s.setupService(c, factory)
 
@@ -954,22 +972,23 @@ func (s *watcherSuite) TestWatchCloudServiceAddressesHash(c *tc.C) {
 
 	ctx := c.Context()
 
-	// Add a cloud service to get an initial state.
-	err := svc.UpdateCloudService(ctx, "foo", "foo-provider", network.ProviderAddresses{
+	// Add a k8s service to get an initial state.
+	err := svc.UpdateK8sService(ctx, "foo", "foo-provider", network.ProviderAddresses{
 		{
 			MachineAddress: network.NewMachineAddress("10.0.0.1"),
 		},
 	})
 	c.Assert(err, tc.ErrorIsNil)
 
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchUnitAddressesHash(ctx, "foo/0")
 	c.Assert(err, tc.ErrorIsNil)
 
 	harness := watchertest.NewHarness(s, watchertest.NewWatcherC(c, watcher))
 
 	harness.AddTest(c, func(c *tc.C) {
-		// Change the address for the cloud service should trigger a change.
-		err := svc.UpdateCloudService(ctx, "foo", "foo-provider", network.ProviderAddresses{
+		// Change the address for the k8s service should trigger a change.
+		err := svc.UpdateK8sService(ctx, "foo", "foo-provider", network.ProviderAddresses{
 			{
 				MachineAddress: network.NewMachineAddress("192.168.0.1"),
 			},
@@ -1018,7 +1037,7 @@ func (s *watcherSuite) TestWatchUnitAddressesHashBadName(c *tc.C) {
 	svc := s.setupService(c, factory)
 
 	_, err := svc.WatchUnitAddressesHash(c.Context(), "bad-unit-name")
-	c.Assert(err, tc.ErrorIs, applicationerrors.UnitNotFound)
+	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationNotFound)
 }
 
 func (s *watcherSuite) TestWatchUnitAddRemoveOnMachineInitialEvents(c *tc.C) {
@@ -1036,6 +1055,7 @@ func (s *watcherSuite) TestWatchUnitAddRemoveOnMachineInitialEvents(c *tc.C) {
 		},
 	)
 
+	s.AssertChangeStreamIdle(c)
 	ctx := c.Context()
 	watcher, err := svc.WatchUnitAddRemoveOnMachine(ctx, machineName)
 	c.Assert(err, tc.ErrorIsNil)
@@ -1054,14 +1074,13 @@ func (s *watcherSuite) TestWatchUnitAddRemoveOnMachine(c *tc.C) {
 		return s.ModelTxnRunner(), nil
 	}
 	svc := s.setupService(c, factory)
-	st := state.NewState(modelDB, clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := state.NewState(modelDB, s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 	machineSvc := machineservice.NewProviderService(
 		machinestate.NewState(modelDB, clock.WallClock, loggertesting.WrapCheckLog(c)),
 		domain.NewStatusHistory(loggertesting.WrapCheckLog(c), clock.WallClock),
 		func(ctx context.Context) (machineservice.Provider, error) {
 			return machineservice.NewNoopProvider(), nil
 		},
-		nil,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -1082,11 +1101,34 @@ func (s *watcherSuite) TestWatchUnitAddRemoveOnMachine(c *tc.C) {
 	})
 	c.Assert(err, tc.ErrorIsNil)
 
+	s.AssertChangeStreamIdle(c)
 	ctx := c.Context()
 	watcher, err := svc.WatchUnitAddRemoveOnMachine(ctx, res0.MachineName)
 	c.Assert(err, tc.ErrorIsNil)
 
 	harness := watchertest.NewHarness(s, watchertest.NewWatcherC(c, watcher))
+	deleteUnit := func(c *tc.C, name string) {
+		err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+			var unitUUID string
+			if err := tx.QueryRowContext(ctx, "SELECT uuid FROM unit WHERE name=?", name).Scan(&unitUUID); err != nil {
+				return errors.Capture(err)
+			}
+			if _, err := tx.ExecContext(ctx, "DELETE FROM unit_agent_status WHERE unit_uuid=?", unitUUID); err != nil {
+				return errors.Capture(err)
+			}
+			if _, err := tx.ExecContext(ctx, "DELETE FROM unit_workload_status WHERE unit_uuid=?", unitUUID); err != nil {
+				return errors.Capture(err)
+			}
+			if _, err := tx.ExecContext(ctx, "DELETE FROM unit_workload_version WHERE unit_uuid=?", unitUUID); err != nil {
+				return errors.Capture(err)
+			}
+			if _, err := tx.ExecContext(ctx, "DELETE FROM unit WHERE uuid=?", unitUUID); err != nil {
+				return errors.Capture(err)
+			}
+			return nil
+		})
+		c.Assert(err, tc.ErrorIsNil)
+	}
 
 	harness.AddTest(c, func(c *tc.C) {
 		s.createIAASApplication(c, svc, "foo",
@@ -1120,134 +1162,13 @@ func (s *watcherSuite) TestWatchUnitAddRemoveOnMachine(c *tc.C) {
 	})
 
 	harness.AddTest(c, func(c *tc.C) {
-		unitUUID, err := st.GetUnitUUIDByName(c.Context(), "foo/0")
-		c.Assert(err, tc.ErrorIsNil)
-		_, err = removalSt.EnsureUnitNotAliveCascade(ctx, unitUUID.String(), false)
-		c.Assert(err, tc.ErrorIsNil)
-		err = removalSt.MarkUnitAsDead(ctx, unitUUID.String())
-		c.Assert(err, tc.ErrorIsNil)
-		err = removalSt.DeleteUnit(ctx, unitUUID.String())
-		c.Assert(err, tc.ErrorIsNil)
+		deleteUnit(c, "foo/0")
 	}, func(w watchertest.WatcherC[[]string]) {
 		w.Check(watchertest.SliceAssert([]string{"foo/0"}))
 	})
 
 	harness.AddTest(c, func(c *tc.C) {
-		unitUUID, err := st.GetUnitUUIDByName(c.Context(), "foo/1")
-		c.Assert(err, tc.ErrorIsNil)
-		_, err = removalSt.EnsureUnitNotAliveCascade(ctx, unitUUID.String(), false)
-		c.Assert(err, tc.ErrorIsNil)
-		err = removalSt.MarkUnitAsDead(ctx, unitUUID.String())
-		c.Assert(err, tc.ErrorIsNil)
-		err = removalSt.DeleteUnit(ctx, unitUUID.String())
-		c.Assert(err, tc.ErrorIsNil)
-	}, func(w watchertest.WatcherC[[]string]) {
-		w.AssertNoChange()
-	})
-
-	harness.Run(c, []string{})
-}
-
-func (s *watcherSuite) TestWatchUnitAddRemoveOnMachineSubordinates(c *tc.C) {
-	factory := changestream.NewWatchableDBFactoryForNamespace(s.GetWatchableDB, "custom_unit_name_lifecycle")
-	modelDB := func(ctx context.Context) (database.TxnRunner, error) {
-		return s.ModelTxnRunner(), nil
-	}
-	svc := s.setupService(c, factory)
-	st := state.NewState(modelDB, clock.WallClock, loggertesting.WrapCheckLog(c))
-	machineSvc := machineservice.NewProviderService(
-		machinestate.NewState(modelDB, clock.WallClock, loggertesting.WrapCheckLog(c)),
-		domain.NewStatusHistory(loggertesting.WrapCheckLog(c), clock.WallClock),
-		func(ctx context.Context) (machineservice.Provider, error) {
-			return machineservice.NewNoopProvider(), nil
-		},
-		nil,
-		clock.WallClock,
-		loggertesting.WrapCheckLog(c),
-	)
-	removalSt := removalstatemodel.NewState(modelDB, loggertesting.WrapCheckLog(c))
-
-	res0, err := machineSvc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
-		Platform: deployment.Platform{
-			OSType:  deployment.Ubuntu,
-			Channel: "22.04",
-		},
-	})
-	c.Assert(err, tc.ErrorIsNil)
-	res1, err := machineSvc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
-		Platform: deployment.Platform{
-			OSType:  deployment.Ubuntu,
-			Channel: "22.04",
-		},
-	})
-	c.Assert(err, tc.ErrorIsNil)
-
-	ctx := c.Context()
-	watcher, err := svc.WatchUnitAddRemoveOnMachine(ctx, res0.MachineName)
-	c.Assert(err, tc.ErrorIsNil)
-
-	harness := watchertest.NewHarness(s, watchertest.NewWatcherC(c, watcher))
-
-	harness.AddTest(c, func(c *tc.C) {
-		s.createIAASApplication(c, svc, "foo",
-			service.AddIAASUnitArg{
-				AddUnitArg: service.AddUnitArg{
-					Placement: &instance.Placement{Scope: instance.MachineScope, Directive: res0.MachineName.String()},
-				},
-			},
-			service.AddIAASUnitArg{
-				AddUnitArg: service.AddUnitArg{
-					Placement: &instance.Placement{Scope: instance.MachineScope, Directive: res1.MachineName.String()},
-				},
-			},
-		)
-	}, func(w watchertest.WatcherC[[]string]) {
-		w.Check(watchertest.SliceAssert([]string{"foo/0"}))
-	})
-
-	var subordinateAppID coreapplication.UUID
-	harness.AddTest(c, func(c *tc.C) {
-		subordinateAppID = s.createIAASApplicationWithCharmAndStoragePath(c, svc, "bar", &stubCharm{subordinate: true}, "deadbeef")
-	}, func(w watchertest.WatcherC[[]string]) {
-		w.AssertNoChange()
-	})
-
-	harness.AddTest(c, func(c *tc.C) {
-		err := svc.AddIAASSubordinateUnit(ctx, subordinateAppID, "foo/0")
-		c.Assert(err, tc.ErrorIsNil)
-	}, func(w watchertest.WatcherC[[]string]) {
-		w.Check(watchertest.SliceAssert([]string{"bar/0"}))
-	})
-
-	harness.AddTest(c, func(c *tc.C) {
-		err := svc.AddIAASSubordinateUnit(ctx, subordinateAppID, "foo/1")
-		c.Assert(err, tc.ErrorIsNil)
-	}, func(w watchertest.WatcherC[[]string]) {
-		w.AssertNoChange()
-	})
-
-	harness.AddTest(c, func(c *tc.C) {
-		unitUUID, err := st.GetUnitUUIDByName(c.Context(), "bar/0")
-		c.Assert(err, tc.ErrorIsNil)
-		_, err = removalSt.EnsureUnitNotAliveCascade(ctx, unitUUID.String(), false)
-		c.Assert(err, tc.ErrorIsNil)
-		err = removalSt.MarkUnitAsDead(ctx, unitUUID.String())
-		c.Assert(err, tc.ErrorIsNil)
-		err = removalSt.DeleteUnit(ctx, unitUUID.String())
-		c.Assert(err, tc.ErrorIsNil)
-	}, func(w watchertest.WatcherC[[]string]) {
-		w.Check(watchertest.SliceAssert([]string{"bar/0"}))
-	})
-
-	harness.AddTest(c, func(c *tc.C) {
-		unitUUID, err := st.GetUnitUUIDByName(c.Context(), "bar/1")
-		c.Assert(err, tc.ErrorIsNil)
-		_, err = removalSt.EnsureUnitNotAliveCascade(ctx, unitUUID.String(), false)
-		c.Assert(err, tc.ErrorIsNil)
-		err = removalSt.MarkUnitAsDead(ctx, unitUUID.String())
-		c.Assert(err, tc.ErrorIsNil)
-		err = removalSt.DeleteUnit(ctx, unitUUID.String())
-		c.Assert(err, tc.ErrorIsNil)
+		deleteUnit(c, "foo/1")
 	}, func(w watchertest.WatcherC[[]string]) {
 		w.AssertNoChange()
 	})
@@ -1271,6 +1192,7 @@ func (s *watcherSuite) TestWatchApplicationsInitialEvent(c *tc.C) {
 	app2 := s.createCAASApplication(c, svc, "bar")
 
 	ctx := c.Context()
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchApplications(ctx)
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -1292,6 +1214,7 @@ func (s *watcherSuite) TestWatchApplications(c *tc.C) {
 	removalSt := removalstatemodel.NewState(modelDB, loggertesting.WrapCheckLog(c))
 
 	ctx := c.Context()
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchApplications(ctx)
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -1319,7 +1242,9 @@ WHERE uuid=?
 	})
 
 	harness.AddTest(c, func(c *tc.C) {
-		_, err := removalSt.EnsureApplicationNotAliveCascade(c.Context(), appID.String(), false, false)
+		_, err := removalSt.EnsureApplicationNotAliveCascade(c.Context(), appID.String(), false)
+		c.Assert(err, tc.ErrorIsNil)
+		err = removalSt.MarkApplicationAsDead(c.Context(), appID.String())
 		c.Assert(err, tc.ErrorIsNil)
 		err = removalSt.DeleteApplication(c.Context(), appID.String(), false)
 		c.Assert(err, tc.ErrorIsNil)
@@ -1339,6 +1264,7 @@ func (s *watcherSuite) TestWatchApplicationExposed(c *tc.C) {
 	appID := s.createIAASApplication(c, svc, appName)
 
 	ctx := c.Context()
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchApplicationExposed(ctx, appName)
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -1465,16 +1391,12 @@ func (s *watcherSuite) TestWatchUnitForLegacyUniter(c *tc.C) {
 	})
 	c.Assert(err, tc.ErrorIsNil)
 
+	s.AssertChangeStreamIdle(c)
+
 	watcher, err := svc.WatchUnitForLegacyUniter(ctx, unitName)
 	c.Assert(err, tc.ErrorIsNil)
 
 	harness := watchertest.NewHarness(s, watchertest.NewWatcherC(c, watcher))
-
-	// Capture the initial event
-	harness.AddTest(c, func(c *tc.C) {}, func(w watchertest.WatcherC[struct{}]) {
-		w.AssertChange()
-		w.AssertNoChange()
-	})
 
 	// Assert no change is emitted from just changing the status.
 	// Conveniently, setting this also allows us to resolve in the next test
@@ -1592,6 +1514,7 @@ func (s *watcherSuite) TestWatchUnitAddresses(c *tc.C) {
 	})
 	c.Assert(err, tc.ErrorIsNil)
 
+	s.AssertChangeStreamIdle(c)
 	watcher, err := svc.WatchUnitAddresses(c.Context(), unit.Name("foo/0"))
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -1688,17 +1611,22 @@ func (s *watcherSuite) setupService(c *tc.C, factory domain.WatchableDBFactory) 
 	caasProviderGetter := func(ctx context.Context) (service.CAASProvider, error) {
 		return nil, coreerrors.NotSupported
 	}
+	cloudInfoGetter := func(ctx context.Context) (service.CloudInfoProvider, error) {
+		return nil, coreerrors.NotSupported
+	}
 
 	storageProviderRegistryGetter := corestorage.ConstModelStorageRegistry(
 		func() internalstorage.ProviderRegistry {
 			return internalstorage.NotImplementedProviderRegistry{}
 		},
 	)
-	state := state.NewState(modelDB, clock.WallClock, loggertesting.WrapCheckLog(c))
+	state := state.NewState(modelDB, s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 	storageSvc := applicationstorageservice.NewService(
-		state, applicationstorageservice.NewStoragePoolProvider(
+		state,
+		applicationstorageservice.NewStoragePoolProvider(
 			storageProviderRegistryGetter, state,
 		),
+		loggertesting.WrapCheckLog(c),
 	)
 
 	return service.NewWatchableService(
@@ -1709,8 +1637,10 @@ func (s *watcherSuite) setupService(c *tc.C, factory domain.WatchableDBFactory) 
 		nil,
 		providerGetter,
 		caasProviderGetter,
+		cloudInfoGetter,
 		nil,
 		domain.NewStatusHistory(loggertesting.WrapCheckLog(c), clock.WallClock),
+		model.UUID(s.ModelUUID()),
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -1725,7 +1655,6 @@ func (s *watcherSuite) createMachine(
 		func(ctx context.Context) (machineservice.Provider, error) {
 			return machineservice.NewNoopProvider(), nil
 		},
-		nil,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)

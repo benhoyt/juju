@@ -12,21 +12,24 @@ import (
 	"github.com/juju/tc"
 
 	coreapplication "github.com/juju/juju/core/application"
+	"github.com/juju/juju/core/arch"
+	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/machine"
-	modeltesting "github.com/juju/juju/core/model/testing"
+	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
 	coreunit "github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/application"
 	"github.com/juju/juju/domain/application/architecture"
 	"github.com/juju/juju/domain/application/charm"
 	applicationstate "github.com/juju/juju/domain/application/state"
+	"github.com/juju/juju/domain/constraints"
 	"github.com/juju/juju/domain/deployment"
 	domainmachine "github.com/juju/juju/domain/machine"
 	machinestate "github.com/juju/juju/domain/machine/state"
 	domainnetwork "github.com/juju/juju/domain/network"
 	"github.com/juju/juju/domain/port"
 	porterrors "github.com/juju/juju/domain/port/errors"
-	"github.com/juju/juju/internal/changestream/testing"
+	"github.com/juju/juju/domain/schema/testing"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	coretesting "github.com/juju/juju/internal/testing"
 )
@@ -58,11 +61,11 @@ var (
 func (s *stateSuite) SetUpTest(c *tc.C) {
 	s.ModelSuite.SetUpTest(c)
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, model.NewUUID)
 	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO model (uuid, controller_uuid, name, qualifier, type, cloud, cloud_type)
-			VALUES (?, ?, "test", "prod", "iaas", "test-model", "ec2")
+INSERT INTO model (uuid, controller_uuid, name, qualifier, type, cloud, cloud_type)
+VALUES (?, ?, "test", "prod", "iaas", "test-model", "ec2")
 		`, modelUUID.String(), coretesting.ControllerTag.Id())
 		return err
 	})
@@ -75,6 +78,13 @@ func (s *stateSuite) SetUpTest(c *tc.C) {
 			Channel: "24.04",
 			OSType:  deployment.Ubuntu,
 		},
+		Constraints: constraints.Constraints{
+			Arch: new(arch.AMD64),
+		},
+		InstanceID: new(instance.Id("foo")),
+		HardwareCharacteristics: instance.HardwareCharacteristics{
+			Arch: new(arch.AMD64),
+		},
 	})
 	c.Assert(err, tc.ErrorIsNil)
 	machineUUID0, err := machineSt.GetMachineUUID(c.Context(), machineNames0[0])
@@ -83,6 +93,13 @@ func (s *stateSuite) SetUpTest(c *tc.C) {
 		Platform: deployment.Platform{
 			Channel: "24.04",
 			OSType:  deployment.Ubuntu,
+		},
+		Constraints: constraints.Constraints{
+			Arch: new(arch.AMD64),
+		},
+		InstanceID: new(instance.Id("bar")),
+		HardwareCharacteristics: instance.HardwareCharacteristics{
+			Arch: new(arch.AMD64),
 		},
 	})
 	c.Assert(err, tc.ErrorIsNil)
@@ -96,6 +113,12 @@ func (s *stateSuite) SetUpTest(c *tc.C) {
 	s.unitUUID, s.unitName = s.createUnit(c, netNodeUUIDs[0], appNames[0])
 }
 
+func (s *stateSuite) TearDownTest(c *tc.C) {
+	s.ModelSuite.TearDownTest(c)
+
+	s.unitCount = 0
+}
+
 func (s *baseSuite) createApplicationWithRelations(c *tc.C, appName string, relations ...string) coreapplication.UUID {
 	relationsMap := map[string]charm.Relation{}
 	for _, relation := range relations {
@@ -106,7 +129,7 @@ func (s *baseSuite) createApplicationWithRelations(c *tc.C, appName string, rela
 		}
 	}
 
-	applicationSt := applicationstate.NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	applicationSt := applicationstate.NewState(s.TxnRunnerFactory(), model.UUID(s.ModelUUID()), clock.WallClock, loggertesting.WrapCheckLog(c))
 	appUUID, _, err := applicationSt.CreateIAASApplication(c.Context(), appName, application.AddIAASApplicationArg{
 		BaseAddApplicationArg: application.BaseAddApplicationArg{
 			Charm: charm.Charm{
@@ -126,6 +149,9 @@ func (s *baseSuite) createApplicationWithRelations(c *tc.C, appName string, rela
 				Revision:      1,
 				Source:        charm.LocalSource,
 			},
+			Constraints: constraints.Constraints{
+				Arch: new(arch.AMD64),
+			},
 		},
 	}, nil)
 	c.Assert(err, tc.ErrorIsNil)
@@ -135,24 +161,30 @@ func (s *baseSuite) createApplicationWithRelations(c *tc.C, appName string, rela
 // createUnit creates a new unit in state and returns its UUID. The unit is assigned
 // to the net node with uuid `netNodeUUID` and application with name `appName`.
 func (s *baseSuite) createUnit(c *tc.C, netNodeUUID, appName string) (coreunit.UUID, coreunit.Name) {
-	ctx := c.Context()
-	applicationSt := applicationstate.NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	applicationSt := applicationstate.NewState(s.TxnRunnerFactory(), model.UUID(s.ModelUUID()), clock.WallClock, loggertesting.WrapCheckLog(c))
 
-	appID, err := applicationSt.GetApplicationUUIDByName(ctx, appName)
+	appID, err := applicationSt.GetApplicationUUIDByName(c.Context(), appName)
 	c.Assert(err, tc.ErrorIsNil)
 
 	// Ensure that we place the unit on the same machine as the net node.
-	var machineName machine.Name
+	var (
+		machineUUID machine.UUID
+		machineName machine.Name
+	)
 	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx, "SELECT name FROM machine WHERE net_node_uuid = ?", netNodeUUID).Scan(&machineName)
+		err := tx.QueryRowContext(ctx, `
+SELECT uuid, name FROM machine WHERE net_node_uuid = ?
+`, netNodeUUID).Scan(&machineUUID, &machineName)
 		return err
 	})
 	c.Assert(err, tc.ErrorIsNil)
 
-	unitNames, _, err := applicationSt.AddIAASUnits(ctx, appID, application.AddIAASUnitArg{
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	unitNames, _, err := applicationSt.AddIAASUnits(c.Context(), appID, application.AddIAASUnitArg{
 		MachineNetNodeUUID: domainnetwork.NetNodeUUID(netNodeUUID),
-		MachineUUID:        tc.Must(c, machine.NewUUID),
+		MachineUUID:        machineUUID,
 		AddUnitArg: application.AddUnitArg{
+			UnitUUID:    unitUUID,
 			NetNodeUUID: domainnetwork.NetNodeUUID(netNodeUUID),
 			Placement: deployment.Placement{
 				Type:      deployment.PlacementTypeMachine,
@@ -165,22 +197,12 @@ func (s *baseSuite) createUnit(c *tc.C, netNodeUUID, appName string) (coreunit.U
 	unitName := unitNames[0]
 	s.unitCount++
 
-	var unitUUID coreunit.UUID
-	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx, "SELECT uuid FROM unit WHERE name = ?", unitName).Scan(&unitUUID)
-		if err != nil {
-			return err
-		}
-
-		return nil
-	})
-	c.Assert(err, tc.ErrorIsNil)
 	return unitUUID, unitName
 }
 
 func (s *stateSuite) initialiseOpenPort(c *tc.C, st *State) {
 	ctx := c.Context()
-	err := st.UpdateUnitPorts(ctx, s.unitUUID, network.GroupedPortRanges{
+	err := st.ImportOpenUnitPorts(ctx, s.unitUUID, network.GroupedPortRanges{
 		"ep0": {
 			{Protocol: "tcp", FromPort: 80, ToPort: 80},
 			{Protocol: "udp", FromPort: 1000, ToPort: 1500},
@@ -188,7 +210,7 @@ func (s *stateSuite) initialiseOpenPort(c *tc.C, st *State) {
 		"ep1": {
 			{Protocol: "tcp", FromPort: 8080, ToPort: 8080},
 		},
-	}, network.GroupedPortRanges{})
+	})
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -238,7 +260,7 @@ func (s *stateSuite) TestGetAllOpenedPorts(c *tc.C) {
 
 	_ = s.createApplicationWithRelations(c, appNames[1], "ep0", "ep1", "ep2")
 	unit1UUID, unit1Name := s.createUnit(c, netNodeUUIDs[1], appNames[1])
-	err := st.UpdateUnitPorts(ctx, unit1UUID, network.GroupedPortRanges{
+	err := st.ImportOpenUnitPorts(ctx, unit1UUID, network.GroupedPortRanges{
 		"ep0": {
 			{Protocol: "tcp", FromPort: 443, ToPort: 443},
 			{Protocol: "udp", FromPort: 2000, ToPort: 2500},
@@ -246,7 +268,7 @@ func (s *stateSuite) TestGetAllOpenedPorts(c *tc.C) {
 		"ep1": {
 			{Protocol: "udp", FromPort: 2000, ToPort: 2500},
 		},
-	}, network.GroupedPortRanges{})
+	})
 	c.Assert(err, tc.ErrorIsNil)
 
 	groupedPortRanges, err := st.GetAllOpenedPorts(ctx)
@@ -303,12 +325,12 @@ func (s *stateSuite) TestGetMachineOpenedPortsAcrossTwoUnits(c *tc.C) {
 	s.initialiseOpenPort(c, st)
 
 	unit1UUID, unit1Name := s.createUnit(c, netNodeUUIDs[0], appNames[0])
-	err := st.UpdateUnitPorts(ctx, unit1UUID, network.GroupedPortRanges{
+	err := st.ImportOpenUnitPorts(ctx, unit1UUID, network.GroupedPortRanges{
 		"ep0": {
 			{Protocol: "tcp", FromPort: 443, ToPort: 443},
 			{Protocol: "udp", FromPort: 2000, ToPort: 2500},
 		},
-	}, network.GroupedPortRanges{})
+	})
 	c.Assert(err, tc.ErrorIsNil)
 
 	machineGroupedPortRanges, err := st.GetMachineOpenedPorts(ctx, machineUUIDs[0])
@@ -341,12 +363,12 @@ func (s *stateSuite) TestGetMachineOpenedPortsAcrossTwoUnitsDifferentMachines(c 
 	s.initialiseOpenPort(c, st)
 
 	unit1UUID, unit1Name := s.createUnit(c, netNodeUUIDs[1], appNames[0])
-	err := st.UpdateUnitPorts(ctx, unit1UUID, network.GroupedPortRanges{
+	err := st.ImportOpenUnitPorts(ctx, unit1UUID, network.GroupedPortRanges{
 		"ep0": {
 			{Protocol: "tcp", FromPort: 443, ToPort: 443},
 			{Protocol: "udp", FromPort: 2000, ToPort: 2500},
 		},
-	}, network.GroupedPortRanges{})
+	})
 	c.Assert(err, tc.ErrorIsNil)
 
 	machineGroupedPortRanges, err := st.GetMachineOpenedPorts(ctx, machineUUIDs[0])
@@ -410,12 +432,12 @@ func (s *stateSuite) TestGetApplicationOpenedPortsAcrossTwoUnits(c *tc.C) {
 	s.initialiseOpenPort(c, st)
 
 	unit1UUID, unit1Name := s.createUnit(c, netNodeUUIDs[1], appNames[0])
-	err := st.UpdateUnitPorts(ctx, unit1UUID, network.GroupedPortRanges{
+	err := st.ImportOpenUnitPorts(ctx, unit1UUID, network.GroupedPortRanges{
 		"ep0": {
 			{Protocol: "tcp", FromPort: 443, ToPort: 443},
 			{Protocol: "udp", FromPort: 2000, ToPort: 2500},
 		},
-	}, network.GroupedPortRanges{})
+	})
 	c.Assert(err, tc.ErrorIsNil)
 
 	expect := port.UnitEndpointPortRanges{
@@ -440,12 +462,12 @@ func (s *stateSuite) TestGetApplicationOpenedPortsAcrossTwoUnitsDifferentApplica
 
 	app1UUID := s.createApplicationWithRelations(c, appNames[1], "ep0", "ep1", "ep2")
 	unit1UUID, unit1Name := s.createUnit(c, netNodeUUIDs[1], appNames[1])
-	err := st.UpdateUnitPorts(ctx, unit1UUID, network.GroupedPortRanges{
+	err := st.ImportOpenUnitPorts(ctx, unit1UUID, network.GroupedPortRanges{
 		"ep0": {
 			{Protocol: "tcp", FromPort: 443, ToPort: 443},
 			{Protocol: "udp", FromPort: 2000, ToPort: 2500},
 		},
-	}, network.GroupedPortRanges{})
+	})
 	c.Assert(err, tc.ErrorIsNil)
 
 	expect := port.UnitEndpointPortRanges{

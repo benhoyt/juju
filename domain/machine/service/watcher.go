@@ -75,7 +75,6 @@ func NewWatchableService(
 	st State,
 	watcherFactory WatcherFactory,
 	providerGetter providertracker.ProviderGetter[Provider],
-	lxdProfileProviderGetter providertracker.ProviderGetter[LXDProfileProvider],
 	statusHistory StatusHistory,
 	clock clock.Clock,
 	logger logger.Logger,
@@ -88,8 +87,7 @@ func NewWatchableService(
 				clock:         clock,
 				logger:        logger,
 			},
-			providerGetter:           providerGetter,
-			lxdProfileProviderGetter: lxdProfileProviderGetter,
+			providerGetter: providerGetter,
 		},
 		watcherFactory: watcherFactory,
 	}
@@ -113,12 +111,19 @@ func (s *WatchableService) WatchMachineLife(ctx context.Context, machineName mac
 	)
 }
 
-// WatchMachineAndMachineUnitLife returns a NotifyWatcher that is subscribed to
+// WatchMachineLifeAndDependants returns a NotifyWatcher that is subscribed to
 // the changes in the machine and machine unit lifecycle tables in the model,
-// for the given machine name. It emits changes for both machine and the
-// machine unit lifecycle events, so it can be used to track the lifecycle of
-// a machine and its units together.
-func (s *WatchableService) WatchMachineAndMachineUnitLife(ctx context.Context, machineName machine.Name) (watcher.NotifyWatcher, error) {
+// for the given machine name. It emits changes for the machine, the
+// machine unit lifecycle events and storage entities it is responsible for, so
+// it can be used to track the lifecycle of a machine and its dependants.
+//
+// The following errors may be returned:
+// - [coreerrors.NotValid] when the supplied machine name is not valid.
+// - [machineerrors.MachineNotFound] when the machine specified by the name does
+// not exist.
+func (s *WatchableService) WatchMachineLifeAndDependants(
+	ctx context.Context, machineName machine.Name,
+) (watcher.NotifyWatcher, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
@@ -126,19 +131,23 @@ func (s *WatchableService) WatchMachineAndMachineUnitLife(ctx context.Context, m
 		return nil, errors.Capture(err)
 	}
 
-	machineTable, unitTable := s.st.NamespaceForMachineAndMachineUnitLife()
+	uuid, err := s.st.GetMachineUUID(ctx, machineName)
+	if errors.Is(err, machineerrors.MachineNotFound) {
+		return nil, errors.Errorf(
+			"machine %q not found", machineName,
+		).Add(machineerrors.MachineNotFound)
+	} else if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	namespace := s.st.NamespaceForMachineLifeAndDependants()
 	return s.watcherFactory.NewNotifyWatcher(
 		ctx,
-		fmt.Sprintf("machine and unit life watcher for %q", machineName),
+		fmt.Sprintf("machine life and dependants watcher for %q", machineName),
 		eventsource.PredicateFilter(
-			machineTable,
+			namespace,
 			changestream.All,
-			eventsource.EqualsPredicate(machineName.String()),
-		),
-		eventsource.PredicateFilter(
-			unitTable,
-			changestream.All,
-			eventsource.EqualsPredicate(machineName.String()),
+			eventsource.EqualsPredicate(uuid.String()),
 		),
 	)
 }
@@ -240,8 +249,8 @@ func (s *WatchableService) WatchModelMachines(ctx context.Context) (watcher.Stri
 	)
 }
 
-// WatchModelMachineLifeAndStartTimes returns a string watcher that emits machine names
-// for changes to machine life or agent start times.
+// WatchModelMachineLifeAndStartTimes returns a string watcher that emits
+// machine names for changes to machine life or agent start times.
 func (s *WatchableService) WatchModelMachineLifeAndStartTimes(ctx context.Context) (watcher.StringsWatcher, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
@@ -273,29 +282,10 @@ func (s *WatchableService) WatchMachineCloudInstances(ctx context.Context, machi
 	)
 }
 
-// WatchLXDProfiles returns a NotifyWatcher that is subscribed to the changes in
-// the machine_cloud_instance table in the model, for the given machine UUID.
-// Note: Sometime in the future, this watcher could react to logical changes
-// fired from `SetAppliedLXDProfileNames()` instead of the `machine_lxd_profile`
-// table, which could become noisy.
-func (s *WatchableService) WatchLXDProfiles(ctx context.Context, machineUUID machine.UUID) (watcher.NotifyWatcher, error) {
-	ctx, span := trace.Start(ctx, trace.NameFromFunc())
-	defer span.End()
-
-	return s.watcherFactory.NewNotifyWatcher(
-		ctx,
-		fmt.Sprintf("machine lxd profiles watcher for %q", machineUUID),
-		eventsource.PredicateFilter(
-			s.st.NamespaceForWatchMachineLXDProfiles(),
-			changestream.All,
-			eventsource.EqualsPredicate(machineUUID.String()),
-		),
-	)
-}
-
 // WatchMachineReboot returns a NotifyWatcher that is subscribed to
 // the changes in the machine_requires_reboot table in the model.
-// It raises an event whenever the machine uuid or its parent is added to the reboot table.
+// It raises an event whenever the machine uuid or its parent is
+// added to the reboot table.
 func (s *WatchableService) WatchMachineReboot(ctx context.Context, uuid machine.UUID) (watcher.NotifyWatcher, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()

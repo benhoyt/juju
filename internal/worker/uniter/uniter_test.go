@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 	"gopkg.in/yaml.v2"
@@ -24,7 +24,7 @@ import (
 	corerelation "github.com/juju/juju/core/relation"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/core/watcher"
-	"github.com/juju/juju/internal/charm/hooks"
+	"github.com/juju/juju/domain/deployment/charm/hooks"
 	coretesting "github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/internal/worker"
 	"github.com/juju/juju/internal/worker/uniter"
@@ -272,64 +272,6 @@ func (s *UniterSuite) TestUniterStartupStatus(c *tc.C) {
 	})
 }
 
-func (s *UniterSuite) TestUniterStartupStatusCharmProfile(c *tc.C) {
-	// addCharmProfile customises the wordpress charm's metadata,
-	// adding an lxd profile for the charm. We do it here rather
-	// than in the charm itself to avoid modifying all of the other
-	// scenarios.
-	addCharmProfile := func(c tc.LikeC, ctx *testContext, path string) {
-		f, err := os.OpenFile(filepath.Join(path, "lxd-profile.yaml"), os.O_RDWR|os.O_CREATE, 0644)
-		c.Assert(err, tc.ErrorIsNil)
-		defer func() {
-			err := f.Close()
-			c.Assert(err, tc.ErrorIsNil)
-		}()
-		_, err = io.WriteString(f, `
-config:
-  security.nesting: "false"
-  security.privileged: "true"`)
-		c.Assert(err, tc.ErrorIsNil)
-	}
-
-	s.runUniterTests(c, []uniterTest{
-		ut(
-			"unit status and message at startup, charm waiting for profile",
-			createCharm{customize: addCharmProfile},
-			serveCharm{},
-			createApplicationAndUnit{container: true},
-			startUniter{
-				newExecutorFunc: executorFunc(c),
-			},
-			waitUnitAgent{
-				statusGetter: unitStatusGetter,
-				status:       status.Waiting,
-				info:         "required charm profile not yet applied to machine",
-			},
-			expectError{"required charm profile on machine not found"},
-		),
-		ut(
-			"unit status and message at startup, charm profile found",
-			createCharm{customize: addCharmProfile},
-			serveCharm{},
-			createApplicationAndUnit{container: true},
-			addCharmProfileToMachine{profiles: []string{"default", "juju-model-u-0"}},
-			startUniter{
-				newExecutorFunc: executorFunc(c),
-			},
-			waitUnitAgent{
-				statusGetter: unitStatusGetter,
-				status:       status.Waiting,
-				info:         status.MessageInitializingAgent,
-			},
-			waitUnitAgent{
-				status: status.Failed,
-				info:   "resolver loop error",
-			},
-			expectError{".*some error occurred.*"},
-		),
-	})
-}
-
 func (s *UniterSuite) TestUniterInstallHook(c *tc.C) {
 	s.runUniterTests(c, []uniterTest{
 		ut(
@@ -356,7 +298,7 @@ func (s *UniterSuite) TestUniterInstallHook(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "install"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook": "install",
 				},
 			},
@@ -453,7 +395,7 @@ func (s *UniterSuite) TestUniterStartHook(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "start"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook": "start",
 				},
 			},
@@ -542,7 +484,7 @@ func (s *UniterSuite) TestUniterMultipleErrors(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "install"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook": "install",
 				},
 			},
@@ -551,7 +493,7 @@ func (s *UniterSuite) TestUniterMultipleErrors(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "leader-elected"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook": "leader-elected",
 				},
 			},
@@ -560,7 +502,7 @@ func (s *UniterSuite) TestUniterMultipleErrors(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "config-changed"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook": "config-changed",
 				},
 			},
@@ -569,7 +511,7 @@ func (s *UniterSuite) TestUniterMultipleErrors(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "start"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook": "start",
 				},
 			},
@@ -611,7 +553,7 @@ func (s *UniterSuite) TestUniterConfigChangedHook(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "config-changed"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook": "config-changed",
 				},
 			},
@@ -749,7 +691,7 @@ func (s *UniterSuite) TestUniterSteadyStateUpgradeResolve(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "upgrade-charm"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook": "upgrade-charm",
 				},
 				charm: 1,
@@ -785,7 +727,7 @@ func (s *UniterSuite) TestUniterSteadyStateUpgradeRetry(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "upgrade-charm"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook": "upgrade-charm",
 				},
 				charm: 1,
@@ -799,7 +741,7 @@ func (s *UniterSuite) TestUniterSteadyStateUpgradeRetry(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "upgrade-charm"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook": "upgrade-charm",
 				},
 				charm: 1,
@@ -870,7 +812,7 @@ func (s *UniterSuite) TestUniterErrorStateUnforcedUpgrade(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "start"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook": "start",
 				},
 			},
@@ -911,7 +853,7 @@ func (s *UniterSuite) TestUniterErrorStateForcedUpgrade(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "start"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook": "start",
 				},
 				charm: 1,
@@ -1118,7 +1060,7 @@ func (s *UniterSuite) TestUniterRelationErrors(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "db-relation-joined"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook":        "db-relation-joined",
 					"relation-id": 0,
 					"remote-unit": "mysql/0",
@@ -1131,7 +1073,7 @@ func (s *UniterSuite) TestUniterRelationErrors(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "db-relation-changed"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook":        "db-relation-changed",
 					"relation-id": 0,
 					"remote-unit": "mysql/0",
@@ -1146,7 +1088,7 @@ func (s *UniterSuite) TestUniterRelationErrors(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "db-relation-departed"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook":        "db-relation-departed",
 					"relation-id": 0,
 					"remote-unit": "mysql/0",
@@ -1162,7 +1104,7 @@ func (s *UniterSuite) TestUniterRelationErrors(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "db-relation-broken"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook":        "db-relation-broken",
 					"relation-id": 0,
 				},
@@ -1196,7 +1138,7 @@ func (s *UniterSuite) TestUniterRelationErrorsLostRelation(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "relation-joined: relation: 1337 not found"`,
-				data: map[string]interface{}{
+				data: map[string]any{
 					"hook":        "relation-joined",
 					"relation-id": 1337,
 					"remote-unit": "other/9",
@@ -1232,7 +1174,7 @@ func (s *UniterSuite) TestRunAction(c *tc.C) {
 			},
 			waitHooks{"install", "leader-elected", "config-changed", "start"},
 			verifyCharm{},
-			addAction{"fakeaction", map[string]interface{}{"foo": "bar"}},
+			addAction{"fakeaction", map[string]any{"foo": "bar"}},
 			waitActionInvocation{[]actionData{{
 				actionName: "fakeaction",
 				args:       []string{"foo=bar"},
@@ -1247,7 +1189,7 @@ func (s *UniterSuite) TestRunAction(c *tc.C) {
 			createCharm{},
 			serveCharm{},
 			createApplicationAndUnit{},
-			addAction{"fakeaction", map[string]interface{}{"foo": "bar"}},
+			addAction{"fakeaction", map[string]any{"foo": "bar"}},
 			addAction{"fakeaction", nil},
 			addAction{"fakeaction", nil},
 			startUniter{},
@@ -1282,7 +1224,7 @@ func (s *UniterSuite) TestRunAction(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "start"`,
-				data:         map[string]interface{}{"hook": "start"},
+				data:         map[string]any{"hook": "start"},
 			},
 			waitActionInvocation{[]actionData{{
 				actionName: "fakeaction",
@@ -1291,7 +1233,7 @@ func (s *UniterSuite) TestRunAction(c *tc.C) {
 				statusGetter: unitStatusGetter,
 				status:       status.Error,
 				info:         `hook failed: "start"`,
-				data:         map[string]interface{}{"hook": "start"},
+				data:         map[string]any{"hook": "start"},
 			},
 			verifyWaiting{},
 			resolveError{params.ResolvedNoHooks},

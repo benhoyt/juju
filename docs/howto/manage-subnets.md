@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "View and manage subnets in Juju. Understand how to list and work with network subnets across cloud deployments."
+---
+
 (manage-subnets)=
 # How to manage subnets
 

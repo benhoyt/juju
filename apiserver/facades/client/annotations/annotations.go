@@ -15,7 +15,7 @@ import (
 	"github.com/juju/juju/core/annotations"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/domain/annotation"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -101,8 +101,8 @@ func annotateError(err error, tag, op string) *params.Error {
 }
 
 func (api *API) getEntityAnnotations(ctx context.Context, entityTag string) (map[string]string, error) {
-	if strings.HasPrefix(entityTag, "charm-") {
-		urlStr := strings.TrimPrefix(entityTag, "charm-")
+	if after, ok := strings.CutPrefix(entityTag, "charm-"); ok {
+		urlStr := after
 		url, err := charm.ParseURL(urlStr)
 		if err != nil {
 			return nil, errors.Trace(err)
@@ -137,8 +137,8 @@ func (api *API) getEntityAnnotations(ctx context.Context, entityTag string) (map
 }
 
 func (api *API) setEntityAnnotations(ctx context.Context, entityTag string, values map[string]string) error {
-	if strings.HasPrefix(entityTag, "charm-") {
-		urlStr := strings.TrimPrefix(entityTag, "charm-")
+	if after, ok := strings.CutPrefix(entityTag, "charm-"); ok {
+		urlStr := after
 		url, err := charm.ParseURL(urlStr)
 		if err != nil {
 			return errors.Trace(err)

@@ -23,9 +23,9 @@ import (
 	"github.com/juju/juju/api"
 	"github.com/juju/juju/api/agent/caasapplication"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/constants"
 	"github.com/juju/juju/cmd/containeragent/utils"
-	"github.com/juju/juju/internal/cmd"
 	internallogger "github.com/juju/juju/internal/logger"
 	k8sconstants "github.com/juju/juju/internal/provider/kubernetes/constants"
 	pebbleidentity "github.com/juju/juju/internal/service/pebble/identity"
@@ -212,7 +212,7 @@ func (c *initCommand) copyBinaries() error {
 			}
 			defer dstStream.Close()
 			_, err = io.Copy(dstStream, srcStream)
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return nil
 			} else if err != nil {
 				return errors.Annotatef(err, "copying %q to %q", src, dst)

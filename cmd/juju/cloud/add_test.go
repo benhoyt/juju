@@ -15,15 +15,15 @@ import (
 	stdtesting "testing"
 
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/tc"
 	"gopkg.in/yaml.v2"
 
 	"github.com/juju/juju/api/jujuclient"
 	jujucloud "github.com/juju/juju/cloud"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/cloud"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	_ "github.com/juju/juju/internal/provider/ec2"
 	_ "github.com/juju/juju/internal/provider/lxd"
 	_ "github.com/juju/juju/internal/provider/maas"
@@ -1085,7 +1085,7 @@ func testInteractiveOpenstackCloudCert(c *tc.C, fakeCertFilename, input, addStdE
 		CACertificates: []string{fakeCert},
 	}
 
-	fakeCertMap := map[string]interface{}{
+	fakeCertMap := map[string]any{
 		"ca-certificates": []string{fakeCert},
 	}
 	fakeCertYaml, err := yaml.Marshal(fakeCertMap)

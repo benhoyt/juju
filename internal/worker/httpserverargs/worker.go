@@ -11,8 +11,8 @@ import (
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/bakery/dbrootkeystore"
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 	"gopkg.in/tomb.v2"
 
 	"github.com/juju/juju/apiserver/apiserverhttp"
@@ -184,16 +184,6 @@ func (b *managedServices) ReadUserAccessLevelForTarget(
 	ctx context.Context, subject coreuser.Name, target permission.ID,
 ) (permission.Access, error) {
 	return b.accessService.ReadUserAccessLevelForTarget(b.tomb.Context(ctx), subject, target)
-}
-
-// EnsureExternalUserIfAuthorized checks if an external user is missing from the
-// database and has permissions on an object. If they do then they will be
-// added. This ensures that juju has a record of external users that have
-// inherited their permissions from everyone@external.
-func (b *managedServices) EnsureExternalUserIfAuthorized(
-	ctx context.Context, subject coreuser.Name, target permission.ID,
-) error {
-	return b.accessService.EnsureExternalUserIfAuthorized(b.tomb.Context(ctx), subject, target)
 }
 
 // UpdateLastModelLogin updates the last login time for the user with the

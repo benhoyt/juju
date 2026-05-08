@@ -7,8 +7,8 @@ import (
 	"github.com/juju/errors"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/core/secrets"
-	"github.com/juju/juju/internal/cmd"
 )
 
 type secretUpdateCommand struct {
@@ -28,7 +28,7 @@ func NewSecretSetCommand(ctx Context) (cmd.Command, error) {
 func (c *secretUpdateCommand) Info() *cmd.Info {
 	doc := `
 Update a secret with a list of key values, or set new metadata.
-If a value has the '#base64' suffix, it is already in base64 format and no
+If a value has the ` + "`#base64`" + ` suffix, it is already in base64 format and no
 encoding will be performed, otherwise the value will be base64 encoded
 prior to being stored.
 To just update selected metadata like rotate policy, do not specify any secret value.
@@ -56,7 +56,7 @@ To just update selected metadata like rotate policy, do not specify any secret v
 	return jujucmd.Info(&cmd.Info{
 		Name:     "secret-set",
 		Args:     "<ID> [key[#base64]=value...]",
-		Purpose:  "Update an existing secret.",
+		Purpose:  "Updates an existing secret.",
 		Doc:      doc,
 		Examples: examples,
 	})

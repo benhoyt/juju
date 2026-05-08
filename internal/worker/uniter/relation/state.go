@@ -6,13 +6,14 @@ package relation
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	"github.com/juju/errors"
 	"github.com/kr/pretty"
 	"gopkg.in/yaml.v2"
 
 	"github.com/juju/juju/core/logger"
-	"github.com/juju/juju/internal/charm/hooks"
+	"github.com/juju/juju/domain/deployment/charm/hooks"
 	"github.com/juju/juju/internal/worker/uniter/hook"
 )
 
@@ -143,7 +144,7 @@ func (s *State) YamlString() (string, error) {
 }
 
 // UnmarshalYAML implements the yaml.Unmarshaler interface.
-func (s *State) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (s *State) UnmarshalYAML(unmarshal func(any) error) error {
 	type StateCopy State
 	var sc StateCopy
 	err := unmarshal(&sc)
@@ -164,11 +165,7 @@ func (s *State) UnmarshalYAML(unmarshal func(interface{}) error) error {
 func (s *State) copy() *State {
 	stCopy := NewState(s.RelationId)
 	stCopy.ChangedPending = s.ChangedPending
-	for m, v := range s.Members {
-		stCopy.Members[m] = v
-	}
-	for m, v := range s.ApplicationMembers {
-		stCopy.ApplicationMembers[m] = v
-	}
+	maps.Copy(stCopy.Members, s.Members)
+	maps.Copy(stCopy.ApplicationMembers, s.ApplicationMembers)
 	return stCopy
 }

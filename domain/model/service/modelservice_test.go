@@ -17,7 +17,6 @@ import (
 	"github.com/juju/juju/core/instance"
 	corelife "github.com/juju/juju/core/life"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	corepermission "github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/semversion"
 	corestatus "github.com/juju/juju/core/status"
@@ -33,6 +32,7 @@ import (
 	networkerrors "github.com/juju/juju/domain/network/errors"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/simplestreams"
+	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	internalstorage "github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/internal/uuid"
@@ -53,16 +53,16 @@ func (s *modelServiceSuite) TestGetModelConstraints(c *tc.C) {
 	defer ctrl.Finish()
 
 	modelConstraints := constraints.Constraints{
-		Arch:      ptr("amd64"),
-		Container: ptr(instance.NONE),
-		CpuCores:  ptr(uint64(4)),
-		Mem:       ptr(uint64(1024)),
-		RootDisk:  ptr(uint64(1024)),
+		Arch:      new("amd64"),
+		Container: new(instance.NONE),
+		CpuCores:  new(uint64(4)),
+		Mem:       new(uint64(1024)),
+		RootDisk:  new(uint64(1024)),
 	}
 	s.mockModelState.EXPECT().GetModelConstraints(gomock.Any()).Return(modelConstraints, nil)
 
 	svc := NewModelService(
-		modeltesting.GenModelUUID(c),
+		tc.Must0(c, coremodel.NewUUID),
 		s.mockControllerState,
 		s.mockModelState,
 		s.environVersionProviderGetter(),
@@ -72,11 +72,11 @@ func (s *modelServiceSuite) TestGetModelConstraints(c *tc.C) {
 	c.Check(err, tc.ErrorIsNil)
 
 	cons := coreconstraints.Value{
-		Arch:      ptr("amd64"),
-		Container: ptr(instance.NONE),
-		CpuCores:  ptr(uint64(4)),
-		Mem:       ptr(uint64(1024)),
-		RootDisk:  ptr(uint64(1024)),
+		Arch:      new("amd64"),
+		Container: new(instance.NONE),
+		CpuCores:  new(uint64(4)),
+		Mem:       new(uint64(1024)),
+		RootDisk:  new(uint64(1024)),
 	}
 	c.Check(result, tc.DeepEquals, cons)
 }
@@ -95,7 +95,7 @@ func (s *modelServiceSuite) TestGetModelConstraintsNotFound(c *tc.C) {
 	)
 
 	svc := NewModelService(
-		modeltesting.GenModelUUID(c),
+		tc.Must0(c, coremodel.NewUUID),
 		s.mockControllerState,
 		s.mockModelState,
 		s.environVersionProviderGetter(),
@@ -116,7 +116,7 @@ func (s *modelServiceSuite) TestGetModelConstraintsFailedModelNotFound(c *tc.C) 
 	s.mockModelState.EXPECT().GetModelConstraints(gomock.Any()).Return(constraints.Constraints{}, modelerrors.NotFound)
 
 	svc := NewModelService(
-		modeltesting.GenModelUUID(c),
+		tc.Must0(c, coremodel.NewUUID),
 		s.mockControllerState,
 		s.mockModelState,
 		s.environVersionProviderGetter(),
@@ -131,12 +131,12 @@ func (s *modelServiceSuite) TestSetModelConstraints(c *tc.C) {
 	defer ctrl.Finish()
 
 	modelCons := constraints.Constraints{
-		Arch:      ptr("amd64"),
-		Container: ptr(instance.NONE),
-		CpuCores:  ptr(uint64(4)),
-		Mem:       ptr(uint64(1024)),
-		RootDisk:  ptr(uint64(1024)),
-		Spaces: ptr([]constraints.SpaceConstraint{
+		Arch:      new("amd64"),
+		Container: new(instance.NONE),
+		CpuCores:  new(uint64(4)),
+		Mem:       new(uint64(1024)),
+		RootDisk:  new(uint64(1024)),
+		Spaces: new([]constraints.SpaceConstraint{
 			{SpaceName: "space1", Exclude: false},
 			{SpaceName: "space2", Exclude: true},
 		}),
@@ -148,7 +148,7 @@ func (s *modelServiceSuite) TestSetModelConstraints(c *tc.C) {
 		})
 
 	svc := NewModelService(
-		modeltesting.GenModelUUID(c),
+		tc.Must0(c, coremodel.NewUUID),
 		s.mockControllerState,
 		s.mockModelState,
 		s.environVersionProviderGetter(),
@@ -156,12 +156,12 @@ func (s *modelServiceSuite) TestSetModelConstraints(c *tc.C) {
 	)
 
 	cons := coreconstraints.Value{
-		Arch:      ptr("amd64"),
-		Container: ptr(instance.NONE),
-		CpuCores:  ptr(uint64(4)),
-		Mem:       ptr(uint64(1024)),
-		RootDisk:  ptr(uint64(1024)),
-		Spaces:    ptr([]string{"space1", "^space2"}),
+		Arch:      new("amd64"),
+		Container: new(instance.NONE),
+		CpuCores:  new(uint64(4)),
+		Mem:       new(uint64(1024)),
+		RootDisk:  new(uint64(1024)),
+		Spaces:    new([]string{"space1", "^space2"}),
 	}
 	err := svc.SetModelConstraints(c.Context(), cons)
 	c.Check(err, tc.ErrorIsNil)
@@ -175,10 +175,10 @@ func (s *modelServiceSuite) TestSetModelConstraintsInvalidContainerType(c *tc.C)
 	defer ctrl.Finish()
 
 	badConstraints := coreconstraints.Value{
-		Container: ptr(instance.ContainerType("bad")),
+		Container: new(instance.ContainerType("bad")),
 	}
 	modelCons := constraints.Constraints{
-		Container: ptr(instance.ContainerType("bad")),
+		Container: new(instance.ContainerType("bad")),
 	}
 
 	s.mockModelState.EXPECT().SetModelConstraints(gomock.Any(), gomock.Any()).DoAndReturn(
@@ -188,7 +188,7 @@ func (s *modelServiceSuite) TestSetModelConstraintsInvalidContainerType(c *tc.C)
 		})
 
 	svc := NewModelService(
-		modeltesting.GenModelUUID(c),
+		tc.Must0(c, coremodel.NewUUID),
 		s.mockControllerState,
 		s.mockModelState,
 		s.environVersionProviderGetter(),
@@ -203,20 +203,20 @@ func (s *modelServiceSuite) TestSetModelConstraintsFailedSpaceNotFound(c *tc.C) 
 	defer ctrl.Finish()
 
 	cons := coreconstraints.Value{
-		Arch:      ptr("amd64"),
-		Container: ptr(instance.NONE),
-		CpuCores:  ptr(uint64(4)),
-		Mem:       ptr(uint64(1024)),
-		RootDisk:  ptr(uint64(1024)),
-		Spaces:    ptr([]string{"space1"}),
+		Arch:      new("amd64"),
+		Container: new(instance.NONE),
+		CpuCores:  new(uint64(4)),
+		Mem:       new(uint64(1024)),
+		RootDisk:  new(uint64(1024)),
+		Spaces:    new([]string{"space1"}),
 	}
 	modelCons := constraints.Constraints{
-		Arch:      ptr("amd64"),
-		Container: ptr(instance.NONE),
-		CpuCores:  ptr(uint64(4)),
-		Mem:       ptr(uint64(1024)),
-		RootDisk:  ptr(uint64(1024)),
-		Spaces: ptr([]constraints.SpaceConstraint{
+		Arch:      new("amd64"),
+		Container: new(instance.NONE),
+		CpuCores:  new(uint64(4)),
+		Mem:       new(uint64(1024)),
+		RootDisk:  new(uint64(1024)),
+		Spaces: new([]constraints.SpaceConstraint{
 			{SpaceName: "space1", Exclude: false},
 		}),
 	}
@@ -227,7 +227,7 @@ func (s *modelServiceSuite) TestSetModelConstraintsFailedSpaceNotFound(c *tc.C) 
 		})
 
 	svc := NewModelService(
-		modeltesting.GenModelUUID(c),
+		tc.Must0(c, coremodel.NewUUID),
 		s.mockControllerState,
 		s.mockModelState,
 		s.environVersionProviderGetter(),
@@ -242,18 +242,18 @@ func (s *modelServiceSuite) TestSetModelConstraintsFailedModelNotFound(c *tc.C) 
 	defer ctrl.Finish()
 
 	cons := coreconstraints.Value{
-		Arch:      ptr("amd64"),
-		Container: ptr(instance.NONE),
-		CpuCores:  ptr(uint64(4)),
-		Mem:       ptr(uint64(1024)),
-		RootDisk:  ptr(uint64(1024)),
+		Arch:      new("amd64"),
+		Container: new(instance.NONE),
+		CpuCores:  new(uint64(4)),
+		Mem:       new(uint64(1024)),
+		RootDisk:  new(uint64(1024)),
 	}
 	modelCons := constraints.Constraints{
-		Arch:      ptr("amd64"),
-		Container: ptr(instance.NONE),
-		CpuCores:  ptr(uint64(4)),
-		Mem:       ptr(uint64(1024)),
-		RootDisk:  ptr(uint64(1024)),
+		Arch:      new("amd64"),
+		Container: new(instance.NONE),
+		CpuCores:  new(uint64(4)),
+		Mem:       new(uint64(1024)),
+		RootDisk:  new(uint64(1024)),
 	}
 	s.mockModelState.EXPECT().SetModelConstraints(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, m constraints.Constraints) error {
@@ -262,7 +262,7 @@ func (s *modelServiceSuite) TestSetModelConstraintsFailedModelNotFound(c *tc.C) 
 		})
 
 	svc := NewModelService(
-		modeltesting.GenModelUUID(c),
+		tc.Must0(c, coremodel.NewUUID),
 		s.mockControllerState,
 		s.mockModelState,
 		s.environVersionProviderGetter(),
@@ -277,7 +277,7 @@ func (s *modelServiceSuite) TestGetModelMetrics(c *tc.C) {
 	defer ctrl.Finish()
 
 	controllerUUID := uuid.MustNewUUID()
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	metrics := coremodel.ModelMetrics{
 		Model: coremodel.ModelInfo{
 			UUID:           modelUUID,
@@ -311,7 +311,7 @@ func (s *modelServiceSuite) TestCreateModelAgentVersionUnsupportedGreater(c *tc.
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 
 	s.mockControllerState.EXPECT().GetModelSeedInformation(
 		gomock.Any(), modelUUID).Return(coremodel.ModelInfo{}, nil)
@@ -341,7 +341,7 @@ func (s *modelServiceSuite) TestAgentVersionUnsupportedLess(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 
 	s.mockControllerState.EXPECT().GetModelSeedInformation(
 		gomock.Any(), modelUUID,
@@ -371,7 +371,7 @@ func (s *modelServiceSuite) TestAgentVersionUnsupportedLess(c *tc.C) {
 func (s *modelServiceSuite) TestCreateModelForVersionInvalidStream(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	s.mockControllerState.EXPECT().GetModelSeedInformation(gomock.Any(), modelUUID).Return(coremodel.ModelInfo{}, nil)
 
 	svc := NewModelService(
@@ -389,49 +389,11 @@ func (s *modelServiceSuite) TestCreateModelForVersionInvalidStream(c *tc.C) {
 	c.Check(err, tc.ErrorIs, modelerrors.AgentStreamNotValid)
 }
 
-func (s *modelServiceSuite) TestDeleteModel(c *tc.C) {
-	ctrl := s.setupMocks(c)
-	defer ctrl.Finish()
-
-	modelUUID := modeltesting.GenModelUUID(c)
-	svc := NewModelService(
-		modelUUID,
-		s.mockControllerState,
-		s.mockModelState,
-		s.environVersionProviderGetter(),
-		DefaultAgentBinaryFinder(),
-	)
-
-	s.mockModelState.EXPECT().Delete(gomock.Any(), modelUUID).Return(nil)
-
-	err := svc.DeleteModel(c.Context())
-	c.Assert(err, tc.ErrorIsNil)
-}
-
-func (s *modelServiceSuite) TestDeleteModelFailedNotFound(c *tc.C) {
-	ctrl := s.setupMocks(c)
-	defer ctrl.Finish()
-
-	modelUUID := modeltesting.GenModelUUID(c)
-	svc := NewModelService(
-		modelUUID,
-		s.mockControllerState,
-		s.mockModelState,
-		s.environVersionProviderGetter(),
-		DefaultAgentBinaryFinder(),
-	)
-
-	s.mockModelState.EXPECT().Delete(gomock.Any(), modelUUID).Return(modelerrors.NotFound)
-
-	err := svc.DeleteModel(c.Context())
-	c.Assert(err, tc.ErrorIs, modelerrors.NotFound)
-}
-
 func (s *modelServiceSuite) TestGetEnvironVersion(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	svc := NewModelService(
 		modelUUID,
 		s.mockControllerState,
@@ -452,7 +414,7 @@ func (s *modelServiceSuite) TestGetEnvironVersionFailedModelNotFound(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	svc := NewModelService(
 		modelUUID,
 		s.mockControllerState,
@@ -471,7 +433,7 @@ func (s *modelServiceSuite) TestGetModelCloudType(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	svc := NewModelService(
 		modelUUID,
 		s.mockControllerState,
@@ -491,7 +453,7 @@ func (s *modelServiceSuite) TestGetModelCloudTypeFailedModelNotFound(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	svc := NewModelService(
 		modelUUID,
 		s.mockControllerState,
@@ -510,7 +472,7 @@ func (s *modelServiceSuite) TestIsControllerModel(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	s.mockModelState.EXPECT().IsControllerModel(gomock.Any()).Return(true, nil)
 
 	svc := NewModelService(
@@ -524,7 +486,7 @@ func (s *modelServiceSuite) TestIsControllerModel(c *tc.C) {
 	c.Check(err, tc.ErrorIsNil)
 	c.Check(isControllerModel, tc.IsTrue)
 
-	modelUUID = modeltesting.GenModelUUID(c)
+	modelUUID = tc.Must0(c, coremodel.NewUUID)
 	s.mockModelState.EXPECT().IsControllerModel(gomock.Any()).Return(false, nil)
 
 	svc = NewModelService(
@@ -543,7 +505,7 @@ func (s *modelServiceSuite) TestIsControllerModelNotFound(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	s.mockModelState.EXPECT().IsControllerModel(gomock.Any()).Return(false, modelerrors.NotFound)
 
 	svc := NewModelService(
@@ -561,7 +523,7 @@ func (s *modelServiceSuite) TestHasValidCredential(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	s.mockControllerState.EXPECT().HasValidCredential(gomock.Any(), modelUUID).Return(true, nil)
 
 	svc := NewModelService(
@@ -575,7 +537,7 @@ func (s *modelServiceSuite) TestHasValidCredential(c *tc.C) {
 	c.Check(err, tc.ErrorIsNil)
 	c.Check(hasValidCredential, tc.IsTrue)
 
-	modelUUID = modeltesting.GenModelUUID(c)
+	modelUUID = tc.Must0(c, coremodel.NewUUID)
 	s.mockControllerState.EXPECT().HasValidCredential(gomock.Any(), modelUUID).Return(false, nil)
 
 	svc = NewModelService(
@@ -594,7 +556,7 @@ func (s *modelServiceSuite) TestHasValidCredentialNotFound(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	s.mockControllerState.EXPECT().HasValidCredential(gomock.Any(), modelUUID).Return(false, modelerrors.NotFound)
 
 	svc := NewModelService(
@@ -617,7 +579,7 @@ func (s *modelServiceSuite) TestGetModelType(c *tc.C) {
 
 	s.mockModelState.EXPECT().GetModelType(gomock.Any()).Return(coremodel.IAAS, nil)
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	svc := NewModelService(
 		modelUUID,
 		s.mockControllerState,
@@ -641,7 +603,7 @@ func (s *modelServiceSuite) TestGetModelTypeNotFound(c *tc.C) {
 
 	s.mockModelState.EXPECT().GetModelType(gomock.Any()).Return(coremodel.ModelType(""), modelerrors.NotFound)
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	svc := NewModelService(
 		modelUUID,
 		s.mockControllerState,
@@ -661,7 +623,7 @@ func (s *modelServiceSuite) TestGetModelSummaryNotFound(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	svc := NewModelService(
 		modelUUID,
 		s.mockControllerState,
@@ -686,7 +648,7 @@ func (s *modelServiceSuite) TestGetModelSummary(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	svc := NewModelService(
 		modelUUID,
 		s.mockControllerState,
@@ -750,7 +712,7 @@ func (s *modelServiceSuite) TestGetUserModelSummaryModelNotFound(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	svc := NewModelService(
 		modelUUID,
 		s.mockControllerState,
@@ -779,7 +741,7 @@ func (s *modelServiceSuite) TestGetUserModelSummaryUserNotFound(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	svc := NewModelService(
 		modelUUID,
 		s.mockControllerState,
@@ -808,7 +770,7 @@ func (s *modelServiceSuite) TestGetUserModelSummaryAccessNotFound(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	svc := NewModelService(
 		modelUUID,
 		s.mockControllerState,
@@ -837,7 +799,7 @@ func (s *modelServiceSuite) TestGetUserModelSummaryUserUUIDNotValid(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	svc := NewModelService(
 		modelUUID,
 		s.mockControllerState,
@@ -856,7 +818,7 @@ func (s *modelServiceSuite) TestGetUserModelSummary(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	svc := NewModelService(
 		modelUUID,
 		s.mockControllerState,
@@ -924,6 +886,66 @@ func (s *modelServiceSuite) TestGetUserModelSummary(c *tc.C) {
 			UnitCount:    10,
 		},
 	})
+}
+
+func (s *modelServiceSuite) TestIsImportingModelFalse(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
+	svc := NewModelService(
+		modelUUID,
+		s.mockControllerState,
+		s.mockModelState,
+		s.environVersionProviderGetter(),
+		DefaultAgentBinaryFinder(),
+	)
+
+	s.mockModelState.EXPECT().IsImportingModel(gomock.Any()).Return(false, nil)
+
+	importing, err := svc.IsImportingModel(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(importing, tc.Equals, false)
+}
+
+func (s *modelServiceSuite) TestIsImportingModelTrue(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
+	svc := NewModelService(
+		modelUUID,
+		s.mockControllerState,
+		s.mockModelState,
+		s.environVersionProviderGetter(),
+		DefaultAgentBinaryFinder(),
+	)
+
+	s.mockModelState.EXPECT().IsImportingModel(gomock.Any()).Return(true, nil)
+
+	importing, err := svc.IsImportingModel(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(importing, tc.Equals, true)
+}
+
+func (s *modelServiceSuite) TestIsImportingModelError(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
+	svc := NewModelService(
+		modelUUID,
+		s.mockControllerState,
+		s.mockModelState,
+		s.environVersionProviderGetter(),
+		DefaultAgentBinaryFinder(),
+	)
+
+	boom := errors.New("boom")
+	s.mockModelState.EXPECT().IsImportingModel(gomock.Any()).Return(false, boom)
+
+	_, err := svc.IsImportingModel(c.Context())
+	c.Assert(err, tc.ErrorIs, boom)
 }
 
 type providerModelServiceSuite struct {
@@ -1075,7 +1097,7 @@ func (s *providerModelServiceSuite) TestCreateModel(c *tc.C) {
 	defer ctrl.Finish()
 
 	controllerUUID := uuid.MustNewUUID()
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	defaultPool := s.newDefaultStoragePool(c, ctrl)
 	s.mockStorageProviderRegistry.EXPECT().RecommendedPoolForKind(
 		internalstorage.StorageKindFilesystem,
@@ -1122,7 +1144,7 @@ func (s *providerModelServiceSuite) TestCreateModelFailedErrorAlreadyExists(c *t
 	defer ctrl.Finish()
 
 	controllerUUID := uuid.MustNewUUID()
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	s.mockControllerState.EXPECT().GetModelSeedInformation(gomock.Any(), gomock.Any()).Return(coremodel.ModelInfo{
 		UUID:           modelUUID,
 		Name:           "my-awesome-model",
@@ -1156,7 +1178,7 @@ func (s *providerModelServiceSuite) TestCloudAPIVersion(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 
 	s.mockCloudInfoProvider.EXPECT().APIVersion().Return("666", nil)
 
@@ -1170,12 +1192,12 @@ func (s *providerModelServiceSuite) TestResolveConstraints(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 
 	s.mockModelState.EXPECT().GetModelConstraints(gomock.Any()).Return(constraints.Constraints{
-		Arch:      ptr("amd64"),
-		Container: ptr(instance.NONE),
-		CpuCores:  ptr(uint64(4)),
+		Arch:      new("amd64"),
+		Container: new(instance.NONE),
+		CpuCores:  new(uint64(4)),
 	}, nil)
 
 	validator := coreconstraints.NewValidator()
@@ -1183,20 +1205,20 @@ func (s *providerModelServiceSuite) TestResolveConstraints(c *tc.C) {
 
 	svc := s.providerService(c, modelUUID)
 	result, err := svc.ResolveConstraints(c.Context(), coreconstraints.Value{
-		Arch:      ptr("arm64"),
-		Container: ptr(instance.NONE),
-		CpuCores:  ptr(uint64(4)),
-		Mem:       ptr(uint64(1024)),
-		RootDisk:  ptr(uint64(1024)),
+		Arch:      new("arm64"),
+		Container: new(instance.NONE),
+		CpuCores:  new(uint64(4)),
+		Mem:       new(uint64(1024)),
+		RootDisk:  new(uint64(1024)),
 	})
 	c.Check(err, tc.ErrorIsNil)
 
 	cons := coreconstraints.Value{
-		Arch:      ptr("arm64"),
-		Container: ptr(instance.NONE),
-		CpuCores:  ptr(uint64(4)),
-		Mem:       ptr(uint64(1024)),
-		RootDisk:  ptr(uint64(1024)),
+		Arch:      new("arm64"),
+		Container: new(instance.NONE),
+		CpuCores:  new(uint64(4)),
+		Mem:       new(uint64(1024)),
+		RootDisk:  new(uint64(1024)),
 	}
 	c.Check(result, tc.DeepEquals, cons)
 }
@@ -1207,7 +1229,7 @@ func (s *providerModelServiceSuite) TestGetModelRegion(c *tc.C) {
 
 	s.mockRegionProvider.EXPECT().Region().Return(simplestreams.CloudSpec{Region: "region"}, nil)
 
-	svc := s.providerService(c, modeltesting.GenModelUUID(c))
+	svc := s.providerService(c, tc.Must0(c, coremodel.NewUUID))
 	spec, err := svc.GetRegionCloudSpec(c.Context())
 
 	c.Assert(err, tc.ErrorIsNil)
@@ -1218,7 +1240,7 @@ func (s *providerModelServiceSuite) TestGetModelRegionNotSupported(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	svc := s.providerService(c, modeltesting.GenModelUUID(c))
+	svc := s.providerService(c, tc.Must0(c, coremodel.NewUUID))
 	svc.environRegionGetter = func(context.Context) (RegionProvider, error) { return nil, coreerrors.NotSupported }
 
 	spec, err := svc.GetRegionCloudSpec(c.Context())

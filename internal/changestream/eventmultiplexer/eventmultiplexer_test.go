@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 
@@ -51,7 +51,7 @@ func (s *eventMultiplexerSuite) TestSubscribe(c *tc.C) {
 	// This confirms the unsubscription invoked by killing the sub.
 	s.metrics.EXPECT().SubscriptionsDec()
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.CleanKill(c, queue)
 
@@ -60,7 +60,7 @@ func (s *eventMultiplexerSuite) TestSubscribe(c *tc.C) {
 
 	// Kill, then bump the loop so it comes around to the top and cleans up.
 	sub.Kill()
-	queue.Report()
+	queue.Report(c.Context())
 }
 
 func (s *eventMultiplexerSuite) TestDispatch(c *tc.C) {
@@ -71,7 +71,7 @@ func (s *eventMultiplexerSuite) TestDispatch(c *tc.C) {
 	terms := make(chan changestream.Term)
 	s.stream.EXPECT().Terms().Return(terms).MinTimes(1)
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.CleanKill(c, queue)
 
@@ -155,7 +155,7 @@ func (s *eventMultiplexerSuite) testMultipleDispatch(c *tc.C, opts ...changestre
 
 	s.clock.EXPECT().Now().MinTimes(1)
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.DirtyKill(c, queue)
 
@@ -166,7 +166,7 @@ func (s *eventMultiplexerSuite) testMultipleDispatch(c *tc.C, opts ...changestre
 	})
 
 	subs := make([]changestream.Subscription, 10)
-	for i := 0; i < len(subs); i++ {
+	for i := range subs {
 		sub, err := queue.Subscribe("foo", opts...)
 		c.Assert(err, tc.ErrorIsNil)
 
@@ -213,7 +213,7 @@ func (s *eventMultiplexerSuite) TestTopicDoesNotMatch(c *tc.C) {
 
 	s.metrics.EXPECT().SubscriptionsInc()
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.DirtyKill(c, queue)
 
@@ -254,7 +254,7 @@ func (s *eventMultiplexerSuite) TestTopicMatchesOne(c *tc.C) {
 
 	s.clock.EXPECT().Now().MinTimes(1)
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.DirtyKill(c, queue)
 
@@ -306,7 +306,7 @@ func (s *eventMultiplexerSuite) TestSubscriptionDoneWhenEventQueueKilled(c *tc.C
 	// a false on the second argument of DispatchDurationObserve.
 	s.metrics.EXPECT().DispatchDurationObserve(gomock.Any(), gomock.Any())
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.CleanKill(c, queue)
 
@@ -353,12 +353,12 @@ func (s *eventMultiplexerSuite) TestUnsubscribeOfOtherSubscription(c *tc.C) {
 
 	s.clock.EXPECT().Now().MinTimes(1)
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.DirtyKill(c, queue)
 
 	subs := make([]changestream.Subscription, 2)
-	for i := 0; i < len(subs); i++ {
+	for i := range subs {
 		sub, err := queue.Subscribe("foo", changestream.Namespace("topic", changestreamtesting.Create))
 		c.Assert(err, tc.ErrorIsNil)
 		subs[i] = sub
@@ -394,7 +394,7 @@ func (s *eventMultiplexerSuite) TestUnsubscribeOfOtherSubscription(c *tc.C) {
 	}
 
 	// Bump the loop so it comes around to the top and cleans up.
-	queue.Report()
+	queue.Report(c.Context())
 
 	for _, sub := range subs {
 		select {
@@ -421,12 +421,12 @@ func (s *eventMultiplexerSuite) TestUnsubscribeOfOtherSubscriptionInAnotherGorou
 	s.metrics.EXPECT().DispatchDurationObserve(gomock.Any(), gomock.Any())
 	s.clock.EXPECT().Now().MinTimes(1)
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.DirtyKill(c, queue)
 
 	subs := make([]changestream.Subscription, 2)
-	for i := 0; i < len(subs); i++ {
+	for i := range subs {
 
 		sub, err := queue.Subscribe("foo", changestream.Namespace("topic", changestreamtesting.Create))
 		c.Assert(err, tc.ErrorIsNil)
@@ -467,7 +467,7 @@ func (s *eventMultiplexerSuite) TestUnsubscribeOfOtherSubscriptionInAnotherGorou
 	}
 
 	// Bump the loop so it comes around to the top and cleans up.
-	queue.Report()
+	queue.Report(c.Context())
 
 	for _, sub := range subs {
 		select {
@@ -498,7 +498,7 @@ func (s *eventMultiplexerSuite) TestUnsubscribeOnDispatchTimeout(c *tc.C) {
 	// The dispatch should be observed as a failure.
 	s.metrics.EXPECT().DispatchDurationObserve(gomock.Any(), true).AnyTimes()
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.CleanKill(c, queue)
 
@@ -540,12 +540,12 @@ func (s *eventMultiplexerSuite) TestStreamDying(c *tc.C) {
 	s.clock.EXPECT().Now().MinTimes(2)
 	s.metrics.EXPECT().DispatchDurationObserve(gomock.Any(), false)
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.DirtyKill(c, queue)
 
 	subs := make([]changestream.Subscription, 2)
-	for i := 0; i < len(subs); i++ {
+	for i := range subs {
 		sub, err := queue.Subscribe("foo", changestream.Namespace("topic", changestreamtesting.Create))
 		c.Assert(err, tc.ErrorIsNil)
 		subs[i] = sub
@@ -606,12 +606,12 @@ func (s *eventMultiplexerSuite) TestStreamDyingWhilstDispatching(c *tc.C) {
 	s.clock.EXPECT().Now().MinTimes(1)
 	s.metrics.EXPECT().DispatchDurationObserve(gomock.Any(), false)
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.CleanKill(c, queue)
 
 	subs := make([]changestream.Subscription, 2)
-	for i := 0; i < len(subs); i++ {
+	for i := range subs {
 		sub, err := queue.Subscribe("foo", changestream.Namespace("topic", changestreamtesting.Create))
 		c.Assert(err, tc.ErrorIsNil)
 		subs[i] = sub
@@ -679,7 +679,7 @@ func (s *eventMultiplexerSuite) TestStreamDyingOnStartup(c *tc.C) {
 	terms := make(chan changestream.Term)
 	s.stream.EXPECT().Terms().Return(terms).MinTimes(1)
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.CleanKill(c, queue)
 
@@ -702,7 +702,7 @@ func (s *eventMultiplexerSuite) TestStreamDyingOnSubscribe(c *tc.C) {
 	s.metrics.EXPECT().SubscriptionsInc().AnyTimes()
 	s.metrics.EXPECT().SubscriptionsDec().AnyTimes()
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.CleanKill(c, queue)
 
@@ -732,18 +732,18 @@ func (s *eventMultiplexerSuite) TestReportWithAllSubscriptions(c *tc.C) {
 	s.metrics.EXPECT().SubscriptionsInc().Times(10)
 	s.metrics.EXPECT().SubscriptionsDec().Times(10)
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.CleanKill(c, queue)
 
 	var subs []changestream.Subscription
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		sub, err := queue.Subscribe("foo")
 		c.Assert(err, tc.ErrorIsNil)
 		subs = append(subs, sub)
 	}
 
-	c.Check(queue.Report(), tc.DeepEquals, map[string]any{
+	c.Check(queue.Report(c.Context()), tc.DeepEquals, map[string]any{
 		"subscriptions":        10,
 		"subscriptions-by-ns":  0,
 		"subscriptions-all":    10,
@@ -755,9 +755,9 @@ func (s *eventMultiplexerSuite) TestReportWithAllSubscriptions(c *tc.C) {
 	}
 
 	// Bump the loop so it comes around to the top and cleans up dead subs.
-	queue.Report()
+	queue.Report(c.Context())
 
-	c.Check(queue.Report(), tc.DeepEquals, map[string]any{
+	c.Check(queue.Report(c.Context()), tc.DeepEquals, map[string]any{
 		"subscriptions":        0,
 		"subscriptions-by-ns":  0,
 		"subscriptions-all":    0,
@@ -779,19 +779,19 @@ func (s *eventMultiplexerSuite) TestReportWithTopicSubscriptions(c *tc.C) {
 
 	s.metrics.EXPECT().SubscriptionsInc().Times(10)
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.CleanKill(c, queue)
 
 	var subs []changestream.Subscription
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		sub, err := queue.Subscribe("foo", changestream.Namespace("topic", changestreamtesting.Create))
 		c.Assert(err, tc.ErrorIsNil)
 
 		subs = append(subs, sub)
 	}
 
-	c.Check(queue.Report(), tc.DeepEquals, map[string]any{
+	c.Check(queue.Report(c.Context()), tc.DeepEquals, map[string]any{
 		"subscriptions":        len(subs),
 		"subscriptions-by-ns":  1,
 		"subscriptions-all":    0,
@@ -813,12 +813,12 @@ func (s *eventMultiplexerSuite) TestReportWithMultipleTopicSubscriptions(c *tc.C
 
 	s.metrics.EXPECT().SubscriptionsInc().Times(10)
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.CleanKill(c, queue)
 
 	var subs []changestream.Subscription
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		sub, err := queue.Subscribe(
 			"foo",
 			changestream.Namespace("topic", changestreamtesting.Create),
@@ -829,7 +829,7 @@ func (s *eventMultiplexerSuite) TestReportWithMultipleTopicSubscriptions(c *tc.C
 		subs = append(subs, sub)
 	}
 
-	c.Check(queue.Report(), tc.DeepEquals, map[string]any{
+	c.Check(queue.Report(c.Context()), tc.DeepEquals, map[string]any{
 		"subscriptions":        len(subs),
 		"subscriptions-by-ns":  2,
 		"subscriptions-all":    0,
@@ -851,12 +851,12 @@ func (s *eventMultiplexerSuite) TestReportWithDuplicateTopicSubscriptions(c *tc.
 
 	s.metrics.EXPECT().SubscriptionsInc().Times(10)
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.CleanKill(c, queue)
 
 	var subs []changestream.Subscription
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		sub, err := queue.Subscribe(
 			"foo",
 			changestream.Namespace("topic", changestreamtesting.Update),
@@ -867,7 +867,7 @@ func (s *eventMultiplexerSuite) TestReportWithDuplicateTopicSubscriptions(c *tc.
 		subs = append(subs, sub)
 	}
 
-	c.Check(queue.Report(), tc.DeepEquals, map[string]any{
+	c.Check(queue.Report(c.Context()), tc.DeepEquals, map[string]any{
 		"subscriptions":        len(subs),
 		"subscriptions-by-ns":  1,
 		"subscriptions-all":    0,
@@ -889,12 +889,12 @@ func (s *eventMultiplexerSuite) TestReportWithMultipleDuplicateTopicSubscription
 
 	s.metrics.EXPECT().SubscriptionsInc().Times(10)
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.CleanKill(c, queue)
 
 	var subs []changestream.Subscription
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		sub, err := queue.Subscribe(
 			"foo",
 			changestream.Namespace("topic", changestreamtesting.Create),
@@ -905,7 +905,7 @@ func (s *eventMultiplexerSuite) TestReportWithMultipleDuplicateTopicSubscription
 		subs = append(subs, sub)
 	}
 
-	c.Check(queue.Report(), tc.DeepEquals, map[string]any{
+	c.Check(queue.Report(c.Context()), tc.DeepEquals, map[string]any{
 		"subscriptions":        len(subs),
 		"subscriptions-by-ns":  1,
 		"subscriptions-all":    0,
@@ -929,14 +929,14 @@ func (s *eventMultiplexerSuite) TestReportWithTopicRemovalAfterUnsubscribe(c *tc
 	s.metrics.EXPECT().SubscriptionsInc()
 	s.metrics.EXPECT().SubscriptionsDec()
 
-	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c))
+	queue, err := New(s.stream, s.clock, s.metrics, loggertesting.WrapCheckLog(c), 0)
 	c.Assert(err, tc.ErrorIsNil)
 	defer workertest.CleanKill(c, queue)
 
 	sub, err := queue.Subscribe("foo", changestream.Namespace("topic", changestreamtesting.Create))
 	c.Assert(err, tc.ErrorIsNil)
 
-	c.Check(queue.Report(), tc.DeepEquals, map[string]any{
+	c.Check(queue.Report(c.Context()), tc.DeepEquals, map[string]any{
 		"subscriptions":        1,
 		"subscriptions-by-ns":  1,
 		"subscriptions-all":    0,
@@ -946,9 +946,9 @@ func (s *eventMultiplexerSuite) TestReportWithTopicRemovalAfterUnsubscribe(c *tc
 	sub.Kill()
 
 	// Bump the loop so it comes around to the top and cleans up dead subs.
-	queue.Report()
+	queue.Report(c.Context())
 
-	c.Check(queue.Report(), tc.DeepEquals, map[string]any{
+	c.Check(queue.Report(c.Context()), tc.DeepEquals, map[string]any{
 		"subscriptions":        0,
 		"subscriptions-by-ns":  0,
 		"subscriptions-all":    0,

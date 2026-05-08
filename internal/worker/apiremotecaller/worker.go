@@ -5,13 +5,14 @@ package apiremotecaller
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 
 	"github.com/juju/juju/api"
 	"github.com/juju/juju/core/logger"
@@ -86,6 +87,11 @@ type remoteWorker struct {
 	cfg WorkerConfig
 
 	runner *worker.Runner
+
+	subscriptionID atomic.Int64
+	subscribeCh    chan subscriber
+	unsubscribeCh  chan int64
+	notifyCh       chan struct{}
 }
 
 // NewWorker exposes the remoteWorker as a Worker.
@@ -101,7 +107,6 @@ func newWorker(cfg WorkerConfig, internalState chan string) (*remoteWorker, erro
 		Name:  "remote-worker",
 		Clock: cfg.Clock,
 		IsFatal: func(err error) bool {
-			// TODO (stickupkid): Handle specific errors here.
 			return false
 		},
 		// Backoff for 5 seconds before restarting a worker.
@@ -116,6 +121,10 @@ func newWorker(cfg WorkerConfig, internalState chan string) (*remoteWorker, erro
 		cfg:            cfg,
 		runner:         runner,
 		internalStates: internalState,
+
+		subscribeCh:   make(chan subscriber),
+		unsubscribeCh: make(chan int64),
+		notifyCh:      make(chan struct{}),
 	}
 
 	err = catacomb.Invoke(catacomb.Plan{
@@ -157,6 +166,24 @@ func (w *remoteWorker) GetAPIRemotes() ([]RemoteConnection, error) {
 	return remotes, nil
 }
 
+// Subscribe creates a new subscription to be notified when the set of API
+// remotes has changed. This is useful for callers that want to be notified when
+// the set of remotes changes so they can update their internal state.
+func (w *remoteWorker) Subscribe() (Subscription, error) {
+	subscriber := newSubscriber(w.subscriptionID.Add(1), func(i int64) {
+		select {
+		case <-w.catacomb.Dying():
+		case w.unsubscribeCh <- i:
+		}
+	})
+	select {
+	case <-w.catacomb.Dying():
+		return nil, w.catacomb.ErrDying()
+	case w.subscribeCh <- subscriber:
+	}
+	return subscriber, nil
+}
+
 // Kill is part of the worker.Worker interface.
 func (w *remoteWorker) Kill() {
 	w.catacomb.Kill(nil)
@@ -168,10 +195,10 @@ func (w *remoteWorker) Wait() error {
 }
 
 // Report returns a map of internal state for the remoteWorker.
-func (w *remoteWorker) Report() map[string]any {
+func (w *remoteWorker) Report(ctx context.Context) map[string]any {
 	report := make(map[string]any)
 	report["origin"] = w.cfg.Origin.Id()
-	report["runner"] = w.runner.Report()
+	report["runner"] = w.runner.Report(ctx)
 	return report
 }
 
@@ -191,6 +218,7 @@ func (w *remoteWorker) loop() error {
 		return errors.Trace(err)
 	}
 
+	subscribers := make(map[int64]subscriber)
 	for {
 		select {
 		case <-w.catacomb.Dying():
@@ -256,6 +284,22 @@ func (w *remoteWorker) loop() error {
 			w.cfg.Logger.Debugf(ctx, "remote workers updated: %v", required)
 
 			w.reportInternalState(stateChanged)
+
+		case subscriber := <-w.subscribeCh:
+			subscribers[subscriber.id] = subscriber
+
+		case id := <-w.unsubscribeCh:
+			delete(subscribers, id)
+
+		case <-w.notifyCh:
+			// Notify all subscribers of the change.
+			for _, sub := range subscribers {
+				select {
+				case <-w.catacomb.Dying():
+					return w.catacomb.ErrDying()
+				case sub.changes <- struct{}{}:
+				}
+			}
 		}
 	}
 }
@@ -268,12 +312,13 @@ func (w *remoteWorker) newRemoteServer(ctx context.Context, controllerID string,
 	// Start a new worker with the target and addresses.
 	err := w.runner.StartWorker(ctx, controllerID, func(ctx context.Context) (worker.Worker, error) {
 		w.cfg.Logger.Debugf(ctx, "starting remote worker for %q", controllerID)
+
 		return w.cfg.NewRemote(RemoteServerConfig{
 			Clock:        w.cfg.Clock,
 			Logger:       w.cfg.Logger,
 			ControllerID: controllerID,
 			APIInfo:      &apiInfo,
-			APIOpener:    w.cfg.APIOpener,
+			APIOpener:    w.newConnection,
 		}), nil
 	})
 	if err != nil && !errors.Is(err, errors.AlreadyExists) {
@@ -292,6 +337,33 @@ func (w *remoteWorker) newRemoteServer(ctx context.Context, controllerID string,
 	}
 
 	return server, nil
+}
+
+func (w *remoteWorker) newConnection(ctx context.Context, apiInfo *api.Info, dialOpts api.DialOpts) (api.Connection, error) {
+	conn, err := w.cfg.APIOpener(ctx, apiInfo, dialOpts)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	// If the remote tracking worker changes the addresses and
+	// restarts the connection, we need to notify the main worker
+	// loop so that it can notify subscribers of the change. This
+	// always ensures then that subscribers are notified when a
+	// change occurs.
+	// This is non-blocking, as we don't want to hold up the connection
+	// establishment if the main loop is busy.
+	go func() {
+		select {
+		case <-w.catacomb.Dying():
+			return
+		case <-ctx.Done():
+			return
+		case w.notifyCh <- struct{}{}:
+			w.cfg.Logger.Tracef(ctx, "notified remote worker change")
+		}
+	}()
+
+	return conn, nil
 }
 
 func (w *remoteWorker) stopRemoteServer(ctx context.Context, controllerID string) error {
@@ -344,4 +416,29 @@ func (w *remoteWorker) reportInternalState(state string) {
 	case w.internalStates <- state:
 	default:
 	}
+}
+
+type subscriber struct {
+	id          int64
+	changes     chan struct{}
+	unsubscribe func(int64)
+}
+
+func newSubscriber(id int64, unsubscribe func(int64)) subscriber {
+	return subscriber{
+		id:          id,
+		changes:     make(chan struct{}),
+		unsubscribe: unsubscribe,
+	}
+}
+
+// Changes returns a channel that signals when the set of API remotes has
+// changed.
+func (s subscriber) Changes() <-chan struct{} {
+	return s.changes
+}
+
+// Close closes the subscription.
+func (s subscriber) Close() {
+	s.unsubscribe(s.id)
 }

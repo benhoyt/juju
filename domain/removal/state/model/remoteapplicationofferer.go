@@ -52,7 +52,7 @@ WHERE  aro.application_uuid = $entityUUID.uuid
 	return remoteAppOffererUUID.UUID, nil
 }
 
-// GetRemoteApplicationOfferer returns true if a remote application exists
+// RemoteApplicationOffererExists returns true if a remote application exists
 // with the input UUID.
 func (st *State) RemoteApplicationOffererExists(ctx context.Context, rUUID string) (bool, error) {
 	db, err := st.DB(ctx)
@@ -118,8 +118,9 @@ SELECT r.uuid AS &entityUUID.uuid
 FROM   v_relation_endpoint AS re
 JOIN   relation AS r ON re.relation_uuid = r.uuid
 JOIN   application_remote_offerer AS aro ON re.application_uuid = aro.application_uuid
-WHERE  r.life_id = 0
-	`, entityUUID{})
+WHERE  aro.uuid = $entityUUID.uuid
+AND    r.life_id = 0
+	`, remoteAppOffererUUID)
 	if err != nil {
 		return res, errors.Errorf("preparing relation uuids query: %w", err)
 	}
@@ -139,7 +140,7 @@ AND    life_id = 0`, uuids{})
 		}
 
 		var relationUUIDs []entityUUID
-		err := tx.Query(ctx, selectRelationUUIDsStmt).GetAll(&relationUUIDs)
+		err := tx.Query(ctx, selectRelationUUIDsStmt, remoteAppOffererUUID).GetAll(&relationUUIDs)
 		if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
 			return errors.Errorf("selecting relation UUIDs: %w", err)
 		}
@@ -323,7 +324,11 @@ WHERE  uuid = $entityUUID.uuid`, entityUUID{})
 		return errors.Errorf("getting charm UUID for application: %w", err)
 	}
 
-	if err := st.deleteSynthApplicationUnits(ctx, tx, synthApp); err != nil {
+	if err := st.deleteOwnedSecretReferences(ctx, tx, synthApp); err != nil {
+		return errors.Errorf("deleting owned secret references for synthetic application: %w", err)
+	}
+
+	if err := st.deleteSynthUnitsForApplication(ctx, tx, synthApp); err != nil {
 		return errors.Errorf("deleting remote application offerer units: %w", err)
 	}
 
@@ -344,7 +349,7 @@ WHERE  uuid = $entityUUID.uuid`, entityUUID{})
 	return nil
 }
 
-func (st *State) deleteSynthApplicationUnits(ctx context.Context, tx *sqlair.TX, synthApp entityUUID) error {
+func (st *State) deleteSynthUnitsForApplication(ctx context.Context, tx *sqlair.TX, synthApp entityUUID) error {
 	selectNetNodesStmt, err := st.Prepare(`
 SELECT DISTINCT nn.uuid AS &entityUUID.uuid
 FROM   net_node AS nn
@@ -352,6 +357,20 @@ JOIN   unit AS u ON nn.uuid = u.net_node_uuid
 JOIN   application AS a ON u.application_uuid = a.uuid
 WHERE  a.uuid = $entityUUID.uuid
 `, synthApp)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	deleteFqdnAddressStmt, err := st.Prepare(`
+DELETE FROM net_node_fqdn_address
+WHERE net_node_uuid IN ($uuids[:])`, uuids{})
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	deleteHostnameAddressStmt, err := st.Prepare(`
+DELETE FROM net_node_hostname_address
+WHERE net_node_uuid IN ($uuids[:])`, uuids{})
 	if err != nil {
 		return errors.Capture(err)
 	}
@@ -386,8 +405,79 @@ WHERE application_uuid = $entityUUID.uuid`, synthApp)
 	}
 
 	netNodeUUIDs := uuids(transform.Slice(netNodeEntityUUIDs, func(e entityUUID) string { return e.UUID }))
+
+	if err := tx.Query(ctx, deleteFqdnAddressStmt, netNodeUUIDs).Run(); err != nil {
+		return errors.Errorf("deleting net node fqdn address for synth units: %w", err)
+	}
+
+	if err := tx.Query(ctx, deleteHostnameAddressStmt, netNodeUUIDs).Run(); err != nil {
+		return errors.Errorf("deleting net node hostname address for synth units: %w", err)
+	}
+
 	if err := tx.Query(ctx, deleteNetNodesStmt, netNodeUUIDs).Run(); err != nil {
 		return errors.Capture(err)
+	}
+
+	return nil
+}
+
+func (st *State) deleteSynthUnit(ctx context.Context, tx *sqlair.TX, synthUnit entityUUID) error {
+	getNetNodeUUIDStmt, err := st.Prepare(`
+SELECT net_node_uuid AS &entityUUID.uuid
+FROM   unit
+WHERE  uuid = $entityUUID.uuid`, entityUUID{})
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	deleteUnitStmt, err := st.Prepare(`
+DELETE FROM unit
+WHERE uuid = $entityUUID.uuid`, synthUnit)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	deleteFqdnAddressStmt, err := st.Prepare(`
+DELETE FROM net_node_fqdn_address
+WHERE net_node_uuid = $entityUUID.uuid`, entityUUID{})
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	deleteHostnameAddressStmt, err := st.Prepare(`
+DELETE FROM net_node_hostname_address
+WHERE net_node_uuid = $entityUUID.uuid`, entityUUID{})
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	deleteNetNodeStmt, err := st.Prepare(`
+DELETE FROM net_node
+WHERE uuid = $entityUUID.uuid`, entityUUID{})
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	var netNode entityUUID
+	err = tx.Query(ctx, getNetNodeUUIDStmt, synthUnit).Get(&netNode)
+	if err != nil {
+		return errors.Errorf("getting net node UUID for synthetic unit: %w", err)
+	}
+
+	if err := tx.Query(ctx, deleteUnitStmt, synthUnit).Run(); err != nil {
+		return errors.Errorf("deleting synthetic unit: %w", err)
+	}
+
+	if err := tx.Query(ctx, deleteFqdnAddressStmt, netNode).Run(); err != nil {
+		return errors.Errorf("deleting net node fqdn address for synthetic unit: %w", err)
+	}
+
+	if err := tx.Query(ctx, deleteHostnameAddressStmt, netNode).Run(); err != nil {
+		return errors.Errorf("deleting net node hostname address for synthetic unit: %w", err)
+	}
+
+	if err := tx.Query(ctx, deleteNetNodeStmt, netNode).Run(); err != nil {
+		return errors.Errorf("deleting net node for synthetic unit: %w", err)
 	}
 
 	return nil

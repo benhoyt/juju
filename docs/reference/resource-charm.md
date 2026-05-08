@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Charm resource reference: file and OCI image resources for charms, enabling separate lifecycle management from charm updates."
+---
+
 (charm-resource)=
 # Resource (charm)
 

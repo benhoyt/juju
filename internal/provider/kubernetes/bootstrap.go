@@ -11,7 +11,7 @@ import (
 
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/names/v6"
 	"github.com/juju/retry"
 	"gopkg.in/yaml.v3"
@@ -36,9 +36,9 @@ import (
 	"github.com/juju/juju/core/paths"
 	"github.com/juju/juju/core/version"
 	"github.com/juju/juju/core/watcher"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/environs"
 	environsbootstrap "github.com/juju/juju/environs/bootstrap"
-	"github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/cloudconfig"
 	"github.com/juju/juju/internal/cloudconfig/podcfg"
 	"github.com/juju/juju/internal/docker"
@@ -780,7 +780,7 @@ func ensureControllerServiceAccount(
 				),
 				Annotations: annotations,
 			},
-			AutomountServiceAccountToken: boolPtr(true),
+			AutomountServiceAccountToken: new(true),
 		})
 
 	cleanUps, err := sa.Ensure(ctx)
@@ -1370,7 +1370,7 @@ func (c *controllerStack) buildContainerSpecForCommands(setupCmd, machineCmd str
 		Constraints:          c.pcfg.Bootstrap.BootstrapMachineConstraints,
 		ExistingContainers:   []string{apiServerContainerName},
 		// TODO(wallyworld) - use storage so the volumes don't need to be manually set up
-		//Filesystems: nil,
+		// Filesystems: nil,
 		CharmUser: caas.RunAsNonRoot,
 	}
 	spec, err := controllerApp.ApplicationPodSpec(cfg)

@@ -116,6 +116,7 @@ func (s *toolsWithMacaroonsIntegrationSuite) TestWithNoBasicAuthReturnsDischarge
 }
 
 func (s *toolsWithMacaroonsIntegrationSuite) TestCanPostWithDischargedMacaroon(c *tc.C) {
+	s.MacaroonSuite.AddControllerUser(c, s.userName, permission.SuperuserAccess)
 	checkCount := 0
 	s.DischargerLogin = func() string {
 		checkCount++
@@ -141,9 +142,9 @@ func (s *toolsWithMacaroonsIntegrationSuite) TestCanPostWithLocalLogin(c *tc.C) 
 		Name:        userName,
 		DisplayName: "Bob Brown",
 		CreatorUUID: s.AdminUserUUID,
-		Password:    ptr(auth.NewPassword(password)),
+		Password:    new(auth.NewPassword(password)),
 		Permission: permission.AccessSpec{
-			Access: permission.LoginAccess,
+			Access: permission.SuperuserAccess,
 			Target: permission.ID{
 				ObjectType: permission.Controller,
 				Key:        s.ControllerUUID,

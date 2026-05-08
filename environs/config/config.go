@@ -10,13 +10,14 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/names/v6"
 	"github.com/juju/proxy"
 	"github.com/juju/schema"
@@ -289,11 +290,6 @@ const (
 	// Deprecated Settings Attributes
 	//
 
-	// IgnoreMachineAddresses when true, will cause the
-	// machine worker not to discover any machine addresses
-	// on start up.
-	IgnoreMachineAddresses = "ignore-machine-addresses"
-
 	// TestModeKey is the key for identifying the model should be run in test
 	// mode.
 	TestModeKey = "test-mode"
@@ -446,7 +442,6 @@ var defaultConfigValues = map[string]any{
 	// Network.
 	"firewall-mode":              FwInstance,
 	"disable-network-management": false,
-	IgnoreMachineAddresses:       false,
 	SSLHostnameVerificationKey:   true,
 	"proxy-ssh":                  false,
 	DefaultSpaceKey:              "",
@@ -700,8 +695,8 @@ func Validate(_ctx context.Context, cfg, old *Config) error {
 	}
 
 	if v, ok := cfg.defined[EgressSubnets].(string); ok && v != "" {
-		cidrs := strings.Split(v, ",")
-		for _, cidr := range cidrs {
+		cidrs := strings.SplitSeq(v, ",")
+		for cidr := range cidrs {
 			if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
 				return errors.Annotatef(err, "invalid egress subnet: %v", cidr)
 			}
@@ -800,11 +795,7 @@ func Validate(_ctx context.Context, cfg, old *Config) error {
 				return fmt.Errorf("cannot change %s from %#v to %#v", attr, oldv, newv)
 			}
 		}
-		if _, oldFound := old.AgentVersion(); oldFound {
-			if _, newFound := cfg.AgentVersion(); !newFound {
-				return errors.New("cannot clear agent-version")
-			}
-		}
+
 		if _, oldFound := old.CharmHubURL(); oldFound {
 			if _, newFound := cfg.CharmHubURL(); !newFound {
 				return errors.New("cannot clear charmhub-url")
@@ -930,11 +921,8 @@ func (c *Config) validateDefaultBase() error {
 	supported := corebase.WorkloadBases()
 	logger.Tracef(context.TODO(), "supported bases %s", supported)
 	var found bool
-	for _, supportedBase := range supported {
-		if parsedBase.IsCompatible(supportedBase) {
-			found = true
-			break
-		}
+	if slices.ContainsFunc(supported, parsedBase.IsCompatible) {
+		found = true
 	}
 	if !found {
 		return errors.NotSupportedf("base %q", parsedBase.DisplayString())
@@ -1416,7 +1404,7 @@ func (c *Config) Mode() (set.Strings, bool) {
 	}
 	if m, ok := modes.(string); ok {
 		s := set.NewStrings()
-		for _, v := range strings.Split(strings.TrimSpace(m), ",") {
+		for v := range strings.SplitSeq(strings.TrimSpace(m), ",") {
 			if v == "" {
 				continue
 			}
@@ -1481,13 +1469,6 @@ func (c *Config) validateCIDRs(cidrs []string, allowEmpty bool) error {
 // configure and manage networking inside the environment.
 func (c *Config) DisableNetworkManagement() (bool, bool) {
 	v, ok := c.defined["disable-network-management"].(bool)
-	return v, ok
-}
-
-// IgnoreMachineAddresses reports whether Juju will discover
-// and store machine addresses on startup.
-func (c *Config) IgnoreMachineAddresses() (bool, bool) {
-	v, ok := c.defined[IgnoreMachineAddresses].(bool)
 	return v, ok
 }
 
@@ -1601,18 +1582,14 @@ func (c *Config) Telemetry() bool {
 // implementation can tell.
 func (c *Config) UnknownAttrs() map[string]any {
 	newAttrs := make(map[string]any)
-	for k, v := range c.unknown {
-		newAttrs[k] = v
-	}
+	maps.Copy(newAttrs, c.unknown)
 	return newAttrs
 }
 
 // AllAttrs returns a copy of the raw configuration attributes.
 func (c *Config) AllAttrs() map[string]any {
 	allAttrs := c.UnknownAttrs()
-	for k, v := range c.defined {
-		allAttrs[k] = v
-	}
+	maps.Copy(allAttrs, c.defined)
 	return allAttrs
 }
 
@@ -1628,9 +1605,7 @@ func (c *Config) Remove(attrs []string) (*Config, error) {
 // Apply returns a new configuration that has the attributes of c plus attrs.
 func (c *Config) Apply(attrs map[string]any) (*Config, error) {
 	defined := c.AllAttrs()
-	for k, v := range attrs {
-		defined[k] = v
-	}
+	maps.Copy(defined, attrs)
 	return New(NoDefaults, defined)
 }
 
@@ -1700,7 +1675,6 @@ var alwaysOptional = schema.Defaults{
 	SSLHostnameVerificationKey:      schema.Omit,
 	"proxy-ssh":                     schema.Omit,
 	"disable-network-management":    schema.Omit,
-	IgnoreMachineAddresses:          schema.Omit,
 	AutomaticallyRetryHooks:         schema.Omit,
 	TestModeKey:                     schema.Omit,
 	DisableTelemetryKey:             schema.Omit,
@@ -1738,9 +1712,7 @@ func allowEmpty(attr string) bool {
 func allDefaults() schema.Defaults {
 	d := schema.Defaults{}
 	configDefaults := ConfigDefaults()
-	for attr, val := range configDefaults {
-		d[attr] = val
-	}
+	maps.Copy(d, configDefaults)
 	for attr, val := range alwaysOptional {
 		if developerConfigValue(attr) {
 			continue

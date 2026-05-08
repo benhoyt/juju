@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/tc"
 
 	internallogger "github.com/juju/juju/internal/logger"
@@ -49,7 +49,7 @@ func (s *bufferedLogWriterSuite) TestOne(c *tc.C) {
 }
 
 func (s *bufferedLogWriterSuite) TestMultiple(c *tc.C) {
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		s.writeAndReceive(c)
 	}
 }
@@ -58,8 +58,9 @@ func (s *bufferedLogWriterSuite) TestBuffering(c *tc.C) {
 	// Write several log message before attempting to read them out.
 	const numMessages = 5
 	now := time.Now()
-	for i := 0; i < numMessages; i++ {
+	for i := range numMessages {
 		s.writer.Write(
+			c.Context(),
 			loggo.Entry{
 				Level:     loggo.Level(i),
 				Module:    fmt.Sprintf("module%d", i),
@@ -70,7 +71,7 @@ func (s *bufferedLogWriterSuite) TestBuffering(c *tc.C) {
 			})
 	}
 
-	for i := 0; i < numMessages; i++ {
+	for i := range numMessages {
 		c.Assert(*s.receiveOne(c), tc.DeepEquals, logsender.LogRecord{
 			Time:     now.Add(time.Duration(i)),
 			Module:   fmt.Sprintf("module%d", i),
@@ -84,6 +85,7 @@ func (s *bufferedLogWriterSuite) TestBuffering(c *tc.C) {
 func (s *bufferedLogWriterSuite) TestLimiting(c *tc.C) {
 	write := func(msgNum int) {
 		s.writer.Write(
+			c.Context(),
 			loggo.Entry{
 				Level:     loggo.INFO,
 				Module:    "module",
@@ -101,7 +103,7 @@ func (s *bufferedLogWriterSuite) TestLimiting(c *tc.C) {
 	}
 
 	// Write more logs than the buffer allows.
-	for i := 0; i < maxLen+3; i++ {
+	for i := range maxLen + 3 {
 		write(i)
 	}
 
@@ -156,12 +158,12 @@ func (s *bufferedLogWriterSuite) TestInstallBufferedLogWriter(c *tc.C) {
 
 	logger := internallogger.GetLogger("bufferedLogWriter-test")
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		logger.Infof(context.TODO(), "%d", i)
 	}
 
 	logsCh := bufferedLogger.Logs()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		select {
 		case rec := <-logsCh:
 			c.Assert(rec.Message, tc.Equals, strconv.Itoa(i))
@@ -186,6 +188,7 @@ func (s *bufferedLogWriterSuite) TestUninstallBufferedLogWriter(c *tc.C) {
 func (s *bufferedLogWriterSuite) writeAndReceive(c *tc.C) {
 	now := time.Now()
 	s.writer.Write(
+		c.Context(),
 		loggo.Entry{
 			Level:     loggo.INFO,
 			Module:    "module",

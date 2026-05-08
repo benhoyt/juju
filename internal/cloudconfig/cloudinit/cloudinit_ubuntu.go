@@ -43,20 +43,54 @@ func (cfg *ubuntuCloudConfig) PackageProxy() string {
 	return p
 }
 
+// AptMirrorInfo represents attributes of an apt mirror.
+type AptMirrorInfo map[string][]string
+
 // SetPackageMirror is defined on the PackageMirrorConfig interface.
-func (cfg *ubuntuCloudConfig) SetPackageMirror(url string) {
-	cfg.SetAttr("apt_mirror", url)
+func (cfg *ubuntuCloudConfig) SetPackageMirror(uri string) {
+	/*
+		apt:
+		  primary:
+		    - arches: [default]
+		      search:
+		        - http://local-mirror.mydomain
+		        - http://archive.ubuntu.com
+	*/
+	// We can't support multiple search paths yet
+	// because the other Juju logic and upstream
+	// packaging repo only supports processing a
+	// single mirror in its SetMirrorCommands api.
+	mirrorInfo := AptMirrorInfo{
+		"search": {uri},
+		"arches": {"default"},
+	}
+	aptInfo := map[string][]AptMirrorInfo{
+		"primary":  {mirrorInfo},
+		"security": {mirrorInfo},
+	}
+	cfg.SetAttr("apt", aptInfo)
 }
 
 // UnsetPackageMirror is defined on the PackageMirrorConfig interface.
 func (cfg *ubuntuCloudConfig) UnsetPackageMirror() {
-	cfg.UnsetAttr("apt_mirror")
+	cfg.UnsetAttr("apt")
 }
 
 // PackageMirror is defined on the PackageMirrorConfig interface.
 func (cfg *ubuntuCloudConfig) PackageMirror() string {
-	mirror, _ := cfg.attrs["apt_mirror"].(string)
-	return mirror
+	mirrorInfo, ok := cfg.attrs["apt"].(map[string][]AptMirrorInfo)
+	if !ok {
+		return ""
+	}
+	primary, ok := mirrorInfo["primary"]
+	if !ok || len(primary) < 1 {
+		return ""
+	}
+	search, ok := primary[0]["search"]
+	if !ok || len(search) < 1 {
+		return ""
+	}
+	return search[0]
 }
 
 // AddPackageSource is defined on the PackageSourcesConfig interface.

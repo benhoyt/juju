@@ -14,8 +14,8 @@ import (
 
 	apisecretbackends "github.com/juju/juju/api/client/secretbackends"
 	"github.com/juju/juju/api/jujuclient"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/secretbackends"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/testhelpers"
 )
 
@@ -74,8 +74,8 @@ func (s *UpdateSuite) TestUpdate(c *tc.C) {
 		gomock.Any(),
 		apisecretbackends.UpdateSecretBackend{
 			Name:                "myvault",
-			TokenRotateInterval: ptr(666 * time.Minute),
-			Config:              map[string]interface{}{"endpoint": "http://vault"},
+			TokenRotateInterval: new(666 * time.Minute),
+			Config:              map[string]any{"endpoint": "http://vault"},
 		}, true).Return(nil)
 	s.updateSecretBackendsAPI.EXPECT().Close().Return(nil)
 
@@ -92,8 +92,8 @@ func (s *UpdateSuite) TestUpdateName(c *tc.C) {
 		gomock.Any(),
 		apisecretbackends.UpdateSecretBackend{
 			Name:       "myvault",
-			NameChange: ptr("myvault2"),
-			Config:     map[string]interface{}{"endpoint": "http://vault"},
+			NameChange: new("myvault2"),
+			Config:     map[string]any{"endpoint": "http://vault"},
 		}, false).Return(nil)
 	s.updateSecretBackendsAPI.EXPECT().Close().Return(nil)
 
@@ -110,8 +110,8 @@ func (s *UpdateSuite) TestUpdateResetTokenRotate(c *tc.C) {
 		gomock.Any(),
 		apisecretbackends.UpdateSecretBackend{
 			Name:                "myvault",
-			TokenRotateInterval: ptr(0 * time.Second),
-			Config:              map[string]interface{}{"endpoint": "http://vault"},
+			TokenRotateInterval: new(0 * time.Second),
+			Config:              map[string]any{"endpoint": "http://vault"},
 		}, false).Return(nil)
 	s.updateSecretBackendsAPI.EXPECT().Close().Return(nil)
 
@@ -131,8 +131,8 @@ func (s *UpdateSuite) TestUpdateFromFile(c *tc.C) {
 		gomock.Any(),
 		apisecretbackends.UpdateSecretBackend{
 			Name:                "myvault",
-			TokenRotateInterval: ptr(666 * time.Minute),
-			Config: map[string]interface{}{
+			TokenRotateInterval: new(666 * time.Minute),
+			Config: map[string]any{
 				"endpoint": "http://vault",
 				"token":    "s.666",
 			},

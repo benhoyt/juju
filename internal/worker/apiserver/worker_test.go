@@ -11,8 +11,9 @@ import (
 
 	"github.com/juju/clock/testclock"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/workertest"
+	"go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/agent"
 	coreapiserver "github.com/juju/juju/apiserver"
@@ -22,7 +23,6 @@ import (
 	"github.com/juju/juju/core/lease"
 	corelogger "github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/internal/jwtparser"
 	"github.com/juju/juju/internal/services"
 	"github.com/juju/juju/internal/testhelpers"
@@ -33,34 +33,39 @@ import (
 
 type workerFixture struct {
 	testhelpers.IsolationSuite
-	agentConfig             mockAgentConfig
-	authenticator           *mockAuthenticator
-	clock                   *testclock.Clock
-	mux                     *apiserverhttp.Mux
-	prometheusRegisterer    stubPrometheusRegisterer
-	leaseManager            lease.Manager
-	config                  apiserver.Config
-	stub                    testhelpers.Stub
-	metricsCollector        *coreapiserver.Collector
-	logSink                 corelogger.ModelLogger
-	charmhubHTTPClient      *http.Client
-	macaroonHTTPClient      *http.Client
-	dbGetter                stubWatchableDBGetter
-	dbDeleter               stubDBDeleter
-	tracerGetter            stubTracerGetter
-	objectStoreGetter       stubObjectStoreGetter
-	controllerConfigService *MockControllerConfigService
-	modelService            *MockModelService
-	domainServicesGetter    services.DomainServicesGetter
-	watcherRegistryGetter   watcherregistry.WatcherRegistryGetter
-	controllerUUID          string
-	controllerModelUUID     model.UUID
-	jwtParser               *jwtparser.Parser
-	flightRecorder          flightrecorder.FlightRecorder
+	agentConfig              mockAgentConfig
+	authenticator            *mockAuthenticator
+	clock                    *testclock.Clock
+	mux                      *apiserverhttp.Mux
+	prometheusRegisterer     stubPrometheusRegisterer
+	leaseManager             lease.Manager
+	config                   apiserver.Config
+	stub                     testhelpers.Stub
+	metricsCollector         *coreapiserver.Collector
+	logSink                  corelogger.ModelLogger
+	charmhubHTTPClient       *http.Client
+	macaroonHTTPClient       *http.Client
+	dbGetter                 stubWatchableDBGetter
+	tracerGetter             stubTracerGetter
+	objectStoreGetter        stubObjectStoreGetter
+	controllerConfigService  *MockControllerConfigService
+	modelService             *MockModelService
+	domainServicesGetter     services.DomainServicesGetter
+	watcherRegistryGetter    watcherregistry.WatcherRegistryGetter
+	controllerUUID           string
+	controllerModelUUID      model.UUID
+	jwtParser                *jwtparser.Parser
+	flightRecorder           flightrecorder.FlightRecorder
+	ephemeralProviderFactory *MockProviderFactory
 }
 
 func (s *workerFixture) SetUpTest(c *tc.C) {
 	s.IsolationSuite.SetUpTest(c)
+}
+
+func (s *workerFixture) setupMocks(c *tc.C) *gomock.Controller {
+	ctrl := gomock.NewController(c)
+
 	s.agentConfig = mockAgentConfig{
 		dataDir: c.MkDir(),
 		logDir:  c.MkDir(),
@@ -79,11 +84,12 @@ func (s *workerFixture) SetUpTest(c *tc.C) {
 	s.macaroonHTTPClient = &http.Client{}
 	s.domainServicesGetter = &stubDomainServicesGetter{}
 	s.controllerUUID = coretesting.ControllerTag.Id()
-	s.controllerModelUUID = modeltesting.GenModelUUID(c)
+	s.controllerModelUUID = tc.Must0(c, model.NewUUID)
 	s.stub.ResetCalls()
 	s.jwtParser = &jwtparser.Parser{}
 	s.watcherRegistryGetter = &stubWatcherRegistryGetter{}
 	s.flightRecorder = flightrecorder.NoopRecorder{}
+	s.ephemeralProviderFactory = NewMockProviderFactory(ctrl)
 
 	s.config = apiserver.Config{
 		AgentConfig:                       &s.agentConfig,
@@ -99,7 +105,6 @@ func (s *workerFixture) SetUpTest(c *tc.C) {
 		CharmhubHTTPClient:                s.charmhubHTTPClient,
 		MacaroonHTTPClient:                s.macaroonHTTPClient,
 		DBGetter:                          s.dbGetter,
-		DBDeleter:                         s.dbDeleter,
 		ControllerConfigService:           s.controllerConfigService,
 		ModelService:                      s.modelService,
 		DomainServicesGetter:              s.domainServicesGetter,
@@ -108,7 +113,28 @@ func (s *workerFixture) SetUpTest(c *tc.C) {
 		JWTParser:                         s.jwtParser,
 		WatcherRegistryGetter:             s.watcherRegistryGetter,
 		FlightRecorder:                    s.flightRecorder,
+		EphemeralProviderFactory:          s.ephemeralProviderFactory,
 	}
+
+	c.Cleanup(func() {
+		s.agentConfig = mockAgentConfig{}
+		s.authenticator = nil
+		s.mux = nil
+		s.leaseManager = nil
+		s.logSink = nil
+		s.charmhubHTTPClient = nil
+		s.macaroonHTTPClient = nil
+		s.jwtParser = nil
+		s.domainServicesGetter = nil
+		s.watcherRegistryGetter = nil
+		s.flightRecorder = flightrecorder.NoopRecorder{}
+		s.config = apiserver.Config{}
+		s.controllerConfigService = nil
+		s.controllerModelUUID = ""
+		s.controllerUUID = ""
+	})
+
+	return ctrl
 }
 
 func (s *workerFixture) newServer(ctx context.Context, config coreapiserver.ServerConfig) (worker.Worker, error) {
@@ -135,6 +161,7 @@ func TestWorkerValidationSuite(t *testing.T) {
 }
 
 func (s *WorkerValidationSuite) TestValidateErrors(c *tc.C) {
+	defer s.setupMocks(c).Finish()
 	type test struct {
 		f      func(*apiserver.Config)
 		expect string
@@ -216,6 +243,7 @@ func (s *WorkerValidationSuite) testValidateError(c *tc.C, f func(*apiserver.Con
 }
 
 func (s *WorkerValidationSuite) TestValidateLogSinkConfig(c *tc.C) {
+	defer s.setupMocks(c).Finish()
 	s.testValidateLogSinkConfig(c, agent.LogSinkRateLimitBurst, "foo", "parsing LOGSINK_RATELIMIT_BURST: .*")
 	s.testValidateLogSinkConfig(c, agent.LogSinkRateLimitRefill, "foo", "parsing LOGSINK_RATELIMIT_REFILL: .*")
 }

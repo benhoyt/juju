@@ -21,7 +21,7 @@ In addition to hook commands, Juju charms also have access to a set of action-sp
 These action commands are available when an action is running, and are used to log progress
 and report the outcome of the action.
 The currently available charm action commands include:
-    action-fail  Set action fail status with message.
-    action-get   Get action parameters.
-    action-log   Record a progress message for the current action.
-    action-set   Set action results.
+    action-fail  Sets action fail status with message.
+    action-get   Gets action parameters.
+    action-log   Records a progress message for the current action.
+    action-set   Sets action results.

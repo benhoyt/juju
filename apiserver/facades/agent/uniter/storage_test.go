@@ -24,7 +24,6 @@ import (
 	domainstorage "github.com/juju/juju/domain/storage"
 	domainstorageerrors "github.com/juju/juju/domain/storage/errors"
 	"github.com/juju/juju/domain/storageprovisioning"
-	storageprovisioningtesting "github.com/juju/juju/domain/storageprovisioning/testing"
 	"github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc/params"
 )
@@ -34,6 +33,7 @@ type storageSuite struct {
 
 	mockBlockDeviceService         *MockBlockDeviceService
 	mockApplicationService         *MockApplicationService
+	mockRemovalService             *MockRemovalService
 	mockStorageProvisioningService *MockStorageProvisioningService
 	mockWatcherRegistry            *MockWatcherRegistry
 }
@@ -47,12 +47,14 @@ func (s *storageSuite) getAPI(c *tc.C) (*StorageAPI, *gomock.Controller) {
 
 	s.mockBlockDeviceService = NewMockBlockDeviceService(ctrl)
 	s.mockApplicationService = NewMockApplicationService(ctrl)
+	s.mockRemovalService = NewMockRemovalService(ctrl)
 	s.mockStorageProvisioningService = NewMockStorageProvisioningService(ctrl)
 	s.mockWatcherRegistry = NewMockWatcherRegistry(ctrl)
 
 	api, err := newStorageAPI(
 		s.mockBlockDeviceService,
 		s.mockApplicationService,
+		s.mockRemovalService,
 		s.mockStorageProvisioningService,
 		s.mockWatcherRegistry,
 		func(ctx context.Context) (common.AuthFunc, error) {
@@ -62,6 +64,15 @@ func (s *storageSuite) getAPI(c *tc.C) (*StorageAPI, *gomock.Controller) {
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
+
+	c.Cleanup(func() {
+		s.mockBlockDeviceService = nil
+		s.mockApplicationService = nil
+		s.mockRemovalService = nil
+		s.mockStorageProvisioningService = nil
+		s.mockWatcherRegistry = nil
+	})
+
 	return api, ctrl
 }
 
@@ -243,7 +254,7 @@ func (s *storageSuite) TestStorageAttachmentsForVolume(c *tc.C) {
 	unitName, err := coreunit.NewName(unitTag.Id())
 	c.Assert(err, tc.ErrorIsNil)
 	unitUUID := unittesting.GenUnitUUID(c)
-	saUUID := storageprovisioningtesting.GenStorageAttachmentUUID(c)
+	saUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
 	bdUUID := tc.Must(c, blockdevice.NewBlockDeviceUUID)
 
 	blockDevice := coreblockdevice.BlockDevice{
@@ -298,7 +309,7 @@ func (s *storageSuite) TestStorageAttachmentsForVolumeWithNoBlockDevice(c *tc.C)
 	unitName, err := coreunit.NewName(unitTag.Id())
 	c.Assert(err, tc.ErrorIsNil)
 	unitUUID := unittesting.GenUnitUUID(c)
-	saUUID := storageprovisioningtesting.GenStorageAttachmentUUID(c)
+	saUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
 
 	s.mockApplicationService.EXPECT().GetUnitUUID(gomock.Any(), unitName).Return(unitUUID, nil)
 	s.mockStorageProvisioningService.EXPECT().GetStorageAttachmentUUIDForUnit(
@@ -334,7 +345,7 @@ func (s *storageSuite) TestStorageAttachmentsForFilesystem(c *tc.C) {
 	unitName, err := coreunit.NewName(unitTag.Id())
 	c.Assert(err, tc.ErrorIsNil)
 	unitUUID := unittesting.GenUnitUUID(c)
-	saUUID := storageprovisioningtesting.GenStorageAttachmentUUID(c)
+	saUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
 
 	s.mockApplicationService.EXPECT().GetUnitUUID(gomock.Any(), unitName).Return(unitUUID, nil)
 	s.mockStorageProvisioningService.EXPECT().GetStorageAttachmentUUIDForUnit(
@@ -461,7 +472,7 @@ func (s *storageSuite) TestStorageAttachmentsWithStorageAttachmentNotProvisioned
 	unitName, err := coreunit.NewName(unitTag.Id())
 	c.Assert(err, tc.ErrorIsNil)
 	unitUUID := unittesting.GenUnitUUID(c)
-	saUUID := storageprovisioningtesting.GenStorageAttachmentUUID(c)
+	saUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
 
 	s.mockApplicationService.EXPECT().GetUnitUUID(gomock.Any(), unitName).Return(unitUUID, nil)
 	s.mockStorageProvisioningService.EXPECT().GetStorageAttachmentUUIDForUnit(
@@ -752,7 +763,7 @@ func (s *storageSuite) TestWatchStorageAttachments(c *tc.C) {
 	unitName, err := coreunit.NewName(unitTag.Id())
 	c.Assert(err, tc.ErrorIsNil)
 	unitUUID := unittesting.GenUnitUUID(c)
-	storageAttachmentUUID := storageprovisioningtesting.GenStorageAttachmentUUID(c)
+	storageAttachmentUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
 
 	s.mockApplicationService.EXPECT().GetUnitUUID(gomock.Any(), unitName).Return(unitUUID, nil)
 	s.mockStorageProvisioningService.EXPECT().GetStorageAttachmentUUIDForUnit(
@@ -888,4 +899,90 @@ func (s *storageSuite) TestWatchStorageAttachmentsWithStorageAttachmentNotFound(
 	c.Assert(results.Results, tc.HasLen, 1)
 	result := results.Results[0]
 	c.Assert(result.Error.Code, tc.Equals, params.CodeNotFound)
+}
+
+func (s *storageSuite) TestRemoveStorageAttachments(c *tc.C) {
+	api, ctrl := s.getAPI(c)
+	defer ctrl.Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	unitName := coreunit.Name("bar/0")
+	saUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
+
+	s.mockApplicationService.EXPECT().GetUnitUUID(
+		gomock.Any(), unitName).Return(unitUUID, nil)
+	s.mockStorageProvisioningService.EXPECT().GetStorageAttachmentUUIDForUnit(
+		gomock.Any(), "foo/0", unitUUID).Return(saUUID, nil)
+	s.mockRemovalService.EXPECT().MarkStorageAttachmentAsDead(gomock.Any(),
+		saUUID).Return(nil)
+
+	args := params.StorageAttachmentIds{
+		Ids: []params.StorageAttachmentId{
+			{
+				StorageTag: "storage-foo-0",
+				UnitTag:    "unit-bar-0",
+			},
+		},
+	}
+	res, err := api.RemoveStorageAttachments(c.Context(), args)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(res.Results, tc.HasLen, 1)
+	c.Check(res.Results[0].Error, tc.IsNil)
+}
+
+func (s *storageSuite) TestRemoveStorageAttachmentsNotFoundIgnored(c *tc.C) {
+	api, ctrl := s.getAPI(c)
+	defer ctrl.Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	unitName := coreunit.Name("bar/0")
+	saUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
+
+	s.mockApplicationService.EXPECT().GetUnitUUID(
+		gomock.Any(), unitName).Return(unitUUID, nil)
+	s.mockStorageProvisioningService.EXPECT().GetStorageAttachmentUUIDForUnit(
+		gomock.Any(), "foo/0", unitUUID).Return(
+		saUUID, domainstorageerrors.StorageAttachmentNotFound)
+
+	args := params.StorageAttachmentIds{
+		Ids: []params.StorageAttachmentId{
+			{
+				StorageTag: "storage-foo-0",
+				UnitTag:    "unit-bar-0",
+			},
+		},
+	}
+	res, err := api.RemoveStorageAttachments(c.Context(), args)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(res.Results, tc.HasLen, 1)
+	c.Check(res.Results[0].Error, tc.IsNil)
+}
+
+func (s *storageSuite) TestRemoveStorageAttachmentsNotFoundIgnoredLater(c *tc.C) {
+	api, ctrl := s.getAPI(c)
+	defer ctrl.Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	unitName := coreunit.Name("bar/0")
+	saUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
+
+	s.mockApplicationService.EXPECT().GetUnitUUID(
+		gomock.Any(), unitName).Return(unitUUID, nil)
+	s.mockStorageProvisioningService.EXPECT().GetStorageAttachmentUUIDForUnit(
+		gomock.Any(), "foo/0", unitUUID).Return(saUUID, nil)
+	s.mockRemovalService.EXPECT().MarkStorageAttachmentAsDead(gomock.Any(),
+		saUUID).Return(domainstorageerrors.StorageAttachmentNotFound)
+
+	args := params.StorageAttachmentIds{
+		Ids: []params.StorageAttachmentId{
+			{
+				StorageTag: "storage-foo-0",
+				UnitTag:    "unit-bar-0",
+			},
+		},
+	}
+	res, err := api.RemoveStorageAttachments(c.Context(), args)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(res.Results, tc.HasLen, 1)
+	c.Check(res.Results[0].Error, tc.IsNil)
 }

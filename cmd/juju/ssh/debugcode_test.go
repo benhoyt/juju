@@ -15,10 +15,10 @@ import (
 
 	apicharm "github.com/juju/juju/api/common/charm"
 	"github.com/juju/juju/api/common/charms"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/ssh/mocks"
 	"github.com/juju/juju/cmd/modelcmd"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
+	"github.com/juju/juju/domain/deployment/charm"
 )
 
 func TestDebugCodeSuite(t *testing.T) {
@@ -66,11 +66,11 @@ func (s *DebugCodeSuite) TestArgFormatting(c *tc.C) {
 	debugArgsB64 := debugArgsCommand[len(`echo "`):strings.Index(debugArgsCommand, `" | base64`)]
 	yamlContent, err := base64.StdEncoding.DecodeString(debugArgsB64)
 	c.Assert(err, tc.ErrorIsNil)
-	var args map[string]interface{}
+	var args map[string]any
 	err = goyaml.Unmarshal(yamlContent, &args)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(args, tc.DeepEquals, map[string]interface{}{
-		"hooks":    []interface{}{"install", "start"},
+	c.Check(args, tc.DeepEquals, map[string]any{
+		"hooks":    []any{"install", "start"},
 		"debug-at": "foo,bar",
 	})
 }

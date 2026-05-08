@@ -6,7 +6,7 @@ package logsendermetrics_test
 import (
 	"testing"
 
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/tc"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -54,13 +54,13 @@ func (s *bufferedLogWriterSuite) TestDescribe(c *tc.C) {
 }
 
 func (s *bufferedLogWriterSuite) TestCollect(c *tc.C) {
-	s.writer.Write(loggo.Entry{})
-	s.writer.Write(loggo.Entry{})
-	s.writer.Write(loggo.Entry{})
-	s.writer.Write(loggo.Entry{})
-	s.writer.Write(loggo.Entry{}) // causes first to be dropped
+	c.Assert(s.writer.Write(c.Context(), loggo.Entry{}), tc.ErrorIsNil)
+	c.Assert(s.writer.Write(c.Context(), loggo.Entry{}), tc.ErrorIsNil)
+	c.Assert(s.writer.Write(c.Context(), loggo.Entry{}), tc.ErrorIsNil)
+	c.Assert(s.writer.Write(c.Context(), loggo.Entry{}), tc.ErrorIsNil)
+	c.Assert(s.writer.Write(c.Context(), loggo.Entry{}), tc.ErrorIsNil) // causes first to be dropped
 
-	for i := 0; i < maxLen; i++ {
+	for range maxLen {
 		<-s.writer.Logs()
 	}
 
@@ -89,13 +89,10 @@ func (s *bufferedLogWriterSuite) TestCollect(c *tc.C) {
 		c.Assert(err, tc.ErrorIsNil)
 	}
 
-	float64ptr := func(v float64) *float64 {
-		return &v
-	}
 	c.Assert(dtoMetrics, tc.DeepEquals, [4]*dto.Metric{
-		{Counter: &dto.Counter{Value: float64ptr(3)}},
-		{Counter: &dto.Counter{Value: float64ptr(5)}},
-		{Counter: &dto.Counter{Value: float64ptr(3)}},
-		{Counter: &dto.Counter{Value: float64ptr(1)}},
+		{Counter: &dto.Counter{Value: new(float64(3))}},
+		{Counter: &dto.Counter{Value: new(float64(5))}},
+		{Counter: &dto.Counter{Value: new(float64(3))}},
+		{Counter: &dto.Counter{Value: new(float64(1))}},
 	})
 }

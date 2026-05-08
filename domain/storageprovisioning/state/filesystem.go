@@ -16,20 +16,26 @@ import (
 	coreunit "github.com/juju/juju/core/unit"
 	"github.com/juju/juju/core/watcher/eventsource"
 	"github.com/juju/juju/domain"
+	applicationerrors "github.com/juju/juju/domain/application/errors"
 	domainlife "github.com/juju/juju/domain/life"
 	domainnetwork "github.com/juju/juju/domain/network"
 	networkerrors "github.com/juju/juju/domain/network/errors"
+	domainstorage "github.com/juju/juju/domain/storage"
 	"github.com/juju/juju/domain/storageprovisioning"
 	storageprovisioningerrors "github.com/juju/juju/domain/storageprovisioning/errors"
+	"github.com/juju/juju/domain/storageprovisioning/internal"
 	"github.com/juju/juju/internal/errors"
 )
 
 // GetFilesystemTemplatesForApplication returns all the filesystem templates for
 // a given application.
+//
+// The following errors may be returned:
+// - [applicationerrors.ApplicationNotFound] when the application does not exist.
 func (st *State) GetFilesystemTemplatesForApplication(
 	ctx context.Context,
 	appUUID coreapplication.UUID,
-) ([]storageprovisioning.FilesystemTemplate, error) {
+) ([]internal.FilesystemTemplate, error) {
 	db, err := st.DB(ctx)
 	if err != nil {
 		return nil, errors.Capture(err)
@@ -84,7 +90,9 @@ ORDER BY asd.storage_name
 		if err != nil {
 			return err
 		} else if !exists {
-			return errors.Errorf("application %q does not exist", appUUID)
+			return errors.Errorf(
+				"application %q does not exist", appUUID,
+			).Add(applicationerrors.ApplicationNotFound)
 		}
 		err = tx.Query(ctx, fsTemplateQuery, id).GetAll(&fsTemplates)
 		if errors.Is(err, sqlair.ErrNoRows) {
@@ -114,17 +122,17 @@ ORDER BY asd.storage_name
 		storageAttrs[attr.Key] = attr.Value
 	}
 
-	r := make([]storageprovisioning.FilesystemTemplate, 0, len(fsTemplates))
+	r := make([]internal.FilesystemTemplate, 0, len(fsTemplates))
 	for _, v := range fsTemplates {
-		r = append(r, storageprovisioning.FilesystemTemplate{
-			StorageName:  v.StorageName,
-			Count:        v.Count,
-			MaxCount:     v.MaxCount,
-			SizeMiB:      v.SizeMiB,
-			ProviderType: v.ProviderType,
-			ReadOnly:     v.ReadOnly,
-			Location:     v.Location,
-			Attributes:   attrs[v.StorageName],
+		r = append(r, internal.FilesystemTemplate{
+			StorageName:       v.StorageName,
+			Count:             v.Count,
+			MaxCount:          v.MaxCount,
+			SizeMiB:           v.SizeMiB,
+			ProviderType:      v.ProviderType,
+			ReadOnly:          v.ReadOnly,
+			CharmLocationHint: v.Location,
+			Attributes:        attrs[v.StorageName],
 		})
 	}
 	return r, nil
@@ -136,7 +144,7 @@ ORDER BY asd.storage_name
 func (st *State) checkFilesystemAttachmentExists(
 	ctx context.Context,
 	tx *sqlair.TX,
-	uuid storageprovisioning.FilesystemAttachmentUUID,
+	uuid domainstorage.FilesystemAttachmentUUID,
 ) (bool, error) {
 	fsaUUIDInput := filesystemAttachmentUUID{UUID: uuid.String()}
 
@@ -166,7 +174,7 @@ WHERE  uuid = $filesystemAttachmentUUID.uuid
 func (st *State) checkFilesystemExists(
 	ctx context.Context,
 	tx *sqlair.TX,
-	uuid storageprovisioning.FilesystemUUID,
+	uuid domainstorage.FilesystemUUID,
 ) (bool, error) {
 	filesystemUUIDInput := filesystemUUID{UUID: uuid.String()}
 
@@ -242,7 +250,7 @@ WHERE  filesystem_id=$filesystemID.filesystem_id
 // exists for the provided filesystem uuid.
 func (st *State) GetFilesystem(
 	ctx context.Context,
-	uuid storageprovisioning.FilesystemUUID,
+	uuid domainstorage.FilesystemUUID,
 ) (storageprovisioning.Filesystem, error) {
 	db, err := st.DB(ctx)
 	if err != nil {
@@ -311,7 +319,7 @@ WHERE     sfs.uuid = $filesystemUUID.uuid
 // attachment exists for the provided filesystem attachment uuid.
 func (st *State) GetFilesystemAttachment(
 	ctx context.Context,
-	uuid storageprovisioning.FilesystemAttachmentUUID,
+	uuid domainstorage.FilesystemAttachmentUUID,
 ) (storageprovisioning.FilesystemAttachment, error) {
 	db, err := st.DB(ctx)
 	if err != nil {
@@ -456,7 +464,7 @@ AND   (m.net_node_uuid IS NOT NULL OR u.net_node_uuid IS NOT NULL)
 // attachment exists for the provided uuid.
 func (st *State) GetFilesystemAttachmentLife(
 	ctx context.Context,
-	uuid storageprovisioning.FilesystemAttachmentUUID,
+	uuid domainstorage.FilesystemAttachmentUUID,
 ) (domainlife.Life, error) {
 	db, err := st.DB(ctx)
 	if err != nil {
@@ -557,7 +565,7 @@ AND             net_node_uuid=$netNodeUUID.uuid
 // - [storageprovisioningerrors.FilesystemAttachmentNotFound] when no
 // filesystem attachment exists for the supplied uuid.
 func (st *State) GetFilesystemAttachmentParams(
-	ctx context.Context, uuid storageprovisioning.FilesystemAttachmentUUID,
+	ctx context.Context, uuid domainstorage.FilesystemAttachmentUUID,
 ) (storageprovisioning.FilesystemAttachmentParams, error) {
 	// Warning (tlm): Potential issue in this implementation. A filesystem
 	// attachment could become disassociated with a storage instance in the
@@ -565,7 +573,7 @@ func (st *State) GetFilesystemAttachmentParams(
 	// the params for a filesystem attachment. This is because
 	// the type of the provider is recorded on the storage instance.
 	//
-	// A review of Mongo shows that this cases is possible but there is not real
+	// A review of Mongo shows that this cases is possible but there is no real
 	// story to show how this happens of if it is valid. As it stands we don't
 	// support this case in Dqlite so it is a watch and act scneario.
 	//
@@ -599,11 +607,15 @@ func (st *State) GetFilesystemAttachmentParams(
 	*/
 	stmt, err := st.Prepare(`
 SELECT &filesystemAttachmentParams.* FROM (
-    SELECT    sf.provider_id,
-              mci.instance_id,
-              cs.location,
-              cs.read_only,
-              sp.type
+    SELECT    sf.provider_id AS filesystem_provider_id,
+              sfa.provider_id AS filesystem_attachment_provider_id,
+              mci.instance_id AS machine_instance_id,
+              kp.provider_id AS caas_instance_id,
+              cs.location AS charm_storage_location,
+              cs.count_max AS charm_storage_count_max,
+              sfa.mount_point,
+              cs.read_only AS charm_storage_read_only,
+              sp.type AS storage_pool_type
     FROM      storage_filesystem_attachment sfa
     JOIN      storage_filesystem sf ON sfa.storage_filesystem_uuid = sf.uuid
     JOIN      storage_instance_filesystem sif ON sf.uuid = sif.storage_filesystem_uuid
@@ -611,6 +623,7 @@ SELECT &filesystemAttachmentParams.* FROM (
     JOIN      storage_pool sp ON si.storage_pool_uuid = sp.uuid
     LEFT JOIN storage_attachment sa ON si.uuid = sa.storage_instance_uuid
     LEFT JOIN unit u ON sa.unit_uuid = u.uuid
+  	LEFT JOIN k8s_pod kp ON u.uuid = kp.unit_uuid
     LEFT JOIN charm_storage cs ON u.charm_uuid = cs.charm_uuid AND si.storage_name = cs.name
     LEFT JOIN machine m ON sfa.net_node_uuid = m.net_node_uuid
     LEFT JOIN machine_cloud_instance mci ON m.uuid = mci.machine_uuid
@@ -649,13 +662,21 @@ SELECT &filesystemAttachmentParams.* FROM (
 		return storageprovisioning.FilesystemAttachmentParams{}, errors.Capture(err)
 	}
 
-	return storageprovisioning.FilesystemAttachmentParams{
-		MachineInstanceID: dbVal.InstanceID.V,
-		Provider:          dbVal.Type,
-		ProviderID:        dbVal.ProviderID.V,
-		MountPoint:        dbVal.Location.V,
-		ReadOnly:          dbVal.ReadOnly.V,
-	}, nil
+	retVal := storageprovisioning.FilesystemAttachmentParams{
+		CharmStorageCountMax: dbVal.CharmStorageCountMax,
+		CharmStorageLocation: dbVal.CharmStorageLocation.V,
+		CharmStorageReadOnly: dbVal.CharmStorageReadOnly.V,
+		CAASInstanceID:       dbVal.CAASInstanceID.V,
+		MachineInstanceID:    dbVal.MachineInstanceID.V,
+		MountPoint:           dbVal.MountPoint.V,
+		Provider:             dbVal.StoragePoolType,
+		FilesystemProviderID: dbVal.FilesystemProviderID.V,
+	}
+	if dbVal.FilesystemAttachmentProviderID.Valid {
+		v := dbVal.FilesystemAttachmentProviderID.V
+		retVal.FilesystemAttachmentProviderID = &v
+	}
+	return retVal, nil
 }
 
 // GetFilesystemAttachmentUUIDForFilesystemNetNode returns the filesystem
@@ -671,9 +692,9 @@ SELECT &filesystemAttachmentParams.* FROM (
 // attachment exists for the supplied values.
 func (st *State) GetFilesystemAttachmentUUIDForFilesystemNetNode(
 	ctx context.Context,
-	fsUUID storageprovisioning.FilesystemUUID,
+	fsUUID domainstorage.FilesystemUUID,
 	nodeUUID domainnetwork.NetNodeUUID,
-) (storageprovisioning.FilesystemAttachmentUUID, error) {
+) (domainstorage.FilesystemAttachmentUUID, error) {
 	db, err := st.DB(ctx)
 	if err != nil {
 		return "", errors.Capture(err)
@@ -735,7 +756,7 @@ AND    net_node_uuid = $netNodeUUID.uuid
 		return "", errors.Capture(err)
 	}
 
-	return storageprovisioning.FilesystemAttachmentUUID(dbVal.UUID), nil
+	return domainstorage.FilesystemAttachmentUUID(dbVal.UUID), nil
 }
 
 // GetFilesystemLife returns the current life value for a filesystem uuid.
@@ -745,7 +766,7 @@ AND    net_node_uuid = $netNodeUUID.uuid
 // for the provided uuid.
 func (st *State) GetFilesystemLife(
 	ctx context.Context,
-	uuid storageprovisioning.FilesystemUUID,
+	uuid domainstorage.FilesystemUUID,
 ) (domainlife.Life, error) {
 	db, err := st.DB(ctx)
 	if err != nil {
@@ -839,7 +860,7 @@ AND             sfa.net_node_uuid=$netNodeUUID.uuid
 }
 
 func (st *State) GetFilesystemParams(
-	ctx context.Context, uuid storageprovisioning.FilesystemUUID,
+	ctx context.Context, uuid domainstorage.FilesystemUUID,
 ) (storageprovisioning.FilesystemParams, error) {
 	// Warning (tlm): Potential issue in this implementation. A filesystem could
 	// become disassociated with a storage instance in the model. In that case
@@ -868,6 +889,7 @@ func (st *State) GetFilesystemParams(
 	paramsStmt, err := st.Prepare(`
 SELECT &filesystemProvisioningParams.* FROM (
     SELECT    sf.filesystem_id,
+              sf.provider_id,
               si.requested_size_mib AS size_mib,
               sp.type,
               sv.volume_id
@@ -958,6 +980,11 @@ WHERE  sf.uuid = $filesystemUUID.uuid
 		}
 	}
 
+	if paramsVal.ProviderID.Valid {
+		v := paramsVal.ProviderID.V
+		retVal.ProviderID = &v
+	}
+
 	return retVal, nil
 }
 
@@ -968,7 +995,7 @@ WHERE  sf.uuid = $filesystemUUID.uuid
 // - [storageprovisioningerrors.FilesystemNotFound] when no filesystem exists
 // for the provided uuid.
 func (st *State) GetFilesystemRemovalParams(
-	ctx context.Context, uuid storageprovisioning.FilesystemUUID,
+	ctx context.Context, uuid domainstorage.FilesystemUUID,
 ) (storageprovisioning.FilesystemRemovalParams, error) {
 	db, err := st.DB(ctx)
 	if err != nil {
@@ -1043,7 +1070,7 @@ SELECT &filesystemRemovalParams.* FROM (
 // for the provided filesystem id.
 func (st *State) GetFilesystemUUIDForID(
 	ctx context.Context, fsID string,
-) (storageprovisioning.FilesystemUUID, error) {
+) (domainstorage.FilesystemUUID, error) {
 	db, err := st.DB(ctx)
 	if err != nil {
 		return "", errors.Capture(err)
@@ -1078,7 +1105,7 @@ WHERE  filesystem_id = $filesystemID.filesystem_id
 		return "", errors.Capture(err)
 	}
 
-	return storageprovisioning.FilesystemUUID(dbVal.UUID), nil
+	return domainstorage.FilesystemUUID(dbVal.UUID), nil
 }
 
 // InitialWatchStatementMachineProvisionedFilesystems returns both the
@@ -1103,7 +1130,7 @@ func (st *State) InitialWatchStatementMachineProvisionedFilesystems(
 // for watching filesystem life changes where the filesystem is model
 // provisioned. On top of this the initial query for getting all filesystems
 // in the model that model provisioned is returned.
-func (st *State) InitialWatchStatementModelProvisionedFilesystems() (string, eventsource.NamespaceQuery) {
+func (st *State) InitialWatchStatementModelProvisionedFilesystems() (string, string, eventsource.NamespaceQuery) {
 	query := func(ctx context.Context, db database.TxnRunner) ([]string, error) {
 		stmt, err := st.Prepare(`
 SELECT &filesystemID.*
@@ -1131,7 +1158,9 @@ WHERE provision_scope_id=0
 		}
 		return rval, nil
 	}
-	return "storage_filesystem_life_model_provisioning", query
+	return "storage_filesystem_life_model_provisioning",
+		"custom_filesystem_provider_id_model_provisioning",
+		query
 }
 
 // InitialWatchStatementMachineProvisionedFilesystemAttachments returns
@@ -1154,7 +1183,7 @@ func (st *State) InitialWatchStatementMachineProvisionedFilesystemAttachments(
 // namespace for watching filesystem life changes where the filesystem is model
 // provisioned. On top of this the initial query for getting all filesystems
 // in the model that model provisioned is returned.
-func (st *State) InitialWatchStatementModelProvisionedFilesystemAttachments() (string, eventsource.NamespaceQuery) {
+func (st *State) InitialWatchStatementModelProvisionedFilesystemAttachments() (string, string, eventsource.NamespaceQuery) {
 	query := func(ctx context.Context, db database.TxnRunner) ([]string, error) {
 		stmt, err := st.Prepare(`
 SELECT &entityUUID.*
@@ -1181,14 +1210,16 @@ WHERE  provision_scope_id=0
 		}
 		return rval, nil
 	}
-	return "storage_filesystem_attachment_life_model_provisioning", query
+	return "storage_filesystem_attachment_life_model_provisioning",
+		"custom_filesystem_attachment_provider_id_model_provisioning",
+		query
 }
 
 // SetFilesystemProvisionedInfo sets on the provided filesystem the
 // information about the provisioned filesystem.
 func (st *State) SetFilesystemProvisionedInfo(
 	ctx context.Context,
-	filesystemUUID storageprovisioning.FilesystemUUID,
+	filesystemUUID domainstorage.FilesystemUUID,
 	info storageprovisioning.FilesystemProvisionedInfo,
 ) error {
 	db, err := st.DB(ctx)
@@ -1232,7 +1263,7 @@ WHERE  uuid = $filesystemProvisionedInfo.uuid
 // attachment information about the provisioned filesystem attachment.
 func (st *State) SetFilesystemAttachmentProvisionedInfo(
 	ctx context.Context,
-	filesystemAttachmentUUID storageprovisioning.FilesystemAttachmentUUID,
+	filesystemAttachmentUUID domainstorage.FilesystemAttachmentUUID,
 	info storageprovisioning.FilesystemAttachmentProvisionedInfo,
 ) error {
 	db, err := st.DB(ctx)
@@ -1277,4 +1308,119 @@ WHERE  uuid = $filesystemAttachmentProvisionedInfo.uuid
 		return errors.Capture(err)
 	}
 	return nil
+}
+
+// GetContainerMountsForApplication returns the map of mount locations for an
+// application. The map entry is keyed by the storage name.
+// An empty map will be returned if there are no records because it is perfectly
+// valid for a workload container to not have a mount point defined.
+func (st *State) GetContainerMountsForApplication(
+	ctx context.Context,
+	appUUID coreapplication.UUID,
+) (map[string][]internal.ContainerMount, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	var containerMounts []containerMount
+	input := entityUUID{appUUID.String()}
+
+	stmt, err := st.Prepare(`
+SELECT (ccm.charm_container_key,
+       ccm.storage,
+       ccm.location) AS (&containerMount.*)
+FROM   application a
+INNER  JOIN charm_container_mount ccm ON a.charm_uuid = ccm.charm_uuid
+WHERE  a.uuid = $entityUUID.uuid
+`, containerMount{}, input)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		exists, err := st.checkApplicationExists(ctx, tx, appUUID)
+		if err != nil {
+			return err
+		} else if !exists {
+			return errors.Errorf(
+				"application %q does not exist", appUUID,
+			).Add(applicationerrors.ApplicationNotFound)
+		}
+		err = tx.Query(ctx, stmt, input).GetAll(&containerMounts)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	rvals := make(map[string][]internal.ContainerMount)
+
+	for _, mount := range containerMounts {
+		rvals[mount.Storage] = append(rvals[mount.Storage],
+			internal.ContainerMount{
+				ContainerKey: mount.CharmContainerKey,
+				StorageName:  mount.Storage,
+				MountPoint:   mount.Location,
+			})
+	}
+
+	return rvals, nil
+}
+
+// GetProvisionedFilesystemAttachmentsForApplication returns the provisioned filesystem
+// attachments indexed by storage name for the given application UUID.
+// It returns an error satisfying [applicationerrors.ApplicationNotFound] if
+// the application does not exist.
+func (st *State) GetProvisionedFilesystemAttachmentsForApplication(
+	ctx context.Context,
+	uuid coreapplication.UUID,
+) (map[string][]storageprovisioning.ProvisionedFilesystemAttachment, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+	input := entityUUID{uuid.String()}
+	stmt, err := st.Prepare(`
+SELECT (sfa.uuid,
+       si.storage_name,
+       sfa.provider_id) AS (&existingFilesystemAttachment.*)
+FROM   storage_filesystem_attachment AS sfa
+JOIN   storage_instance_filesystem AS sif ON sfa.storage_filesystem_uuid = sif.storage_filesystem_uuid
+JOIN   storage_instance AS si ON sif.storage_instance_uuid = si.uuid
+JOIN   storage_attachment AS sa ON si.uuid = sa.storage_instance_uuid
+JOIN   unit AS u ON sa.unit_uuid = u.uuid
+WHERE  u.application_uuid = $entityUUID.uuid AND sfa.provider_id <> ''`,
+		existingFilesystemAttachment{}, input)
+
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+	var existingAttachments existingFilesystemAttachmentRows
+
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		exists, err := st.checkApplicationExists(ctx, tx, uuid)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return errors.Errorf(
+				"application %q does not exist", uuid,
+			).Add(applicationerrors.ApplicationNotFound)
+		}
+		err = tx.Query(ctx, stmt, input).GetAll(&existingAttachments)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	return existingAttachments.toProvisionedFilesystemAttachment()
 }

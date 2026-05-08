@@ -5,7 +5,6 @@ package uniter
 
 import (
 	"context"
-	"strings"
 
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
@@ -13,20 +12,20 @@ import (
 	apiServerErrors "github.com/juju/juju/apiserver/errors"
 	coresecrets "github.com/juju/juju/core/secrets"
 	"github.com/juju/juju/core/unit"
+	"github.com/juju/juju/domain/secret"
 	secreterrors "github.com/juju/juju/domain/secret/errors"
-	secretservice "github.com/juju/juju/domain/secret/service"
 	"github.com/juju/juju/internal/secrets"
 	"github.com/juju/juju/rpc/params"
 )
 
 // SecretService provides core secrets operations.
 type SecretService interface {
-	CreateCharmSecret(context.Context, *coresecrets.URI, secretservice.CreateCharmSecretParams) error
-	UpdateCharmSecret(context.Context, *coresecrets.URI, secretservice.UpdateCharmSecretParams) error
-	DeleteSecret(context.Context, *coresecrets.URI, secretservice.DeleteSecretParams) error
-	GetSecretValue(context.Context, *coresecrets.URI, int, secretservice.SecretAccessor) (coresecrets.SecretValue, *coresecrets.ValueRef, error)
-	GrantSecretAccess(context.Context, *coresecrets.URI, secretservice.SecretAccessParams) error
-	RevokeSecretAccess(context.Context, *coresecrets.URI, secretservice.SecretAccessParams) error
+	CreateCharmSecret(context.Context, *coresecrets.URI, secret.CreateCharmSecretParams) error
+	UpdateCharmSecret(context.Context, *coresecrets.URI, secret.UpdateCharmSecretParams) error
+	DeleteSecret(context.Context, *coresecrets.URI, secret.DeleteSecretParams) error
+	GetSecretValue(context.Context, *coresecrets.URI, int, secret.SecretAccessor) (coresecrets.SecretValue, *coresecrets.ValueRef, error)
+	GrantSecretAccess(context.Context, *coresecrets.URI, secret.SecretAccessParams) error
+	RevokeSecretAccess(context.Context, *coresecrets.URI, secret.SecretAccessParams) error
 	GetConsumedRevision(
 		ctx context.Context, uri *coresecrets.URI, unitName unit.Name,
 		refresh, peek bool, labelToUpdate *string) (int, error)
@@ -74,18 +73,18 @@ func (u *UniterAPI) createSecret(ctx context.Context, arg params.CreateSecretArg
 		uri = coresecrets.NewURI()
 	}
 
-	params := secretservice.CreateCharmSecretParams{
+	params := secret.CreateCharmSecretParams{
 		Version: secrets.Version,
-		UpdateCharmSecretParams: fromUpsertParams(arg.UpsertSecretArg, secretservice.SecretAccessor{
-			Kind: secretservice.UnitAccessor,
+		UpdateCharmSecretParams: fromUpsertParams(arg.UpsertSecretArg, secret.SecretAccessor{
+			Kind: secret.UnitAccessor,
 			ID:   authTag.Id(),
 		}),
 	}
 	switch kind := secretOwner.Kind(); kind {
 	case names.UnitTagKind:
-		params.CharmOwner = secretservice.CharmSecretOwner{Kind: secretservice.UnitOwner, ID: secretOwner.Id()}
+		params.CharmOwner = secret.CharmSecretOwner{Kind: secret.UnitCharmSecretOwner, ID: secretOwner.Id()}
 	case names.ApplicationTagKind:
-		params.CharmOwner = secretservice.CharmSecretOwner{Kind: secretservice.ApplicationOwner, ID: secretOwner.Id()}
+		params.CharmOwner = secret.CharmSecretOwner{Kind: secret.ApplicationCharmSecretOwner, ID: secretOwner.Id()}
 	default:
 		return "", errors.NotValidf("secret owner kind %q", kind)
 	}
@@ -96,7 +95,7 @@ func (u *UniterAPI) createSecret(ctx context.Context, arg params.CreateSecretArg
 	return uri.String(), nil
 }
 
-func fromUpsertParams(p params.UpsertSecretArg, accessor secretservice.SecretAccessor) secretservice.UpdateCharmSecretParams {
+func fromUpsertParams(p params.UpsertSecretArg, accessor secret.SecretAccessor) secret.UpdateCharmSecretParams {
 	var valueRef *coresecrets.ValueRef
 	if p.Content.ValueRef != nil {
 		valueRef = &coresecrets.ValueRef{
@@ -104,7 +103,7 @@ func fromUpsertParams(p params.UpsertSecretArg, accessor secretservice.SecretAcc
 			RevisionID: p.Content.ValueRef.RevisionID,
 		}
 	}
-	return secretservice.UpdateCharmSecretParams{
+	return secret.UpdateCharmSecretParams{
 		Accessor:     accessor,
 		RotatePolicy: p.RotatePolicy,
 		ExpireTime:   p.ExpireTime,
@@ -142,8 +141,8 @@ func (u *UniterAPI) updateSecret(ctx context.Context, arg params.UpdateSecretArg
 		return errors.New("at least one attribute to update must be specified")
 	}
 
-	accessor := secretservice.SecretAccessor{
-		Kind: secretservice.UnitAccessor,
+	accessor := secret.SecretAccessor{
+		Kind: secret.UnitAccessor,
 		ID:   u.auth.GetAuthTag().Id(),
 	}
 	err = u.secretService.UpdateCharmSecret(ctx, uri, fromUpsertParams(arg.UpsertSecretArg, accessor))
@@ -160,8 +159,8 @@ func (u *UniterAPI) removeSecrets(ctx context.Context, args params.DeleteSecretA
 		return result, nil
 	}
 
-	accessor := secretservice.SecretAccessor{
-		Kind: secretservice.UnitAccessor,
+	accessor := secret.SecretAccessor{
+		Kind: secret.UnitAccessor,
 		ID:   u.auth.GetAuthTag().Id(),
 	}
 
@@ -171,7 +170,7 @@ func (u *UniterAPI) removeSecrets(ctx context.Context, args params.DeleteSecretA
 			result.Results[i].Error = apiServerErrors.ServerError(err)
 			continue
 		}
-		p := secretservice.DeleteSecretParams{
+		p := secret.DeleteSecretParams{
 			Accessor:  accessor,
 			Revisions: arg.Revisions,
 		}
@@ -204,7 +203,7 @@ func appFromTag(tag names.Tag) string {
 	return ""
 }
 
-type grantRevokeFunc func(context.Context, *coresecrets.URI, secretservice.SecretAccessParams) error
+type grantRevokeFunc func(context.Context, *coresecrets.URI, secret.SecretAccessParams) error
 
 // secretsGrant grants access to a secret for the specified subjects.
 func (u *UniterAPI) secretsGrant(ctx context.Context, args params.GrantRevokeSecretArgs) (params.ErrorResults, error) {
@@ -216,42 +215,38 @@ func (u *UniterAPI) secretsRevoke(ctx context.Context, args params.GrantRevokeSe
 	return u.secretsGrantRevoke(ctx, args, u.secretService.RevokeSecretAccess)
 }
 
-func accessorFromTag(tag names.Tag) (secretservice.SecretAccessor, error) {
-	result := secretservice.SecretAccessor{
+func accessorFromTag(tag names.Tag) (secret.SecretAccessor, error) {
+	result := secret.SecretAccessor{
 		ID: tag.Id(),
 	}
 	switch kind := tag.Kind(); kind {
 	case names.ApplicationTagKind:
-		if strings.HasPrefix(result.ID, "remote-") {
-			result.Kind = secretservice.RemoteApplicationAccessor
-		} else {
-			result.Kind = secretservice.ApplicationAccessor
-		}
+		result.Kind = secret.ApplicationAccessor
 	case names.UnitTagKind:
-		result.Kind = secretservice.UnitAccessor
+		result.Kind = secret.UnitAccessor
 	case names.ModelTagKind:
-		result.Kind = secretservice.ModelAccessor
+		result.Kind = secret.ModelAccessor
 	default:
-		return secretservice.SecretAccessor{}, errors.Errorf("tag kind %q not valid for secret accessor", kind)
+		return secret.SecretAccessor{}, errors.Errorf("tag kind %q not valid for secret accessor", kind)
 	}
 	return result, nil
 }
 
-func accessScopeFromTag(tag names.Tag) (secretservice.SecretAccessScope, error) {
-	result := secretservice.SecretAccessScope{
+func accessScopeFromTag(tag names.Tag) (secret.SecretAccessScope, error) {
+	result := secret.SecretAccessScope{
 		ID: tag.Id(),
 	}
 	switch kind := tag.Kind(); kind {
 	case names.ApplicationTagKind:
-		result.Kind = secretservice.ApplicationAccessScope
+		result.Kind = secret.ApplicationAccessScope
 	case names.UnitTagKind:
-		result.Kind = secretservice.UnitAccessScope
+		result.Kind = secret.UnitAccessScope
 	case names.RelationTagKind:
-		result.Kind = secretservice.RelationAccessScope
+		result.Kind = secret.RelationAccessScope
 	case names.ModelTagKind:
-		result.Kind = secretservice.ModelAccessScope
+		result.Kind = secret.ModelAccessScope
 	default:
-		return secretservice.SecretAccessScope{}, errors.Errorf("tag kind %q not valid for secret access scope", kind)
+		return secret.SecretAccessScope{}, errors.Errorf("tag kind %q not valid for secret access scope", kind)
 	}
 	return result, nil
 }
@@ -265,7 +260,7 @@ func (u *UniterAPI) secretsGrantRevoke(ctx context.Context, args params.GrantRev
 		if err != nil {
 			return errors.Trace(err)
 		}
-		var scope secretservice.SecretAccessScope
+		var scope secret.SecretAccessScope
 		if arg.ScopeTag != "" {
 			scopeTag, err := names.ParseTag(arg.ScopeTag)
 			if err != nil {
@@ -281,8 +276,8 @@ func (u *UniterAPI) secretsGrantRevoke(ctx context.Context, args params.GrantRev
 			return errors.NotValidf("secret role %q", arg.Role)
 		}
 
-		accessor := secretservice.SecretAccessor{
-			Kind: secretservice.UnitAccessor,
+		accessor := secret.SecretAccessor{
+			Kind: secret.UnitAccessor,
 			ID:   u.auth.GetAuthTag().Id(),
 		}
 
@@ -295,7 +290,7 @@ func (u *UniterAPI) secretsGrantRevoke(ctx context.Context, args params.GrantRev
 			if err != nil {
 				return errors.Trace(err)
 			}
-			if err := op(ctx, uri, secretservice.SecretAccessParams{
+			if err := op(ctx, uri, secret.SecretAccessParams{
 				Accessor: accessor,
 				Scope:    scope,
 				Subject:  subject,

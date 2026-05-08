@@ -17,7 +17,8 @@ const MigrationModelHTTPHeader = "X-Juju-Migration-Model-UUID"
 // InitiateMigrationArgs holds the details required to start one or
 // more model migrations.
 type InitiateMigrationArgs struct {
-	Specs []MigrationSpec `json:"specs"`
+	Specs  []MigrationSpec `json:"specs"`
+	DryRun bool            `json:"dry-run,omitempty"`
 }
 
 // MigrationSpec holds the details required to start the migration of
@@ -158,8 +159,9 @@ type MasterMigrationStatus struct {
 // MigrationModelInfo is used to report basic model information to the
 // migrationmaster worker.
 type MigrationModelInfo struct {
-	UUID                   string            `json:"uuid"`
-	Name                   string            `json:"name"`
+	UUID string `json:"uuid"`
+	Name string `json:"name"`
+	// Qualifier is the model owner identifier used to disambiguate Name.
 	Qualifier              string            `json:"qualifier"`
 	AgentVersion           semversion.Number `json:"agent-version"`
 	ControllerAgentVersion semversion.Number `json:"controller-agent-version"`

@@ -17,11 +17,11 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/agent"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/containeragent/unit"
 	utilsmocks "github.com/juju/juju/cmd/containeragent/utils/mocks"
 	"github.com/juju/juju/cmd/internal/agent/agentconf"
 	jujuversion "github.com/juju/juju/core/version"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	k8sconstants "github.com/juju/juju/internal/provider/kubernetes/constants"
 	"github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/internal/worker/logsender"
@@ -79,7 +79,7 @@ func (s *containerUnitAgentSuite) setupCommand(c *tc.C, configChangedVal *voyeur
 
 func (s *containerUnitAgentSuite) prepareAgentConf(c *tc.C, appName string) string {
 	fPath := filepath.Join(s.dataDir, k8sconstants.TemplateFileNameAgentConf)
-	err := os.WriteFile(fPath, []byte(fmt.Sprintf(agentConfigContents, appName)), 0600)
+	err := os.WriteFile(fPath, fmt.Appendf(nil, agentConfigContents, appName), 0600)
 	c.Assert(err, tc.IsNil)
 	return fPath
 }

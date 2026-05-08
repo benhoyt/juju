@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju offer reference: applications made available for cross-model relations, enabling integrations across models, controllers, and  clouds."
+---
+
 (offer)=
 # Offer
 

@@ -19,7 +19,8 @@ var defaultTransactionRunner = txn.NewRetryingTxnRunner()
 
 // trackedDB is used for testing purposes.
 type txnRunner struct {
-	db *sqlair.DB
+	db       *sqlair.DB
+	postHook func(context.Context, *sqlair.TX)
 }
 
 // Txn executes the input function against the tracked database, using
@@ -30,7 +31,7 @@ type txnRunner struct {
 // should use.
 func (t *txnRunner) Txn(ctx context.Context, fn func(context.Context, *sqlair.TX) error) error {
 	return defaultTransactionRunner.Retry(ctx, func() error {
-		return errors.Trace(defaultTransactionRunner.Txn(ctx, t.db, fn))
+		return errors.Trace(defaultTransactionRunner.Txn(ctx, t.db, wrapTxnFunc(fn, t.postHook)))
 	})
 }
 
@@ -39,6 +40,9 @@ func (t *txnRunner) Txn(ctx context.Context, fn func(context.Context, *sqlair.TX
 // Retry semantics are applied automatically based on transient failures.
 // This is the function that almost all downstream database consumers
 // should use.
+//
+// We don't need to wrap our txn function here, because StdTxn is not exposed
+// to production code, only testing code.
 func (t *txnRunner) StdTxn(ctx context.Context, fn func(context.Context, *sql.Tx) error) error {
 	return defaultTransactionRunner.Retry(ctx, func() error {
 		return errors.Trace(defaultTransactionRunner.StdTxn(ctx, t.db.PlainDB(), fn))
@@ -50,6 +54,16 @@ func (t *txnRunner) StdTxn(ctx context.Context, fn func(context.Context, *sql.Tx
 // shutting down or has been closed.
 func (t *txnRunner) Dying() <-chan struct{} {
 	return make(<-chan struct{})
+}
+
+func wrapTxnFunc(fn func(context.Context, *sqlair.TX) error, postHook func(context.Context, *sqlair.TX)) func(context.Context, *sqlair.TX) error {
+	return func(ctx context.Context, tx *sqlair.TX) error {
+		err := fn(ctx, tx)
+		if postHook != nil {
+			postHook(ctx, tx)
+		}
+		return err
+	}
 }
 
 type singularDBGetter struct {

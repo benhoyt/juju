@@ -24,6 +24,6 @@ func TestPreupgradechecksSuite(t *stdtesting.T) {
 func (s *preupgradechecksSuite) TestCheckFreeDiskSpace(c *tc.C) {
 	// Expect an impossibly large amount of free disk.
 	s.PatchValue(&upgrades.MinDiskSpaceMib, uint64(humanize.PiByte/humanize.MiByte))
-	err := upgrades.PreUpgradeSteps(&mockAgentConfig{dataDir: "/"}, false)
+	err := upgrades.PreUpgradeSteps(&mockAgentConfig{dataDir: "/"})
 	c.Assert(err, tc.ErrorMatches, `not enough free disk space on "/" for upgrade: .* available, require 1073741824MiB`)
 }

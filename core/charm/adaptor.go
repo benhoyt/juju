@@ -3,7 +3,7 @@
 
 package charm
 
-import "github.com/juju/juju/internal/charm"
+import "github.com/juju/juju/domain/deployment/charm"
 
 func NewCharmInfoAdaptor(meta EssentialMetadata) charmInfoAdaptor {
 	return charmInfoAdaptor{meta: meta}
@@ -25,10 +25,6 @@ func (adaptor charmInfoAdaptor) Manifest() *charm.Manifest {
 
 func (adaptor charmInfoAdaptor) Config() *charm.ConfigSpec {
 	return adaptor.meta.Config
-}
-
-func (adaptor charmInfoAdaptor) LXDProfile() *charm.LXDProfile {
-	return nil // not part of the essential metadata
 }
 
 func (adaptor charmInfoAdaptor) Actions() *charm.Actions {

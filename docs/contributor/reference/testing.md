@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Understand Juju's testing requirements and frameworks, covering unit testing and integration testing strategies for contributors."
+---
+
 (testing)=
 # Testing
 

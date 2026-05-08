@@ -5,10 +5,13 @@ package application
 
 import (
 	"context"
+	"slices"
+	"strings"
 
 	"github.com/juju/clock"
 	"github.com/juju/names/v6"
 
+	apiservererrors "github.com/juju/juju/apiserver/errors"
 	coreassumes "github.com/juju/juju/core/assumes"
 	corecharm "github.com/juju/juju/core/charm"
 	"github.com/juju/juju/core/constraints"
@@ -21,17 +24,35 @@ import (
 	"github.com/juju/juju/core/objectstore"
 	coreresource "github.com/juju/juju/core/resource"
 	"github.com/juju/juju/core/status"
-	coreunit "github.com/juju/juju/core/unit"
+	"github.com/juju/juju/core/storage"
 	"github.com/juju/juju/domain/application"
 	applicationcharm "github.com/juju/juju/domain/application/charm"
-	applicationerrors "github.com/juju/juju/domain/application/errors"
 	applicationservice "github.com/juju/juju/domain/application/service"
+	"github.com/juju/juju/domain/deployment/charm"
+	"github.com/juju/juju/domain/deployment/charm/assumes"
+	domainstorage "github.com/juju/juju/domain/storage"
+	storageerrors "github.com/juju/juju/domain/storage/errors"
 	"github.com/juju/juju/environs/bootstrap"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/charm/assumes"
 	"github.com/juju/juju/internal/errors"
-	"github.com/juju/juju/internal/storage"
+	"github.com/juju/juju/rpc/params"
 )
+
+// DeployApplicationLocalRepo describes an interface for deploying applications where the
+// charm does not need to come from a repository.
+type DeployApplicationLocalRepo interface {
+	Deploy(context.Context, DeployApplicationParams) error
+}
+
+// deployApplicationLocalRepo is an internal implementation of
+// [DeployApplicationLocalRepo]
+type deployApplicationLocalRepo struct {
+	applicationService ApplicationService
+	clock              clock.Clock
+	logger             corelogger.Logger
+	modelType          coremodel.ModelType
+	store              objectstore.ObjectStore
+	storageService     StorageService
+}
 
 // ModelService provides access to the model state.
 type ModelService interface {
@@ -65,39 +86,8 @@ type DeployApplicationParams struct {
 	Force bool
 }
 
-// handleApplicationDomainError is a first low pass effort to start handling
-// some of the errors that will come out of the application domain. If a handler
-// does not exist then the original error will be returned.
-func handleApplicationDomainError(err error) error {
-	// Check to see if the user has creeped over or under a charm storage count
-	// limit.
-	limitErr, is := errors.AsType[applicationerrors.StorageCountLimitExceeded](err)
-	if is && limitErr.Requested < limitErr.Minimum {
-		return errors.Errorf(
-			"storage directive %q request count %d insufficient for the charms minimum count of %d",
-			limitErr.StorageName, limitErr.Requested, limitErr.Minimum,
-		).Add(coreerrors.NotValid)
-	} else if is && limitErr.Maximum != nil && limitErr.Requested > *limitErr.Maximum {
-		return errors.Errorf(
-			"storage directive %q request count %d exceeds the charms maximum count of %d",
-			limitErr.StorageName, limitErr.Requested, *limitErr.Maximum,
-		).Add(coreerrors.NotValid)
-	}
-
-	return err
-}
-
-// DeployApplication takes a charm and various parameters and deploys it.
-func DeployApplication(
-	ctx context.Context,
-	modelType coremodel.ModelType,
-	applicationService ApplicationService,
-	storageService StorageService,
-	store objectstore.ObjectStore,
-	args DeployApplicationParams,
-	logger corelogger.Logger,
-	clock clock.Clock,
-) error {
+// Deploy takes a charm and various parameters and deploys it.
+func (d deployApplicationLocalRepo) Deploy(ctx context.Context, args DeployApplicationParams) error {
 	if args.Charm.Meta().Name == bootstrap.ControllerCharmName {
 		return errors.New("manual deploy of the controller charm not supported").
 			Add(coreerrors.NotSupported)
@@ -112,27 +102,84 @@ func DeployApplication(
 	}
 
 	// Enforce "assumes" requirements.
-	if err := assertCharmAssumptions(ctx, applicationService, args.Charm.Meta().Assumes); err != nil {
+	if err := assertCharmAssumptions(ctx, d.applicationService, args.Charm.Meta().Assumes); err != nil {
 		if !errors.Is(err, coreerrors.NotSupported) || !args.Force {
 			return errors.Capture(err)
 		}
 
-		logger.Warningf(ctx, "proceeding with deployment of application %q even though the charm feature requirements could not be met as --force was specified", args.ApplicationName)
+		d.logger.Warningf(ctx, "proceeding with deployment of application %q even though the charm feature requirements could not be met as --force was specified", args.ApplicationName)
 	}
 
-	if modelType == coremodel.CAAS {
+	if d.modelType == coremodel.CAAS {
 		if charm.MetaFormat(args.Charm) == charm.FormatV1 {
 			return errors.Errorf(
 				"deploying format v1 charm %q not supported",
 				args.ApplicationName,
 			).Add(coreerrors.NotSupported)
 		}
+
+		// We don't yet currently support attaching storage to CAAS units.
+		if len(args.AttachStorage) > 0 {
+			return apiservererrors.ParamsErrorf(
+				params.CodeNotSupported,
+				"attaching storage to CAAS units is not supported",
+			)
+		}
+	}
+
+	if len(args.AttachStorage) > 0 && args.NumUnits != 1 {
+		return apiservererrors.ParamsErrorf(
+			params.CodeNotFound,
+			"attaching existing storage can only be done when the number of units is 1",
+		)
+	}
+
+	// Dedupe the supplied input to avoid repeated work.
+	storageTagsToAttach := slices.SortedFunc(
+		slices.Values(args.AttachStorage),
+		func(a, b names.StorageTag) int {
+			return strings.Compare(a.String(), b.String())
+		},
+	)
+	storageTagsToAttach = slices.Compact(storageTagsToAttach)
+
+	// Storage UUIDs to attach to the new deployment's first unit.
+	storageUUIDsToAttach := make(
+		[]domainstorage.StorageInstanceUUID,
+		0,
+		len(storageTagsToAttach),
+	)
+	for _, storageTag := range storageTagsToAttach {
+		storageUUID, err := d.storageService.GetStorageInstanceUUIDForID(
+			ctx, storageTag.Id(),
+		)
+
+		if errors.Is(err, storageerrors.StorageInstanceNotFound) {
+			return apiservererrors.ParamsErrorf(
+				params.CodeNotFound,
+				"storage instance %q does not exist",
+				storageTag.Id(),
+			)
+		} else if err != nil {
+			// Log the error instead of reporting verbatim to client
+			d.logger.Warningf(
+				ctx,
+				"getting storage instance uuid for id %q during deploying application %q from local: %s",
+				args.ApplicationName,
+				err.Error(),
+			)
+			return errors.Errorf(
+				"getting information for storage instance %q", storageTag.Id(),
+			)
+		}
+
+		storageUUIDsToAttach = append(storageUUIDsToAttach, storageUUID)
 	}
 
 	var downloadInfo *applicationcharm.DownloadInfo
 	if args.CharmOrigin.Source == corecharm.CharmHub {
 		var err error
-		downloadInfo, err = applicationService.GetCharmDownloadInfo(ctx, args.Charm.locator)
+		downloadInfo, err = d.applicationService.GetCharmDownloadInfo(ctx, args.Charm.locator)
 		if err != nil {
 			return errors.Capture(err)
 		}
@@ -143,7 +190,7 @@ func DeployApplication(
 		return errors.Capture(err)
 	}
 
-	sdo, err := storageDirectives(ctx, storageService, args.Storage)
+	sdo, err := storageDirectives(ctx, d.storageService, args.Storage)
 	if err != nil {
 		return errors.Capture(err)
 	}
@@ -156,7 +203,7 @@ func DeployApplication(
 		Devices:          args.Devices,
 		ApplicationStatus: &status.StatusInfo{
 			Status: status.Unset,
-			Since:  ptr(clock.Now()),
+			Since:  new(d.clock.Now()),
 		},
 		ApplicationConfig: args.ApplicationConfig,
 		ApplicationSettings: application.ApplicationSettings{
@@ -165,13 +212,9 @@ func DeployApplication(
 		Constraints:               args.Constraints,
 		StorageDirectiveOverrides: sdo,
 	}
-	if modelType == coremodel.CAAS {
-		unitArgs, err := makeCAASUnitArgs(args)
-		if err != nil {
-			return errors.Capture(err)
-		}
-
-		_, err = applicationService.CreateCAASApplication(
+	if d.modelType == coremodel.CAAS {
+		unitArgs := d.makeCAASUnitArgs(args, storageUUIDsToAttach)
+		_, err = d.applicationService.CreateCAASApplication(
 			ctx,
 			args.ApplicationName,
 			args.Charm,
@@ -180,17 +223,13 @@ func DeployApplication(
 			unitArgs...,
 		)
 		if err != nil {
-			return handleApplicationDomainError(errors.Capture(err))
+			return handleApplicationDomainDeployError(errors.Capture(err))
 		}
 		return nil
 	}
 
-	unitArgs, err := makeIAASUnitArgs(args)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	_, err = applicationService.CreateIAASApplication(
+	unitArgs := d.makeIAASUnitArgs(args, storageUUIDsToAttach)
+	_, err = d.applicationService.CreateIAASApplication(
 		ctx,
 		args.ApplicationName,
 		args.Charm,
@@ -199,42 +238,71 @@ func DeployApplication(
 		unitArgs...,
 	)
 	if err != nil {
-		return handleApplicationDomainError(err)
+		return handleApplicationDomainDeployError(err)
 	}
 
 	return nil
 }
 
-func makeIAASUnitArgs(args DeployApplicationParams) ([]applicationservice.AddIAASUnitArg, error) {
-	unitArgs := make([]applicationservice.AddIAASUnitArg, args.NumUnits)
+func (deployApplicationLocalRepo) makeIAASUnitArgs(
+	args DeployApplicationParams,
+	storageUUIDsToAttach []domainstorage.StorageInstanceUUID,
+) []applicationservice.AddIAASUnitArg {
+	unitArgs := make([]applicationservice.AddIAASUnitArg, 0, args.NumUnits)
 	for i := range args.NumUnits {
 		var unitPlacement *instance.Placement
 		if i < len(args.Placement) {
 			unitPlacement = args.Placement[i]
 		}
-		unitArgs[i] = applicationservice.AddIAASUnitArg{
+		unitArg := applicationservice.AddIAASUnitArg{
 			AddUnitArg: applicationservice.AddUnitArg{
 				Placement: unitPlacement,
 			},
 		}
+		if i == 0 {
+			// We only support attaching storage when exactly 1 unit is being
+			// created. This is due to the constraints faced in our facade
+			// params. There is a check before this call which ensures that
+			// exactly 1 unit is being created.
+			//
+			// Should we ever update our facade params we can support better
+			// combinations and unit assignment.
+			unitArg.StorageInstancesToAttach = storageUUIDsToAttach
+		}
+
+		unitArgs = append(unitArgs, unitArg)
 	}
 
-	return unitArgs, nil
+	return unitArgs
 }
 
-func makeCAASUnitArgs(args DeployApplicationParams) ([]applicationservice.AddUnitArg, error) {
-	unitArgs := make([]applicationservice.AddUnitArg, args.NumUnits)
+func (deployApplicationLocalRepo) makeCAASUnitArgs(
+	args DeployApplicationParams, storageUUIDsToAttach []domainstorage.StorageInstanceUUID,
+) []applicationservice.AddUnitArg {
+	unitArgs := make([]applicationservice.AddUnitArg, 0, args.NumUnits)
 	for i := range args.NumUnits {
 		var unitPlacement *instance.Placement
 		if i < len(args.Placement) {
 			unitPlacement = args.Placement[i]
 		}
-		unitArgs[i] = applicationservice.AddUnitArg{
+		unitArg := applicationservice.AddUnitArg{
 			Placement: unitPlacement,
 		}
+		if i == 0 {
+			// We only support attaching storage when exactly 1 unit is being
+			// created. This is due to the constraints faced in our facade
+			// params. There is a check before this call which ensures that
+			// exactly 1 unit is being created.
+			//
+			// Should we ever update our facade params we can support better
+			// combinations and unit assignment.
+			unitArg.StorageInstancesToAttach = storageUUIDsToAttach
+		}
+
+		unitArgs = append(unitArgs, unitArg)
 	}
 
-	return unitArgs, nil
+	return unitArgs
 }
 
 func transformBindings(endpointBindings map[string]string) map[string]network.SpaceName {
@@ -255,48 +323,6 @@ func transformToPendingResources(argResources map[string]string) ([]coreresource
 		pendingResources = append(pendingResources, resUUID)
 	}
 	return pendingResources, nil
-}
-
-// addUnits starts n units of the given application using the specified placement
-// directives to allocate the machines.
-func (api *APIBase) addUnits(
-	ctx context.Context,
-	appName string,
-	n int,
-	placement []*instance.Placement,
-	attachStorage []names.StorageTag,
-	assignUnits bool,
-	charmMeta *charm.Meta,
-) ([]coreunit.Name, error) {
-	units := make([]coreunit.Name, 0, n)
-
-	// TODO what do we do if we fail half-way through this process?
-	for i := 0; i < n; i++ {
-		var unitPlacement *instance.Placement
-		if i < len(placement) {
-			unitPlacement = placement[i]
-		}
-
-		unitArg := applicationservice.AddUnitArg{
-			Placement: unitPlacement,
-		}
-
-		var unitNames []coreunit.Name
-		var err error
-		if api.modelType == coremodel.CAAS {
-			unitNames, err = api.applicationService.AddCAASUnits(ctx, appName, unitArg)
-		} else {
-			unitNames, _, err = api.applicationService.AddIAASUnits(ctx, appName, applicationservice.AddIAASUnitArg{
-				AddUnitArg: unitArg,
-			})
-		}
-		if err != nil {
-			return nil, errors.Errorf("adding unit to application %q: %w", appName, err)
-		}
-		units = append(units, unitNames...)
-	}
-
-	return units, nil
 }
 
 func assertCharmAssumptions(

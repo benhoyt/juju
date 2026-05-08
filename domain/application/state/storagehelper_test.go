@@ -7,19 +7,13 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/juju/clock"
 	"github.com/juju/tc"
 
+	corecharm "github.com/juju/juju/core/charm"
 	coredatabase "github.com/juju/juju/core/database"
-	coremachine "github.com/juju/juju/core/machine"
 	coreunit "github.com/juju/juju/core/unit"
-	"github.com/juju/juju/domain/application"
-	"github.com/juju/juju/domain/application/architecture"
-	"github.com/juju/juju/domain/application/charm"
-	domainnetwork "github.com/juju/juju/domain/network"
+	domainlife "github.com/juju/juju/domain/life"
 	domainstorage "github.com/juju/juju/domain/storage"
-	domainstorageprov "github.com/juju/juju/domain/storageprovisioning"
-	loggertesting "github.com/juju/juju/internal/logger/testing"
 )
 
 type dbGetter interface {
@@ -29,6 +23,57 @@ type dbGetter interface {
 
 type storageHelper struct {
 	dbGetter
+}
+
+// assertFilesystemAttachmentExists ensures a filesystem attachment exists for
+// the supplied attachment UUID.
+func (s *storageHelper) assertFilesystemAttachmentExists(
+	c *tc.C, attachmentUUID domainstorage.FilesystemAttachmentUUID,
+) {
+	var gotUUID string
+	err := s.DB().QueryRowContext(
+		c.Context(),
+		"SELECT uuid FROM storage_filesystem_attachment WHERE uuid = ?",
+		attachmentUUID.String(),
+	).Scan(&gotUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(gotUUID, tc.Equals, attachmentUUID.String())
+}
+
+// assertStorageInstanceAttachmentExists ensures a storage attachment exists
+// for the supplied attachment, storage instance, and unit UUIDs.
+func (s *storageHelper) assertStorageInstanceAttachmentExists(
+	c *tc.C,
+	attachmentUUID domainstorage.StorageAttachmentUUID,
+	storageInstanceUUID domainstorage.StorageInstanceUUID,
+	unitUUID coreunit.UUID,
+) {
+	var gotUUID string
+	err := s.DB().QueryRowContext(
+		c.Context(),
+		`SELECT uuid FROM storage_attachment
+WHERE uuid = ? AND storage_instance_uuid = ? AND unit_uuid = ?`,
+		attachmentUUID.String(),
+		storageInstanceUUID.String(),
+		unitUUID.String(),
+	).Scan(&gotUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(gotUUID, tc.Equals, attachmentUUID.String())
+}
+
+// getStorageInstanceCharmName returns the charm name for the supplied Storage
+// Instance UUID.
+func (s *storageHelper) getStorageInstanceCharmName(
+	c *tc.C, storageInstanceUUID domainstorage.StorageInstanceUUID,
+) string {
+	var charmName string
+	err := s.DB().QueryRowContext(
+		c.Context(),
+		"SELECT charm_name FROM storage_instance WHERE uuid = ?",
+		storageInstanceUUID.String(),
+	).Scan(&charmName)
+	c.Assert(err, tc.ErrorIsNil)
+	return charmName
 }
 
 func (s *storageHelper) newStoragePool(c *tc.C,
@@ -43,13 +88,262 @@ func (s *storageHelper) newStoragePool(c *tc.C,
 	return poolUUID
 }
 
+// newStorageInstanceWithName creates a new storage instance with the supplied
+// storage name and no backing filesystem or volume.
+func (s *storageHelper) newStorageInstanceWithName(
+	c *tc.C, storageName string,
+) domainstorage.StorageInstanceUUID {
+	return s.newStorageInstanceWithValues(
+		c,
+		storageName,
+		domainstorage.StorageKindFilesystem,
+		domainlife.Alive,
+		"bar",
+		1024,
+	)
+}
+
+// newStorageInstanceWithValues creates a new storage instance with the supplied
+// values and no backing filesystem or volume.
+func (s *storageHelper) newStorageInstanceWithValues(
+	c *tc.C,
+	storageName string,
+	kind domainstorage.StorageKind,
+	life domainlife.Life,
+	charmName string,
+	requestedSizeMIB int,
+) domainstorage.StorageInstanceUUID {
+	storageInstanceUUID := tc.Must(c, domainstorage.NewStorageInstanceUUID)
+	storagePoolUUID := s.newStoragePool(c, storageInstanceUUID.String(), "test-provider")
+
+	_, err := s.DB().ExecContext(
+		c.Context(),
+		`
+INSERT INTO storage_instance (uuid, storage_name, storage_kind_id, storage_id,
+                              life_id, storage_pool_uuid, charm_name, requested_size_mib)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`,
+		storageInstanceUUID.String(),
+		storageName,
+		kind,
+		storageInstanceUUID.String(),
+		life,
+		storagePoolUUID.String(),
+		charmName,
+		requestedSizeMIB,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	return storageInstanceUUID
+}
+
+// newModelFilesystemForStorageInstance creates a model filesystem and links it
+// to the supplied storage instance using default values.
+//
+// The filesystem created has life set to alive, model provision scope and
+// size 1024 MiB.
+func (s *storageHelper) newModelFilesystemForStorageInstance(
+	c *tc.C,
+	storageInstanceUUID domainstorage.StorageInstanceUUID,
+) domainstorage.FilesystemUUID {
+	filesystemUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
+
+	_, err := s.DB().ExecContext(
+		c.Context(),
+		`
+INSERT INTO storage_filesystem (uuid, filesystem_id, life_id, provision_scope_id, size_mib)
+VALUES (?, ?, ?, ?, ?)
+`,
+		filesystemUUID.String(),
+		filesystemUUID.String(),
+		domainlife.Alive,
+		0,
+		1024,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = s.DB().ExecContext(
+		c.Context(),
+		`
+INSERT INTO storage_instance_filesystem (storage_instance_uuid,
+                                         storage_filesystem_uuid)
+VALUES (?, ?)
+`,
+		storageInstanceUUID.String(),
+		filesystemUUID.String(),
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	return filesystemUUID
+}
+
+// newModelVolumeForStorageInstance creates a model volume and links it to the
+// supplied storage instance using default values.
+//
+// The volume created has life set to alive, model provision scope and
+// size 2048 MiB.
+func (s *storageHelper) newModelVolumeForStorageInstance(
+	c *tc.C,
+	storageInstanceUUID domainstorage.StorageInstanceUUID,
+) domainstorage.VolumeUUID {
+	volumeUUID := tc.Must(c, domainstorage.NewVolumeUUID)
+
+	_, err := s.DB().ExecContext(
+		c.Context(),
+		`
+INSERT INTO storage_volume (uuid, volume_id, life_id, provision_scope_id, size_mib)
+VALUES (?, ?, ?, ?, ?)
+`,
+		volumeUUID.String(),
+		volumeUUID.String(),
+		domainlife.Alive,
+		0,
+		2048,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = s.DB().ExecContext(
+		c.Context(),
+		`
+INSERT INTO storage_instance_volume (storage_instance_uuid,
+                                     storage_volume_uuid)
+VALUES (?, ?)
+`,
+		storageInstanceUUID.String(),
+		volumeUUID.String(),
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	return volumeUUID
+}
+
+// newModelFilesystemStorageInstance creates a new storage instance backed by a
+// model provisioned filesystem, using the charm name from the supplied charm
+// UUID.
+func (s *storageHelper) newModelFilesystemStorageInstance(
+	c *tc.C, storageName string, charmUUID corecharm.ID,
+) (domainstorage.StorageInstanceUUID, domainstorage.FilesystemUUID) {
+	storageInstanceUUID := tc.Must(c, domainstorage.NewStorageInstanceUUID)
+	filesystemUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
+	storagePoolUUID := s.newStoragePool(c, storageInstanceUUID.String(), "test-provider")
+
+	var charmName string
+	err := s.DB().QueryRowContext(
+		c.Context(),
+		"SELECT name FROM charm_metadata WHERE charm_uuid = ?",
+		charmUUID.String(),
+	).Scan(&charmName)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = s.DB().ExecContext(
+		c.Context(),
+		`
+INSERT INTO storage_instance (uuid, storage_name, storage_kind_id, storage_id,
+                              life_id, storage_pool_uuid, charm_name, requested_size_mib)
+VALUES (?, ?, 1, ?, ?, ?, ?, 1024)
+`,
+		storageInstanceUUID.String(),
+		storageName,
+		storageInstanceUUID.String(),
+		domainlife.Alive,
+		storagePoolUUID.String(),
+		charmName,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = s.DB().ExecContext(
+		c.Context(),
+		`
+INSERT INTO storage_filesystem (uuid, filesystem_id, life_id, provision_scope_id, size_mib)
+VALUES (?, ?, ?, 0, 1024)
+	`,
+		filesystemUUID.String(),
+		filesystemUUID.String(),
+		domainlife.Alive,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = s.DB().ExecContext(
+		c.Context(),
+		`
+INSERT INTO storage_instance_filesystem (storage_instance_uuid,
+                                         storage_filesystem_uuid)
+VALUES (?, ?)
+	`,
+		storageInstanceUUID.String(),
+		filesystemUUID.String(),
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	return storageInstanceUUID, filesystemUUID
+}
+
+// newModelVolumeStorageInstance creates a new storage instance backed by a
+// model provisioned volume, using the charm name from the supplied charm UUID.
+func (s *storageHelper) newModelVolumeStorageInstance(
+	c *tc.C, storageName string, charmUUID corecharm.ID,
+) (domainstorage.StorageInstanceUUID, domainstorage.VolumeUUID) {
+	storageInstanceUUID := tc.Must(c, domainstorage.NewStorageInstanceUUID)
+	volumeUUID := tc.Must(c, domainstorage.NewVolumeUUID)
+	storagePoolUUID := s.newStoragePool(c, storageInstanceUUID.String(), "test-provider")
+
+	var charmName string
+	err := s.DB().QueryRowContext(
+		c.Context(),
+		"SELECT name FROM charm_metadata WHERE charm_uuid = ?",
+		charmUUID.String(),
+	).Scan(&charmName)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = s.DB().ExecContext(
+		c.Context(),
+		`
+INSERT INTO storage_instance (uuid, storage_name, storage_kind_id, storage_id,
+                              life_id, storage_pool_uuid, charm_name, requested_size_mib)
+VALUES (?, ?, 0, ?, ?, ?, ?, 2048)
+`,
+		storageInstanceUUID.String(),
+		storageName,
+		storageInstanceUUID.String(),
+		domainlife.Alive,
+		storagePoolUUID.String(),
+		charmName,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = s.DB().ExecContext(
+		c.Context(),
+		`
+INSERT INTO storage_volume (uuid, volume_id, life_id, provision_scope_id, size_mib)
+VALUES (?, ?, ?, 0, 2048)
+	`,
+		volumeUUID.String(),
+		volumeUUID.String(),
+		domainlife.Alive,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = s.DB().ExecContext(
+		c.Context(),
+		`
+INSERT INTO storage_instance_volume (storage_instance_uuid, storage_volume_uuid)
+VALUES (?, ?)
+	`,
+		storageInstanceUUID.String(),
+		volumeUUID.String(),
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	return storageInstanceUUID, volumeUUID
+}
+
 // newStorageInstanceFilesysatemWithProviderID creates a new storage instance in
 // the model backed by a filesystem with the given provider ID set.
 func (s *storageHelper) newStorageInstanceFilesysatemWithProviderID(
 	c *tc.C, storageName string, providerID string,
-) (domainstorage.StorageInstanceUUID, domainstorageprov.FilesystemUUID) {
+) (domainstorage.StorageInstanceUUID, domainstorage.FilesystemUUID) {
 	storageInstUUID := tc.Must(c, domainstorage.NewStorageInstanceUUID)
-	storageFilesystemUUID := tc.Must(c, domainstorageprov.NewFilesystemUUID)
+	storageFilesystemUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 	storagePoolUUID := s.newStoragePool(c, storageInstUUID.String(), "lxd")
 
 	_, err := s.DB().ExecContext(
@@ -100,12 +394,12 @@ func (s *storageHelper) newStorageInstanceFilesystemBackedVolumeWithProviderID(
 	c *tc.C, storageName string, fsProviderID, vProviderID string,
 ) (
 	domainstorage.StorageInstanceUUID,
-	domainstorageprov.FilesystemUUID,
-	domainstorageprov.VolumeUUID,
+	domainstorage.FilesystemUUID,
+	domainstorage.VolumeUUID,
 ) {
 	storageInstUUID := tc.Must(c, domainstorage.NewStorageInstanceUUID)
-	storageFilesystemUUID := tc.Must(c, domainstorageprov.NewFilesystemUUID)
-	storageVolumeUUID := tc.Must(c, domainstorageprov.NewVolumeUUID)
+	storageFilesystemUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
+	storageVolumeUUID := tc.Must(c, domainstorage.NewVolumeUUID)
 	storagePoolUUID := s.newStoragePool(c, storageInstUUID.String(), "lxd")
 
 	_, err := s.DB().ExecContext(
@@ -171,9 +465,9 @@ VALUES (?, ?, 0, ?, 0)
 // the model backed by a volume with the given provider ID set.
 func (s *storageHelper) newStorageInstanceVolumeWithProviderID(
 	c *tc.C, storageName string, providerID string,
-) (domainstorage.StorageInstanceUUID, domainstorageprov.VolumeUUID) {
+) (domainstorage.StorageInstanceUUID, domainstorage.VolumeUUID) {
 	storageInstUUID := tc.Must(c, domainstorage.NewStorageInstanceUUID)
-	storageVolumeUUID := tc.Must(c, domainstorageprov.NewVolumeUUID)
+	storageVolumeUUID := tc.Must(c, domainstorage.NewVolumeUUID)
 	storagePoolUUID := s.newStoragePool(c, storageInstUUID.String(), "lxd")
 
 	_, err := s.DB().ExecContext(
@@ -231,57 +525,37 @@ INSERT INTO storage_unit_owner (storage_instance_uuid, unit_uuid) VALUES (?, ?)
 	c.Assert(err, tc.ErrorIsNil)
 }
 
-// newUnit is a helper function for generating a new unit in the model for
-// testing. This should be used when the caller just needs a unit with a uuid to
-// exist but cares no more about the details of the unit.
-func (s *storageHelper) newUnit(c *tc.C) coreunit.UUID {
-	st := NewState(
-		s.TxnRunnerFactory(),
-		clock.WallClock,
-		loggertesting.WrapCheckLog(c),
-	)
-
-	netNodeUUID := tc.Must(c, domainnetwork.NewNetNodeUUID)
-	appUUID, _, err := st.CreateIAASApplication(
+// newStorageInstanceAttachment creates a storage attachment for the supplied
+// storage instance and unit.
+func (s *storageHelper) newStorageInstanceAttachment(
+	c *tc.C, instUUID domainstorage.StorageInstanceUUID, unitUUID coreunit.UUID,
+) domainstorage.StorageAttachmentUUID {
+	attachmentUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
+	_, err := s.DB().ExecContext(
 		c.Context(),
-		"foo",
-		application.AddIAASApplicationArg{
-			BaseAddApplicationArg: application.BaseAddApplicationArg{
-				Charm: charm.Charm{
-					Metadata: charm.Metadata{
-						Name: "foo",
-					},
-					Manifest: charm.Manifest{
-						Bases: []charm.Base{{
-							Name:          "ubuntu",
-							Channel:       charm.Channel{Risk: charm.RiskStable},
-							Architectures: []string{"amd64"},
-						}},
-					},
-					ReferenceName: "foo",
-					Architecture:  architecture.AMD64,
-					Revision:      1,
-					Source:        charm.LocalSource,
-				},
-				IsController: false,
-			},
-		},
-		[]application.AddIAASUnitArg{
-			{
-				AddUnitArg: application.AddUnitArg{
-					NetNodeUUID: netNodeUUID,
-				},
-				MachineNetNodeUUID: netNodeUUID,
-				MachineUUID:        tc.Must(c, coremachine.NewUUID),
-				Nonce:              ptr("foo"),
-			},
-		},
+		`
+INSERT INTO storage_attachment (uuid, storage_instance_uuid, unit_uuid, life_id)
+VALUES (?, ?, ?, ?)
+`,
+		attachmentUUID.String(),
+		instUUID.String(),
+		unitUUID.String(),
+		domainlife.Alive,
 	)
 	c.Assert(err, tc.ErrorIsNil)
+	return attachmentUUID
+}
 
-	units, err := st.getApplicationUnits(c.Context(), appUUID)
+// setStorageInstanceLife updates the life for the supplied storage instance.
+func (s *storageHelper) setStorageInstanceLife(
+	c *tc.C, storageInstanceUUID domainstorage.StorageInstanceUUID,
+	life domainlife.Life,
+) {
+	_, err := s.DB().ExecContext(
+		c.Context(),
+		"UPDATE storage_instance SET life_id = ? WHERE uuid = ?",
+		life,
+		storageInstanceUUID.String(),
+	)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(units, tc.HasLen, 1)
-
-	return units[0]
 }

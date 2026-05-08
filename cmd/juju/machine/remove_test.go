@@ -14,11 +14,11 @@ import (
 
 	"github.com/juju/juju/api"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/machine"
 	"github.com/juju/juju/cmd/juju/machine/mocks"
 	"github.com/juju/juju/environs/config"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc/params"
 )
@@ -288,7 +288,7 @@ func (s *RemoveMachineSuite) TestRemovePrompt(c *tc.C) {
 	ctx := cmdtesting.Context(c)
 	ctx.Stdin = &stdin
 
-	attrs := testing.FakeConfig().Merge(map[string]interface{}{config.ModeKey: config.RequiresPromptsMode})
+	attrs := testing.FakeConfig().Merge(map[string]any{config.ModeKey: config.RequiresPromptsMode})
 	s.mockModelConfigApi.EXPECT().ModelGet(gomock.Any()).Return(attrs, nil)
 	s.mockApi.EXPECT().DestroyMachinesWithParams(gomock.Any(), false, false, true, gomock.Any(), "1", "2")
 	s.mockApi.EXPECT().DestroyMachinesWithParams(gomock.Any(), false, false, false, gomock.Any(), "1", "2")
@@ -311,7 +311,7 @@ func (s *RemoveMachineSuite) TestRemovePromptAborted(c *tc.C) {
 	var stdin bytes.Buffer
 	ctx.Stdin = &stdin
 
-	attrs := testing.FakeConfig().Merge(map[string]interface{}{config.ModeKey: config.RequiresPromptsMode})
+	attrs := testing.FakeConfig().Merge(map[string]any{config.ModeKey: config.RequiresPromptsMode})
 	s.mockModelConfigApi.EXPECT().ModelGet(gomock.Any()).Return(attrs, nil)
 	s.mockApi.EXPECT().DestroyMachinesWithParams(gomock.Any(), false, false, true, gomock.Any(), "1", "2")
 

@@ -33,6 +33,7 @@ func (s *stateSuite) TestGetHardwareCharacteristics(c *tc.C) {
 	c.Check(*hc.CpuPower, tc.Equals, uint64(75))
 	c.Check(*hc.AvailabilityZone, tc.Equals, "az-1")
 	c.Check(*hc.VirtType, tc.Equals, "virtual-machine")
+	c.Check(*hc.Tags, tc.DeepEquals, []string{"tag1", "tag2"})
 }
 
 func (s *stateSuite) TestGetHardwareCharacteristicsWithoutAvailabilityZone(c *tc.C) {
@@ -46,14 +47,14 @@ func (s *stateSuite) TestGetHardwareCharacteristicsWithoutAvailabilityZone(c *tc
 		"",
 		"nonce",
 		&instance.HardwareCharacteristics{
-			Arch:           ptr("arm64"),
-			Mem:            ptr[uint64](1024),
-			RootDisk:       ptr[uint64](256),
-			RootDiskSource: ptr("/test"),
-			CpuCores:       ptr[uint64](4),
-			CpuPower:       ptr[uint64](75),
-			Tags:           ptr([]string{"tag1", "tag2"}),
-			VirtType:       ptr("virtual-machine"),
+			Arch:           new("arm64"),
+			Mem:            new(uint64(1024)),
+			RootDisk:       new(uint64(256)),
+			RootDiskSource: new("/test"),
+			CpuCores:       new(uint64(4)),
+			CpuPower:       new(uint64(75)),
+			Tags:           new([]string{"tag1", "tag2"}),
+			VirtType:       new("virtual-machine"),
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
@@ -68,6 +69,7 @@ func (s *stateSuite) TestGetHardwareCharacteristicsWithoutAvailabilityZone(c *tc
 	c.Check(*hc.CpuPower, tc.Equals, uint64(75))
 	c.Check(hc.AvailabilityZone, tc.IsNil)
 	c.Check(*hc.VirtType, tc.Equals, "virtual-machine")
+	c.Check(*hc.Tags, tc.DeepEquals, []string{"tag1", "tag2"})
 }
 
 func (s *stateSuite) TestAvailabilityZoneWithNoMachine(c *tc.C) {
@@ -108,14 +110,14 @@ func (s *stateSuite) TestSetInstanceData(c *tc.C) {
 		"one",
 		"nonce",
 		&instance.HardwareCharacteristics{
-			Arch:             ptr("arm64"),
-			Mem:              ptr[uint64](1024),
-			RootDisk:         ptr[uint64](256),
-			CpuCores:         ptr[uint64](4),
-			CpuPower:         ptr[uint64](75),
-			Tags:             ptr([]string{"tag1", "tag2"}),
-			AvailabilityZone: ptr("az-1"),
-			VirtType:         ptr("virtual-machine"),
+			Arch:             new("arm64"),
+			Mem:              new(uint64(1024)),
+			RootDisk:         new(uint64(256)),
+			CpuCores:         new(uint64(4)),
+			CpuPower:         new(uint64(75)),
+			Tags:             new([]string{"tag1", "tag2"}),
+			AvailabilityZone: new("az-1"),
+			VirtType:         new("virtual-machine"),
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
@@ -249,7 +251,7 @@ func (s *stateSuite) TestSetInstanceDataAlreadyExists(c *tc.C) {
 		"one",
 		"nonce",
 		&instance.HardwareCharacteristics{
-			Arch: ptr("arm64"),
+			Arch: new("arm64"),
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
@@ -262,7 +264,7 @@ func (s *stateSuite) TestSetInstanceDataAlreadyExists(c *tc.C) {
 		"one",
 		"nonce",
 		&instance.HardwareCharacteristics{
-			Arch: ptr("amd64"),
+			Arch: new("amd64"),
 		},
 	)
 	c.Assert(err, tc.ErrorMatches, "machine cloud instance already exists.*")
@@ -316,15 +318,15 @@ func (s *stateSuite) ensureInstance(c *tc.C) (machine.UUID, machine.Name) {
 		"one-two-three",
 		"nonce",
 		&instance.HardwareCharacteristics{
-			Arch:             ptr("arm64"),
-			Mem:              ptr[uint64](1024),
-			RootDisk:         ptr[uint64](256),
-			RootDiskSource:   ptr("/test"),
-			CpuCores:         ptr[uint64](4),
-			CpuPower:         ptr[uint64](75),
-			Tags:             ptr([]string{"tag1", "tag2"}),
-			AvailabilityZone: ptr("az-1"),
-			VirtType:         ptr("virtual-machine"),
+			Arch:             new("arm64"),
+			Mem:              new(uint64(1024)),
+			RootDisk:         new(uint64(256)),
+			RootDiskSource:   new("/test"),
+			CpuCores:         new(uint64(4)),
+			CpuPower:         new(uint64(75)),
+			Tags:             new([]string{"tag1", "tag2"}),
+			AvailabilityZone: new("az-1"),
+			VirtType:         new("virtual-machine"),
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)

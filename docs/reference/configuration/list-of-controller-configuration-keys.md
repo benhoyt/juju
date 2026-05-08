@@ -219,6 +219,7 @@ for the jujud operator and mongo images.
 
 `caas-operator-image-path` sets the URL of the docker image
 used for the application operator.
+//
 Deprecated: use `caas-image-repo`.
 
 **Type:** string
@@ -259,12 +260,54 @@ Use a value of 0 to disable the limit.
 **Can be changed after bootstrap:** no
 
 
+(controller-config-dqlite-busy-timeout)=
+## `dqlite-busy-timeout`
+
+`dqlite-busy-timeout` sets the timeout for how long a database operation will
+wait for a lock to be released before returning an error, that is the
+amount of time a writer will wait for others to finish writing on the
+same database.
+
+**Type:** TimeDurationString
+
+**Default value:** 1s
+
+**Can be changed after bootstrap:** yes
+
+
 (controller-config-features)=
 ## `features`
 
 `features` allows a list of runtime changeable features to be updated.
 
 **Type:** string
+
+**Can be changed after bootstrap:** yes
+
+
+(controller-config-http-server-read-timeout)=
+## `http-server-read-timeout`
+
+`http-server-read-timeout` is the maximum duration for reading the entire HTTP request,
+including the body.
+A zero value means no timeout.
+
+**Type:** duration
+
+**Default value:** 0s
+
+**Can be changed after bootstrap:** yes
+
+
+(controller-config-http-server-write-timeout)=
+## `http-server-write-timeout`
+
+`http-server-write-timeout` is the maximum duration before timing out writes of the HTTP response.
+A zero value means no timeout.
+
+**Type:** duration
+
+**Default value:** 0s
 
 **Can be changed after bootstrap:** yes
 
@@ -291,6 +334,18 @@ created locally on the controller.
 **Type:** string
 
 **Can be changed after bootstrap:** no
+
+
+(controller-config-idle-connection-timeout)=
+## `idle-connection-timeout`
+
+`idle-connection-timeout` is the time between the controller resetting all idle connections.
+
+**Type:** duration
+
+**Default value:** 30s
+
+**Can be changed after bootstrap:** yes
 
 
 (controller-config-juju-mgmt-space)=
@@ -459,62 +514,6 @@ controller on behalf of workers running for a model.
 **Type:** string
 
 **Default value:** 10M
-
-**Can be changed after bootstrap:** yes
-
-
-(controller-config-object-store-s3-endpoint)=
-## `object-store-s3-endpoint`
-
-`object-store-s3-endpoint` is the endpoint to use for S3 object stores.
-
-**Type:** string
-
-**Can be changed after bootstrap:** yes
-
-
-(controller-config-object-store-s3-static-key)=
-## `object-store-s3-static-key`
-
-`object-store-s3-static-key` is the static key to use for S3 object stores.
-
-**Type:** string
-
-**Can be changed after bootstrap:** yes
-
-
-(controller-config-object-store-s3-static-secret)=
-## `object-store-s3-static-secret`
-
-`object-store-s3-static-secret` is the static secret to use for S3 object
-stores.
-
-**Type:** string
-
-**Can be changed after bootstrap:** yes
-
-
-(controller-config-object-store-s3-static-session)=
-## `object-store-s3-static-session`
-
-`object-store-s3-static-session` is the static session token to use for S3
-object stores.
-
-**Type:** string
-
-**Can be changed after bootstrap:** yes
-
-
-(controller-config-object-store-type)=
-## `object-store-type`
-
-`object-store-type` is the type of object store to use for storing blobs.
-This isn't currently allowed to be changed dynamically, that will come
-when we support multiple object store types (not including state).
-
-**Type:** string
-
-**Default value:** file
 
 **Can be changed after bootstrap:** yes
 

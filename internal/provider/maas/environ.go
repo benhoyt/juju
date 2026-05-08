@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,7 @@ import (
 	"github.com/juju/juju/internal/cloudconfig/instancecfg"
 	"github.com/juju/juju/internal/cloudconfig/providerinit"
 	"github.com/juju/juju/internal/provider/common"
+	internalstorage "github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/internal/tools"
 )
 
@@ -679,8 +681,17 @@ func (env *maasEnviron) StartInstance(
 		logger.Debugf(ctx, "attempting to acquire node in zone %q", availabilityZone)
 	}
 
-	// Storage.
-	volumes, err := buildMAASVolumeParameters(args.Volumes, args.Constraints)
+	// Filter out all volume params that are not for the MAAS storage provider.
+	// This is done as the environ only supports provisioning volumes within
+	// MAAS for new instances.
+	maasVolumeParameters := slices.DeleteFunc(
+		args.Volumes,
+		func(v internalstorage.VolumeParams) bool {
+			return v.Provider != maasStorageProviderType
+		},
+	)
+
+	volumes, err := buildMAASVolumeParameters(maasVolumeParameters, args.Constraints)
 	if err != nil {
 		return nil, environs.ZoneIndependentError(errors.Annotate(err, "invalid volume parameters"))
 	}
@@ -790,8 +801,8 @@ func (env *maasEnviron) StartInstance(
 	}
 	logger.Debugf(ctx, "started instance %q", inst.Id())
 
-	requestedVolumes := make([]names.VolumeTag, len(args.Volumes))
-	for i, v := range args.Volumes {
+	requestedVolumes := make([]names.VolumeTag, len(maasVolumeParameters))
+	for i, v := range maasVolumeParameters {
 		requestedVolumes[i] = v.Tag
 	}
 	resultVolumes, resultAttachments, err := inst.volumes(

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju application reference: understand application structure, units, configuration, resources, relations, and lifecycle management."
+---
+
 (application)=
 # Application
 

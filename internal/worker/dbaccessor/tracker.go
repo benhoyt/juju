@@ -13,7 +13,7 @@ import (
 	"github.com/canonical/sqlair"
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
+	"github.com/juju/worker/v5"
 	"gopkg.in/tomb.v2"
 
 	corecontext "github.com/juju/juju/core/context"
@@ -310,8 +310,8 @@ func (w *trackedDBWorker) Wait() error {
 }
 
 // Report provides information for the engine report.
-func (w *trackedDBWorker) Report() map[string]any {
-	return w.report.Report()
+func (w *trackedDBWorker) Report(ctx context.Context) map[string]any {
+	return w.report.Report(ctx)
 }
 
 func (w *trackedDBWorker) loop() error {
@@ -501,7 +501,7 @@ type report struct {
 }
 
 // Report provides information for the engine report.
-func (r *report) Report() map[string]any {
+func (r *report) Report(_ context.Context) map[string]any {
 	r.Lock()
 	defer r.Unlock()
 
@@ -529,14 +529,14 @@ func jitter(interval time.Duration, factor float64) time.Duration {
 
 func applyDBLimits(db *sql.DB) {
 	// Set the maximum number of idle and open connections to be the same and
-	// set to 2 (default is 0 for MaxOpenConns). From testing, it's better to
+	// set to 3 (default is 0 for MaxOpenConns). From testing, it's better to
 	// have both set to the same value, and not setting these values can lead to
 	// a large number of open connections being created and not closed, which
 	// can lead to unbounded connections.
 	//
-	// If and when we change this number, be aware that a database will have 2
+	// If and when we change this number, be aware that a database will have 3
 	// connections per database, per dqlite App. So if we have 100 databases
-	// then that is 200 connections per dqlite App. Changing that number to
+	// then that is 300 connections per dqlite App. Changing that number to
 	// match runtime.GOMAXPROCS will then be len(database) * runtime.GOMAXPROCS
 	// per dqlite App. This can lead to a lot of open connections, so be
 	// careful.
@@ -545,6 +545,6 @@ func applyDBLimits(db *sql.DB) {
 	// dqlite App will be less because the number of databases per dqlite App
 	// will be less. Testing will need to be done to determine the best number
 	// for this.
-	db.SetMaxIdleConns(2)
-	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(3)
+	db.SetMaxOpenConns(3)
 }

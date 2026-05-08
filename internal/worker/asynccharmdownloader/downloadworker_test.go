@@ -12,8 +12,8 @@ import (
 
 	clock "github.com/juju/clock"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 
@@ -215,7 +215,7 @@ func (s *workerSuite) TestWorkerCreatesAsyncWorkerWithSameAppIDOverTwoChangeSet(
 	s.applicationService.EXPECT().WatchApplicationsWithPendingCharms(gomock.Any()).DoAndReturn(func(ctx context.Context) (watcher.Watcher[[]string], error) {
 		return watchertest.NewMockStringsWatcher(changes), nil
 	})
-	s.httpClientGetter.EXPECT().GetHTTPClient(gomock.Any(), http.CharmhubPurpose).Return(s.httpClient, nil).Times(2)
+	s.httpClientGetter.EXPECT().GetHTTPClient(gomock.Any(), http.CharmhubPurpose).Return(s.httpClient, nil).Times(1)
 
 	var called int64
 	s.newAsyncWorker = func() worker.Worker {

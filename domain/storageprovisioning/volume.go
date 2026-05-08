@@ -8,7 +8,67 @@ import (
 	coreunit "github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/blockdevice"
 	"github.com/juju/juju/domain/life"
+	domainstorage "github.com/juju/juju/domain/storage"
 )
+
+// MachineVolumeAttachmentProvisioningParams defines the set of parameters
+// required for attaching a volume a machine during machine provisioning.
+type MachineVolumeAttachmentProvisioningParams struct {
+	// Provider is the storage provider to use when provisioning the volume.
+	Provider string
+
+	// ReadOnly indicates if the volume should be attached to the machine as
+	// read only.
+	ReadOnly bool
+
+	// StorageName is the the name given to the storage instance this volume
+	// fulfills.
+	StorageName string
+
+	// VolumeID is the unique id given to the volume in the controller. This is
+	// not the volume uuid.
+	VolumeID string
+
+	// VolumeProviderID is the unique id given to the volume by the storage
+	// provider. This value is opaque to Juju.
+	VolumeProviderID string
+
+	// VolumeUUID is the unique uuid of the volume this attachment is for. When
+	// performing compparison of this attachment ALWAYS use this value.
+	VolumeUUID domainstorage.VolumeUUID
+}
+
+// MachineVolumeProvisioningParams defines the set of parameters required to
+// provision volumes alongside machines in the environ.
+type MachineVolumeProvisioningParams struct {
+	// Attributes is the set of provider specific attributes to use when
+	// provisioning and managing the volume.
+	Attributes map[string]string
+
+	// ID is the unique id given to the volume in the controller. This is not
+	// the volume uuid.
+	ID string
+
+	// Provider is the storage provider to use when provisioning the volume.
+	Provider string
+
+	// RequestedSizeMiB is the requested size the volume should be at least
+	// provisioned as. See [MachineVolumeProvisioningParams.SizeMiB] for the
+	// actual size of the volume once provisioned.
+	RequestedSizeMiB uint64
+
+	// StorageName is the the name given to the storage instance this volume
+	// fulfills.
+	StorageName string
+
+	// Tags represents the set of tags that should be applied to the volume by
+	// the storage provider.
+	Tags map[string]string
+
+	// UUID is the unique uuid given to this volume. ALWAYS use this value in
+	// comparison checks.
+	UUID domainstorage.VolumeUUID
+}
 
 // VolumeAttachmentID is a struct that provides the IDs and names associated
 // with a volume attachment. In this case the id refers to the volume
@@ -93,7 +153,7 @@ type VolumeAttachment struct {
 // attachment plan.
 type VolumeAttachmentPlan struct {
 	Life             life.Life
-	DeviceType       PlanDeviceType
+	DeviceType       domainstorage.VolumeDeviceType
 	DeviceAttributes map[string]string
 }
 
@@ -107,7 +167,7 @@ type VolumeAttachmentProvisionedInfo struct {
 // VolumeAttachmentPlanProvisionedInfo is information set by the storage
 // provisioner for volume attachments it has provisioned.
 type VolumeAttachmentPlanProvisionedInfo struct {
-	DeviceType       PlanDeviceType
+	DeviceType       domainstorage.VolumeDeviceType
 	DeviceAttributes map[string]string
 }
 
@@ -128,7 +188,7 @@ type VolumeParams struct {
 	ID                   string
 	Provider             string
 	SizeMiB              uint64
-	VolumeAttachmentUUID *VolumeAttachmentUUID
+	VolumeAttachmentUUID *domainstorage.VolumeAttachmentUUID
 }
 
 // VolumeRemovalParams defines the set of parameters that a caller needs to

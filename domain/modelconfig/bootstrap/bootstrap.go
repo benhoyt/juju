@@ -53,7 +53,7 @@ func SetModelConfig(
 		}
 
 		attrs[config.UUIDKey] = m.UUID
-		attrs[config.TypeKey] = m.ModelType
+		attrs[config.TypeKey] = m.CloudType
 		attrs[config.NameKey] = m.Name
 
 		// TODO(tlm): Currently the Juju client passes agent version and stream

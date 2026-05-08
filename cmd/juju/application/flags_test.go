@@ -10,7 +10,7 @@ import (
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/core/devices"
-	"github.com/juju/juju/internal/storage"
+	"github.com/juju/juju/core/storage"
 	"github.com/juju/juju/internal/testhelpers"
 )
 

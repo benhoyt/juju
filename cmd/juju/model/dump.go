@@ -11,9 +11,9 @@ import (
 	"github.com/juju/names/v6"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/output"
-	"github.com/juju/juju/internal/cmd"
 )
 
 // NewDumpCommand returns a fully constructed dump-model command.
@@ -63,7 +63,7 @@ func (c *dumpCommand) Init(args []string) error {
 // DumpModelAPI specifies the used function calls of the ModelManager.
 type DumpModelAPI interface {
 	Close() error
-	DumpModel(context.Context, names.ModelTag) (map[string]interface{}, error)
+	DumpModel(context.Context, names.ModelTag) (map[string]any, error)
 }
 
 func (c *dumpCommand) getAPI(ctx context.Context) (DumpModelAPI, error) {

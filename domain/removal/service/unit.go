@@ -16,7 +16,7 @@ import (
 	"github.com/juju/juju/domain/removal"
 	removalerrors "github.com/juju/juju/domain/removal/errors"
 	"github.com/juju/juju/domain/removal/internal"
-	"github.com/juju/juju/domain/storageprovisioning"
+	"github.com/juju/juju/domain/storage"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -50,7 +50,7 @@ type UnitState interface {
 	GetUnitLife(ctx context.Context, unitUUID string) (life.Life, error)
 
 	// DeleteUnit removes a unit from the database completely.
-	DeleteUnit(ctx context.Context, unitUUID string) error
+	DeleteUnit(ctx context.Context, unitUUID string, force bool) error
 
 	// GetApplicationNameAndUnitNameByUnitUUID retrieves the application name
 	// and unit name for a unit identified by the input UUID. If the unit does
@@ -60,8 +60,12 @@ type UnitState interface {
 	// MarkUnitAsDead marks the unit with the input UUID as dead.
 	MarkUnitAsDead(ctx context.Context, unitUUID string) error
 
-	// GetCharmForUnit returns the charm UUID for the unit with the input unit UUID.
-	// If the unit does not exist, it returns an empty string.
+	// MarkUnitAsDeadWithNoEntities marks the unit with the input UUID as dead
+	// only if there are no associated entities that are still alive.
+	MarkUnitAsDeadWithNoEntities(ctx context.Context, unitUUID string) error
+
+	// GetCharmForUnit returns the charm UUID for the unit with the input unit
+	// UUID. If the unit does not exist, it returns an empty string.
 	GetCharmForUnit(ctx context.Context, unitUUID string) (string, error)
 }
 
@@ -137,8 +141,105 @@ func (s *Service) RemoveUnit(
 	}
 
 	for _, a := range cascaded.StorageAttachmentUUIDs {
+		if force && wait > 0 {
+			if _, err := s.storageAttachmentScheduleRemoval(
+				ctx, storage.StorageAttachmentUUID(a), false, 0,
+			); err != nil {
+				return "", errors.Capture(err)
+			}
+		}
 		if _, err := s.storageAttachmentScheduleRemoval(
-			ctx, storageprovisioning.StorageAttachmentUUID(a), force, wait,
+			ctx, storage.StorageAttachmentUUID(a), force, wait,
+		); err != nil {
+			return "", errors.Capture(err)
+		}
+	}
+
+	for _, a := range cascaded.FileSystemAttachmentUUIDs {
+		if force && wait > 0 {
+			if _, err := s.filesystemAttachmentScheduleRemoval(
+				ctx, storage.FilesystemAttachmentUUID(a), false, 0,
+			); err != nil {
+				return "", errors.Capture(err)
+			}
+		}
+		if _, err := s.filesystemAttachmentScheduleRemoval(
+			ctx, storage.FilesystemAttachmentUUID(a), force, wait,
+		); err != nil {
+			return "", errors.Capture(err)
+		}
+	}
+
+	for _, a := range cascaded.VolumeAttachmentUUIDs {
+		if force && wait > 0 {
+			if _, err := s.volumeAttachmentScheduleRemoval(
+				ctx, storage.VolumeAttachmentUUID(a), false, 0,
+			); err != nil {
+				return "", errors.Capture(err)
+			}
+		}
+		if _, err := s.volumeAttachmentScheduleRemoval(
+			ctx, storage.VolumeAttachmentUUID(a), force, wait,
+		); err != nil {
+			return "", errors.Capture(err)
+		}
+	}
+
+	for _, a := range cascaded.VolumeAttachmentPlanUUIDs {
+		if force && wait > 0 {
+			if _, err := s.volumeAttachmentPlanScheduleRemoval(
+				ctx, storage.VolumeAttachmentPlanUUID(a), false, 0,
+			); err != nil {
+				return "", errors.Capture(err)
+			}
+		}
+		if _, err := s.volumeAttachmentPlanScheduleRemoval(
+			ctx, storage.VolumeAttachmentPlanUUID(a), force, wait,
+		); err != nil {
+			return "", errors.Capture(err)
+		}
+	}
+
+	for _, a := range cascaded.FileSystemUUIDs {
+		if force && wait > 0 {
+			if _, err := s.filesystemScheduleRemoval(
+				ctx, storage.FilesystemUUID(a), false, 0,
+			); err != nil {
+				return "", errors.Capture(err)
+			}
+		}
+		if _, err := s.filesystemScheduleRemoval(
+			ctx, storage.FilesystemUUID(a), force, wait,
+		); err != nil {
+			return "", errors.Capture(err)
+		}
+	}
+
+	for _, a := range cascaded.VolumeUUIDs {
+		if force && wait > 0 {
+			if _, err := s.volumeScheduleRemoval(
+				ctx, storage.VolumeUUID(a), false, 0,
+			); err != nil {
+				return "", errors.Capture(err)
+			}
+		}
+		if _, err := s.volumeScheduleRemoval(
+			ctx, storage.VolumeUUID(a), force, wait,
+		); err != nil {
+			return "", errors.Capture(err)
+		}
+	}
+
+	for _, a := range cascaded.StorageInstanceUUIDs {
+		if force && wait > 0 {
+			if _, err := s.storageInstanceScheduleRemoval(
+				ctx, storage.StorageInstanceUUID(a), false, 0,
+			); err != nil {
+				return "", errors.Capture(err)
+			}
+		}
+		if _, err := s.storageInstanceScheduleRemoval(
+			ctx, storage.StorageInstanceUUID(a), force, wait,
 		); err != nil {
 			return "", errors.Capture(err)
 		}
@@ -224,12 +325,26 @@ func (s *Service) processUnitRemovalJob(ctx context.Context, job removal.Job) er
 		return errors.Errorf("getting unit %q life: %w", job.EntityUUID, err)
 	}
 
+	// If the model is alive, we cannot delete it even with force. This is
+	// programming error if we've reached this point and we're still alive.
 	if l == life.Alive {
 		return errors.Errorf("unit %q is alive", job.EntityUUID).Add(removalerrors.EntityStillAlive)
 	}
 
 	if l == life.Dying && !job.Force {
-		return errors.Errorf("unit %q is not dead", job.EntityUUID).Add(removalerrors.EntityNotDead)
+		// Can the unit be marked as dead? If the unit has any associated
+		// entities that are still alive, we cannot mark it as dead.
+		err := s.modelState.MarkUnitAsDeadWithNoEntities(ctx, job.EntityUUID)
+		if errors.Is(err, applicationerrors.UnitNotFound) {
+			// The unit has already been removed.
+			// Indicate success so that this job will be deleted.
+			return nil
+		} else if errors.Is(err, removalerrors.EntityStillAlive) {
+			return errors.Errorf("marking unit %q as dead: %v", job.EntityUUID, err).
+				Add(removalerrors.EntityNotDead)
+		} else if err != nil {
+			return errors.Capture(err)
+		}
 	}
 
 	// If we made it here, the unit is either dead, or we are processing a
@@ -237,7 +352,11 @@ func (s *Service) processUnitRemovalJob(ctx context.Context, job removal.Job) er
 	// in relation scopes. If the unit is dead, it transitioned to that
 	// state itself without departing relations, and can not act in that
 	// capacity again, so we depart all remaining scopes here.
-	if err := s.leaveAllRelationScopes(ctx, unit.UUID(job.EntityUUID)); err != nil {
+	if err := s.leaveAllRelationScopes(ctx, unit.UUID(job.EntityUUID)); errors.Is(err, applicationerrors.UnitNotFound) {
+		// The unit has already been removed.
+		// Indicate success so that this job will be deleted.
+		return nil
+	} else if err != nil {
 		return errors.Capture(err)
 	}
 
@@ -246,16 +365,33 @@ func (s *Service) processUnitRemovalJob(ctx context.Context, job removal.Job) er
 	// A case has been made for the unit to create and update its own
 	// secrets directly, but for deletion we could safely remove that
 	// functionality and rely only on this code path.
-	if err := s.deleteUnitOwnedSecrets(ctx, unit.UUID(job.EntityUUID)); err != nil {
-		return errors.Capture(err)
+	if err := s.deleteUnitOwnedSecrets(ctx, unit.UUID(job.EntityUUID)); errors.Is(err, applicationerrors.UnitNotFound) {
+		// The unit has already been removed.
+		// Indicate success so that this job will be deleted.
+		return nil
+	} else if err != nil {
+		return errors.Errorf("deleting unit owned secrets: %w", err)
 	}
 
 	charmUUID, err := s.modelState.GetCharmForUnit(ctx, job.EntityUUID)
-	if err != nil {
-		return errors.Errorf("getting charm for unit %q: %w", job.EntityUUID, err)
+	if errors.Is(err, applicationerrors.UnitNotFound) {
+		// The unit has already been removed.
+		// Indicate success so that this job will be deleted.
+		return nil
+	} else if err != nil {
+		return errors.Errorf("getting charm for unit: %w", err)
 	}
 
-	if err := s.modelState.DeleteUnit(ctx, job.EntityUUID); errors.Is(err, applicationerrors.UnitNotFound) {
+	applicationName, unitName, err := s.modelState.GetApplicationNameAndUnitNameByUnitUUID(ctx, job.EntityUUID)
+	if errors.Is(err, applicationerrors.UnitNotFound) {
+		// The unit has already been removed.
+		// Indicate success so that this job will be deleted.
+		return nil
+	} else if err != nil {
+		return errors.Errorf("getting application name and unit name: %w", err)
+	}
+
+	if err := s.modelState.DeleteUnit(ctx, job.EntityUUID, job.Force); errors.Is(err, applicationerrors.UnitNotFound) {
 		// The unit has already been removed.
 		// Indicate success so that this job will be deleted.
 		return nil
@@ -274,11 +410,6 @@ func (s *Service) processUnitRemovalJob(ctx context.Context, job removal.Job) er
 	// sooner that the expiry of its last lease.
 	// For all other scenarios preventing lease renewal, the lease will be
 	// relinquished naturally by expiry.
-	applicationName, unitName, err := s.modelState.GetApplicationNameAndUnitNameByUnitUUID(ctx, job.EntityUUID)
-	if err != nil {
-		return errors.Errorf("getting application name and unit name: %w", err)
-	}
-
 	if err := s.leadershipRevoker.RevokeLeadership(applicationName, unit.Name(unitName)); err != nil && !errors.Is(err, leadership.ErrClaimNotHeld) {
 		return errors.Errorf("revoking leadership: %w", err)
 	}

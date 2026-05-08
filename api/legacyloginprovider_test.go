@@ -58,7 +58,7 @@ func (s *legacyLoginProviderSuite) setupMocks(c *tc.C) *gomock.Controller {
 }
 
 func (s *legacyLoginProviderSuite) APIInfo() *api.Info {
-	srv := apiservertesting.NewAPIServer(func(modelUUID string) (interface{}, error) {
+	srv := apiservertesting.NewAPIServer(func(modelUUID string) (any, error) {
 		var err error
 		if modelUUID != "" && modelUUID != testing.ModelTag.Id() {
 			err = fmt.Errorf("%w: %q", apiservererrors.UnknownModelError, modelUUID)
@@ -104,7 +104,7 @@ func (s *legacyLoginProviderSuite) TestLegacyProviderLogin(c *tc.C) {
 	username := names.NewUserTag("admin")
 	password := jujutesting.AdminSecret
 
-	lp := api.NewLegacyLoginProvider(username, password, "", nil, nil, nil)
+	lp := api.NewLegacyLoginProvider(username, password, "", nil, nil)
 	apiState, err := api.Open(c.Context(), &api.Info{
 		Addrs:          info.Addrs,
 		ControllerUUID: info.ControllerUUID,
@@ -137,7 +137,7 @@ func (s *legacyLoginProviderSuite) TestLegacyProviderWithNilTag(c *tc.C) {
 	info := s.APIInfo()
 	password := jujutesting.AdminSecret
 
-	lp := api.NewLegacyLoginProvider(nil, password, "", nil, nil, nil)
+	lp := api.NewLegacyLoginProvider(nil, password, "", nil, nil)
 	_, err := api.Open(c.Context(), &api.Info{
 		Addrs:          info.Addrs,
 		ControllerUUID: info.ControllerUUID,
@@ -170,7 +170,6 @@ func (s *legacyLoginProviderBasicSuite) TestLegacyProviderAuthHeader(c *tc.C) {
 		nonce,
 		[]macaroon.Slice{},
 		nil,
-		nil,
 	)
 	got, err := lp.AuthHeader()
 	c.Assert(err, tc.ErrorIsNil)
@@ -188,7 +187,6 @@ func (s *legacyLoginProviderBasicSuite) TestLegacyProviderAuthHeaderWithNilTag(c
 		password,
 		nonce,
 		[]macaroon.Slice{},
-		nil,
 		nil,
 	)
 	got, err := lp.AuthHeader()

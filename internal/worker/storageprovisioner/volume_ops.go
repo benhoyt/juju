@@ -241,9 +241,9 @@ func volumeAttachmentPlanFromAttachment(attachment storage.VolumeAttachment) par
 	var planInfo params.VolumeAttachmentPlanInfo
 	if attachment.PlanInfo != nil {
 		planInfo.DeviceAttributes = attachment.PlanInfo.DeviceAttributes
-		planInfo.DeviceType = attachment.PlanInfo.DeviceType
+		planInfo.DeviceType = attachment.PlanInfo.DeviceType.String()
 	} else {
-		planInfo.DeviceType = storage.DeviceTypeLocal
+		planInfo.DeviceType = storage.DeviceTypeLocal.String()
 	}
 	return params.VolumeAttachmentPlan{
 		VolumeTag:  attachment.Volume.String(),
@@ -555,7 +555,7 @@ type createVolumeOp struct {
 	args storage.VolumeParams
 }
 
-func (op *createVolumeOp) key() interface{} {
+func (op *createVolumeOp) key() any {
 	return op.args.Tag
 }
 
@@ -564,7 +564,7 @@ type removeVolumeOp struct {
 	tag names.VolumeTag
 }
 
-func (op *removeVolumeOp) key() interface{} {
+func (op *removeVolumeOp) key() any {
 	return op.tag
 }
 
@@ -573,7 +573,7 @@ type attachVolumeOp struct {
 	args storage.VolumeAttachmentParams
 }
 
-func (op *attachVolumeOp) key() interface{} {
+func (op *attachVolumeOp) key() any {
 	return params.MachineStorageId{
 		MachineTag:    op.args.Machine.String(),
 		AttachmentTag: op.args.Volume.String(),
@@ -585,7 +585,7 @@ type detachVolumeOp struct {
 	args storage.VolumeAttachmentParams
 }
 
-func (op *detachVolumeOp) key() interface{} {
+func (op *detachVolumeOp) key() any {
 	return params.MachineStorageId{
 		MachineTag:    op.args.Machine.String(),
 		AttachmentTag: op.args.Volume.String(),

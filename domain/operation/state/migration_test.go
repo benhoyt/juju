@@ -348,34 +348,3 @@ JOIN machine ON machine.uuid = operation_machine_task.machine_uuid`)
 			"name":    machineName2,
 		}})
 }
-
-// TestDeleteImportedOperations deletes all operations and returns referenced store paths.
-func (s *migrationSuite) TestDeleteImportedOperations(c *tc.C) {
-	// Arrange: create two operations, one with an output path
-	op1 := s.addOperation(c)
-	t1 := s.addOperationTask(c, op1)
-	s.addOperationTaskOutputWithPath(c, t1, "/path/one")
-
-	op2 := s.addOperation(c)
-	s.addOperationTask(c, op2) // no path
-
-	// Sanity: operations exist
-	c.Assert(s.getRowCount(c, "operation") > 0, tc.IsTrue)
-
-	// Act
-	paths, err := s.state.DeleteImportedOperations(c.Context())
-
-	// Assert
-	c.Assert(err, tc.IsNil)
-	c.Check(paths, tc.SameContents, []string{"/path/one"})
-	c.Check(s.getRowCount(c, "operation"), tc.Equals, 0)
-}
-
-// TestDeleteImportedOperationsNoOps returns an empty list when there are no operations.
-func (s *migrationSuite) TestDeleteImportedOperationsNoOps(c *tc.C) {
-	// Act
-	paths, err := s.state.DeleteImportedOperations(c.Context())
-	// Assert
-	c.Assert(err, tc.IsNil)
-	c.Check(paths, tc.HasLen, 0)
-}

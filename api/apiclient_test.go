@@ -25,7 +25,7 @@ import (
 	"github.com/juju/clock"
 	"github.com/juju/clock/testclock"
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/names/v6"
 	proxyutils "github.com/juju/proxy"
 	"github.com/juju/tc"
@@ -34,13 +34,13 @@ import (
 	"github.com/juju/juju/api/base"
 	apiclient "github.com/juju/juju/api/client/client"
 	"github.com/juju/juju/api/common"
+	proxy "github.com/juju/juju/api/proxy/config"
 	apitesting "github.com/juju/juju/api/testing"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	apiservertesting "github.com/juju/juju/apiserver/testing"
 	"github.com/juju/juju/core/network"
 	jujuversion "github.com/juju/juju/core/version"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
-	proxy "github.com/juju/juju/internal/proxy/config"
 	"github.com/juju/juju/internal/testhelpers"
 	jtesting "github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc"
@@ -79,7 +79,7 @@ func (a testAdminAPI) Login(req params.LoginRequest) (params.LoginResult, error)
 }
 
 func (s *apiclientSuite) APIInfo() *api.Info {
-	srv := apiservertesting.NewAPIServer(func(modelUUID string) (interface{}, error) {
+	srv := apiservertesting.NewAPIServer(func(modelUUID string) (any, error) {
 		var err error
 		if modelUUID != "" && modelUUID != jtesting.ModelTag.Id() {
 			err = fmt.Errorf("%w: %q", apiservererrors.UnknownModelError, modelUUID)
@@ -182,7 +182,7 @@ func (s *apiclientSuite) TestDialAPIMultipleError(c *tc.C) {
 
 	// count holds the number of times we've accepted a connection.
 	var count int32
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		c.Assert(err, tc.ErrorIsNil)
 		defer listener.Close()
@@ -351,7 +351,9 @@ func (s *apiclientSuite) TestOpenHonorsModelTag(c *tc.C) {
 	// We start by ensuring we have an invalid tag, and Open should fail.
 	info.ModelTag = names.NewModelTag("0b501e7e-cafe-f00d-ba1d-b1a570c0e199")
 	_, err := api.Open(c.Context(), info, api.DialOpts{})
-	c.Assert(errors.Cause(err), tc.DeepEquals, &rpc.RequestError{
+	rErr, ok := errors.AsType[*rpc.RequestError](err)
+	c.Assert(ok, tc.IsTrue)
+	c.Assert(rErr, tc.DeepEquals, &rpc.RequestError{
 		Message: `unknown model: "0b501e7e-cafe-f00d-ba1d-b1a570c0e199"`,
 		Code:    "model not found",
 	})
@@ -390,7 +392,7 @@ func (s *apiclientSuite) TestDialWebsocketStopsOtherDialAttempts(c *tc.C) {
 		return r.conn, nil
 	}
 	conn0 := fakeConn{}
-	clock := testclock.NewClock(time.Now())
+	clock := testclock.NewDilatedWallClock(time.Millisecond)
 	openDone := make(chan struct{})
 	const dialAddressInterval = 50 * time.Millisecond
 	go func() {
@@ -446,8 +448,6 @@ func (s *apiclientSuite) TestDialWebsocketStopsOtherDialAttempts(c *tc.C) {
 	// Wait for the next dial to be made. Note that we wait for two
 	// waiters because ContextWithTimeout as created by the
 	// outer level of api.Open also waits.
-	err := clock.WaitAdvance(dialAddressInterval, time.Second, 2)
-	c.Assert(err, tc.ErrorIsNil)
 
 	select {
 	case info1 = <-dialed:
@@ -712,40 +712,24 @@ func (s *apiclientSuite) TestOpenWithNoCACert(c *tc.C) {
 	// This is hard to test as we have no way of affecting the system roots,
 	// so instead we check that the error that we get implies that
 	// we're using the system roots.
-
 	info := s.APIInfo()
 	info.CACert = ""
-
-	// Unfortunately I have not better way to check that there is no retry.
-	// The idea is that if we don't have any retry, we should have a total dial time lesser than
-	// the retryDelay. It may break if the dial doesn't fail fast enough, but 200ms is quite long
-	// for this test, so it shouldn't be flaky.
-	dialTime := time.Now()
-	retryDelay := 200 * time.Millisecond
-
-	// This test used to use a long timeout so that we can check that the retry
-	// logic doesn't retry, but that got all messed up with dualstack IPs.
-	// The api server was only listening on IPv4, but localhost resolved to both
-	// IPv4 and IPv6. The IPv4 didn't retry, but the IPv6 one did, because it was
-	// retrying the dial. The parallel try doesn't have a fatal error type yet.
 	_, err := api.Open(c.Context(), info, api.DialOpts{
-		Timeout:    2 * time.Second,
-		RetryDelay: 200 * time.Millisecond,
+		Timeout:    time.Hour,
+		RetryDelay: time.Nanosecond,
 	})
-	switch errType := errors.Cause(err).(type) {
-	case *tls.CertificateVerificationError:
-	default:
-		c.Fatalf("unexpected error type %v", errType)
+
+	var certErr *tls.CertificateVerificationError
+	if !errors.As(err, &certErr) {
+		c.Fatalf("unexpected certificate error: %v", certErr)
 	}
-	endDialTime := time.Now()
-	c.Assert(endDialTime.Sub(dialTime), tc.DurationLessThan, retryDelay)
 }
 
 func (s *apiclientSuite) TestOpenWithRedirect(c *tc.C) {
 	redirectToHosts := []string{"0.1.2.3:1234", "0.1.2.4:1235"}
 	redirectToCACert := "fake CA cert"
 
-	srv := apiservertesting.NewAPIServer(func(modelUUID string) (interface{}, error) {
+	srv := apiservertesting.NewAPIServer(func(modelUUID string) (any, error) {
 		return &redirectAPI{
 			modelUUID:        modelUUID,
 			redirectToHosts:  redirectToHosts,
@@ -925,7 +909,7 @@ func (s *apiclientSuite) TestFallbackToIPLookupWhenCacheOutOfDate(c *tc.C) {
 	// happen before the first one and the first
 	// attempt might then never happen.
 	dialed := make(map[string]bool)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
 		case hostPort := <-dialc:
 			dialed[hostPort] = true
@@ -955,7 +939,7 @@ func (s *apiclientSuite) TestFallbackToIPLookupWhenCacheOutOfDate(c *tc.C) {
 
 func (s *apiclientSuite) TestOpenTimesOutOnLogin(c *tc.C) {
 	unblock := make(chan chan struct{})
-	srv := apiservertesting.NewAPIServer(func(modelUUID string) (interface{}, error) {
+	srv := apiservertesting.NewAPIServer(func(modelUUID string) (any, error) {
 		return &loginTimeoutAPI{
 			unblock: unblock,
 		}, nil
@@ -990,7 +974,8 @@ func (s *apiclientSuite) TestOpenTimesOutOnLogin(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	select {
 	case err := <-done:
-		c.Assert(err, tc.ErrorMatches, `cannot log in: context deadline exceeded`)
+		c.Assert(err, tc.ErrorMatches,
+			`cannot log in: api connection open timed out`)
 	case <-time.After(time.Second):
 		c.Fatalf("timed out waiting for api.Open timeout")
 	}
@@ -1030,7 +1015,7 @@ func (s *apiclientSuite) TestOpenTimeoutAffectsDial(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	select {
 	case err := <-done:
-		c.Assert(err, tc.ErrorMatches, `unable to connect to API: context deadline exceeded`)
+		c.Assert(err, tc.ErrorMatches, `api connection open timed out`)
 	case <-time.After(time.Second):
 		c.Fatalf("timed out waiting for api.Open timeout")
 	}
@@ -1071,7 +1056,7 @@ func (s *apiclientSuite) TestOpenDialTimeoutAffectsDial(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	select {
 	case err := <-done:
-		c.Assert(err, tc.ErrorMatches, `unable to connect to API: context deadline exceeded`)
+		c.Assert(err, tc.ErrorMatches, `api connection dial timed out`)
 	case <-time.After(time.Second):
 		c.Fatalf("timed out waiting for api.Open timeout")
 	}
@@ -1079,7 +1064,7 @@ func (s *apiclientSuite) TestOpenDialTimeoutAffectsDial(c *tc.C) {
 
 func (s *apiclientSuite) TestOpenDialTimeoutDoesNotAffectLogin(c *tc.C) {
 	unblock := make(chan chan struct{})
-	srv := apiservertesting.NewAPIServer(func(modelUUID string) (interface{}, error) {
+	srv := apiservertesting.NewAPIServer(func(modelUUID string) (any, error) {
 		return &loginTimeoutAPI{
 			unblock: unblock,
 		}, nil
@@ -1495,7 +1480,9 @@ func (s *apiclientSuite) TestOpenUsesModelUUIDPaths(c *tc.C) {
 	// Passing in an unknown model UUID should fail with a known error
 	info.ModelTag = names.NewModelTag("1eaf1e55-70ad-face-b007-70ad57001999")
 	conn, err = api.Open(c.Context(), info, api.DialOpts{})
-	c.Assert(errors.Cause(err), tc.DeepEquals, &rpc.RequestError{
+	rErr, ok := errors.AsType[*rpc.RequestError](err)
+	c.Assert(ok, tc.IsTrue)
+	c.Assert(rErr, tc.DeepEquals, &rpc.RequestError{
 		Message: `unknown model: "1eaf1e55-70ad-face-b007-70ad57001999"`,
 		Code:    "model not found",
 	})
@@ -1548,7 +1535,7 @@ func newRPCConnection(errs ...error) *fakeRPCConnection {
 
 type fakeRPCConnection struct {
 	stub     testhelpers.Stub
-	response interface{}
+	response any
 }
 
 func (f *fakeRPCConnection) Dead() <-chan struct{} {
@@ -1559,7 +1546,7 @@ func (f *fakeRPCConnection) Close() error {
 	return nil
 }
 
-func (f *fakeRPCConnection) Call(ctx context.Context, req rpc.Request, params, response interface{}) error {
+func (f *fakeRPCConnection) Call(ctx context.Context, req rpc.Request, params, response any) error {
 	f.stub.AddCall(req.Type+"."+req.Action, req.Version, params)
 	if f.response != nil {
 		rv := reflect.ValueOf(response)
@@ -1622,11 +1609,11 @@ type fakeConn struct {
 	closed chan struct{}
 }
 
-func (c fakeConn) Receive(x interface{}) error {
+func (c fakeConn) Receive(x any) error {
 	return errors.New("no data available from fake connection")
 }
 
-func (c fakeConn) Send(x interface{}) error {
+func (c fakeConn) Send(x any) error {
 	return errors.New("cannot write to fake connection")
 }
 

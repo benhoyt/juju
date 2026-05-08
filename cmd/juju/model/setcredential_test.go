@@ -15,10 +15,10 @@ import (
 	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/api/jujuclient"
 	"github.com/juju/juju/cloud"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/model"
 	coremodel "github.com/juju/juju/core/model"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	_ "github.com/juju/juju/internal/provider/ec2" // needed when getting valid local credentials
 	"github.com/juju/juju/internal/testhelpers"
 	"github.com/juju/juju/internal/testing"
@@ -145,7 +145,7 @@ func (s *ModelCredentialCommandSuite) assertCredentialNotFound(c *tc.C, expected
 
 	s.modelClient.CheckNoCalls(c)
 	s.cloudClient.CheckCalls(c, []testhelpers.StubCall{
-		{"UserCredentials", []interface{}{
+		{"UserCredentials", []any{
 			names.NewUserTag("admin"),
 			names.NewCloudTag("aws"),
 		}},
@@ -187,14 +187,14 @@ func (s *ModelCredentialCommandSuite) assertRemoteCredentialFound(c *tc.C, expec
 	c.Assert(cmdtesting.Stdout(ctx), tc.Equals, "")
 
 	s.modelClient.CheckCalls(c, []testhelpers.StubCall{
-		{"ChangeModelCredential", []interface{}{
+		{"ChangeModelCredential", []any{
 			testing.ModelTag,
 			credentialTag,
 		}},
 		{"Close", nil},
 	})
 	s.cloudClient.CheckCalls(c, []testhelpers.StubCall{
-		{"UserCredentials", []interface{}{
+		{"UserCredentials", []any{
 			names.NewUserTag("admin"),
 			names.NewCloudTag("aws"),
 		}},
@@ -214,7 +214,7 @@ Changed cloud credential on model "admin/mymodel" to "credential".
 	c.Assert(err, tc.ErrorIsNil)
 
 	s.modelClient.CheckCalls(c, []testhelpers.StubCall{
-		{"ChangeModelCredential", []interface{}{
+		{"ChangeModelCredential", []any{
 			testing.ModelTag,
 			names.NewCloudCredentialTag("aws/admin/credential"),
 		}},
@@ -252,11 +252,11 @@ func (s *ModelCredentialCommandSuite) assertLocalCredentialUsed(c *tc.C, expecte
 	c.Assert(cmdtesting.Stdout(ctx), tc.Equals, "")
 
 	s.cloudClient.CheckCalls(c, []testhelpers.StubCall{
-		{"UserCredentials", []interface{}{
+		{"UserCredentials", []any{
 			names.NewUserTag("admin"),
 			names.NewCloudTag("aws"),
 		}},
-		{"AddCredential", []interface{}{
+		{"AddCredential", []any{
 			names.NewCloudCredentialTag("aws/admin/credential").String(),
 			credential,
 		}},

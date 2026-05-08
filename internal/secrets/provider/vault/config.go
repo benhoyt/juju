@@ -18,6 +18,7 @@ import (
 const (
 	EndpointKey      = "endpoint"
 	NamespaceKey     = "namespace"
+	MountPathKey     = "mount-path"
 	TokenKey         = "token"
 	CACertKey        = "ca-cert"
 	ClientCertKey    = "client-cert"
@@ -40,6 +41,12 @@ var configSchema = configschema.Fields{
 	NamespaceKey: {
 		Description: "The namespace in which to store secrets.",
 		Type:        configschema.Tstring,
+		Immutable:   true,
+	},
+	MountPathKey: {
+		Description: "The mount path for the secret store.",
+		Type:        configschema.Tstring,
+		Immutable:   true,
 	},
 	CACertKey: {
 		Description: "The vault CA certificate.",
@@ -63,7 +70,7 @@ var configSchema = configschema.Fields{
 var configDefaults = schema.Defaults{}
 
 type backendConfig struct {
-	validAttrs map[string]interface{}
+	validAttrs map[string]any
 }
 
 func (c *backendConfig) endpoint() string {
@@ -72,6 +79,11 @@ func (c *backendConfig) endpoint() string {
 
 func (c *backendConfig) namespace() string {
 	v, _ := c.validAttrs[NamespaceKey].(string)
+	return v
+}
+
+func (c *backendConfig) mountPath() string {
+	v, _ := c.validAttrs[MountPathKey].(string)
 	return v
 }
 
@@ -150,7 +162,7 @@ func (p vaultProvider) ValidateConfig(oldCfg, newCfg provider.ConfigAttrs, token
 	return nil
 }
 
-func newConfig(attrs map[string]interface{}) (*backendConfig, error) {
+func newConfig(attrs map[string]any) (*backendConfig, error) {
 	cfg, err := coreconfig.NewConfig(attrs, configSchema, configDefaults)
 	if err != nil {
 		return nil, errors.Trace(err)

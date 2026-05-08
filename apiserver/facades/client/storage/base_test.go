@@ -4,86 +4,80 @@
 package storage
 
 import (
-	"context"
-
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
 	apiservertesting "github.com/juju/juju/apiserver/testing"
-	"github.com/juju/juju/core/machine"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
-	"github.com/juju/juju/core/unit"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/uuid"
 )
 
+// baseStorageSuite provides a base [tc] testing suite that establishes the
+// required dependencies of this facade for easier testing.
 type baseStorageSuite struct {
-	authorizer apiservertesting.FakeAuthorizer
-
-	controllerUUID string
-	modelUUID      coremodel.UUID
-
-	api *StorageAPI
-
-	unitTag    names.UnitTag
-	machineTag names.MachineTag
-
+	blockChecker       *MockBlockChecker
 	applicationService *MockApplicationService
-	blockDeviceService *MockBlockDeviceService
+	machineService     *MockMachineService
 	removalService     *MockRemovalService
+	statusService      *MockStatusService
 	storageService     *MockStorageService
 
-	poolsInUse []string
+	authorizer     apiservertesting.FakeAuthorizer
+	controllerUUID string
+	modelUUID      coremodel.UUID
 }
 
+// makeTestAPIForIAASModel constructs a new [StorageAPI] with the mock dependencies
+// contained in [baseStorageSuite]. This func expects the caller to have setup
+// mocks first with [baseStorageSuite.setupMocks]
+func (s *baseStorageSuite) makeTestAPIForIAASModel(c *tc.C) *StorageAPI {
+	return s.makeTestAPI(c, coremodel.IAAS)
+}
+
+func (s *baseStorageSuite) makeTestAPI(c *tc.C, modelType coremodel.ModelType) *StorageAPI {
+	return NewStorageAPI(
+		s.controllerUUID,
+		s.modelUUID,
+		modelType,
+		s.authorizer,
+		loggertesting.WrapCheckLog(c),
+		s.blockChecker,
+		s.applicationService,
+		s.removalService,
+		s.storageService,
+		s.machineService,
+		s.statusService,
+	)
+}
+
+// setupMocks establishes a go mock controller and creates the required
+// dependency mocks for a [StorageAPI].
 func (s *baseStorageSuite) setupMocks(c *tc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 
-	s.unitTag = names.NewUnitTag("mysql/0")
-	s.machineTag = names.NewMachineTag("1234")
-
 	s.authorizer = apiservertesting.FakeAuthorizer{Tag: names.NewUserTag("admin"), Controller: true}
+	s.controllerUUID = uuid.MustNewUUID().String()
+	s.modelUUID = tc.Must0(c, coremodel.NewUUID)
 
 	s.applicationService = NewMockApplicationService(ctrl)
-	s.applicationService.EXPECT().GetUnitMachineName(gomock.Any(), unit.Name("mysql/0")).DoAndReturn(func(ctx context.Context, u unit.Name) (machine.Name, error) {
-		c.Assert(u.String(), tc.Equals, s.unitTag.Id())
-		return machine.Name(s.machineTag.Id()), nil
-	}).AnyTimes()
-
-	s.blockDeviceService = NewMockBlockDeviceService(ctrl)
+	s.blockChecker = NewMockBlockChecker(ctrl)
+	s.machineService = NewMockMachineService(ctrl)
 	s.removalService = NewMockRemovalService(ctrl)
+	s.statusService = NewMockStatusService(ctrl)
 	s.storageService = NewMockStorageService(ctrl)
-
-	s.poolsInUse = []string{}
-
-	s.controllerUUID = uuid.MustNewUUID().String()
-	s.modelUUID = modeltesting.GenModelUUID(c)
-
-	s.api = NewStorageAPI(
-		s.controllerUUID,
-		s.modelUUID,
-		s.authorizer,
-		loggertesting.WrapCheckLog(c),
-		s.applicationService,
-		s.blockDeviceService,
-		s.removalService,
-		s.storageService,
-	)
 
 	c.Cleanup(func() {
 		s.authorizer = apiservertesting.FakeAuthorizer{}
-		s.api = nil
 		s.applicationService = nil
-		s.blockDeviceService = nil
+		s.blockChecker = nil
 		s.controllerUUID = ""
-		s.machineTag = names.MachineTag{}
+		s.machineService = nil
 		s.modelUUID = ""
-		s.poolsInUse = nil
 		s.removalService = nil
+		s.statusService = nil
 		s.storageService = nil
-		s.unitTag = names.UnitTag{}
 	})
 
 	return ctrl

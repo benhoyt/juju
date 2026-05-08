@@ -16,13 +16,13 @@ import (
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	apiservertesting "github.com/juju/juju/apiserver/testing"
 	"github.com/juju/juju/core/leadership"
-	modeltesting "github.com/juju/juju/core/model/testing"
+	coremodel "github.com/juju/juju/core/model"
 	corestatus "github.com/juju/juju/core/status"
 	applicationcharm "github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
 	operation "github.com/juju/juju/domain/operation"
 	operationerrors "github.com/juju/juju/domain/operation/errors"
-	internalcharm "github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -67,7 +67,7 @@ func (s *actionSuite) setupAPI(c *tc.C, authTag names.UserTag) {
 		Tag:      authTag,
 		AdminTag: s.adminTag,
 	}
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 
 	leadershipFunc := func() (leadership.Reader, error) {
 		return FakeLeadership{}, nil
@@ -97,7 +97,7 @@ func (s *actionSuite) TestActionsSuccess(c *tc.C) {
 		TaskInfo: operation.TaskInfo{
 			ID:             "42",
 			ActionName:     "charm-action-0",
-			ExecutionGroup: ptr("group-0"),
+			ExecutionGroup: new("group-0"),
 			IsParallel:     true,
 			Parameters: map[string]any{
 				"arg-0": "value-0",
@@ -394,10 +394,10 @@ func (s *actionSuite) TestApplicationsCharmsActionsSuccess(c *tc.C) {
 		ActionSpecs: map[string]internalcharm.ActionSpec{
 			"backup": {
 				Description: "Create a backup",
-				Params: map[string]interface{}{
+				Params: map[string]any{
 					"type": "object",
-					"properties": map[string]interface{}{
-						"target": map[string]interface{}{
+					"properties": map[string]any{
+						"target": map[string]any{
 							"type": "string",
 						},
 					},
@@ -405,7 +405,7 @@ func (s *actionSuite) TestApplicationsCharmsActionsSuccess(c *tc.C) {
 			},
 			"restore": {
 				Description: "Restore from backup",
-				Params: map[string]interface{}{
+				Params: map[string]any{
 					"type": "object",
 				},
 			},
@@ -562,7 +562,7 @@ func (s *actionSuite) TestApplicationsCharmsActionsMultipleEntities(c *tc.C) {
 		ActionSpecs: map[string]internalcharm.ActionSpec{
 			"backup": {
 				Description: "Create a backup",
-				Params: map[string]interface{}{
+				Params: map[string]any{
 					"type": "object",
 				},
 			},

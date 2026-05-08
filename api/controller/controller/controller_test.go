@@ -40,7 +40,7 @@ func (s *Suite) TestDestroyController(c *tc.C) {
 	var stub testhelpers.Stub
 	apiCaller := apitesting.BestVersionCaller{
 		BestVersion: 11,
-		APICallerFunc: func(objType string, version int, id, request string, arg, result interface{}) error {
+		APICallerFunc: func(objType string, version int, id, request string, arg, result any) error {
 			stub.AddCall(objType+"."+request, arg)
 			return stub.NextErr()
 		},
@@ -61,7 +61,7 @@ func (s *Suite) TestDestroyController(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 
 	stub.CheckCalls(c, []testhelpers.StubCall{
-		{FuncName: "Controller.DestroyController", Args: []interface{}{params.DestroyControllerArgs{
+		{FuncName: "Controller.DestroyController", Args: []any{params.DestroyControllerArgs{
 			DestroyModels:  true,
 			DestroyStorage: &destroyStorage,
 			Force:          &force,
@@ -74,7 +74,7 @@ func (s *Suite) TestDestroyController(c *tc.C) {
 func (s *Suite) TestDestroyControllerError(c *tc.C) {
 	apiCaller := apitesting.BestVersionCaller{
 		BestVersion: 4,
-		APICallerFunc: func(objType string, version int, id, request string, arg, result interface{}) error {
+		APICallerFunc: func(objType string, version int, id, request string, arg, result any) error {
 			return errors.New("nope")
 		},
 	}
@@ -84,32 +84,41 @@ func (s *Suite) TestDestroyControllerError(c *tc.C) {
 }
 
 func (s *Suite) TestInitiateMigration(c *tc.C) {
-	s.checkInitiateMigration(c, makeSpec())
+	s.checkInitiateMigration(c, makeSpec(), false)
+}
+
+func (s *Suite) TestInitiateMigrationDryRun(c *tc.C) {
+	spec := makeSpec()
+	expectedArgs := specToArgs(spec)
+	expectedArgs.DryRun = true
+	s.checkInitiateMigration(c, spec, true)
 }
 
 func (s *Suite) TestInitiateMigrationEmptyCACert(c *tc.C) {
 	spec := makeSpec()
 	spec.TargetCACert = ""
-	s.checkInitiateMigration(c, spec)
+	s.checkInitiateMigration(c, spec, false)
 }
 
 func (s *Suite) TestInitiateMigrationSkipUserChecks(c *tc.C) {
 	spec := makeSpec()
 	spec.SkipUserChecks = true
-	s.checkInitiateMigration(c, spec)
+	s.checkInitiateMigration(c, spec, false)
 }
 
-func (s *Suite) checkInitiateMigration(c *tc.C, spec controller.MigrationSpec) {
+func (s *Suite) checkInitiateMigration(c *tc.C, spec controller.MigrationSpec, dryRun bool) {
 	client, stub := makeInitiateMigrationClient(params.InitiateMigrationResults{
 		Results: []params.InitiateMigrationResult{{
 			MigrationId: "id",
 		}},
 	})
-	id, err := client.InitiateMigration(c.Context(), spec)
+	id, err := client.InitiateMigration(c.Context(), spec, dryRun)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(id, tc.Equals, "id")
+	expected := specToArgs(spec)
+	expected.DryRun = dryRun
 	stub.CheckCalls(c, []testhelpers.StubCall{
-		{FuncName: "Controller.InitiateMigration", Args: []interface{}{specToArgs(spec)}},
+		{FuncName: "Controller.InitiateMigration", Args: []any{expected}},
 	})
 }
 
@@ -146,7 +155,7 @@ func (s *Suite) TestInitiateMigrationError(c *tc.C) {
 			Error: apiservererrors.ServerError(errors.New("boom")),
 		}},
 	})
-	id, err := client.InitiateMigration(c.Context(), makeSpec())
+	id, err := client.InitiateMigration(c.Context(), makeSpec(), false)
 	c.Check(id, tc.Equals, "")
 	c.Check(err, tc.ErrorMatches, "boom")
 }
@@ -158,17 +167,17 @@ func (s *Suite) TestInitiateMigrationResultMismatch(c *tc.C) {
 			{MigrationId: "wtf"},
 		},
 	})
-	id, err := client.InitiateMigration(c.Context(), makeSpec())
+	id, err := client.InitiateMigration(c.Context(), makeSpec(), false)
 	c.Check(id, tc.Equals, "")
 	c.Check(err, tc.ErrorMatches, "unexpected number of results returned")
 }
 
 func (s *Suite) TestInitiateMigrationCallError(c *tc.C) {
-	apiCaller := apitesting.APICallerFunc(func(string, int, string, string, interface{}, interface{}) error {
+	apiCaller := apitesting.APICallerFunc(func(string, int, string, string, any, any) error {
 		return errors.New("boom")
 	})
 	client := controller.NewClient(apiCaller)
-	id, err := client.InitiateMigration(c.Context(), makeSpec())
+	id, err := client.InitiateMigration(c.Context(), makeSpec(), false)
 	c.Check(id, tc.Equals, "")
 	c.Check(err, tc.ErrorMatches, "boom")
 }
@@ -177,14 +186,14 @@ func (s *Suite) TestInitiateMigrationValidationError(c *tc.C) {
 	client, stub := makeInitiateMigrationClient(params.InitiateMigrationResults{})
 	spec := makeSpec()
 	spec.ModelUUID = "not-a-uuid"
-	id, err := client.InitiateMigration(c.Context(), spec)
+	id, err := client.InitiateMigration(c.Context(), spec, false)
 	c.Check(id, tc.Equals, "")
 	c.Check(err, tc.ErrorMatches, "client-side validation failed: model UUID not valid")
 	c.Check(stub.Calls(), tc.HasLen, 0) // API call shouldn't have happened
 }
 
 func (s *Suite) TestHostedModelConfigs_CallError(c *tc.C) {
-	apiCaller := apitesting.APICallerFunc(func(string, int, string, string, interface{}, interface{}) error {
+	apiCaller := apitesting.APICallerFunc(func(string, int, string, string, any, any) error {
 		return errors.New("boom")
 	})
 	client := controller.NewClient(apiCaller)
@@ -194,7 +203,7 @@ func (s *Suite) TestHostedModelConfigs_CallError(c *tc.C) {
 }
 
 func (s *Suite) TestHostedModelConfigs_FormatResults(c *tc.C) {
-	apiCaller := apitesting.BestVersionCaller{APICallerFunc: func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := apitesting.BestVersionCaller{APICallerFunc: func(objType string, version int, id, request string, arg, result any) error {
 		c.Assert(objType, tc.Equals, "Controller")
 		c.Assert(request, tc.Equals, "HostedModelConfigs")
 		c.Assert(arg, tc.IsNil)
@@ -205,7 +214,7 @@ func (s *Suite) TestHostedModelConfigs_FormatResults(c *tc.C) {
 				{
 					Name:      "first",
 					Qualifier: "prod",
-					Config: map[string]interface{}{
+					Config: map[string]any{
 						"name": "first",
 					},
 					CloudSpec: &params.CloudSpec{
@@ -215,7 +224,7 @@ func (s *Suite) TestHostedModelConfigs_FormatResults(c *tc.C) {
 				}, {
 					Name:      "third",
 					Qualifier: "prod",
-					Config: map[string]interface{}{
+					Config: map[string]any{
 						"name": "second",
 					},
 					CloudSpec: &params.CloudSpec{
@@ -233,7 +242,7 @@ func (s *Suite) TestHostedModelConfigs_FormatResults(c *tc.C) {
 	first := config[0]
 	c.Assert(first.Name, tc.Equals, "first")
 	c.Assert(first.Qualifier, tc.Equals, "prod")
-	c.Assert(first.Config, tc.DeepEquals, map[string]interface{}{
+	c.Assert(first.Config, tc.DeepEquals, map[string]any{
 		"name": "first",
 	})
 	c.Assert(first.CloudSpec, tc.DeepEquals, environscloudspec.CloudSpec{
@@ -245,12 +254,51 @@ func (s *Suite) TestHostedModelConfigs_FormatResults(c *tc.C) {
 	c.Assert(second.Error.Error(), tc.Equals, "validating CloudSpec: empty Type not valid")
 }
 
+func (s *Suite) TestCloudSpec(c *tc.C) {
+	modelTag := names.NewModelTag(randomUUID())
+	apiCaller := apitesting.BestVersionCaller{APICallerFunc: func(objType string, version int, id, request string, arg, result any) error {
+		c.Check(objType, tc.Equals, "Controller")
+		c.Check(version, tc.Equals, 14)
+		c.Check(request, tc.Equals, "CloudSpec")
+		c.Check(arg, tc.DeepEquals, params.Entities{
+			Entities: []params.Entity{{Tag: modelTag.String()}},
+		})
+		out := result.(*params.CloudSpecResults)
+		*out = params.CloudSpecResults{
+			Results: []params.CloudSpecResult{{
+				Result: &params.CloudSpec{
+					Type: "aws",
+					Name: "cloud",
+				},
+			}},
+		}
+		return nil
+	}, BestVersion: 14}
+	client := controller.NewClient(apiCaller)
+
+	spec, err := client.CloudSpec(c.Context(), modelTag)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(spec, tc.DeepEquals, environscloudspec.CloudSpec{
+		Type: "aws",
+		Name: "cloud",
+	})
+}
+
+func (s *Suite) TestCloudSpec_CallError(c *tc.C) {
+	apiCaller := apitesting.APICallerFunc(func(string, int, string, string, any, any) error {
+		return errors.New("boom")
+	})
+	client := controller.NewClient(apiCaller)
+	_, err := client.CloudSpec(c.Context(), names.NewModelTag(randomUUID()))
+	c.Assert(err, tc.ErrorMatches, "boom")
+}
+
 func makeInitiateMigrationClient(results params.InitiateMigrationResults) (
 	*controller.Client, *testhelpers.Stub,
 ) {
 	var stub testhelpers.Stub
 	apiCaller := apitesting.APICallerFunc(
-		func(objType string, version int, id, request string, arg, result interface{}) error {
+		func(objType string, version int, id, request string, arg, result any) error {
 			stub.AddCall(objType+"."+request, arg)
 			out := result.(*params.InitiateMigrationResults)
 			*out = results
@@ -285,7 +333,7 @@ func randomUUID() string {
 }
 
 func (s *Suite) TestModelStatusEmpty(c *tc.C) {
-	apiCaller := apitesting.BestVersionCaller{APICallerFunc: func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := apitesting.BestVersionCaller{APICallerFunc: func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "Controller")
 		c.Check(id, tc.Equals, "")
 		c.Check(request, tc.Equals, "ModelStatus")
@@ -303,7 +351,7 @@ func (s *Suite) TestModelStatusEmpty(c *tc.C) {
 func (s *Suite) TestModelStatus(c *tc.C) {
 	apiCaller := apitesting.BestVersionCaller{
 		BestVersion: 13,
-		APICallerFunc: func(objType string, version int, id, request string, arg, result interface{}) error {
+		APICallerFunc: func(objType string, version int, id, request string, arg, result any) error {
 			c.Check(objType, tc.Equals, "Controller")
 			c.Check(id, tc.Equals, "")
 			c.Check(request, tc.Equals, "ModelStatus")
@@ -352,7 +400,7 @@ func (s *Suite) TestModelStatus(c *tc.C) {
 
 func (s *Suite) TestModelStatusError(c *tc.C) {
 	apiCaller := apitesting.APICallerFunc(
-		func(objType string, version int, id, request string, args, result interface{}) error {
+		func(objType string, version int, id, request string, args, result any) error {
 			return errors.New("model error")
 		})
 	client := controller.NewClient(apiCaller)
@@ -364,19 +412,19 @@ func (s *Suite) TestModelStatusError(c *tc.C) {
 func (s *Suite) TestConfigSet(c *tc.C) {
 	apiCaller := apitesting.BestVersionCaller{
 		BestVersion: 5,
-		APICallerFunc: func(objType string, version int, id, request string, args, result interface{}) error {
+		APICallerFunc: func(objType string, version int, id, request string, args, result any) error {
 			c.Assert(objType, tc.Equals, "Controller")
 			c.Assert(version, tc.Equals, 5)
 			c.Assert(request, tc.Equals, "ConfigSet")
 			c.Assert(result, tc.IsNil)
-			c.Assert(args, tc.DeepEquals, params.ControllerConfigSet{Config: map[string]interface{}{
+			c.Assert(args, tc.DeepEquals, params.ControllerConfigSet{Config: map[string]any{
 				"some-setting": 345,
 			}})
 			return errors.New("ruth mundy")
 		},
 	}
 	client := controller.NewClient(apiCaller)
-	err := client.ConfigSet(c.Context(), map[string]interface{}{
+	err := client.ConfigSet(c.Context(), map[string]any{
 		"some-setting": 345,
 	})
 	c.Assert(err, tc.ErrorMatches, "ruth mundy")
@@ -385,7 +433,7 @@ func (s *Suite) TestConfigSet(c *tc.C) {
 func (s *Suite) TestWatchModelSummaries(c *tc.C) {
 	apiCaller := apitesting.BestVersionCaller{
 		BestVersion: 9,
-		APICallerFunc: func(objType string, version int, id, request string, args, result interface{}) error {
+		APICallerFunc: func(objType string, version int, id, request string, args, result any) error {
 			c.Check(objType, tc.Equals, "Controller")
 			c.Check(version, tc.Equals, 9)
 			c.Check(request, tc.Equals, "WatchModelSummaries")
@@ -403,7 +451,7 @@ func (s *Suite) TestWatchModelSummaries(c *tc.C) {
 func (s *Suite) TestWatchAllModelSummaries(c *tc.C) {
 	apiCaller := apitesting.BestVersionCaller{
 		BestVersion: 9,
-		APICallerFunc: func(objType string, version int, id, request string, args, result interface{}) error {
+		APICallerFunc: func(objType string, version int, id, request string, args, result any) error {
 			c.Check(objType, tc.Equals, "Controller")
 			c.Check(version, tc.Equals, 9)
 			c.Check(request, tc.Equals, "WatchAllModelSummaries")
@@ -420,7 +468,7 @@ func (s *Suite) TestWatchAllModelSummaries(c *tc.C) {
 
 func (s *Suite) TestDashboardConnectionInfo(c *tc.C) {
 	apiCaller := apitesting.APICallerFunc(
-		func(objType string, version int, id, request string, args, result interface{}) error {
+		func(objType string, version int, id, request string, args, result any) error {
 			c.Assert(objType, tc.Equals, "Controller")
 			c.Assert(request, tc.Equals, "DashboardConnectionInfo")
 			c.Assert(args, tc.IsNil)
@@ -443,7 +491,7 @@ func (s *Suite) TestDashboardConnectionInfo(c *tc.C) {
 
 func (s *Suite) TestAllModels(c *tc.C) {
 	now := time.Now()
-	apiCaller := apitesting.BestVersionCaller{APICallerFunc: func(objType string, version int, id, request string, args, result interface{}) error {
+	apiCaller := apitesting.BestVersionCaller{APICallerFunc: func(objType string, version int, id, request string, args, result any) error {
 		c.Check(objType, tc.Equals, "Controller")
 		c.Check(id, tc.Equals, "")
 		c.Check(request, tc.Equals, "AllModels")
@@ -476,14 +524,14 @@ func (s *Suite) TestAllModels(c *tc.C) {
 }
 
 func (s *Suite) TestControllerConfig(c *tc.C) {
-	apiCaller := apitesting.APICallerFunc(func(objType string, version int, id, request string, args, result interface{}) error {
+	apiCaller := apitesting.APICallerFunc(func(objType string, version int, id, request string, args, result any) error {
 		c.Check(objType, tc.Equals, "Controller")
 		c.Check(id, tc.Equals, "")
 		c.Check(request, tc.Equals, "ControllerConfig")
 		c.Check(args, tc.IsNil)
 		c.Check(result, tc.FitsTypeOf, &params.ControllerConfigResult{})
 		*(result.(*params.ControllerConfigResult)) = params.ControllerConfigResult{
-			Config: map[string]interface{}{
+			Config: map[string]any{
 				"api-port": 666,
 			},
 		}
@@ -497,7 +545,7 @@ func (s *Suite) TestControllerConfig(c *tc.C) {
 }
 
 func (s *Suite) TestListBlockedModels(c *tc.C) {
-	apiCaller := apitesting.APICallerFunc(func(objType string, version int, id, request string, args, result interface{}) error {
+	apiCaller := apitesting.APICallerFunc(func(objType string, version int, id, request string, args, result any) error {
 		c.Check(objType, tc.Equals, "Controller")
 		c.Check(id, tc.Equals, "")
 		c.Check(request, tc.Equals, "ListBlockedModels")
@@ -534,7 +582,7 @@ func (s *Suite) TestListBlockedModels(c *tc.C) {
 }
 
 func (s *Suite) TestRemoveBlocks(c *tc.C) {
-	apiCaller := apitesting.APICallerFunc(func(objType string, version int, id, request string, args, result interface{}) error {
+	apiCaller := apitesting.APICallerFunc(func(objType string, version int, id, request string, args, result any) error {
 		c.Check(objType, tc.Equals, "Controller")
 		c.Check(id, tc.Equals, "")
 		c.Check(request, tc.Equals, "RemoveBlocks")
@@ -549,7 +597,7 @@ func (s *Suite) TestRemoveBlocks(c *tc.C) {
 }
 
 func (s *Suite) TestGetControllerAccess(c *tc.C) {
-	apiCaller := apitesting.APICallerFunc(func(objType string, version int, id, request string, args, result interface{}) error {
+	apiCaller := apitesting.APICallerFunc(func(objType string, version int, id, request string, args, result any) error {
 		c.Check(objType, tc.Equals, "Controller")
 		c.Check(id, tc.Equals, "")
 		c.Check(request, tc.Equals, "GetControllerAccess")

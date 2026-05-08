@@ -19,7 +19,7 @@ import (
 	"github.com/juju/utils/v4/exec"
 
 	jujucmd "github.com/juju/juju/cmd"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/internal/worker/uniter/runner/jujuc"
 	"github.com/juju/juju/juju/sockets"
@@ -155,9 +155,8 @@ func (s *ServerSuite) TestNoStdin(c *tc.C) {
 func (s *ServerSuite) TestLocks(c *tc.C) {
 	var wg sync.WaitGroup
 	t0 := time.Now()
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func() {
+	for range 4 {
+		wg.Go(func() {
 			dir := c.MkDir()
 			resp, err := s.Call(c, jujuc.Request{
 				ContextId:   "validCtx",
@@ -167,8 +166,7 @@ func (s *ServerSuite) TestLocks(c *tc.C) {
 			})
 			c.Assert(err, tc.ErrorIsNil)
 			c.Assert(resp.Code, tc.Equals, 0)
-			wg.Done()
-		}()
+		})
 	}
 	wg.Wait()
 	t1 := time.Now()

@@ -1,7 +1,7 @@
 (hook-command-secret-grant)=
 # `secret-grant`
 ## Summary
-Grant access to a secret.
+Grants access to a secret.
 
 ## Usage
 ``` secret-grant [options] <ID>```
@@ -9,8 +9,8 @@ Grant access to a secret.
 ### Options
 | Flag | Default | Usage |
 | --- | --- | --- |
-| `-r`, `--relation` |  | the relation with which to associate the grant |
-| `--unit` |  | the unit to grant access |
+| `-r`, `--relation` |  | Specifies the relation with which to associate the grant. |
+| `--unit` |  | Specifies the unit to grant access. |
 
 ## Examples
 

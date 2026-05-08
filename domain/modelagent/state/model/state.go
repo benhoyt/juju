@@ -8,6 +8,7 @@ import (
 	"database/sql"
 
 	"github.com/canonical/sqlair"
+	"github.com/juju/collections/transform"
 
 	coreagentbinary "github.com/juju/juju/core/agentbinary"
 	corebase "github.com/juju/juju/core/base"
@@ -341,7 +342,7 @@ WHERE     mav.name = $machineName.name
 // machine in the model is currently running. This is a bulk call to support
 // operations such as model export where it is expected that the state of a
 // model stays relatively static over the operation. This function will never
-// provide enough granuality into what machine fails as part of the checks.
+// provide enough granularity into what machine fails as part of the checks.
 //
 // The following errors can be expected:
 // - [modelagenterrors.AgentVersionNotSet] when one or more machines in
@@ -1111,7 +1112,7 @@ func (st *State) GetUnitUUIDByName(ctx context.Context, name coreunit.Name) (cor
 // IsControllerModel indicates if this model is running the Juju controller
 // that owns this model. True is returned when this is the case.
 func (s *State) IsControllerModel(ctx context.Context) (bool, error) {
-	return false, errors.New("not implemented")
+	return false, nil
 }
 
 // NamespaceForWatchAgentVersion returns the namespace identifier
@@ -1526,7 +1527,7 @@ UPDATE SET version = excluded.version,
 			)
 		}
 
-		unitAgentVersion.ArchtectureID = archMap.ID
+		unitAgentVersion.ArchitectureID = archMap.ID
 		return tx.Query(ctx, upsertRunningVersionStmt, unitAgentVersion).Run()
 	})
 
@@ -1538,4 +1539,152 @@ UPDATE SET version = excluded.version,
 	}
 
 	return nil
+}
+
+// GetAllMachinesWithBase returns a map of machine UUIDs to their resolved
+// platform base.
+//
+// Machines for which the channel field is NULL are skipped and do not appear
+// in the returned map.
+//
+// Machines for which the OS and channel field are both empty will result in a
+// corresponding zero value base returned.
+//
+// This method may return the following errors:
+//   - [coreerrors.NotValid] if, for any machine, either the OS or channel
+//     field but not both is non-empty.
+func (st *State) GetAllMachinesWithBase(ctx context.Context) (map[string]corebase.Base, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	stmt, err := st.Prepare(`
+SELECT mp.machine_uuid AS &machineBase.machine_uuid,
+       os.name AS &machineBase.os,
+       mp.channel AS &machineBase.channel
+FROM   machine_platform AS mp
+JOIN   os ON mp.os_id = os.id
+`, machineBase{})
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	machineBases := []machineBase{}
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err := tx.Query(ctx, stmt).GetAll(&machineBases)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		return nil, errors.Errorf("getting all machines in model with their base information: %w", err)
+	}
+
+	// note that the Channel field may be empty or NULL in the underlying database.
+	m := make(map[string]corebase.Base, len(machineBases))
+	for _, machineBase := range machineBases {
+		if !machineBase.Channel.Valid {
+			// skip machine base with no channel set
+			continue
+		}
+		base, err := corebase.ParseBase(machineBase.OS, machineBase.Channel.V)
+		if err != nil {
+			return nil, errors.Errorf(
+				"parsing machine with UUID %q with OS %q and channel %q: %w",
+				machineBase.MachineUUID,
+				machineBase.OS,
+				machineBase.Channel.V,
+				err,
+			)
+		}
+		m[machineBase.MachineUUID] = base
+	}
+
+	return m, nil
+}
+
+// GetAllMachinesArchitectures returns a map of machine architectures that
+// are currently in use by machines in the model.
+func (st *State) GetAllMachinesArchitectures(ctx context.Context) ([]string, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	stmt, err := st.Prepare(`
+SELECT DISTINCT a.name AS &name.name
+FROM   machine_platform AS mp
+JOIN   architecture AS a ON mp.architecture_id = a.id
+`, name{})
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	var found []name
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err := tx.Query(ctx, stmt).GetAll(&found)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		return nil, errors.Errorf(
+			"getting all machine architectures in model: %w", err,
+		)
+	}
+
+	return transform.Slice(found, func(a name) string {
+		return a.Name
+	}), nil
+}
+
+// GetAllMachineTargetAgentVersionByArches returns all the given machine
+// architectures for a given agent version that have an associated agent binary
+// in the agent binary store.
+func (st *State) GetAllMachineTargetAgentVersionByArches(
+	ctx context.Context,
+	version string,
+) ([]string, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	key := agentBinaryStore{
+		Version: version,
+	}
+
+	stmt, err := st.Prepare(`
+SELECT DISTINCT a.name AS &agentBinaryStore.architecture_name
+FROM   agent_binary_store AS abs
+JOIN   architecture AS a ON abs.architecture_id = a.id
+WHERE  version = $agentBinaryStore.version 
+`, key)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	var found []agentBinaryStore
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err := tx.Query(ctx, stmt, key).GetAll(&found)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return nil
+		} else if err != nil {
+			return errors.Errorf(
+				"getting existing agent binaries for version %q: %w",
+				version, err,
+			)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	return transform.Slice(found, func(a agentBinaryStore) string {
+		return a.ArchitectureName
+	}), nil
 }

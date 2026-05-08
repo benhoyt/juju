@@ -21,10 +21,10 @@ import (
 
 	apicharm "github.com/juju/juju/api/common/charm"
 	"github.com/juju/juju/api/common/charms"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/ssh/mocks"
 	"github.com/juju/juju/cmd/modelcmd"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
+	"github.com/juju/juju/domain/deployment/charm"
 	jujussh "github.com/juju/juju/internal/network/ssh"
 )
 
@@ -56,6 +56,7 @@ var debugHooksTests = []struct {
 	expected: &argsSpec{
 		hostKeyChecking: "yes",
 		knownHosts:      "0",
+		enablePty:       true,
 		argsMatch:       `ubuntu@0\.(private|public|1\.2\.3) exec sudo .+`, // can be any of the 3
 	},
 }, {
@@ -65,12 +66,23 @@ var debugHooksTests = []struct {
 	expected: &argsSpec{
 		hostKeyChecking: "yes",
 		knownHosts:      "0",
+		enablePty:       true,
 		withProxy:       true,
 		argsMatch:       `ubuntu@0\.(private|public|1\.2\.3) exec sudo .+`, // can be any of the 3
 	},
 }, {
 	info:        "pty enabled",
 	args:        []string{"--pty=true", "mysql/0"},
+	hostChecker: validAddresses("0.private", "0.public", "0.1.2.3"), // set by setAddresses() and setLinkLayerDevicesAddresses()
+	expected: &argsSpec{
+		hostKeyChecking: "yes",
+		knownHosts:      "0",
+		enablePty:       true,
+		argsMatch:       `ubuntu@0\.(private|public|1\.2\.3) exec sudo .+`, // can be any of the 3
+	},
+}, {
+	info:        "pty=false overridden by debug-hooks",
+	args:        []string{"--pty=false", "mysql/0"},
 	hostChecker: validAddresses("0.private", "0.public", "0.1.2.3"), // set by setAddresses() and setLinkLayerDevicesAddresses()
 	expected: &argsSpec{
 		hostKeyChecking: "yes",
@@ -220,10 +232,10 @@ func (s *DebugHooksSuite) TestDebugHooksArgFormatting(c *tc.C) {
 	debugArgsB64 := debugArgsCommand[len(`echo "`):strings.Index(debugArgsCommand, `" | base64`)]
 	yamlContent, err := base64.StdEncoding.DecodeString(debugArgsB64)
 	c.Assert(err, tc.ErrorIsNil)
-	var args map[string]interface{}
+	var args map[string]any
 	err = goyaml.Unmarshal(yamlContent, &args)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(args, tc.DeepEquals, map[string]interface{}{
-		"hooks": []interface{}{"install", "start"},
+	c.Check(args, tc.DeepEquals, map[string]any{
+		"hooks": []any{"install", "start"},
 	})
 }

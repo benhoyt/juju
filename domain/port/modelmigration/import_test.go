@@ -6,7 +6,7 @@ package modelmigration
 import (
 	"testing"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
@@ -87,23 +87,23 @@ func (s *importSuite) TestImport(c *tc.C) {
 
 	unit1UUID := coreunittesting.GenUnitUUID(c)
 	s.portService.EXPECT().GetUnitUUID(gomock.Any(), coreunit.Name("unit/1")).Return(unit1UUID, nil)
-	s.portService.EXPECT().UpdateUnitPorts(gomock.Any(), unit1UUID, network.GroupedPortRanges{
+	s.portService.EXPECT().ImportOpenUnitPorts(gomock.Any(), unit1UUID, network.GroupedPortRanges{
 		"endpoint-1": []network.PortRange{{
 			FromPort: 100,
 			ToPort:   200,
 			Protocol: "udp",
 		}},
-	}, nil)
+	})
 
 	unit2UUID := coreunittesting.GenUnitUUID(c)
 	s.portService.EXPECT().GetUnitUUID(gomock.Any(), coreunit.Name("unit/2")).Return(unit2UUID, nil)
-	s.portService.EXPECT().UpdateUnitPorts(gomock.Any(), unit2UUID, network.GroupedPortRanges{
+	s.portService.EXPECT().ImportOpenUnitPorts(gomock.Any(), unit2UUID, network.GroupedPortRanges{
 		"endpoint-2": []network.PortRange{{
 			FromPort: 300,
 			ToPort:   400,
 			Protocol: "tcp",
 		}},
-	}, nil)
+	})
 
 	op := s.newImportOperation()
 	err := op.Execute(c.Context(), model)

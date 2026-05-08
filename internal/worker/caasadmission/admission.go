@@ -67,7 +67,8 @@ func NewAdmissionCreator(
 	// TODO change to fail
 	failurePolicy := admission.Ignore
 	matchPolicy := admission.Equivalent
-	ruleScope := admission.AllScopes
+	namespaceRuleScope := admission.NamespacedScope
+	clusterRuleScope := admission.ClusterScope
 	sideEffects := admission.SideEffectClassNone
 
 	// MutatingWebhook Obj
@@ -108,8 +109,42 @@ func NewAdmissionCreator(
 						Rule: admission.Rule{
 							APIGroups:   anyMatch,
 							APIVersions: anyMatch,
-							Resources:   anyMatch,
-							Scope:       &ruleScope,
+							// The resources we are interested in correspond
+							// to those we want to track for deletion when
+							// the juju app that created them is deleted.
+							// See Delete() on the k8s application resource in
+							// internal/provider/kubernetes/application/application.go
+							Resources: []string{
+								"configmaps/*",
+								"pods/*",
+								"statefulsets/*",
+								"deployments/*",
+								"daemonsets/*",
+								"roles/*",
+								"rolebindings/*",
+								"services/*",
+								"secrets/*",
+								"serviceaccounts/*",
+								"ingresses/*",
+							},
+							Scope: &namespaceRuleScope,
+						},
+					}, {
+						Operations: []admission.OperationType{
+							admission.Create,
+							admission.Update,
+						},
+						Rule: admission.Rule{
+							APIGroups:   anyMatch,
+							APIVersions: anyMatch,
+							Resources: []string{
+								"clusterroles/*",
+								"clusterrolebindings/*",
+								"customresourcedefinitions/*",
+								"mutatingwebhookconfigurations/*",
+								"validatingwebhookconfigurations/*",
+							},
+							Scope: &clusterRuleScope,
 						},
 					},
 				},

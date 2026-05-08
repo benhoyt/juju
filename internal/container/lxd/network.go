@@ -174,7 +174,11 @@ func (s *Server) ensureDefaultNetworking(profile *api.Profile, eTag string) erro
 		"parent":  network.DefaultLXDBridge,
 	}
 
-	if err := s.UpdateProfile(profile.Name, profile.Writable(), eTag); err != nil {
+	op, err := s.UpdateProfile(profile.Name, profile.Writable(), eTag)
+	if err == nil {
+		err = op.Wait()
+	}
+	if err != nil {
 		return errors.Trace(err)
 	}
 	logger.Debugf(context.TODO(), "created new nic device %q in profile %q", nicName, profile.Name)
@@ -231,7 +235,7 @@ func (s *Server) verifyNICsWithAPI(nics map[string]device) error {
 // but the name generation aborts to be safe from (theoretical) integer overflow.
 func generateNICDeviceName(profile *api.Profile) string {
 	template := "eth%d"
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		name := fmt.Sprintf(template, i)
 		unique := true
 		for d := range profile.Devices {
@@ -267,6 +271,19 @@ func isValidNetworkType(net *api.Network) bool {
 	return net.Type == netTypeBridge || net.Type == nicTypeMACVLAN
 }
 
+// NetworkName returns the network name from the
+// map of device attributes.
+func NetworkName(info map[string]string) string {
+	// Versions of the LXD profile prior to 3.22 have the network name as
+	// "parent" under NIC entries in the "devices" list.
+	// Later versions have it under "network".
+	netName, ok := info["network"]
+	if !ok {
+		netName = info["parent"]
+	}
+	return netName
+}
+
 // InterfaceInfoFromDevices returns a slice of interface info congruent with the
 // input LXD NIC devices.
 // The output is used to generate cloud-init user-data congruent with the NICs
@@ -275,9 +292,10 @@ func InterfaceInfoFromDevices(nics map[string]device) (corenetwork.InterfaceInfo
 	interfaces := make(corenetwork.InterfaceInfos, len(nics))
 	var i int
 	for name, device := range nics {
+		netName := NetworkName(device)
 		iInfo := corenetwork.InterfaceInfo{
 			InterfaceName:       name,
-			ParentInterfaceName: device["parent"],
+			ParentInterfaceName: netName,
 			MACAddress:          device["hwaddr"],
 			ConfigType:          corenetwork.ConfigDHCP,
 			Origin:              corenetwork.OriginProvider,

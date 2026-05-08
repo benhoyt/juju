@@ -6,16 +6,18 @@ package testing
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/canonical/sqlair"
 	"github.com/juju/clock"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 	"gopkg.in/tomb.v2"
 
 	"github.com/juju/juju/core/changestream"
 	"github.com/juju/juju/core/database"
+	coretesting "github.com/juju/juju/core/testing"
 	"github.com/juju/juju/internal/changestream/eventmultiplexer"
 	"github.com/juju/juju/internal/changestream/stream"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
@@ -24,7 +26,8 @@ import (
 const (
 	// This is copied from the internal/changestream/stream/stream.go file.
 	// This is so we don't expose the state name outside of the package.
-	stateIdle = "idle"
+	stateIdle     = "idle"
+	stateDispatch = "dispatch"
 )
 
 // TestWatchableDB creates a watchable DB for running the ChangeStream
@@ -46,9 +49,14 @@ type TestWatchableDB struct {
 func NewTestWatchableDB(c *tc.C, id string, db database.TxnRunner) *TestWatchableDB {
 	states := make(chan []string, 1)
 
+	termDeadline, _ := c.Deadline()
+	if time.Until(termDeadline) > coretesting.ShortWait {
+		termDeadline = termDeadline.Add(-coretesting.ShortWait)
+	}
+
 	logger := loggertesting.WrapCheckLog(c)
-	stream := stream.NewInternalStates(id, db, newNoopFileWatcher(), clock.WallClock, noopMetrics{}, logger, states)
-	mux, err := eventmultiplexer.New(stream, clock.WallClock, noopMetrics{}, logger)
+	stream := stream.NewInternalStates(id, db, newNoopFileWatcher(), clock.WallClock, noopMetrics{}, logger, termDeadline, states)
+	mux, err := eventmultiplexer.New(stream, clock.WallClock, noopMetrics{}, logger, time.Until(termDeadline))
 	c.Assert(err, tc.ErrorIsNil)
 
 	h := TestWatchableDB{
@@ -122,6 +130,31 @@ func (h *TestWatchableDB) Wait() error {
 func (h *TestWatchableDB) loop() error {
 	<-h.catacomb.Dying()
 	return h.catacomb.ErrDying()
+}
+
+// assertChangeStreamIdle waits for either the change stream to quickly dispatch
+// some changes or become idle before the deadline.
+func assertChangeStreamIdle(c *tc.C, states <-chan []string) {
+	timer := time.NewTimer(coretesting.LongWait)
+	for {
+		select {
+		case states := <-states:
+			for _, state := range states {
+				switch state {
+				case stateIdle:
+					return
+				case stateDispatch:
+					next := coretesting.LongWait
+					if deadline, ok := c.Deadline(); ok {
+						next = time.Until(deadline) - coretesting.LongWait
+					}
+					timer.Reset(next)
+				}
+			}
+		case <-timer.C:
+			c.Fatalf("timed out waiting for idle state")
+		}
+	}
 }
 
 type noopFileWatcher struct {

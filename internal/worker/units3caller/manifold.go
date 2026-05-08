@@ -9,12 +9,13 @@ import (
 	"strings"
 
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
 	httprequest "gopkg.in/httprequest.v1"
 
 	"github.com/juju/juju/agent/engine"
 	"github.com/juju/juju/api"
+	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/internal/s3client"
@@ -69,7 +70,7 @@ func (config ManifoldConfig) start(ctx context.Context, getter dependency.Getter
 		return nil, err
 	}
 
-	httpClient, err := apiConn.RootHTTPClient()
+	httpClient, err := apiConn.HTTPClient(base.HTTPClientScopeUnscoped)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -86,7 +87,11 @@ func (config ManifoldConfig) start(ctx context.Context, getter dependency.Getter
 // intended to be used by the unit, there is never an expectation that the unit
 // will write to the object store.
 func NewS3Client(url string, client s3client.HTTPClient, logger logger.Logger) (objectstore.ReadSession, error) {
-	return s3client.NewS3Client(url, client, s3client.AnonymousCredentials{}, logger)
+	return s3client.NewS3Client(url, client, s3client.AnonymousCredentials{},
+		s3client.WithLogger(logger),
+		s3client.WithMaxAttempts(10),
+		s3client.WithRateLimiting(false),
+	)
 }
 
 // httpClient is a shim around a shim. The httprequest.Client is a shim around

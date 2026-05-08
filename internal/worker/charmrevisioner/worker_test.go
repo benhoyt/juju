@@ -8,10 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/juju/clock/testclock"
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 
@@ -20,7 +21,7 @@ import (
 	http "github.com/juju/juju/core/http"
 	"github.com/juju/juju/core/logger"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
+	coretesting "github.com/juju/juju/core/testing"
 	"github.com/juju/juju/core/version"
 	"github.com/juju/juju/core/watcher/watchertest"
 	"github.com/juju/juju/domain/application"
@@ -28,10 +29,10 @@ import (
 	applicationcharm "github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	"github.com/juju/juju/domain/deployment"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
+	"github.com/juju/juju/domain/deployment/charm/resource"
 	domainresource "github.com/juju/juju/domain/resource"
 	config "github.com/juju/juju/environs/config"
-	internalcharm "github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/charm/resource"
 	"github.com/juju/juju/internal/charmhub"
 	"github.com/juju/juju/internal/charmhub/transport"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
@@ -52,7 +53,7 @@ type WorkerSuite struct {
 	charmhubClient     *MockCharmhubClient
 	httpClient         *MockHTTPClient
 	httpClientGetter   *MockHTTPClientGetter
-	clock              *MockClock
+	clock              *testclock.Clock
 
 	modelTag names.ModelTag
 }
@@ -62,24 +63,38 @@ func TestWorkerSuite(t *testing.T) {
 	tc.Run(t, &WorkerSuite{})
 }
 
+// advanceClockUntil advances the fake clock in small increments until either
+// the done channel is signalled or the timeout elapses. This avoids a race
+// where the worker's timer might not yet be registered when the test advances
+// the clock by a large amount in one go.
+func advanceClockUntil(clock *testclock.Clock, period time.Duration, done <-chan struct{}) bool {
+	// Use a short step to cover jitter and registration timing.
+	const step = 200 * time.Millisecond
+	// Wait up to twice the period plus a short buffer, because of the jitter.
+	timeout := time.After(coretesting.ShortWait + period*2)
+	for {
+		select {
+		case <-done:
+			return true
+		case <-timeout:
+			return false
+		default:
+			clock.Advance(step)
+			// Yield to allow the worker to observe the tick.
+			time.Sleep(1 * time.Millisecond)
+		}
+	}
+}
+
 func (s *WorkerSuite) TestTriggerFetch(c *tc.C) {
 	// Ensure that a clock tick triggers a fetch, the testing of the fetch
 	// is done in other methods.
 
-	defer s.setupMocks(c).Finish()
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
 
 	watcher := watchertest.NewMockStringsWatcher(make(chan []string))
 	s.modelConfigService.EXPECT().Watch(gomock.Any()).Return(watcher, nil)
-
-	ch := make(chan time.Time)
-
-	// These are required to be in-order.
-	gomock.InOrder(
-		s.clock.EXPECT().After(gomock.Any()).DoAndReturn(func(d time.Duration) <-chan time.Time {
-			return ch
-		}),
-		s.clock.EXPECT().After(gomock.Any()).Return(make(<-chan time.Time)),
-	)
 
 	done := make(chan struct{})
 	s.applicationService.EXPECT().GetApplicationsForRevisionUpdater(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]application.RevisionUpdaterApplication, error) {
@@ -96,15 +111,91 @@ func (s *WorkerSuite) TestTriggerFetch(c *tc.C) {
 
 	s.ensureStartup(c)
 
-	select {
-	case ch <- time.Now():
-	case <-c.Context().Done():
-		c.Fatalf("timed out sending time")
+	// Advance the clock incrementally until the fetch is triggered or we time out.
+	// 1 second is enough to ensure that the fetch is triggered.
+	if ok := advanceClockUntil(s.clock, time.Second, done); !ok {
+		c.Fatalf("timed out waiting for fetch")
 	}
 
-	select {
-	case <-done:
-	case <-c.Context().Done():
+	workertest.CleanKill(c, w)
+}
+
+func (s *WorkerSuite) TestTriggerFetchLoop(c *tc.C) {
+	// Ensure that a clock tick triggers a fetch and that the timer is reset
+	// on the next tick.
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	watcher := watchertest.NewMockStringsWatcher(make(chan []string))
+	s.modelConfigService.EXPECT().Watch(gomock.Any()).Return(watcher, nil)
+
+	done := make(chan struct{})
+	times := 2
+	s.applicationService.EXPECT().GetApplicationsForRevisionUpdater(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]application.RevisionUpdaterApplication, error) {
+		times--
+		if times == 0 {
+			close(done)
+		}
+		return nil, nil
+	}).AnyTimes()
+
+	s.modelConfigService.EXPECT().ModelConfig(gomock.Any()).Return(&config.Config{}, nil).AnyTimes()
+	s.modelService.EXPECT().GetModelMetrics(gomock.Any()).Return(coremodel.ModelMetrics{}, nil).AnyTimes()
+	s.charmhubClient.EXPECT().RefreshWithMetricsOnly(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+	w := s.newWorker(c)
+	defer workertest.DirtyKill(c, w)
+
+	s.ensureStartup(c)
+
+	// Advance the clock incrementally until the fetch is triggered or we time out.
+	// 2 seconds are enough to ensure that the 2 fetches are triggered.
+	if ok := advanceClockUntil(s.clock, 2*time.Second, done); !ok {
+		c.Errorf("timed out waiting for fetch")
+	}
+
+	workertest.CleanKill(c, w)
+}
+
+func (s *WorkerSuite) TestTriggerFetchWhileConfigUpdate(c *tc.C) {
+	// Ensure that a clock tick triggers a fetch, even if the config changes continuously.
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	configChanges := make(chan []string)
+	watcher := watchertest.NewMockStringsWatcher(configChanges)
+	s.modelConfigService.EXPECT().Watch(gomock.Any()).Return(watcher, nil)
+
+	done := make(chan struct{})
+	s.applicationService.EXPECT().GetApplicationsForRevisionUpdater(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]application.RevisionUpdaterApplication, error) {
+		close(done)
+		return nil, nil
+	})
+
+	s.expectModelConfig(c)
+	s.expectModelConfig(c)
+	s.expectSendEmptyModelMetrics(c)
+
+	w := s.newWorker(c)
+	defer workertest.DirtyKill(c, w)
+
+	// Send continuous config changes to ensure that the fetch is triggered after the config update
+	go func() {
+		for {
+			select {
+			case <-c.Context().Done():
+				return
+			case <-done:
+				return
+			case configChanges <- []string{"anything"}:
+			}
+		}
+	}()
+
+	s.ensureStartup(c)
+
+	// Advance the clock incrementally until the fetch is triggered or we time out.
+	if ok := advanceClockUntil(s.clock, time.Second, done); !ok {
 		c.Fatalf("timed out waiting for fetch")
 	}
 
@@ -113,11 +204,8 @@ func (s *WorkerSuite) TestTriggerFetch(c *tc.C) {
 
 func (s *WorkerSuite) TestTriggerModelConfig(c *tc.C) {
 	// Ensure that a model config change triggers a new charmhub client.
-	defer s.setupMocks(c).Finish()
-
-	// This will block, and we can then trigger the model config change
-	// independently.
-	s.clock.EXPECT().After(gomock.Any()).Return(make(<-chan time.Time)).AnyTimes()
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
 
 	ch := make(chan []string)
 	watcher := watchertest.NewMockStringsWatcher(ch)
@@ -142,13 +230,13 @@ func (s *WorkerSuite) TestTriggerModelConfig(c *tc.C) {
 
 	select {
 	case ch <- []string{config.CharmHubURLKey}:
-	case <-c.Context().Done():
-		c.Fatalf("timed out sending time")
+	case <-time.After(coretesting.ShortWait):
+		c.Fatalf("timed out sending config change")
 	}
 
 	select {
 	case <-done:
-	case <-c.Context().Done():
+	case <-time.After(coretesting.ShortWait):
 		c.Fatalf("timed out waiting for new client")
 	}
 
@@ -240,7 +328,7 @@ func (s *WorkerSuite) TestFetch(c *tc.C) {
 	})
 
 	model := coremodel.ModelInfo{
-		UUID:           modeltesting.GenModelUUID(c),
+		UUID:           tc.Must0(c, coremodel.NewUUID),
 		ControllerUUID: uuid.MustNewUUID(),
 		Cloud:          "aws",
 		CloudType:      "ec2",
@@ -275,7 +363,7 @@ func (s *WorkerSuite) TestFetch(c *tc.C) {
 		essentialMetadata: charm.EssentialMetadata{
 			ResolvedOrigin: charm.Origin{
 				Source:   charm.CharmHub,
-				Revision: ptr(666),
+				Revision: new(666),
 				Channel:  &channel,
 				Platform: charm.Platform{
 					Architecture: "amd64",
@@ -298,7 +386,7 @@ func (s *WorkerSuite) TestFetchInfo(c *tc.C) {
 	s.expectModelConfig(c)
 
 	model := coremodel.ModelInfo{
-		UUID:           modeltesting.GenModelUUID(c),
+		UUID:           tc.Must0(c, coremodel.NewUUID),
 		ControllerUUID: uuid.MustNewUUID(),
 		Cloud:          "aws",
 		CloudType:      "ec2",
@@ -380,7 +468,7 @@ func (s *WorkerSuite) TestFetchInfo(c *tc.C) {
 		essentialMetadata: charm.EssentialMetadata{
 			ResolvedOrigin: charm.Origin{
 				Source:   charm.CharmHub,
-				Revision: ptr(666),
+				Revision: new(666),
 				Channel:  &channel,
 				Platform: charm.Platform{
 					Architecture: "amd64",
@@ -402,7 +490,7 @@ func (s *WorkerSuite) TestFetchInfoInvalidResponseLength(c *tc.C) {
 	s.expectModelConfig(c)
 
 	model := coremodel.ModelInfo{
-		UUID:           modeltesting.GenModelUUID(c),
+		UUID:           tc.Must0(c, coremodel.NewUUID),
 		ControllerUUID: uuid.MustNewUUID(),
 		Cloud:          "aws",
 		CloudType:      "ec2",
@@ -479,7 +567,7 @@ func (s *WorkerSuite) TestRequest(c *tc.C) {
 	s.expectModelConfig(c)
 
 	model := coremodel.ModelInfo{
-		UUID:           modeltesting.GenModelUUID(c),
+		UUID:           tc.Must0(c, coremodel.NewUUID),
 		ControllerUUID: uuid.MustNewUUID(),
 		Cloud:          "aws",
 		CloudType:      "ec2",
@@ -545,7 +633,7 @@ func (s *WorkerSuite) TestRequest(c *tc.C) {
 		essentialMetadata: charm.EssentialMetadata{
 			ResolvedOrigin: charm.Origin{
 				Source:   charm.CharmHub,
-				Revision: ptr(666),
+				Revision: new(666),
 				Channel:  &channel,
 			},
 		},
@@ -560,7 +648,7 @@ func (s *WorkerSuite) TestRequestWithResources(c *tc.C) {
 	s.expectModelConfig(c)
 
 	model := coremodel.ModelInfo{
-		UUID:           modeltesting.GenModelUUID(c),
+		UUID:           tc.Must0(c, coremodel.NewUUID),
 		ControllerUUID: uuid.MustNewUUID(),
 		Cloud:          "aws",
 		CloudType:      "ec2",
@@ -646,7 +734,7 @@ func (s *WorkerSuite) TestRequestWithResources(c *tc.C) {
 		essentialMetadata: charm.EssentialMetadata{
 			ResolvedOrigin: charm.Origin{
 				Source:   charm.CharmHub,
-				Revision: ptr(666),
+				Revision: new(666),
 				Channel:  &channel,
 			},
 		},
@@ -661,7 +749,7 @@ func (s *WorkerSuite) TestRequestWithError(c *tc.C) {
 	s.expectModelConfig(c)
 
 	model := coremodel.ModelInfo{
-		UUID:           modeltesting.GenModelUUID(c),
+		UUID:           tc.Must0(c, coremodel.NewUUID),
 		ControllerUUID: uuid.MustNewUUID(),
 		Cloud:          "aws",
 		CloudType:      "ec2",
@@ -1183,9 +1271,7 @@ func (s *WorkerSuite) setupMocks(c *tc.C) *gomock.Controller {
 	s.charmhubClient = NewMockCharmhubClient(ctrl)
 
 	s.now = time.Now()
-
-	s.clock = NewMockClock(ctrl)
-	s.clock.EXPECT().Now().Return(s.now).AnyTimes()
+	s.clock = testclock.NewClock(s.now)
 
 	s.modelTag = names.NewModelTag(uuid.MustNewUUID().String())
 
@@ -1218,9 +1304,6 @@ func (s *WorkerSuite) expectWatcher(c *tc.C) {
 	ch := make(chan []string)
 	watcher := watchertest.NewMockStringsWatcher(ch)
 	s.modelConfigService.EXPECT().Watch(gomock.Any()).Return(watcher, nil)
-	s.clock.EXPECT().After(gomock.Any()).DoAndReturn(func(d time.Duration) <-chan time.Time {
-		return nil
-	})
 }
 
 func (s *WorkerSuite) expectModelConfig(c *tc.C) {
@@ -1229,7 +1312,7 @@ func (s *WorkerSuite) expectModelConfig(c *tc.C) {
 
 func (s *WorkerSuite) expectSendEmptyModelMetrics(c *tc.C) {
 	model := coremodel.ModelInfo{
-		UUID:           modeltesting.GenModelUUID(c),
+		UUID:           tc.Must0(c, coremodel.NewUUID),
 		ControllerUUID: uuid.MustNewUUID(),
 		Cloud:          "aws",
 		CloudType:      "ec2",

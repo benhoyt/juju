@@ -23,6 +23,7 @@ import (
 	"github.com/juju/retry"
 	"github.com/juju/utils/v4"
 
+	proxy "github.com/juju/juju/api/proxy/config"
 	corebase "github.com/juju/juju/core/base"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/network"
@@ -30,7 +31,6 @@ import (
 	"github.com/juju/juju/environs"
 	environscloudspec "github.com/juju/juju/environs/cloudspec"
 	"github.com/juju/juju/internal/container/lxd"
-	proxy "github.com/juju/juju/internal/proxy/config"
 )
 
 // Server defines an interface of all localized methods that the environment
@@ -70,8 +70,8 @@ type Server interface {
 	GetStoragePoolVolume(pool string, volType string, name string) (*lxdapi.StorageVolume, string, error)
 	GetStoragePoolVolumes(pool string) (volumes []lxdapi.StorageVolume, err error)
 	CreateVolume(pool, name string, config map[string]string) error
-	UpdateStoragePoolVolume(pool string, volType string, name string, volume lxdapi.StorageVolumePut, ETag string) error
-	DeleteStoragePoolVolume(pool string, volType string, name string) (err error)
+	UpdateStoragePoolVolume(pool string, volType string, name string, volume lxdapi.StorageVolumePut, ETag string) (lxdclient.Operation, error)
+	DeleteStoragePoolVolume(pool string, volType string, name string) (lxdclient.Operation, error)
 	ServerCertificate() string
 	HostArch() string
 	SupportedArches() []string

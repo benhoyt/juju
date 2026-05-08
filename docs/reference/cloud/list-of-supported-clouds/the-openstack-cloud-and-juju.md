@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Deploy on OpenStack cloud using Juju, including supported versions, novarc file configuration, and authentication with Keystone."
+---
+
 (cloud-openstack)=
 # The OpenStack cloud and Juju
 
@@ -109,24 +115,24 @@ The network label or UUID to bring machines up on when multiple networks exist.
 
 ## Supported constraints
 
-| {ref}`CONSTRAINT <constraint>`         |                                                     |
-|----------------------------------------|-----------------------------------------------------|
-| conflicting:                           | `instance-type` vs. `[mem, root-disk, cores]` |
-| supported?                             |                                                     |
-| - {ref}`constraint-allocate-public-ip` | &#10003;                                            |
-| - {ref}`constraint-arch`               | &#10003;                                            |
-| - {ref}`constraint-cores`              | &#10003;                                            |
-| - {ref}`constraint-cpu-power`          | &#10005;                                            |
-| - {ref}`constraint-image-id`           | &#10005; <br> An OpenStack image ID.                |
-| - {ref}`constraint-instance-role`      | &#10005;                                            |
+| {ref}`CONSTRAINT <constraint>`         |                                                                         |
+|----------------------------------------|-------------------------------------------------------------------------|
+| conflicting:                           | `[instance-type]` vs. `[mem, root-disk, cores]`                         |
+| supported?                             |                                                                         |
+| - {ref}`constraint-allocate-public-ip` | &#10003;                                                                |
+| - {ref}`constraint-arch`               | &#10003;                                                                |
+| - {ref}`constraint-cores`              | &#10003;                                                                |
+| - {ref}`constraint-cpu-power`          | &#10005;                                                                |
+| - {ref}`constraint-image-id`           | &#10005; <br> An OpenStack image ID.                                    |
+| - {ref}`constraint-instance-role`      | &#10005;                                                                |
 | - {ref}`constraint-instance-type`      | &#10003; <br> Any OpenStack flavor defined by an OpenStack cloud admin. |
-| - {ref}`constraint-mem`                | &#10003;                                            |
-| - {ref}`constraint-root-disk`          | &#10003;                                            |
-| - {ref}`constraint-root-disk-source`   | &#10003; <br> Valid values: `[local, volume]`.      |
-| - {ref}`constraint-spaces`             | &#10005;                                            |
-| - {ref}`constraint-tags`               | &#10005;                                            |
-| - {ref}`constraint-virt-type`          | &#10003;                                            |
-| - {ref}`constraint-zones`              | &#10003;                                            |
+| - {ref}`constraint-mem`                | &#10003;                                                                |
+| - {ref}`constraint-root-disk`          | &#10003;                                                                |
+| - {ref}`constraint-root-disk-source`   | &#10003; <br> Valid values: `[local, volume]`.                          |
+| - {ref}`constraint-spaces`             | &#10005;                                                                |
+| - {ref}`constraint-tags`               | &#10005;                                                                |
+| - {ref}`constraint-virt-type`          | &#10003;                                                                |
+| - {ref}`constraint-zones`              | &#10003;                                                                |
 
 ## Supported placement directives
 

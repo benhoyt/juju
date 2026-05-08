@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Deploy workloads on Google Kubernetes Engine (GKE) with Juju, including add-k8s command usage and storage provider configuration."
+---
+
 (cloud-kubernetes-gke)=
 # The Google GKE cloud and Juju
 

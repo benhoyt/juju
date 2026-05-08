@@ -13,6 +13,7 @@ import (
 
 	"github.com/juju/juju/core/arch"
 	"github.com/juju/juju/core/instance"
+	corenetwork "github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/instances"
@@ -105,7 +106,7 @@ func (env *environ) newContainer(
 	// are made, instead of at a higher level in the package, so as not to
 	// assume that all providers will have the same need to be implemented
 	// in the same way.
-	statusCallback := func(ctx context.Context, currentStatus status.Status, msg string, data map[string]interface{}) error {
+	statusCallback := func(ctx context.Context, currentStatus status.Status, msg string, data map[string]any) error {
 		if args.StatusCallback != nil {
 			_ = args.StatusCallback(ctx, currentStatus, msg, nil)
 		}
@@ -180,8 +181,7 @@ func (env *environ) getImageSources(ctx context.Context) ([]lxd.ServerSpec, erro
 // Cloud-init config is generated based on the network devices in the default
 // profile and included in the spec config.
 func (env *environ) getContainerSpec(
-	ctx context.Context,
-	image lxd.SourcedImage, serverVersion string, args environs.StartInstanceParams,
+	ctx context.Context, image lxd.SourcedImage, serverVersion string, args environs.StartInstanceParams,
 ) (lxd.ContainerSpec, error) {
 	hostname, err := env.namespace.Hostname(args.InstanceConfig.MachineId)
 	if err != nil {
@@ -189,13 +189,22 @@ func (env *environ) getContainerSpec(
 	}
 	cSpec := lxd.ContainerSpec{
 		Name:     hostname,
-		Profiles: append([]string{"default", env.profileName()}, args.CharmLXDProfiles...),
+		Profiles: []string{"default", env.profileName()},
 		Image:    image,
 		Config:   make(map[string]string),
 	}
 	cSpec.ApplyConstraints(serverVersion, args.Constraints)
 
-	cloudCfg, err := cloudinit.New(args.InstanceConfig.Base.OS)
+	virtType := instance.InstanceTypeContainer
+	if args.Constraints.HasVirtType() {
+		v, err := instance.ParseVirtType(*args.Constraints.VirtType)
+		if err != nil {
+			return lxd.ContainerSpec{}, errors.Trace(err)
+		}
+		virtType = v
+	}
+	cloudCfg, err := cloudinit.New(
+		args.InstanceConfig.Base.OS, cloudinit.WithNetplanMACMatch(virtType == instance.InstanceTypeVM))
 	if err != nil {
 		return cSpec, errors.Trace(err)
 	}
@@ -238,7 +247,7 @@ func (env *environ) getContainerSpec(
 	// correctly.  It likely has to do with the HTTP transport, much
 	// as we have to b64encode the userdata for GCE.  Until that is
 	// resolved we simply pass the plain text.
-	//cfg[lxd.UserDataKey] = utils.Gzip(userData)
+	// cfg[lxd.UserDataKey] = utils.Gzip(userData)
 	cSpec.Config[lxd.UserDataKey] = string(userData)
 
 	for k, v := range args.InstanceConfig.Tags {
@@ -277,9 +286,8 @@ func (env *environ) assignContainerNICs(instStartParams environs.StartInstancePa
 	requestedNICNames := set.NewStrings()
 	for nicName, details := range assignedNICs {
 		requestedNICNames.Add(nicName)
-		if len(details) != 0 {
-			requestedHostBridges.Add(details["parent"])
-		}
+		netName := lxd.NetworkName(details)
+		requestedHostBridges.Add(netName)
 	}
 
 	// Assign any extra NICs required to satisfy the subnet requirements
@@ -322,10 +330,11 @@ func (env *environ) assignContainerNICs(instStartParams environs.StartInstancePa
 				}
 				break
 			}
-
+			hwaddr := corenetwork.GenerateVirtualMACAddress()
 			assignedNICs[devName] = map[string]string{
 				"name":    devName,
 				"type":    "nic",
+				"hwaddr":  hwaddr,
 				"nictype": "bridged",
 				"parent":  hostBridge,
 			}

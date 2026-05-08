@@ -11,7 +11,7 @@ import (
 	"go.uber.org/mock/gomock"
 	"gopkg.in/yaml.v2"
 
-	"github.com/juju/juju/internal/charm/hooks"
+	"github.com/juju/juju/domain/deployment/charm/hooks"
 	"github.com/juju/juju/internal/worker/uniter/hook"
 	"github.com/juju/juju/internal/worker/uniter/operation"
 	"github.com/juju/juju/internal/worker/uniter/operation/mocks"
@@ -316,7 +316,7 @@ type unitStateMatcher struct {
 	expected string
 }
 
-func (m unitStateMatcher) Matches(x interface{}) bool {
+func (m unitStateMatcher) Matches(x any) bool {
 	obtained, ok := x.(params.SetUnitStateArg)
 	if !ok {
 		return false

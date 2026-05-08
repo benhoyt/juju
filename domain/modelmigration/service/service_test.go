@@ -9,45 +9,33 @@ import (
 
 	"github.com/juju/collections/set"
 	"github.com/juju/tc"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/mock/gomock"
 
+	"github.com/juju/juju/core/changestream"
 	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/providertracker"
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/core/status"
+	"github.com/juju/juju/core/watcher"
+	"github.com/juju/juju/core/watcher/eventsource"
+	"github.com/juju/juju/core/watcher/watchertest"
 	"github.com/juju/juju/environs/instances"
+	"github.com/juju/juju/internal/errors"
 )
 
 type serviceSuite struct {
+	controllerState  *MockControllerState
+	modelState       *MockModelState
+	watcherFactory   *MockWatcherFactory
 	instanceProvider *MockInstanceProvider
 	resourceProvider *MockResourceProvider
-	state            *MockState
 }
 
 func TestServiceSuite(t *testing.T) {
 	tc.Run(t, &serviceSuite{})
-}
-
-func (s *serviceSuite) setupMocks(c *tc.C) *gomock.Controller {
-	ctrl := gomock.NewController(c)
-	s.instanceProvider = NewMockInstanceProvider(ctrl)
-	s.resourceProvider = NewMockResourceProvider(ctrl)
-	s.state = NewMockState(ctrl)
-	return ctrl
-}
-
-func (s *serviceSuite) instanceProviderGetter(_ *tc.C) providertracker.ProviderGetter[InstanceProvider] {
-	return func(_ context.Context) (InstanceProvider, error) {
-		return s.instanceProvider, nil
-	}
-}
-
-func (s *serviceSuite) resourceProviderGetter(_ *tc.C) providertracker.ProviderGetter[ResourceProvider] {
-	return func(_ context.Context) (ResourceProvider, error) {
-		return s.resourceProvider, nil
-	}
 }
 
 // TestAdoptResources is testing the happy path of adopting a models cloud
@@ -58,7 +46,7 @@ func (s *serviceSuite) TestAdoptResources(c *tc.C) {
 	sourceControllerVersion, err := semversion.Parse("4.1.1")
 	c.Assert(err, tc.ErrorIsNil)
 
-	s.state.EXPECT().GetControllerUUID(gomock.Any()).Return(
+	s.modelState.EXPECT().GetControllerUUID(gomock.Any()).Return(
 		"deadbeef-1bad-500d-9000-4b1d0d06f00d",
 		nil,
 	)
@@ -69,9 +57,12 @@ func (s *serviceSuite) TestAdoptResources(c *tc.C) {
 	).Return(nil)
 
 	err = NewService(
+		s.controllerState,
+		s.modelState,
+		"test-model-uuid",
+		s.watcherFactory,
 		s.instanceProviderGetter(c),
 		s.resourceProviderGetter(c),
-		s.state,
 	).AdoptResources(c.Context(), sourceControllerVersion)
 	c.Check(err, tc.ErrorIsNil)
 }
@@ -89,15 +80,18 @@ func (s *serviceSuite) TestAdoptResourcesProviderNotSupported(c *tc.C) {
 	sourceControllerVersion, err := semversion.Parse("4.1.1")
 	c.Assert(err, tc.ErrorIsNil)
 
-	s.state.EXPECT().GetControllerUUID(gomock.Any()).Return(
+	s.modelState.EXPECT().GetControllerUUID(gomock.Any()).Return(
 		"deadbeef-1bad-500d-9000-4b1d0d06f00d",
 		nil,
 	).AnyTimes()
 
 	err = NewService(
+		s.controllerState,
+		s.modelState,
+		"test-model-uuid",
+		s.watcherFactory,
 		s.instanceProviderGetter(c),
 		resourceGetter,
-		s.state,
 	).AdoptResources(c.Context(), sourceControllerVersion)
 	c.Check(err, tc.ErrorIsNil)
 }
@@ -111,7 +105,7 @@ func (s *serviceSuite) TestAdoptResourcesProviderNotImplemented(c *tc.C) {
 	sourceControllerVersion, err := semversion.Parse("4.1.1")
 	c.Assert(err, tc.ErrorIsNil)
 
-	s.state.EXPECT().GetControllerUUID(gomock.Any()).Return(
+	s.modelState.EXPECT().GetControllerUUID(gomock.Any()).Return(
 		"deadbeef-1bad-500d-9000-4b1d0d06f00d",
 		nil,
 	)
@@ -122,9 +116,12 @@ func (s *serviceSuite) TestAdoptResourcesProviderNotImplemented(c *tc.C) {
 	).Return(coreerrors.NotImplemented)
 
 	err = NewService(
+		s.controllerState,
+		s.modelState,
+		"test-model-uuid",
+		s.watcherFactory,
 		s.instanceProviderGetter(c),
 		s.resourceProviderGetter(c),
-		s.state,
 	).AdoptResources(c.Context(), sourceControllerVersion)
 	c.Check(err, tc.ErrorIsNil)
 }
@@ -144,13 +141,16 @@ func (s *serviceSuite) TestMachinesFromProviderNotInModel(c *tc.C) {
 			},
 		},
 			nil)
-	s.state.EXPECT().GetAllInstanceIDs(gomock.Any()).
+	s.modelState.EXPECT().GetAllInstanceIDs(gomock.Any()).
 		Return(set.NewStrings("instance0"), nil)
 
 	_, err := NewService(
+		s.controllerState,
+		s.modelState,
+		"test-model-uuid",
+		s.watcherFactory,
 		s.instanceProviderGetter(c),
 		s.resourceProviderGetter(c),
-		s.state,
 	).CheckMachines(c.Context())
 	c.Check(err, tc.ErrorMatches, "provider instance IDs.*instance1.*")
 }
@@ -168,15 +168,224 @@ func (s *serviceSuite) TestMachineInstanceIDsNotInProvider(c *tc.C) {
 			},
 		},
 			nil)
-	s.state.EXPECT().GetAllInstanceIDs(gomock.Any()).
+	s.modelState.EXPECT().GetAllInstanceIDs(gomock.Any()).
 		Return(set.NewStrings("instance0", "instance1"), nil)
 
 	_, err := NewService(
+		s.controllerState,
+		s.modelState,
+		"test-model-uuid",
+		s.watcherFactory,
 		s.instanceProviderGetter(c),
 		s.resourceProviderGetter(c),
-		s.state,
 	).CheckMachines(c.Context())
 	c.Check(err, tc.ErrorMatches, "instance IDs.*instance1.*")
+}
+
+func (s *serviceSuite) TestActivateImport(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	currentVersion := semversion.MustParse("4.0.0").String()
+	desiredVersion := semversion.MustParse("4.0.1").String()
+
+	mExp := s.modelState.EXPECT()
+	cExp := s.controllerState.EXPECT()
+
+	// These are expected to be called in order. The agent version must be
+	// updated before the model importing status is deleted. And we want the
+	// controller state to have the model importing status deleted last.
+	gomock.InOrder(
+		cExp.GetControllerTargetVersion(gomock.Any()).Return(desiredVersion, nil),
+		mExp.GetModelTargetAgentVersion(gomock.Any()).Return(currentVersion, nil),
+		mExp.SetModelTargetAgentVersion(gomock.Any(), currentVersion, desiredVersion).Return(nil),
+		mExp.DeleteModelImportingStatus(gomock.Any()).Return(nil),
+		cExp.DeleteModelImportingStatus(gomock.Any(), "test-model-uuid").Return(nil),
+	)
+
+	err := NewService(
+		s.controllerState,
+		s.modelState,
+		"test-model-uuid",
+		s.watcherFactory,
+		s.instanceProviderGetter(c),
+		s.resourceProviderGetter(c),
+	).ActivateImport(c.Context())
+	c.Check(err, tc.ErrorIsNil)
+}
+
+func (s *serviceSuite) TestActivateImportSameVersion(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	currentVersion := semversion.MustParse("4.0.0").String()
+	desiredVersion := semversion.MustParse("4.0.0").String()
+
+	mExp := s.modelState.EXPECT()
+	cExp := s.controllerState.EXPECT()
+
+	// These are expected to be called in order. The agent version must be
+	// updated before the model importing status is deleted. And we want the
+	// controller state to have the model importing status deleted last.
+	gomock.InOrder(
+		cExp.GetControllerTargetVersion(gomock.Any()).Return(desiredVersion, nil),
+		mExp.GetModelTargetAgentVersion(gomock.Any()).Return(currentVersion, nil),
+		mExp.DeleteModelImportingStatus(gomock.Any()).Return(nil),
+		cExp.DeleteModelImportingStatus(gomock.Any(), "test-model-uuid").Return(nil),
+	)
+
+	err := NewService(
+		s.controllerState,
+		s.modelState,
+		"test-model-uuid",
+		s.watcherFactory,
+		s.instanceProviderGetter(c),
+		s.resourceProviderGetter(c),
+	).ActivateImport(c.Context())
+	c.Check(err, tc.ErrorIsNil)
+}
+
+func (s *serviceSuite) TestActivateImportControllerFails(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	cExp := s.controllerState.EXPECT()
+
+	cExp.GetControllerTargetVersion(gomock.Any()).Return("", errors.Errorf("front fell off"))
+
+	err := NewService(
+		s.controllerState,
+		s.modelState,
+		"test-model-uuid",
+		s.watcherFactory,
+		s.instanceProviderGetter(c),
+		s.resourceProviderGetter(c),
+	).ActivateImport(c.Context())
+	c.Check(err, tc.ErrorMatches, ".*front fell off")
+}
+
+func (s *serviceSuite) TestActivateImportModelFails(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	desiredVersion := semversion.MustParse("4.0.1").String()
+
+	mExp := s.modelState.EXPECT()
+	cExp := s.controllerState.EXPECT()
+
+	cExp.GetControllerTargetVersion(gomock.Any()).Return(desiredVersion, nil)
+	mExp.GetModelTargetAgentVersion(gomock.Any()).Return("", errors.Errorf("front fell off"))
+
+	err := NewService(
+		s.controllerState,
+		s.modelState,
+		"test-model-uuid",
+		s.watcherFactory,
+		s.instanceProviderGetter(c),
+		s.resourceProviderGetter(c),
+	).ActivateImport(c.Context())
+	c.Check(err, tc.ErrorMatches, ".*front fell off")
+}
+
+// TestWatchForMigration asserts that WatchForMigration asks the watcher
+// factory for a notify watcher filtering on the model_migrating namespace
+// scoped to this service's model UUID.
+func (s *serviceSuite) TestWatchForMigration(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	var (
+		namespace       string
+		changeMask      changestream.ChangeType
+		matchesUUID     bool
+		matchesOtherID  bool
+		predicateCalled bool
+	)
+
+	ch := make(chan struct{}, 1)
+	s.modelState.EXPECT().GetNamespaceModelMigrating().Return("model_migrating")
+	s.watcherFactory.EXPECT().NewNotifyWatcher(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, _ string, fo eventsource.FilterOption, _ ...eventsource.FilterOption) (watcher.Watcher[struct{}], error) {
+			namespace = fo.Namespace()
+			changeMask = fo.ChangeMask()
+			// The predicate captured here confirms we're scoping to the
+			// service's model UUID.
+			if pred := fo.ChangePredicate(); pred != nil {
+				predicateCalled = true
+				matchesUUID = pred("test-model-uuid")
+				matchesOtherID = pred("other-model-uuid")
+			}
+			return watchertest.NewMockNotifyWatcher(ch), nil
+		},
+	)
+
+	svc := NewService(
+		s.controllerState,
+		s.modelState,
+		"test-model-uuid",
+		s.watcherFactory,
+		s.instanceProviderGetter(c),
+		s.resourceProviderGetter(c),
+	)
+	w, err := svc.WatchForMigration(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+	defer workertest.CleanKill(c, w)
+
+	c.Check(namespace, tc.Equals, "model_migrating")
+	c.Check(changeMask, tc.Equals, changestream.All)
+	c.Check(predicateCalled, tc.IsTrue)
+	c.Check(matchesUUID, tc.IsTrue)
+	c.Check(matchesOtherID, tc.IsFalse)
+}
+
+// TestWatchForMigrationError asserts that if the watcher factory returns an
+// error, WatchForMigration propagates it to the caller.
+func (s *serviceSuite) TestWatchForMigrationError(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	s.modelState.EXPECT().GetNamespaceModelMigrating().Return("model_migrating")
+	s.watcherFactory.EXPECT().NewNotifyWatcher(gomock.Any(), gomock.Any(), gomock.Any()).Return(
+		nil, errors.Errorf("boom"),
+	)
+
+	svc := NewService(
+		s.controllerState,
+		s.modelState,
+		"test-model-uuid",
+		s.watcherFactory,
+		s.instanceProviderGetter(c),
+		s.resourceProviderGetter(c),
+	)
+	_, err := svc.WatchForMigration(c.Context())
+	c.Assert(err, tc.ErrorMatches, ".*boom")
+}
+
+func (s *serviceSuite) setupMocks(c *tc.C) *gomock.Controller {
+	ctrl := gomock.NewController(c)
+
+	s.controllerState = NewMockControllerState(ctrl)
+	s.modelState = NewMockModelState(ctrl)
+	s.watcherFactory = NewMockWatcherFactory(ctrl)
+
+	s.instanceProvider = NewMockInstanceProvider(ctrl)
+	s.resourceProvider = NewMockResourceProvider(ctrl)
+
+	c.Cleanup(func() {
+		s.controllerState = nil
+		s.modelState = nil
+		s.watcherFactory = nil
+		s.instanceProvider = nil
+		s.resourceProvider = nil
+	})
+
+	return ctrl
+}
+
+func (s *serviceSuite) instanceProviderGetter(_ *tc.C) providertracker.ProviderGetter[InstanceProvider] {
+	return func(_ context.Context) (InstanceProvider, error) {
+		return s.instanceProvider, nil
+	}
+}
+
+func (s *serviceSuite) resourceProviderGetter(_ *tc.C) providertracker.ProviderGetter[ResourceProvider] {
+	return func(_ context.Context) (ResourceProvider, error) {
+		return s.resourceProvider, nil
+	}
 }
 
 type instanceStub struct {

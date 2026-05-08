@@ -6,9 +6,14 @@ package service
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
+	"sort"
+
+	"github.com/juju/collections/set"
 
 	"github.com/juju/juju/core/agentbinary"
+	"github.com/juju/juju/core/arch"
 	corebase "github.com/juju/juju/core/base"
 	"github.com/juju/juju/core/changestream"
 	coreerrors "github.com/juju/juju/core/errors"
@@ -39,34 +44,16 @@ type AgentBinaryFinder interface {
 type agentBinaryFinderFunc func(semversion.Number) (bool, error)
 
 type ModelState interface {
-	// GetMachineCountNotUsingBase returns the number of machines that are not
-	// using one of the supplied bases. If no machines exist in the model or if
-	// no machines exist that are using a base not in the set provided, zero is
-	// returned with no error.
-	GetMachineCountNotUsingBase(context.Context, []corebase.Base) (int, error)
-
 	// GetMachineAgentBinaryMetadata reports the agent binary metadata that is
 	// currently running a given machine.
-	//
-	// The following errors can be expected:
-	// - [machineerrors.MachineNotFound] when the machine being asked for does
-	// not exist.
-	// - [modelagenterrors.MissingAgentBinaries] when the agent binaries don't
-	// exist for one or more machines in the model.
 	GetMachineAgentBinaryMetadata(ctx context.Context, machineName string) (agentbinary.Metadata, error)
 
-	// GetMachinesAgentBinaryMetadata reports the agent binary metadata that each
-	// machine in the model is currently running. This is a bulk call to support
-	// operations such as model export where it is expected that the state of a
-	// model stays relatively static over the operation. This function will
-	// never provide enough granuality into what machine fails as part of the
-	// checks.
-	//
-	// The following errors can be expected:
-	// - [modelagenterrors.AgentVersionNotSet] when one or more machines
-	// in the model do not have their agent version set.
-	// - [modelagenterrors.MissingAgentBinaries] when the agent binaries don't
-	// exist for one or more machines in the model.
+	// GetMachinesAgentBinaryMetadata reports the agent binary metadata that
+	// each machine in the model is currently running. This is a bulk call to
+	// support operations such as model export where it is expected that the
+	// state of a model stays relatively static over the operation. This
+	// function will never provide enough granularity into what machine fails as
+	// part of the checks.
 	GetMachinesAgentBinaryMetadata(context.Context) (map[machine.Name]agentbinary.Metadata, error)
 
 	// GetMachinesNotAtTargetAgentVersion returns the list of machines where
@@ -77,17 +64,10 @@ type ModelState interface {
 
 	// GetMachineRunningAgentBinaryVersion returns the running machine agent
 	// binary version for the given machine uuid.
-	// The following errors can be expected:
-	// - [machineerrors.MachineNotFound] when the machine being asked for does
-	// not exist.
-	// - [github.com/juju/juju/domain/modelagent/errors.AgentVersionNotFound]
-	// when no running agent version has been set for the given machine.
 	GetMachineRunningAgentBinaryVersion(context.Context, string) (agentbinary.Version, error)
 
-	// GetMachineTargetAgentVersion returns the target agent version for the specified machine.
-	// The following error types can be expected:
-	// - [github.com/juju/juju/domain/modelagent/errors.AgentVersionNotFound] when
-	// the agent version does not exist.
+	// GetMachineTargetAgentVersion returns the target agent version for the
+	// specified machine.
 	GetMachineTargetAgentVersion(context.Context, string) (agentbinary.Version, error)
 
 	// GetMachineUUIDByName returns the UUID of a machine identified by its
@@ -95,21 +75,16 @@ type ModelState interface {
 	// [machineerroros.MachineNotFound] is returned.
 	GetMachineUUIDByName(context.Context, machine.Name) (string, error)
 
-	// GetModelTargetAgentVersion returns the target agent version for this model.
+	// GetModelTargetAgentVersion returns the target agent version for this
+	// model.
 	GetModelTargetAgentVersion(context.Context) (semversion.Number, error)
 
 	// GetUnitsAgentBinaryMetadata reports the agent binary metadata that each
 	// unit in the model is currently running. This is a bulk call to support
 	// operations such as model export where it is expected that the state of a
 	// model stays relatively static over the operation. This function will
-	// never provide enough granuality into what unit fails as part of the
+	// never provide enough granularity into what unit fails as part of the
 	// checks.
-	//
-	// The following errors can be expected:
-	// - [modelagenterrors.AgentVersionNotSet] when one or more units in
-	// the model do not have their agent version set.
-	// - [modelagenterrors.MissingAgentBinaries] when the agent binaries don't
-	// exist for one or more units in the model.
 	GetUnitsAgentBinaryMetadata(context.Context) (map[coreunit.Name]agentbinary.Metadata, error)
 
 	// GetUnitsNotAtTargetAgentVersion returns the list of units where their
@@ -120,19 +95,10 @@ type ModelState interface {
 
 	// GetUnitRunningAgentBinaryVersion returns the running unit agent binary
 	// version for the given unit uuid.
-	// The following errors can be expected:
-	// - [applicationerrors.UnitNotFound] when the unit in question does not
-	// exist.
-	// - [github.com/juju/juju/domain/modelagent/errors.AgentVersionNotFound] when no
-	// running agent version has been reported for the given machine.
 	GetUnitRunningAgentBinaryVersion(context.Context, coreunit.UUID) (agentbinary.Version, error)
 
-	// GetUnitTargetAgentVersion returns the target agent version for the specified unit.
-	// The following error types can be expected:
-	// - [github.com/juju/juju/domain/application/errors.UnitNotFound] when the
-	// unit does not exist.
-	// - [github.com/juju/juju/domain/modelagent/errors.AgentVersionNotFound] when
-	// the agent version does not exist.
+	// GetUnitTargetAgentVersion returns the target agent version for the
+	// specified unit.
 	GetUnitTargetAgentVersion(context.Context, coreunit.UUID) (agentbinary.Version, error)
 
 	// GetUnitUUIDByName returns the UUID for the named unit, returning an
@@ -150,11 +116,6 @@ type ModelState interface {
 
 	// SetMachineRunningAgentBinaryVersion sets the running agent version for
 	// the machine.
-	// The following errors can be expected:
-	// - [machineerrors.MachineNotFound] if the machine does not exist.
-	// - [machineerrors.MachineIsDead] if the machine is dead.
-	// - [github.com/juju/juju/core/errors.NotSupported] if the architecture is
-	// not known to the database.
 	SetMachineRunningAgentBinaryVersion(context.Context, string, agentbinary.Version) error
 
 	// SetModelAgentStream is responsible for setting the agent stream that is
@@ -186,13 +147,25 @@ type ModelState interface {
 	// UpdateLatestAgentVersion persists the latest available agent version.
 	UpdateLatestAgentVersion(context.Context, semversion.Number) error
 
-	// SetUnitRunningAgentBinaryVersion sets the running agent version for the unit.
-	// The following error types can be expected:
-	// - [applicationerrors.UnitNotFound] - when the unit does not exist.
-	// - [applicationerrors.UnitIsDead] - when the unit is dead.
-	// - [github.com/juju/juju/core/errors.NotSupported] if the architecture is
-	// not known to the database.
+	// SetUnitRunningAgentBinaryVersion sets the running agent version for the
+	// unit.
 	SetUnitRunningAgentBinaryVersion(context.Context, coreunit.UUID, agentbinary.Version) error
+
+	// GetAllMachinesWithBase returns a map of
+	// machine UUIDs to their resolved platform base.
+	GetAllMachinesWithBase(ctx context.Context) (map[string]corebase.Base, error)
+
+	// GetAllMachinesArchitectures returns a map of all machine architectures in
+	// the model.
+	GetAllMachinesArchitectures(ctx context.Context) ([]string, error)
+
+	// GetAllMachineTargetAgentVersionByArches returns all the given machine
+	// architectures for a given agent version that have an associated agent binary
+	// in the agent binary store.
+	GetAllMachineTargetAgentVersionByArches(
+		ctx context.Context,
+		version string,
+	) ([]string, error)
 }
 
 // ControllerState defines the interface for interacting with the
@@ -201,6 +174,14 @@ type ControllerState interface {
 	// GetControllerAgentVersions has the responsibility of
 	// getting the agent versions of all the controllers.
 	GetControllerAgentVersions(context.Context) ([]semversion.Number, error)
+
+	// GetAllMachineTargetAgentVersionByArches returns all the given machine
+	// architectures for a given agent version that have an associated agent binary
+	// in the agent binary store.
+	GetAllMachineTargetAgentVersionByArches(
+		ctx context.Context,
+		version string,
+	) ([]string, error)
 }
 
 // WatcherFactory provides a factory for constructing new watchers.
@@ -389,13 +370,81 @@ func (s *Service) GetMachineTargetAgentVersion(
 	return s.modelSt.GetMachineTargetAgentVersion(ctx, uuid)
 }
 
+// GetMissingAgentTargetVersions returns missing architectures for the
+// target agent version.
+func (s *Service) GetMissingAgentTargetVersions(ctx context.Context) (semversion.Number, []arch.Arch, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	// Get the current model target agent version. This we can use to check
+	// if we've got binaries for it, for all architectures.
+	targetVersion, err := s.modelSt.GetModelTargetAgentVersion(ctx)
+	if err != nil {
+		return semversion.Zero, nil, errors.Errorf("getting model target agent version: %w", err)
+	}
+
+	// Get all the machines architectures in the model.
+	machineArchesSlice, err := s.modelSt.GetAllMachinesArchitectures(ctx)
+	if err != nil {
+		return semversion.Zero, nil, errors.Errorf("getting all machine architectures in model: %w", err)
+	}
+	machineArches := set.NewStrings(machineArchesSlice...)
+
+	// Find any missing architectures for the target version in the model
+	// database, before checking the controller database. The look up hierarchy
+	// ensures that if a tools for a give architecture exists in complete form
+	// in the model database, we don't need to check the controller database.
+	foundModelArchesSlice, err := s.modelSt.GetAllMachineTargetAgentVersionByArches(ctx, targetVersion.String())
+	if err != nil {
+		return semversion.Zero, nil, errors.Errorf("getting missing agent target versions from model: %w", err)
+	}
+	foundModelArches := set.NewStrings(foundModelArchesSlice...)
+
+	missingModelArches := machineArches.Difference(foundModelArches)
+	if len(missingModelArches) == 0 {
+		// No missing architectures from the model database.
+		return semversion.Zero, nil, nil
+	}
+
+	// We've got some missing architectures from the model database, check
+	// the controller database for any of the missing architectures.
+
+	foundControllerArchesSlice, err := s.controllerSt.GetAllMachineTargetAgentVersionByArches(ctx, targetVersion.String())
+	if err != nil {
+		return semversion.Zero, nil, errors.Errorf("getting missing agent target versions from controller: %w", err)
+	}
+	foundControllerArches := set.NewStrings(foundControllerArchesSlice...)
+
+	missingControllerArches := missingModelArches.Difference(foundControllerArches)
+	if len(missingControllerArches) == 0 {
+		return semversion.Zero, nil, nil
+	}
+
+	// Deduplicate the missing architectures from both model and controller
+	// databases.
+	missing := missingControllerArches.Union(missingModelArches)
+
+	arches := make([]arch.Arch, 0, len(missing))
+	for arch := range missing {
+		archStr, err := decodeArchitecture(arch)
+		if err != nil {
+			return semversion.Zero, nil, errors.Errorf("encoding missing architecture %q: %w", arch, err)
+		}
+		arches = append(arches, archStr)
+	}
+	sort.Strings(arches)
+
+	// Still have some missing architectures.
+	return targetVersion, arches, nil
+}
+
 // GetUnitsAgentBinaryMetadata returns the agent binary metadata that is running
 // for each unit in the model. This call expects that every unit in the model
 // has their agent binary version set and there exist agent binaries available
 // for each unit and the version that it is running.
 //
 // This is a bulk call to support operations such as model export where it will
-// never provide enough granuality into what unit fails as part of the checks.
+// never provide enough granularity into what unit fails as part of the checks.
 //
 // The following error types can be expected:
 // - [modelagenterrors.AgentVersionNotSet] when one or more units in the
@@ -883,24 +932,33 @@ func (s *Service) validateModelCanBeUpgraded(
 		).Add(modelagenterrors.CannotUpgradeControllerModel)
 	}
 
-	failedMachineCount, err := s.modelSt.GetMachineCountNotUsingBase(ctx, corebase.WorkloadBases())
+	machineBases, err := s.modelSt.GetAllMachinesWithBase(ctx)
 	if err != nil {
-		return errors.Errorf(
-			"getting count of machines in model not running a supported workload base: %w",
-			err,
-		)
+		return errors.Errorf("getting machine bases from state: %w", err)
 	}
 
-	if failedMachineCount > 0 {
+	maps.DeleteFunc(machineBases, machineUsesSupportedBase(corebase.WorkloadBases()))
+	if len(machineBases) > 0 {
 		return modelagenterrors.ModelUpgradeBlocker{
 			Reason: fmt.Sprintf(
-				"model has %d machines using unsupported bases: %v",
-				failedMachineCount, corebase.WorkloadBases(),
+				"model has %d machines using unsupported bases, the supported bases are: %v",
+				len(machineBases), corebase.WorkloadBases(),
 			),
 		}
 	}
-
 	return nil
+}
+
+// machineUsesSupportedBase returns a predicate for maps.DeleteFunc that
+// removes machines whose base matches one of the supported bases.
+// Bases are considered equal if their OS and track match while risk and branch are ignored.
+func machineUsesSupportedBase(supported []corebase.Base) func(uuid string, b corebase.Base) bool {
+	return func(_ string, b corebase.Base) bool {
+		// We only compare OS and Track.
+		return slices.ContainsFunc(supported, func(s corebase.Base) bool {
+			return b.OS == s.OS && b.Channel.Track == s.Channel.Track
+		})
+	}
 }
 
 // validateModelCanBeUpgradedTo checks to see if the model can be upgraded to
@@ -925,7 +983,7 @@ func (s *Service) validateModelCanBeUpgradedTo(
 	currentTargetVersion semversion.Number,
 	desiredTargetVersion semversion.Number,
 ) error {
-	if semversion.Zero == desiredTargetVersion {
+	if desiredTargetVersion.IsZero() {
 		return errors.New(
 			"invalid agent version supplied",
 		).Add(modelagenterrors.AgentVersionNotSupported)
@@ -982,8 +1040,7 @@ func (s *Service) validateModelCanBeUpgradedTo(
 func (s *Service) getRecommendedVersion(
 	ctx context.Context,
 ) (semversion.Number, error) {
-	versions, err := s.controllerSt.
-		GetControllerAgentVersions(ctx)
+	versions, err := s.controllerSt.GetControllerAgentVersions(ctx)
 	if err != nil {
 		return semversion.Zero, errors.Capture(err)
 	}
@@ -1235,4 +1292,21 @@ func (s *WatchableService) WatchModelTargetAgentVersion(ctx context.Context) (wa
 		return nil, errors.Errorf("creating watcher for agent version: %w", err)
 	}
 	return w, nil
+}
+
+func decodeArchitecture(a string) (arch.Arch, error) {
+	switch a {
+	case "amd64":
+		return arch.AMD64, nil
+	case "arm64":
+		return arch.ARM64, nil
+	case "ppc64el":
+		return arch.PPC64EL, nil
+	case "riscv64":
+		return arch.RISCV64, nil
+	case "s390x":
+		return arch.S390X, nil
+	default:
+		return "", errors.Errorf("unsupported architecture %q", a)
+	}
 }

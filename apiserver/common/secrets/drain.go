@@ -16,6 +16,7 @@ import (
 	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/model"
 	coresecrets "github.com/juju/juju/core/secrets"
+	"github.com/juju/juju/domain/secret"
 	secretservice "github.com/juju/juju/domain/secret/service"
 	"github.com/juju/juju/rpc/params"
 )
@@ -115,18 +116,18 @@ func OwnerTagFromOwner(owner coresecrets.Owner) (names.Tag, error) {
 	return nil, errors.NotValidf("owner kind %q", owner.Kind)
 }
 
-func secretAccessorFromTag(authTag names.Tag) (secretservice.SecretAccessor, error) {
+func secretAccessorFromTag(authTag names.Tag) (secret.SecretAccessor, error) {
 	switch authTag.(type) {
 	case names.UnitTag:
-		return secretservice.SecretAccessor{
-			Kind: secretservice.UnitAccessor, ID: authTag.Id(),
+		return secret.SecretAccessor{
+			Kind: secret.UnitAccessor, ID: authTag.Id(),
 		}, nil
 	case names.ModelTag:
-		return secretservice.SecretAccessor{
-			Kind: secretservice.ModelAccessor, ID: authTag.Id(),
+		return secret.SecretAccessor{
+			Kind: secret.ModelAccessor, ID: authTag.Id(),
 		}, nil
 	}
-	return secretservice.SecretAccessor{}, errors.NotValidf("auth tag kind %q", authTag.Kind())
+	return secret.SecretAccessor{}, errors.NotValidf("auth tag kind %q", authTag.Kind())
 }
 
 // isLeaderUnit returns true if the authenticated caller is the unit leader of its application.
@@ -141,8 +142,8 @@ func isLeaderUnit(authTag names.Tag, leadershipChecker leadership.Checker) (bool
 }
 
 func (s *SecretsDrainAPI) getCharmSecretsToDrain(ctx context.Context) ([]*coresecrets.SecretMetadataForDrain, error) {
-	owners := []secretservice.CharmSecretOwner{{
-		Kind: secretservice.UnitOwner,
+	owners := []secret.CharmSecretOwner{{
+		Kind: secret.UnitCharmSecretOwner,
 		ID:   s.authTag.Id(),
 	}}
 	// Unit leaders can also get metadata for secrets owned by the app.
@@ -152,8 +153,8 @@ func (s *SecretsDrainAPI) getCharmSecretsToDrain(ctx context.Context) ([]*corese
 	}
 	if isLeader {
 		appName, _ := names.UnitApplication(s.authTag.Id())
-		owners = append(owners, secretservice.CharmSecretOwner{
-			Kind: secretservice.ApplicationOwner,
+		owners = append(owners, secret.CharmSecretOwner{
+			Kind: secret.ApplicationCharmSecretOwner,
 			ID:   appName,
 		})
 	}
@@ -184,7 +185,7 @@ func (s *SecretsDrainAPI) changeSecretBackendForOne(ctx context.Context, arg par
 	return s.secretService.ChangeSecretBackend(ctx, uri, arg.Revision, toChangeSecretBackendParams(accessor, arg))
 }
 
-func toChangeSecretBackendParams(accessor secretservice.SecretAccessor, arg params.ChangeSecretBackendArg) secretservice.ChangeSecretBackendParams {
+func toChangeSecretBackendParams(accessor secret.SecretAccessor, arg params.ChangeSecretBackendArg) secretservice.ChangeSecretBackendParams {
 	params := secretservice.ChangeSecretBackendParams{
 		Accessor: accessor,
 		Data:     arg.Content.Data,

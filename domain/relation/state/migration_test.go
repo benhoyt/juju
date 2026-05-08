@@ -4,10 +4,7 @@
 package state
 
 import (
-	"context"
-	"database/sql"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/juju/tc"
@@ -17,11 +14,10 @@ import (
 	"github.com/juju/juju/core/network"
 	corerelation "github.com/juju/juju/core/relation"
 	corerelationtesting "github.com/juju/juju/core/relation/testing"
-	coreunittesting "github.com/juju/juju/core/unit/testing"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
+	"github.com/juju/juju/domain/deployment/charm"
 	domainrelation "github.com/juju/juju/domain/relation"
 	relationerrors "github.com/juju/juju/domain/relation/errors"
-	"github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/internal/uuid"
 )
@@ -77,9 +73,10 @@ func (s *migrationSuite) TestImportRelation(c *tc.C) {
 	_ = s.addApplicationEndpointFromRelation(c, charm2, appUUID2, relProvider)
 	_ = s.addApplicationEndpointFromRelation(c, charm2, appUUID1, relRequirer)
 	expectedRelID := uint64(42)
+	newRelationUUID := tc.Must(c, corerelation.NewUUID).String()
 
 	// Act
-	obtainedRelUUID, err := s.state.ImportRelation(c.Context(), corerelation.EndpointIdentifier{
+	err := s.state.ImportRelation(c.Context(), newRelationUUID, corerelation.EndpointIdentifier{
 		ApplicationName: "application-1",
 		EndpointName:    "req",
 	}, corerelation.EndpointIdentifier{
@@ -90,7 +87,86 @@ func (s *migrationSuite) TestImportRelation(c *tc.C) {
 	// Assert
 	c.Assert(err, tc.ErrorIsNil)
 	foundRelUUID := s.fetchRelationUUIDByRelationID(c, expectedRelID)
-	c.Assert(obtainedRelUUID, tc.Equals, foundRelUUID)
+	c.Assert(newRelationUUID, tc.Equals, foundRelUUID)
+}
+
+func (s *migrationSuite) TestImportRelationNotFound(c *tc.C) {
+	// Arrange
+	relProvider := charm.Relation{
+		Name:  "prov",
+		Role:  charm.RoleProvider,
+		Scope: charm.ScopeGlobal,
+	}
+	relRequirer := charm.Relation{
+		Name:  "req",
+		Role:  charm.RoleRequirer,
+		Scope: charm.ScopeGlobal,
+	}
+
+	charm1 := s.addCharm(c)
+	charm2 := s.addCharm(c)
+
+	appUUID1 := s.addApplication(c, charm1, "application-1")
+	appUUID2 := s.addApplication(c, charm2, "application-2")
+	_ = s.addApplicationEndpointFromRelation(c, charm1, appUUID1, relProvider)
+	_ = s.addApplicationEndpointFromRelation(c, charm1, appUUID2, relRequirer)
+	expectedRelID := uint64(42)
+	newRelationUUID := tc.Must(c, corerelation.NewUUID).String()
+
+	// Act
+	err := s.state.ImportRelation(c.Context(), newRelationUUID, corerelation.EndpointIdentifier{
+		ApplicationName: "application-1",
+		EndpointName:    "req",
+	}, corerelation.EndpointIdentifier{
+		ApplicationName: "application-2",
+		EndpointName:    "prov",
+	}, expectedRelID, charm.ScopeGlobal)
+
+	// Assert
+	c.Assert(err, tc.ErrorIs, relationerrors.ApplicationEndpointNotFound)
+}
+
+func (s *migrationSuite) TestImportPeerRelation(c *tc.C) {
+	// Arrange
+	relPeer := charm.Relation{
+		Name:  "peer",
+		Role:  charm.RolePeer,
+		Scope: charm.ScopeGlobal,
+	}
+
+	charm1 := s.addCharm(c)
+
+	appUUID1 := s.addApplication(c, charm1, "application-1")
+	_ = s.addApplicationEndpointFromRelation(c, charm1, appUUID1, relPeer)
+	expectedRelID := uint64(43)
+	newRelationUUID := tc.Must(c, corerelation.NewUUID).String()
+
+	// Act
+	err := s.state.ImportPeerRelation(c.Context(), newRelationUUID, corerelation.EndpointIdentifier{
+		ApplicationName: "application-1",
+		EndpointName:    "peer",
+	}, expectedRelID, charm.ScopeGlobal)
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+	foundRelUUID := s.fetchRelationUUIDByRelationID(c, expectedRelID)
+	c.Assert(newRelationUUID, tc.Equals, foundRelUUID)
+}
+
+func (s *migrationSuite) TestImportPeerRelationNotFound(c *tc.C) {
+	charm1 := s.addCharm(c)
+
+	s.addApplication(c, charm1, "application-1")
+
+	expectedRelID := uint64(43)
+	newRelationUUID := tc.Must(c, corerelation.NewUUID).String()
+
+	err := s.state.ImportPeerRelation(c.Context(), newRelationUUID, corerelation.EndpointIdentifier{
+		ApplicationName: "application-1",
+		EndpointName:    "peer",
+	}, expectedRelID, charm.ScopeGlobal)
+
+	c.Assert(err, tc.ErrorIs, relationerrors.ApplicationEndpointNotFound)
 }
 
 func (s *migrationSuite) TestGetApplicationUUIDByName(c *tc.C) {
@@ -128,107 +204,11 @@ func (s *migrationSuite) TestSetRelationApplicationSettings(c *tc.C) {
 	}
 	settingsUpdate := map[string]string{
 		"key2": "value22",
-		"key3": "",
+		"key7": "value5",
 	}
 	expectedSettings := map[string]string{
-		"key1": "value1",
 		"key2": "value22",
-	}
-	for k, v := range initialSettings {
-		s.addRelationApplicationSetting(c, relationEndpointUUID1, k, v)
-	}
-
-	// Act:
-	err := s.state.SetRelationApplicationSettings(
-		c.Context(),
-		relationUUID,
-		s.fakeApplicationUUID1,
-		settingsUpdate,
-	)
-
-	// Assert:
-	c.Assert(err, tc.ErrorIsNil, tc.Commentf(errors.ErrorStack(err)))
-
-	foundSettings := s.getRelationApplicationSettings(c, relationEndpointUUID1)
-	c.Assert(foundSettings, tc.DeepEquals, expectedSettings)
-}
-
-func (s *migrationSuite) TestSetRelationApplicationSettingsNothingToSet(c *tc.C) {
-	// Arrange: Add relation with one endpoint.
-	endpoint1 := domainrelation.Endpoint{
-		ApplicationName: s.fakeApplicationName1,
-		Relation: charm.Relation{
-			Name:      "fake-endpoint-name-1",
-			Role:      charm.RoleProvider,
-			Interface: "database",
-			Scope:     charm.ScopeContainer,
-		},
-	}
-	charmRelationUUID1 := s.addCharmRelation(c, s.fakeCharmUUID1, endpoint1.Relation)
-	applicationEndpointUUID1 := s.addApplicationEndpoint(c, s.fakeApplicationUUID1, charmRelationUUID1)
-	relationUUID := s.addRelation(c)
-	relationEndpointUUID1 := s.addRelationEndpoint(c, relationUUID, applicationEndpointUUID1)
-
-	// Arrange: Declare settings and add initial settings.
-	initialSettings := map[string]string{
-		"key1": "value1",
-		"key2": "value2",
-		"key3": "value3",
-	}
-	settingsUpdate := map[string]string{
-		"key2": "",
-		"key3": "",
-	}
-	expectedSettings := map[string]string{
-		"key1": "value1",
-	}
-	for k, v := range initialSettings {
-		s.addRelationApplicationSetting(c, relationEndpointUUID1, k, v)
-	}
-
-	// Act:
-	err := s.state.SetRelationApplicationSettings(
-		c.Context(),
-		relationUUID,
-		s.fakeApplicationUUID1,
-		settingsUpdate,
-	)
-
-	// Assert:
-	c.Assert(err, tc.ErrorIsNil, tc.Commentf(errors.ErrorStack(err)))
-
-	foundSettings := s.getRelationApplicationSettings(c, relationEndpointUUID1)
-	c.Assert(foundSettings, tc.DeepEquals, expectedSettings)
-}
-
-func (s *migrationSuite) TestSetRelationApplicationSettingsNothingToUnSet(c *tc.C) {
-	// Arrange: Add relation with one endpoint.
-	endpoint1 := domainrelation.Endpoint{
-		ApplicationName: s.fakeApplicationName1,
-		Relation: charm.Relation{
-			Name:      "fake-endpoint-name-1",
-			Role:      charm.RoleProvider,
-			Interface: "database",
-			Scope:     charm.ScopeContainer,
-		},
-	}
-	charmRelationUUID1 := s.addCharmRelation(c, s.fakeCharmUUID1, endpoint1.Relation)
-	applicationEndpointUUID1 := s.addApplicationEndpoint(c, s.fakeApplicationUUID1, charmRelationUUID1)
-	relationUUID := s.addRelation(c)
-	relationEndpointUUID1 := s.addRelationEndpoint(c, relationUUID, applicationEndpointUUID1)
-
-	// Arrange: Declare settings and add initial settings.
-	initialSettings := map[string]string{
-		"key1": "value1",
-	}
-	settingsUpdate := map[string]string{
-		"key2": "value2",
-		"key3": "value3",
-	}
-	expectedSettings := map[string]string{
-		"key1": "value1",
-		"key2": "value2",
-		"key3": "value3",
+		"key7": "value5",
 	}
 	for k, v := range initialSettings {
 		s.addRelationApplicationSetting(c, relationEndpointUUID1, k, v)
@@ -407,60 +387,6 @@ func (s *migrationSuite) TestSetRelationApplicationSettingsRelationNotFound(c *t
 	c.Assert(err, tc.ErrorIs, relationerrors.RelationNotFound)
 }
 
-func (s *migrationSuite) TestDeleteImportedRelations(c *tc.C) {
-	// Arrange: Add a peer relation with one endpoint.
-	endpoint1 := domainrelation.Endpoint{
-		ApplicationName: s.fakeApplicationName1,
-		Relation: charm.Relation{
-			Name:      "fake-endpoint-name-1",
-			Role:      charm.RoleProvider,
-			Interface: "database",
-			Scope:     charm.ScopeContainer,
-		},
-	}
-	charmRelationUUID1 := s.addCharmRelation(c, s.fakeCharmUUID1, endpoint1.Relation)
-	applicationEndpointUUID1 := s.addApplicationEndpoint(c, s.fakeApplicationUUID1, charmRelationUUID1)
-	relationUUID := s.addRelation(c)
-	relationEndpointUUID1 := s.addRelationEndpoint(c, relationUUID, applicationEndpointUUID1)
-
-	// Arrange: Declare settings and add initial settings.
-	appInitialSettings := map[string]string{
-		"key1": "value1",
-		"key2": "value2",
-		"key3": "value3",
-	}
-	for k, v := range appInitialSettings {
-		s.addRelationApplicationSetting(c, relationEndpointUUID1, k, v)
-	}
-
-	// Arrange: Add a unit to the relation.
-	unitName := coreunittesting.GenNewName(c, "app/0")
-	unitUUID := s.addUnit(c, unitName, s.fakeApplicationUUID1, s.fakeCharmUUID1)
-	relationUnitUUID := s.addRelationUnit(c, unitUUID, relationEndpointUUID1)
-
-	unitInitialSettings := map[string]string{
-		"key1": "value1",
-		"key2": "value2",
-		"key3": "value3",
-	}
-	for k, v := range unitInitialSettings {
-		s.addRelationUnitSetting(c, relationUnitUUID, k, v)
-	}
-
-	// Act
-	err := s.state.DeleteImportedRelations(c.Context())
-
-	// Assert
-	c.Assert(err, tc.ErrorIsNil)
-	s.checkTableEmpty(c, "relation_unit_uuid", "relation_unit_settings")
-	s.checkTableEmpty(c, "relation_unit_uuid", "relation_unit_settings_hash")
-	s.checkTableEmpty(c, "uuid", "relation_unit")
-	s.checkTableEmpty(c, "relation_endpoint_uuid", "relation_application_settings")
-	s.checkTableEmpty(c, "relation_endpoint_uuid", "relation_application_settings_hash")
-	s.checkTableEmpty(c, "uuid", "relation_endpoint")
-	s.checkTableEmpty(c, "uuid", "relation")
-}
-
 func (s *migrationSuite) TestExportRelations(c *tc.C) {
 	// Arrange: Add two endpoints and a relation on them.
 	endpoint1 := domainrelation.Endpoint{
@@ -530,9 +456,23 @@ func (s *migrationSuite) TestExportRelations(c *tc.C) {
 
 	// Assert:
 	c.Assert(err, tc.ErrorIsNil)
+	// Endpoints are returned in canonical key order: requirer first, then
+	// provider for regular relations.
 	c.Check(exported, tc.SameContents, []domainrelation.ExportRelation{{
-		ID: 1,
+		ID: 0,
 		Endpoints: []domainrelation.ExportEndpoint{{
+			ApplicationName: s.fakeApplicationName2,
+			Name:            endpoint2.Name,
+			Role:            endpoint2.Role,
+			Interface:       endpoint2.Interface,
+			Optional:        endpoint2.Optional,
+			Limit:           endpoint2.Limit,
+			Scope:           relationScope,
+			ApplicationSettings: map[string]any{
+				"app-foo": "app-bar",
+			},
+			AllUnitSettings: make(map[string]map[string]any),
+		}, {
 			ApplicationName: s.fakeApplicationName1,
 			Name:            endpoint1.Name,
 			Role:            endpoint1.Role,
@@ -549,21 +489,9 @@ func (s *migrationSuite) TestExportRelations(c *tc.C) {
 				},
 			},
 			ApplicationSettings: make(map[string]any),
-		}, {
-			ApplicationName: s.fakeApplicationName2,
-			Name:            endpoint2.Name,
-			Role:            endpoint2.Role,
-			Interface:       endpoint2.Interface,
-			Optional:        endpoint2.Optional,
-			Limit:           endpoint2.Limit,
-			Scope:           relationScope,
-			ApplicationSettings: map[string]any{
-				"app-foo": "app-bar",
-			},
-			AllUnitSettings: make(map[string]map[string]any),
 		}},
 	}, {
-		ID: 2,
+		ID: 1,
 		Endpoints: []domainrelation.ExportEndpoint{{
 			ApplicationName:     s.fakeApplicationName1,
 			Name:                peerEndpoint.Name,
@@ -576,6 +504,81 @@ func (s *migrationSuite) TestExportRelations(c *tc.C) {
 			ApplicationSettings: make(map[string]any),
 		}},
 	}})
+}
+
+// TestExportRelationsCanonicalOrder verifies that ExportRelations returns
+// endpoints in canonical key order (requirer first, provider second, peer last)
+// regardless of insertion order. All permutations of the SQL ORDER BY CASE role
+// block are exercised.
+func (s *migrationSuite) TestExportRelationsCanonicalOrder(c *tc.C) {
+	tests := []struct {
+		description    string
+		insertionRoles []charm.RelationRole
+		wantRoles      []charm.RelationRole
+	}{
+		{
+			description:    "provider inserted first, requirer second → canonical: requirer first",
+			insertionRoles: []charm.RelationRole{charm.RoleProvider, charm.RoleRequirer},
+			wantRoles:      []charm.RelationRole{charm.RoleRequirer, charm.RoleProvider},
+		},
+		{
+			description:    "requirer inserted first, provider second → canonical: requirer first",
+			insertionRoles: []charm.RelationRole{charm.RoleRequirer, charm.RoleProvider},
+			wantRoles:      []charm.RelationRole{charm.RoleRequirer, charm.RoleProvider},
+		},
+		{
+			description:    "peer relation (single endpoint) → canonical: peer",
+			insertionRoles: []charm.RelationRole{charm.RolePeer},
+			wantRoles:      []charm.RelationRole{charm.RolePeer},
+		},
+	}
+
+	// wantRolesByRelID maps relation_id → expected canonical role order.
+	wantRolesByRelID := make(map[int][]charm.RelationRole)
+
+	for i, tt := range tests {
+		c.Log(tt.description)
+
+		// Create fresh charms and apps per iteration to avoid UNIQUE
+		// constraint violations on (charm_uuid, name) in charm_relation.
+		charmUUIDs := make([]corecharm.ID, len(tt.insertionRoles))
+		appUUIDs := make([]coreapplication.UUID, len(tt.insertionRoles))
+		for j := range tt.insertionRoles {
+			charmUUIDs[j] = s.addCharm(c)
+			appUUIDs[j] = s.addApplication(c, charmUUIDs[j],
+				fmt.Sprintf("app-%d-%d", i, j))
+		}
+
+		relID := s.relationCount
+		relationUUID := s.addRelation(c)
+		for j, role := range tt.insertionRoles {
+			rel := charm.Relation{
+				Name:      fmt.Sprintf("ep-%d-%d", i, j),
+				Role:      role,
+				Interface: "database",
+				Scope:     charm.ScopeGlobal,
+			}
+			charmRelUUID := s.addCharmRelation(c, charmUUIDs[j], rel)
+			appEpUUID := s.addApplicationEndpoint(c, appUUIDs[j], charmRelUUID)
+			s.addRelationEndpoint(c, relationUUID, appEpUUID)
+		}
+		wantRolesByRelID[relID] = tt.wantRoles
+	}
+
+	exported, err := s.state.ExportRelations(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(exported, tc.HasLen, len(tests))
+
+	for _, rel := range exported {
+		wantRoles, ok := wantRolesByRelID[rel.ID]
+		c.Assert(ok, tc.IsTrue, tc.Commentf("unexpected relation ID %d", rel.ID))
+		c.Assert(rel.Endpoints, tc.HasLen, len(wantRoles),
+			tc.Commentf("relation %d", rel.ID))
+		for j, wantRole := range wantRoles {
+			c.Check(rel.Endpoints[j].Role, tc.Equals, wantRole,
+				tc.Commentf("relation %d endpoint[%d]", rel.ID, j))
+		}
+	}
 }
 
 // addApplicationEndpointFromRelation creates and associates a new application
@@ -606,31 +609,4 @@ VALUES (?,?,?,?)
 `, relationEndpointUUID.String(), appUUID.String(), charmRelationUUID.String(), network.AlphaSpaceId)
 
 	return relationEndpointUUID
-}
-
-func (s *migrationSuite) checkTableEmpty(c *tc.C, colName, tableName string) {
-	query := fmt.Sprintf(`
-SELECT %s
-FROM   %s
-`, colName, tableName)
-
-	values := []string{}
-	_ = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, query)
-
-		if err != nil {
-			return errors.Capture(err)
-		}
-		defer func() { _ = rows.Close() }()
-
-		for rows.Next() {
-			var value string
-			if err := rows.Scan(&value); err != nil {
-				return errors.Capture(err)
-			}
-			values = append(values, value)
-		}
-		return nil
-	})
-	c.Check(values, tc.DeepEquals, []string{}, tc.Commentf("table %q first value: %q", tableName, strings.Join(values, ", ")))
 }

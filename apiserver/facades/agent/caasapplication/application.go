@@ -158,6 +158,13 @@ func (f *Facade) UnitIntroduction(ctx context.Context, args params.CAASUnitIntro
 			CACert:            caCert,
 			Password:          unitPassword,
 			UpgradedToVersion: version,
+
+			OpenTelemetryEnabled:               controllerConfig.OpenTelemetryEnabled(),
+			OpenTelemetryEndpoint:              controllerConfig.OpenTelemetryEndpoint(),
+			OpenTelemetryInsecure:              controllerConfig.OpenTelemetryInsecure(),
+			OpenTelemetryStackTraces:           controllerConfig.OpenTelemetryStackTraces(),
+			OpenTelemetrySampleRatio:           controllerConfig.OpenTelemetrySampleRatio(),
+			OpenTelemetryTailSamplingThreshold: controllerConfig.OpenTelemetryTailSamplingThreshold(),
 		},
 	)
 	if err != nil {

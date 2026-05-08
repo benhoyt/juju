@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/juju/collections/set"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
 	"gopkg.in/yaml.v2"
@@ -19,9 +19,9 @@ import (
 	"github.com/juju/juju/api/jujuclient"
 	k8s "github.com/juju/juju/caas/kubernetes"
 	"github.com/juju/juju/cloud"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/caas"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/provider/kubernetes/proxy"
 	_ "github.com/juju/juju/internal/provider/maas"
 	"github.com/juju/juju/internal/testhelpers"
@@ -193,7 +193,7 @@ func (s *updateCAASSuite) assertUpdateCloudResult(
 		Endpoint:         "https://6.6.6.6:8888",
 		IdentityEndpoint: "",
 		StorageEndpoint:  "",
-		Config:           map[string]interface{}{"workload-storage": workloadStorage},
+		Config:           map[string]any{"workload-storage": workloadStorage},
 		RegionConfig:     cloud.RegionConfig(nil),
 		CACertificates:   []string{"fakecadata2"},
 	}
@@ -217,7 +217,7 @@ func (s *updateCAASSuite) assertUpdateCloudResult(
 					IdentityEndpoint: "",
 					StorageEndpoint:  "",
 					Regions:          []cloud.Region(nil),
-					Config:           map[string]interface{}(nil),
+					Config:           map[string]any(nil),
 					RegionConfig:     cloud.RegionConfig(nil),
 				},
 				"mrcloud2": {
@@ -229,7 +229,7 @@ func (s *updateCAASSuite) assertUpdateCloudResult(
 					IdentityEndpoint: "",
 					StorageEndpoint:  "",
 					Regions:          []cloud.Region(nil),
-					Config:           map[string]interface{}(nil),
+					Config:           map[string]any(nil),
 					RegionConfig:     cloud.RegionConfig(nil),
 				},
 				"myk8s": expectedCloudToUpdate,

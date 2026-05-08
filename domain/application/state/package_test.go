@@ -8,12 +8,15 @@ import (
 	"database/sql"
 
 	"github.com/juju/clock"
+	"github.com/juju/collections/transform"
 	"github.com/juju/tc"
 
 	coreapplication "github.com/juju/juju/core/application"
+	corecharm "github.com/juju/juju/core/charm"
 	"github.com/juju/juju/core/devices"
 	coremachine "github.com/juju/juju/core/machine"
 	coremachinetesting "github.com/juju/juju/core/machine/testing"
+	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
 	networktesting "github.com/juju/juju/core/network/testing"
 	"github.com/juju/juju/core/objectstore"
@@ -23,20 +26,28 @@ import (
 	"github.com/juju/juju/domain/application"
 	"github.com/juju/juju/domain/application/architecture"
 	"github.com/juju/juju/domain/application/charm"
-	"github.com/juju/juju/domain/application/internal"
 	"github.com/juju/juju/domain/deployment"
 	"github.com/juju/juju/domain/life"
 	domainnetwork "github.com/juju/juju/domain/network"
 	schematesting "github.com/juju/juju/domain/schema/testing"
+	domainstorage "github.com/juju/juju/domain/storage"
 	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/uuid"
 )
 
-//go:generate go run go.uber.org/mock/mockgen -typed -package state -destination charm_mock_test.go github.com/juju/juju/internal/charm Charm
+//go:generate go run go.uber.org/mock/mockgen -typed -package state -destination charm_mock_test.go github.com/juju/juju/domain/deployment/charm Charm
 
 type baseSuite struct {
 	schematesting.ModelSuite
+
+	modelUUID model.UUID
+}
+
+func (s *baseSuite) SetUpTest(c *tc.C) {
+	s.ModelSuite.SetUpTest(c)
+
+	s.modelUUID = tc.Must(c, model.NewUUID)
 }
 
 func (s *baseSuite) minimalMetadata(c *tc.C, name string) charm.Metadata {
@@ -72,6 +83,161 @@ func (s *baseSuite) minimalManifest(c *tc.C) charm.Manifest {
 			},
 		},
 	}
+}
+
+// getCharmMetadataName returns the charm metadata name for the supplied charm
+// UUID.
+func (s *baseSuite) getCharmMetadataName(c *tc.C, charmUUID corecharm.ID) string {
+	var name string
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(
+			ctx,
+			"SELECT name FROM charm_metadata WHERE charm_uuid = ?",
+			charmUUID.String(),
+		).Scan(&name)
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	return name
+}
+
+// newCharmWithStorage inserts a charm and a single filesystem storage
+// definition directly into the model tables and returns the charm UUID.
+func (s *baseSuite) newCharmWithStorage(
+	c *tc.C,
+	storageName string,
+	countMax int,
+) corecharm.ID {
+	charmUUID := tc.Must(c, corecharm.NewID)
+	charmName := "charm-" + charmUUID.String()
+
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(
+			ctx,
+			`
+INSERT INTO charm (uuid, reference_name, architecture_id, revision)
+VALUES (?, ?, 0, ?)
+`,
+			charmUUID.String(),
+			charmName,
+			1,
+		)
+		if err != nil {
+			return errors.Capture(err)
+		}
+
+		_, err = tx.ExecContext(
+			ctx,
+			`
+INSERT INTO charm_metadata (charm_uuid, name)
+VALUES (?, ?)
+`,
+			charmUUID.String(),
+			charmName,
+		)
+		if err != nil {
+			return errors.Capture(err)
+		}
+
+		_, err = tx.ExecContext(
+			ctx,
+			`
+INSERT INTO charm_storage (
+	charm_uuid,
+	name,
+	description,
+	storage_kind_id,
+	shared,
+	read_only,
+	count_min,
+	count_max,
+	minimum_size_mib,
+	location
+)
+VALUES (?, ?, ?, 1, false, false, 1, ?, 1024, '/')
+`,
+			charmUUID.String(),
+			storageName,
+			storageName,
+			countMax,
+		)
+		if err != nil {
+			return errors.Capture(err)
+		}
+
+		return nil
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	return charmUUID
+}
+
+// getUnitName returns the unit name for the supplied unit UUID.
+func (s *baseSuite) getUnitName(c *tc.C, unitUUID coreunit.UUID) string {
+	var name string
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(
+			ctx,
+			"SELECT name FROM unit WHERE uuid = ?",
+			unitUUID.String(),
+		).Scan(&name)
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	return name
+}
+
+// getUnitNetNodeUUID returns the net node UUID for the supplied unit UUID.
+func (s *baseSuite) getUnitNetNodeUUID(
+	c *tc.C, unitUUID coreunit.UUID,
+) domainnetwork.NetNodeUUID {
+	var uuid string
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(
+			ctx,
+			"SELECT net_node_uuid FROM unit WHERE uuid = ?",
+			unitUUID.String(),
+		).Scan(&uuid)
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	netNodeUUID := domainnetwork.NetNodeUUID(uuid)
+	c.Assert(netNodeUUID.Validate(), tc.ErrorIsNil)
+	return netNodeUUID
+}
+
+// getUnitMachineUUID returns the machine UUID for the supplied unit UUID.
+func (s *baseSuite) getUnitMachineUUID(c *tc.C, unitUUID coreunit.UUID) coremachine.UUID {
+	var uuid string
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(
+			ctx,
+			`SELECT m.uuid FROM machine m
+JOIN unit u ON m.net_node_uuid = u.net_node_uuid
+WHERE u.uuid = ?`,
+			unitUUID.String(),
+		).Scan(&uuid)
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	machineUUID, err := coremachine.ParseUUID(uuid)
+	c.Assert(err, tc.ErrorIsNil)
+	return machineUUID
+}
+
+// getMachineNetNodeUUID returns the net node UUID for the supplied machine
+// UUID.
+func (s *baseSuite) getMachineNetNodeUUID(
+	c *tc.C, machineUUID coremachine.UUID,
+) domainnetwork.NetNodeUUID {
+	var uuid string
+	err := s.DB().QueryRowContext(
+		c.Context(),
+		"SELECT net_node_uuid FROM machine WHERE uuid = ?",
+		machineUUID.String(),
+	).Scan(&uuid)
+	c.Assert(err, tc.ErrorIsNil)
+
+	netNodeUUID := domainnetwork.NetNodeUUID(uuid)
+	c.Assert(netNodeUUID.Validate(), tc.ErrorIsNil)
+	return netNodeUUID
 }
 
 func (s *baseSuite) addApplicationArgForResources(c *tc.C,
@@ -137,7 +303,7 @@ INSERT INTO object_store_metadata_path (path, metadata_uuid) VALUES (?, ?)
 func (s *baseSuite) addIAASApplicationArgForStorage(c *tc.C,
 	name string,
 	charmStorage []charm.Storage,
-	directives []internal.CreateApplicationStorageDirectiveArg,
+	directives []domainstorage.DirectiveArg,
 ) application.AddIAASApplicationArg {
 	platform := deployment.Platform{
 		Channel:      "666",
@@ -185,7 +351,7 @@ func (s *baseSuite) createNamedIAASUnit(c *tc.C) (coreunit.Name, coreunit.UUID) 
 }
 
 func (s *baseSuite) createNNamedIAASUnit(c *tc.C, n int) ([]coreunit.Name, []coreunit.UUID) {
-	state := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	state := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 	_, unitUUIDS := s.createIAASApplicationWithNUnits(c, "foo", life.Alive, n)
 	names := make([]coreunit.Name, 0, n)
 	for _, unitUUID := range unitUUIDS {
@@ -197,7 +363,7 @@ func (s *baseSuite) createNNamedIAASUnit(c *tc.C, n int) ([]coreunit.Name, []cor
 }
 
 func (s *baseSuite) createNamedCAASUnit(c *tc.C) (coreunit.Name, coreunit.UUID) {
-	state := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	state := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 	_, unitUUIDS := s.createCAASApplicationWithNUnits(c, "foo", life.Alive, 1)
 	name, err := state.GetUnitNameForUUID(c.Context(), unitUUIDS[0])
 	c.Assert(err, tc.ErrorIsNil)
@@ -214,7 +380,17 @@ func (s *baseSuite) createIAASApplicationWithNUnits(
 	l life.Life,
 	unitCount int,
 ) (coreapplication.UUID, []coreunit.UUID) {
-	state := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	return s.createIAASApplicationWithNUnitsAndStorage(c, name, l, unitCount, nil)
+}
+
+func (s *baseSuite) createIAASApplicationWithNUnitsAndStorage(
+	c *tc.C,
+	name string,
+	l life.Life,
+	unitCount int,
+	storage map[string]charm.Storage,
+) (coreapplication.UUID, []coreunit.UUID) {
+	state := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 	platform := deployment.Platform{
 		Channel:      "22.04/stable",
 		OSType:       deployment.Ubuntu,
@@ -228,11 +404,15 @@ func (s *baseSuite) createIAASApplicationWithNUnits(
 
 	ctx := c.Context()
 	units := make([]application.AddIAASUnitArg, unitCount)
-	for i := range units {
+	unitUUIDs := make([]coreunit.UUID, unitCount)
+	for i := range unitCount {
+		unitUUID := tc.Must(c, coreunit.NewUUID)
+		unitUUIDs[i] = unitUUID
 		netNodeUUID := tc.Must(c, domainnetwork.NewNetNodeUUID)
-		units[i].MachineUUID = coremachinetesting.GenUUID(c)
+		units[i].MachineUUID = tc.Must(c, coremachine.NewUUID)
 		units[i].MachineNetNodeUUID = netNodeUUID
 		units[i].NetNodeUUID = netNodeUUID
+		units[i].UnitUUID = unitUUID
 	}
 
 	appUUID, _, err := state.CreateIAASApplication(ctx, name, application.AddIAASApplicationArg{
@@ -241,7 +421,8 @@ func (s *baseSuite) createIAASApplicationWithNUnits(
 			Channel:  channel,
 			Charm: charm.Charm{
 				Metadata: charm.Metadata{
-					Name: name,
+					Name:    name,
+					Storage: storage,
 					Provides: map[string]charm.Relation{
 						"endpoint": {
 							Name:  "endpoint",
@@ -303,16 +484,13 @@ func (s *baseSuite) createIAASApplicationWithNUnits(
 	})
 	c.Assert(err, tc.ErrorIsNil)
 
-	unitUUIDS, err := state.getApplicationUnits(ctx, appUUID)
-	c.Assert(err, tc.ErrorIsNil)
-
-	return appUUID, unitUUIDS
+	return appUUID, unitUUIDs
 }
 
 // createIAASApplicationWithReferenceName creates an IAAS application with the given
 // reference name. In this way two applications can be created with the same charm config.
 func (s *baseSuite) createIAASApplicationWithReferenceName(c *tc.C, name string, l life.Life, referenceName string, units ...application.AddIAASUnitArg) coreapplication.UUID {
-	state := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	state := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 	platform := deployment.Platform{
 		Channel:      "22.04/stable",
 		OSType:       deployment.Ubuntu,
@@ -404,7 +582,7 @@ func (s *baseSuite) createIAASApplicationWithEndpointBindings(
 	bindings map[string]network.SpaceName,
 	units ...application.AddIAASUnitArg,
 ) coreapplication.UUID {
-	state := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	state := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 	platform := deployment.Platform{
 		Channel:      "22.04/stable",
 		OSType:       deployment.Ubuntu,
@@ -515,26 +693,27 @@ func (s *baseSuite) createSubnetForCAASModel(c *tc.C) {
 func (s *baseSuite) createCAASApplicationWithNUnits(
 	c *tc.C, name string, l life.Life, unitCount int,
 ) (coreapplication.UUID, []coreunit.UUID) {
-	units := make([]application.AddCAASUnitArg, 0, unitCount)
-	for range unitCount {
-		units = append(units, application.AddCAASUnitArg{
+	units := make([]application.AddCAASUnitArg, unitCount)
+	unitUUIDs := make([]coreunit.UUID, unitCount)
+	for i := range unitCount {
+		unitUUID := tc.Must(c, coreunit.NewUUID)
+		unitUUIDs[i] = unitUUID
+		units[i] = application.AddCAASUnitArg{
 			AddUnitArg: application.AddUnitArg{
+				UnitUUID:    unitUUID,
 				NetNodeUUID: tc.Must(c, domainnetwork.NewNetNodeUUID),
 			},
-		})
+		}
 	}
 	appUUID := s.createCAASApplication(
 		c, name, l, units...,
 	)
-	state := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
-	uuids, err := state.getApplicationUnits(c.Context(), appUUID)
-	c.Assert(err, tc.ErrorIsNil)
-	return appUUID, uuids
+	return appUUID, unitUUIDs
 }
 
 func (s *baseSuite) createCAASApplication(c *tc.C, name string, l life.Life, units ...application.AddCAASUnitArg) coreapplication.UUID {
 	s.createSubnetForCAASModel(c)
-	state := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	state := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	platform := deployment.Platform{
 		Channel:      "22.04/stable",
@@ -622,7 +801,7 @@ func (s *baseSuite) createCAASApplication(c *tc.C, name string, l life.Life, uni
 
 func (s *baseSuite) createCAASScalingApplication(c *tc.C, name string, l life.Life, scale int) coreapplication.UUID {
 	s.createSubnetForCAASModel(c)
-	state := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	state := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	platform := deployment.Platform{
 		Channel:      "22.04/stable",
@@ -680,6 +859,77 @@ func (s *baseSuite) createCAASScalingApplication(c *tc.C, name string, l life.Li
 	c.Assert(err, tc.ErrorIsNil)
 
 	return appID
+}
+
+func (s *baseSuite) createMigratingApplication(c *tc.C, name string) (coreapplication.UUID, corecharm.ID) {
+	st := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
+
+	platform := deployment.Platform{
+		Channel:      "666",
+		OSType:       deployment.Ubuntu,
+		Architecture: architecture.ARM64,
+	}
+	channel := &deployment.Channel{
+		Track:  "track",
+		Risk:   "risk",
+		Branch: "branch",
+	}
+	ctx := c.Context()
+	id := tc.Must(c, coreapplication.NewUUID)
+	args := application.InsertApplicationArgs{
+		ApplicationUUID: id.String(),
+		Platform:        platform,
+		Charm: charm.Charm{
+			Metadata:      s.minimalMetadata(c, name),
+			Manifest:      s.minimalManifest(c),
+			Source:        charm.CharmHubSource,
+			ReferenceName: name,
+			Revision:      42,
+			Architecture:  architecture.AMD64,
+		},
+		Scale:   1,
+		Channel: channel,
+		Config: map[string]application.AddApplicationConfig{
+			"foo": {
+				Value: "bar",
+				Type:  charm.OptionString,
+			},
+		},
+		Settings: application.ApplicationSettings{
+			Trust: true,
+		},
+	}
+	err := st.InsertMigratingApplication(ctx, "666", args)
+	c.Assert(err, tc.ErrorIsNil)
+
+	var charmID corecharm.ID
+	err = s.TxnRunner().StdTxn(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, "SELECT charm_uuid FROM application WHERE uuid = ?", id.String()).Scan(&charmID)
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	return id, charmID
+}
+
+func (s *baseSuite) getApplicationUnits(c *tc.C, appUUID coreapplication.UUID) []coreunit.UUID {
+	var dbVals []string
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, "SELECT uuid FROM unit WHERE application_uuid = ?", appUUID.String())
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var uuid string
+			if err := rows.Scan(&uuid); err != nil {
+				return err
+			}
+			dbVals = append(dbVals, uuid)
+		}
+		return rows.Err()
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	return transform.Slice(dbVals, func(u string) coreunit.UUID { return coreunit.UUID(u) })
 }
 
 func (s *baseSuite) assertApplication(

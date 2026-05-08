@@ -12,14 +12,14 @@ import (
 	"strconv"
 	"strings"
 
-	semversion "github.com/juju/juju/core/semversion"
+	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/internal/errors"
 )
 
 // The presence and format of this constant is very important.
 // The debian/rules build recipe uses this value for the version
 // number of the release package.
-const version = "4.0-beta8"
+const version = "4.1-beta2"
 
 // UserAgentVersion defines a user agent version used for communication for
 // outside resources.
@@ -38,9 +38,6 @@ const (
 	// GradeDevel reflects the snap "devel" grade value.
 	GradeDevel = "devel"
 )
-
-// The version that we switched over from old style numbering to new style.
-var switchOverVersion = semversion.MustParse("1.19.9")
 
 // build is a string representing this build of Juju's number.
 //
@@ -103,19 +100,10 @@ func init() {
 	Current = semversion.MustParse(strings.TrimSpace(string(v)))
 }
 
-func isOdd(x int) bool {
-	return x%2 != 0
-}
-
 // IsDev returns whether the version represents a development version. A
-// version with a tag or a nonzero build component is considered to be a
-// development version.  Versions older than or equal to 1.19.3 (the switch
-// over time) check for odd minor versions.
+// version with a tag will be considered a development version.
 func IsDev(v semversion.Number) bool {
-	if v.Compare(switchOverVersion) <= 0 {
-		return isOdd(v.Minor) || v.Build > 0
-	}
-	return v.Tag != "" || v.Build > 0
+	return v.Tag != ""
 }
 
 func mustParseBuildInt(buildInt string) int {

@@ -33,7 +33,7 @@ type UniterClient interface {
 	GoalState(context.Context) (application.GoalState, error)
 	CloudSpec(context.Context) (*params.CloudSpec, error)
 	ActionBegin(ctx context.Context, tag names.ActionTag) error
-	ActionFinish(ctx context.Context, tag names.ActionTag, status string, results map[string]interface{}, message string) error
+	ActionFinish(ctx context.Context, tag names.ActionTag, status string, results map[string]any, message string) error
 	UnitWorkloadVersion(ctx context.Context, tag names.UnitTag) (string, error)
 	SetUnitWorkloadVersion(ctx context.Context, tag names.UnitTag, version string) error
 	OpenedMachinePortRangesByEndpoint(ctx context.Context, machineTag names.MachineTag) (map[names.UnitTag]network.GroupedPortRanges, error)
@@ -45,4 +45,8 @@ type UniterClient interface {
 	WatchUpdateStatusHookInterval(context.Context) (watcher.NotifyWatcher, error)
 	UpdateStatusHookInterval(context.Context) (time.Duration, error)
 	StorageAttachmentLife(context.Context, []params.StorageAttachmentId) ([]params.LifeResult, error)
+
+	// GetUnitContext returns as much context information required for the
+	// construction of a context factory.
+	GetUnitContext(ctx context.Context, tag names.UnitTag) (uniter.UnitContext, error)
 }

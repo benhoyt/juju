@@ -11,9 +11,9 @@ import (
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/domain/application/architecture"
 	applicationcharm "github.com/juju/juju/domain/application/charm"
-	internalcharm "github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/charm/assumes"
-	"github.com/juju/juju/internal/charm/resource"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
+	"github.com/juju/juju/domain/deployment/charm/assumes"
+	"github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/internal/testhelpers"
 	"github.com/juju/juju/rpc/params"
 )
@@ -63,8 +63,8 @@ func (s *exportSuite) TestExport(c *tc.C) {
 			"foo": {
 				Resource: "foo",
 				Mounts:   []internalcharm.Mount{{Storage: "foo", Location: "/bar"}},
-				Gid:      ptr(1000),
-				Uid:      ptr(1000),
+				Gid:      new(1000),
+				Uid:      new(1000),
 			},
 		},
 		Assumes: &assumes.ExpressionTree{
@@ -92,9 +92,9 @@ func (s *exportSuite) TestExport(c *tc.C) {
 			"bar": {
 				Parallel:    true,
 				Description: "baz",
-				Params: map[string]interface{}{
+				Params: map[string]any{
 					"foo": "bar",
-					"blah": map[string]interface{}{
+					"blah": map[string]any{
 						"alpha": "omega",
 					},
 				},
@@ -154,8 +154,8 @@ func (s *exportSuite) TestExport(c *tc.C) {
 				"foo": {
 					Resource: "foo",
 					Mounts:   []params.CharmMount{{Storage: "foo", Location: "/bar"}},
-					Gid:      ptr(1000),
-					Uid:      ptr(1000),
+					Gid:      new(1000),
+					Uid:      new(1000),
 				},
 			},
 			AssumesExpr: &assumes.ExpressionTree{
@@ -171,9 +171,9 @@ func (s *exportSuite) TestExport(c *tc.C) {
 				"bar": {
 					Parallel:    true,
 					Description: "baz",
-					Params: map[string]interface{}{
+					Params: map[string]any{
 						"foo": "bar",
-						"blah": map[string]interface{}{
+						"blah": map[string]any{
 							"alpha": "omega",
 						},
 					},

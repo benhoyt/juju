@@ -41,8 +41,9 @@ type DestroyControllerArgs struct {
 // ModelBlockInfo holds information about a model and its
 // current blocks.
 type ModelBlockInfo struct {
-	UUID      string   `json:"model-uuid"`
-	Name      string   `json:"name"`
+	UUID string `json:"model-uuid"`
+	Name string `json:"name"`
+	// Qualifier is the model owner identifier used to disambiguate Name.
 	Qualifier string   `json:"qualifier"`
 	Blocks    []string `json:"blocks"`
 }
@@ -62,7 +63,8 @@ type RemoveBlocksArgs struct {
 
 // ModelStatus holds information about the status of a juju model.
 type ModelStatus struct {
-	ModelTag           string                 `json:"model-tag"`
+	ModelTag string `json:"model-tag"`
+	// Qualifier is the model owner identifier used to disambiguate the model.
 	Qualifier          string                 `json:"qualifier"`
 	Life               life.Value             `json:"life"`
 	Type               string                 `json:"type"`
@@ -115,7 +117,7 @@ type UserAccessResults struct {
 // ControllerConfigSet holds new config values for
 // Controller.ConfigSet.
 type ControllerConfigSet struct {
-	Config map[string]interface{} `json:"config"`
+	Config map[string]any `json:"config"`
 }
 
 // ControllerAction is an action that can be performed on a model.

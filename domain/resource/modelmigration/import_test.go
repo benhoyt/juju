@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
+	"github.com/juju/juju/domain/deployment/charm/resource"
 	domainresource "github.com/juju/juju/domain/resource"
 	resourceerrors "github.com/juju/juju/domain/resource/errors"
-	"github.com/juju/juju/internal/charm/resource"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 )
 

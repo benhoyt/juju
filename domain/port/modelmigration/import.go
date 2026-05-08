@@ -7,7 +7,7 @@ import (
 	"context"
 
 	"github.com/juju/collections/transform"
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 
 	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/modelmigration"
@@ -34,11 +34,10 @@ func RegisterImport(coordinator Coordinator, logger logger.Logger) {
 // PortService provides a subset of the port domain
 // service methods needed for open ports import.
 type PortService interface {
-	// UpdateUnitPorts updates the open ports on the unit with the given UUID.
-	UpdateUnitPorts(
-		ctx context.Context,
-		unitUUID coreunit.UUID,
-		openPorts, closePorts network.GroupedPortRanges,
+	// ImportOpenUnitPorts opens ports for the endpoints of a given unit during
+	// migration.
+	ImportOpenUnitPorts(
+		ctx context.Context, unit coreunit.UUID, openPorts network.GroupedPortRanges,
 	) error
 
 	// GetUnitUUID returns the UUID of the unit with the given name.
@@ -113,7 +112,7 @@ func (i *importOperation) importUnitPorts(
 		if err != nil {
 			return errors.Errorf("getting uuid for unit %s: %w", unitName, err)
 		}
-		err = i.portService.UpdateUnitPorts(ctx, unitUUID, openPorts, nil)
+		err = i.portService.ImportOpenUnitPorts(ctx, unitUUID, openPorts)
 		if err != nil {
 			return errors.Errorf("setting open ports on unit %s: %w", unitName, err)
 		}

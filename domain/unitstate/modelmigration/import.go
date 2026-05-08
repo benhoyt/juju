@@ -6,8 +6,9 @@ package modelmigration
 import (
 	"context"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 
+	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/modelmigration"
 	coreunit "github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/unitstate"
@@ -23,8 +24,10 @@ type Coordinator interface {
 
 // RegisterImport registers a new model migration importer to the coordinator,
 // for importing unit states.
-func RegisterImport(coordinator Coordinator) {
-	coordinator.Add(&importOperation{})
+func RegisterImport(coordinator Coordinator, log logger.Logger) {
+	coordinator.Add(&importOperation{
+		logger: log,
+	})
 }
 
 // ImportService provides a subset of the unitstate domain service methods needed
@@ -41,6 +44,7 @@ type importOperation struct {
 	modelmigration.BaseOperation
 
 	service ImportService
+	logger  logger.Logger
 }
 
 // Name returns the name of this operation.
@@ -51,7 +55,7 @@ func (i *importOperation) Name() string {
 // Setup the import operation.
 // This will create a new service instance.
 func (i *importOperation) Setup(scope modelmigration.Scope) error {
-	i.service = unitstateservice.NewService(unitstatestate.NewState(scope.ModelDB()))
+	i.service = unitstateservice.NewService(unitstatestate.NewState(scope.ModelDB(), i.logger), i.logger)
 	return nil
 }
 
@@ -69,7 +73,7 @@ func (i *importOperation) Execute(ctx context.Context, model description.Model) 
 			uniterState := unit.UniterState()
 			storageState := unit.StorageState()
 			args := unitstate.UnitState{
-				Name:         unitName,
+				Name:         unitName.String(),
 				UniterState:  &uniterState,
 				StorageState: &storageState,
 			}

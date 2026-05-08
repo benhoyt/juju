@@ -16,7 +16,7 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5/catacomb"
 
 	"github.com/juju/juju/apiserver/apiserverhttp"
 	"github.com/juju/juju/core/logger"
@@ -30,14 +30,17 @@ var (
 
 // Config is the configuration required for running an API server worker.
 type Config struct {
-	AgentName       string
-	Clock           clock.Clock
-	TLSConfig       *tls.Config
-	Mux             *apiserverhttp.Mux
-	MuxShutdownWait time.Duration
-	LogDir          string
-	Logger          logger.Logger
-	APIPort         int
+	AgentName              string
+	Clock                  clock.Clock
+	TLSConfig              *tls.Config
+	Mux                    *apiserverhttp.Mux
+	MuxShutdownWait        time.Duration
+	LogDir                 string
+	Logger                 logger.Logger
+	APIPort                int
+	IdleConnectionTimeout  time.Duration
+	HTTPServerReadTimeout  time.Duration
+	HTTPServerWriteTimeout time.Duration
 }
 
 // Validate validates the API server configuration.
@@ -107,11 +110,14 @@ func (w *Worker) Wait() error {
 }
 
 // Report provides information for the engine report.
-func (w *Worker) Report() map[string]interface{} {
+func (w *Worker) Report(_ context.Context) map[string]any {
 	w.mu.Lock()
-	result := map[string]interface{}{
-		"api-port": w.config.APIPort,
-		"status":   w.status,
+	result := map[string]any{
+		"api-port":                  w.config.APIPort,
+		"status":                    w.status,
+		"idle-connection-timeout":   w.config.IdleConnectionTimeout,
+		"http-server-read-timeout":  w.config.HTTPServerReadTimeout,
+		"http-server-write-timeout": w.config.HTTPServerWriteTimeout,
 	}
 	w.mu.Unlock()
 	return result
@@ -123,6 +129,41 @@ func (w *Worker) URL() string {
 	return w.listener.URL()
 }
 
+// extractRawFd gets the underlying file descriptor from the http connection.
+// This should only be used for informational purposes.
+func extractRawFd(c net.Conn) int {
+	fd := -1
+	var tcpConn *net.TCPConn
+	switch v := c.(type) {
+	case *net.TCPConn:
+		tcpConn = v
+	case *tls.Conn:
+		tc := v.NetConn()
+		switch tc := tc.(type) {
+		case *net.TCPConn:
+			tcpConn = tc
+		}
+	}
+	if tcpConn == nil {
+		return fd
+	}
+	rawConn, err := tcpConn.SyscallConn()
+	if err != nil {
+		return fd
+	}
+	_ = rawConn.Control(func(localFD uintptr) {
+		fd = int(localFD)
+	})
+	return fd
+}
+
+// recordRawFd adds the "http-fd" key containing the raw HTTP file descriptor
+// This can be used for tracking raw file descriptors to their login purpose
+func recordRawFd(ctx context.Context, c net.Conn) context.Context {
+	fd := extractRawFd(c)
+	return context.WithValue(ctx, "raw-http-fd", fd)
+}
+
 func (w *Worker) loop() error {
 	ctx, cancel := w.scopedContext()
 	defer cancel()
@@ -132,9 +173,15 @@ func (w *Worker) loop() error {
 		logger: w.logger,
 	}, "", 0) // no prefix and no flags so log.Logger doesn't add extra prefixes
 	server := &http.Server{
-		Handler:   w.config.Mux,
-		TLSConfig: w.config.TLSConfig,
-		ErrorLog:  serverLog,
+		Handler:     w.config.Mux,
+		TLSConfig:   w.config.TLSConfig,
+		ErrorLog:    serverLog,
+		IdleTimeout: w.config.IdleConnectionTimeout,
+		// HTTPServerReadTimeout and HTTPServerWriteTimeout default to 0 (no timeout).
+		// Set to non-zero values to prevent indefinite reads/writes if needed.
+		ReadTimeout:  w.config.HTTPServerReadTimeout,
+		WriteTimeout: w.config.HTTPServerWriteTimeout,
+		ConnContext:  recordRawFd,
 	}
 
 	go func() {

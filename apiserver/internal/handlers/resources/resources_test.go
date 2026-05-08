@@ -22,11 +22,15 @@ import (
 
 	api "github.com/juju/juju/api/client/resources"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
+	coreapplication "github.com/juju/juju/core/application"
 	coreresource "github.com/juju/juju/core/resource"
 	coreresourcetesting "github.com/juju/juju/core/resource/testing"
+	"github.com/juju/juju/domain/application"
+	applicationerrors "github.com/juju/juju/domain/application/errors"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
+	domainlife "github.com/juju/juju/domain/life"
 	domainresource "github.com/juju/juju/domain/resource"
 	resourceerrors "github.com/juju/juju/domain/resource/errors"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/testhelpers"
 	"github.com/juju/juju/rpc/params"
@@ -47,9 +51,11 @@ type ResourcesHandlerSuite struct {
 	resourceReader  io.ReadCloser
 	applicationName string
 
-	resourceService       *MockResourceService
-	resourceServiceGetter *MockResourceServiceGetter
-	downloader            *MockDownloader
+	resourceService          *MockResourceService
+	resourceServiceGetter    *MockResourceServiceGetter
+	applicationService       *MockApplicationService
+	applicationServiceGetter *MockApplicationServiceGetter
+	downloader               *MockDownloader
 }
 
 func TestResourcesHandlerSuite(t *testing.T) {
@@ -84,7 +90,7 @@ func (s *ResourcesHandlerSuite) SetUpTest(c *tc.C) {
 			Origin:      charmresource.OriginUpload,
 			Size:        int64(len(s.resourceContent)),
 		},
-		UUID:        s.resourceUUID,
+		ID:          s.resourceUUID.String(),
 		RetrievedBy: s.username,
 	}
 
@@ -96,12 +102,15 @@ func (s *ResourcesHandlerSuite) setupMocks(c *tc.C) *gomock.Controller {
 
 	s.resourceService = NewMockResourceService(ctrl)
 	s.resourceServiceGetter = NewMockResourceServiceGetter(ctrl)
+	s.applicationService = NewMockApplicationService(ctrl)
+	s.applicationServiceGetter = NewMockApplicationServiceGetter(ctrl)
 	s.downloader = NewMockDownloader(ctrl)
 
 	s.handler = NewResourceHandler(
 		s.authFunc,
 		func(context.Context) error { return nil },
 		s.resourceServiceGetter,
+		s.applicationServiceGetter,
 		s.downloader,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -140,10 +149,19 @@ func (s *ResourcesHandlerSuite) TestExpectedAuthTags(c *tc.C) {
 		authFunc,
 		func(context.Context) error { return nil },
 		s.resourceServiceGetter,
+		s.applicationServiceGetter,
 		s.downloader,
 		loggertesting.WrapCheckLog(c),
 	)
 
+	s.applicationServiceGetter.EXPECT().Application(gomock.Any()).Return(s.applicationService, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), s.applicationName).Return(
+		application.ApplicationDetails{
+			UUID:                   coreapplication.UUID("app-uuid"),
+			Life:                   domainlife.Alive,
+			Name:                   s.applicationName,
+			IsApplicationSynthetic: false,
+		}, nil)
 	s.resourceService.EXPECT().GetResourceUUIDByApplicationAndResourceName(
 		gomock.Any(),
 		s.applicationName,
@@ -201,6 +219,41 @@ func (s *ResourcesHandlerSuite) TestGetSuccess(c *tc.C) {
 	// Arrange:
 	req := s.newDownloadRequest(c)
 
+	s.applicationServiceGetter.EXPECT().Application(gomock.Any()).Return(s.applicationService, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), s.applicationName).Return(
+		application.ApplicationDetails{
+			UUID:                   coreapplication.UUID("app-uuid"),
+			Life:                   domainlife.Alive,
+			Name:                   s.applicationName,
+			IsApplicationSynthetic: false,
+		}, nil)
+	s.resourceService.EXPECT().GetResourceUUIDByApplicationAndResourceName(
+		gomock.Any(),
+		s.applicationName,
+		s.resourceName,
+	).Return(s.resourceUUID, nil)
+
+	s.resourceService.EXPECT().OpenResource(
+		gomock.Any(),
+		s.resourceUUID,
+	).Return(s.resource, s.resourceReader, nil)
+
+	// Act:
+	s.serveHTTP(req)
+
+	// Assert:
+	s.checkResp(c, http.StatusOK, "application/octet-stream", s.resourceContent)
+}
+
+func (s *ResourcesHandlerSuite) TestGetApplicationNotFound(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// Arrange:
+	req := s.newDownloadRequest(c)
+
+	s.applicationServiceGetter.EXPECT().Application(gomock.Any()).Return(s.applicationService, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), s.applicationName).Return(
+		application.ApplicationDetails{}, applicationerrors.ApplicationNotFound)
 	s.resourceService.EXPECT().GetResourceUUIDByApplicationAndResourceName(
 		gomock.Any(),
 		s.applicationName,
@@ -224,6 +277,14 @@ func (s *ResourcesHandlerSuite) TestGetNotFoundError(c *tc.C) {
 	// Arrange:
 	req := s.newDownloadRequest(c)
 
+	s.applicationServiceGetter.EXPECT().Application(gomock.Any()).Return(s.applicationService, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), s.applicationName).Return(
+		application.ApplicationDetails{
+			UUID:                   coreapplication.UUID("app-uuid"),
+			Life:                   domainlife.Alive,
+			Name:                   s.applicationName,
+			IsApplicationSynthetic: false,
+		}, nil)
 	s.resourceService.EXPECT().GetResourceUUIDByApplicationAndResourceName(
 		gomock.Any(),
 		s.applicationName,
@@ -241,11 +302,19 @@ func (s *ResourcesHandlerSuite) TestPutSuccessAttachResource(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	// Arrange:
+	s.applicationServiceGetter.EXPECT().Application(gomock.Any()).Return(s.applicationService, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), s.applicationName).Return(
+		application.ApplicationDetails{
+			UUID:                   coreapplication.UUID("app-uuid"),
+			Life:                   domainlife.Alive,
+			Name:                   s.applicationName,
+			IsApplicationSynthetic: false,
+		}, nil)
 	s.resourceService.EXPECT().GetResourceUUIDByApplicationAndResourceName(gomock.Any(), s.applicationName, s.resourceName).Return(s.resourceUUID, nil)
 	newResourceUUID := coreresourcetesting.GenResourceUUID(c)
 	s.resourceService.EXPECT().UpdateUploadResource(gomock.Any(), s.resourceUUID).Return(newResourceUUID, nil)
-	s.resource.UUID = newResourceUUID
-	s.resourceService.EXPECT().GetResource(gomock.Any(), newResourceUUID).Return(
+	s.resource.ID = newResourceUUID.String()
+	s.resourceService.EXPECT().GetResourceWithoutApplication(gomock.Any(), newResourceUUID).Return(
 		s.resource, nil,
 	)
 
@@ -256,6 +325,11 @@ func (s *ResourcesHandlerSuite) TestPutSuccessAttachResource(c *tc.C) {
 		s.resource.Size,
 	).Return(s.resourceReader, nil)
 
+	// The call to StoreResourceAndIncrementCharmModifiedVersion includes
+	// resource details after upload.
+	expectedResource := s.resource
+	expectedResource.Origin = charmresource.OriginUpload
+	expectedResource.Revision = -1
 	s.resourceService.EXPECT().StoreResourceAndIncrementCharmModifiedVersion(gomock.Any(), domainresource.StoreResourceArgs{
 		ResourceUUID:    newResourceUUID,
 		Reader:          s.resourceReader,
@@ -263,15 +337,7 @@ func (s *ResourcesHandlerSuite) TestPutSuccessAttachResource(c *tc.C) {
 		RetrievedByType: coreresource.User,
 		Size:            s.resource.Size,
 		Fingerprint:     s.resource.Fingerprint,
-	})
-
-	// Second call to GetResource gets resource details after upload.
-	expectedResource := s.resource
-	expectedResource.Origin = charmresource.OriginUpload
-	expectedResource.Revision = -1
-	s.resourceService.EXPECT().GetResource(gomock.Any(), newResourceUUID).Return(
-		expectedResource, nil,
-	)
+	}).Return(expectedResource, nil)
 
 	req := s.newUploadRequest(c)
 
@@ -282,7 +348,60 @@ func (s *ResourcesHandlerSuite) TestPutSuccessAttachResource(c *tc.C) {
 	expected := mustMarshalJSON(&params.UploadResult{
 		Resource: params.Resource{
 			CharmResource: api.CharmResource2API(expectedResource.Resource),
-			UUID:          expectedResource.UUID.String(),
+			ID:            expectedResource.ID,
+			Username:      expectedResource.RetrievedBy,
+			Timestamp:     expectedResource.Timestamp,
+		},
+	})
+	s.checkResp(c, http.StatusOK, "application/json", string(expected))
+}
+
+func (s *ResourcesHandlerSuite) TestPutSuccessForApplicationNotFound(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// Arrange:
+	s.applicationServiceGetter.EXPECT().Application(gomock.Any()).Return(s.applicationService, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), s.applicationName).Return(
+		application.ApplicationDetails{}, applicationerrors.ApplicationNotFound)
+	s.resourceService.EXPECT().GetResourceUUIDByApplicationAndResourceName(gomock.Any(), s.applicationName, s.resourceName).Return(s.resourceUUID, nil)
+	newResourceUUID := coreresourcetesting.GenResourceUUID(c)
+	s.resourceService.EXPECT().UpdateUploadResource(gomock.Any(), s.resourceUUID).Return(newResourceUUID, nil)
+	s.resource.ID = newResourceUUID.String()
+	s.resourceService.EXPECT().GetResourceWithoutApplication(gomock.Any(), newResourceUUID).Return(
+		s.resource, nil,
+	)
+
+	s.downloader.EXPECT().Download(
+		gomock.Any(),
+		s.resourceReader,
+		s.resource.Fingerprint.String(),
+		s.resource.Size,
+	).Return(s.resourceReader, nil)
+
+	// The call to StoreResourceAndIncrementCharmModifiedVersion includes
+	// resource details after upload.
+	expectedResource := s.resource
+	expectedResource.Origin = charmresource.OriginUpload
+	expectedResource.Revision = -1
+	s.resourceService.EXPECT().StoreResourceAndIncrementCharmModifiedVersion(gomock.Any(), domainresource.StoreResourceArgs{
+		ResourceUUID:    newResourceUUID,
+		Reader:          s.resourceReader,
+		RetrievedBy:     s.username,
+		RetrievedByType: coreresource.User,
+		Size:            s.resource.Size,
+		Fingerprint:     s.resource.Fingerprint,
+	}).Return(expectedResource, nil)
+
+	req := s.newUploadRequest(c)
+
+	// Act:
+	s.serveHTTP(req)
+
+	// Assert: Check that the uploaded resources details are returned:
+	expected := mustMarshalJSON(&params.UploadResult{
+		Resource: params.Resource{
+			CharmResource: api.CharmResource2API(expectedResource.Resource),
+			ID:            expectedResource.ID,
 			Username:      expectedResource.RetrievedBy,
 			Timestamp:     expectedResource.Timestamp,
 		},
@@ -301,6 +420,7 @@ func (s *ResourcesHandlerSuite) TestPutChangeBlocked(c *tc.C) {
 		s.authFunc,
 		changeAllowedFunc,
 		s.resourceServiceGetter,
+		s.applicationServiceGetter,
 		s.downloader,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -320,6 +440,14 @@ func (s *ResourcesHandlerSuite) TestPutSuccessDockerResource(c *tc.C) {
 	// Arrange:
 	req := s.newUploadRequest(c)
 
+	s.applicationServiceGetter.EXPECT().Application(gomock.Any()).Return(s.applicationService, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), s.applicationName).Return(
+		application.ApplicationDetails{
+			UUID:                   coreapplication.UUID("app-uuid"),
+			Life:                   domainlife.Alive,
+			Name:                   s.applicationName,
+			IsApplicationSynthetic: false,
+		}, nil)
 	s.resourceService.EXPECT().GetResourceUUIDByApplicationAndResourceName(
 		gomock.Any(),
 		s.applicationName,
@@ -331,8 +459,8 @@ func (s *ResourcesHandlerSuite) TestPutSuccessDockerResource(c *tc.C) {
 
 	res := s.resource
 	res.Type = charmresource.TypeContainerImage
-	res.UUID = newResourceUUID
-	s.resourceService.EXPECT().GetResource(gomock.Any(), newResourceUUID).Return(
+	res.ID = newResourceUUID.String()
+	s.resourceService.EXPECT().GetResourceWithoutApplication(gomock.Any(), newResourceUUID).Return(
 		res, nil,
 	)
 
@@ -343,6 +471,11 @@ func (s *ResourcesHandlerSuite) TestPutSuccessDockerResource(c *tc.C) {
 		s.resource.Size,
 	).Return(s.resourceReader, nil)
 
+	// The call to StoreResourceAndIncrementCharmModifiedVersion includes
+	// resource details after upload.
+	expectedResource := res
+	expectedResource.Origin = charmresource.OriginUpload
+	expectedResource.Revision = -1
 	s.resourceService.EXPECT().StoreResourceAndIncrementCharmModifiedVersion(gomock.Any(), domainresource.StoreResourceArgs{
 		ResourceUUID:    newResourceUUID,
 		Reader:          s.resourceReader,
@@ -350,15 +483,7 @@ func (s *ResourcesHandlerSuite) TestPutSuccessDockerResource(c *tc.C) {
 		RetrievedByType: coreresource.User,
 		Size:            s.resource.Size,
 		Fingerprint:     s.resource.Fingerprint,
-	})
-
-	// Second call to GetResource gets resource details after upload.
-	expectedResource := res
-	expectedResource.Origin = charmresource.OriginUpload
-	expectedResource.Revision = -1
-	s.resourceService.EXPECT().GetResource(gomock.Any(), newResourceUUID).Return(
-		expectedResource, nil,
-	)
+	}).Return(expectedResource, nil)
 
 	// Act:
 	s.serveHTTP(req)
@@ -367,7 +492,7 @@ func (s *ResourcesHandlerSuite) TestPutSuccessDockerResource(c *tc.C) {
 	expected := mustMarshalJSON(&params.UploadResult{
 		Resource: params.Resource{
 			CharmResource: api.CharmResource2API(expectedResource.Resource),
-			UUID:          expectedResource.UUID.String(),
+			ID:            expectedResource.ID,
 			Username:      expectedResource.RetrievedBy,
 			Timestamp:     expectedResource.Timestamp,
 		},
@@ -383,7 +508,15 @@ func (s *ResourcesHandlerSuite) TestPutExtensionMismatch(c *tc.C) {
 	req.Header.Set("Content-Disposition", "form-data; filename=different.ext")
 	req.URL.RawQuery += fmt.Sprintf("&pendingid=%s", s.resourceUUID)
 
-	s.resourceService.EXPECT().GetResource(gomock.Any(), s.resourceUUID).Return(
+	s.applicationServiceGetter.EXPECT().Application(gomock.Any()).Return(s.applicationService, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), s.applicationName).Return(
+		application.ApplicationDetails{
+			UUID:                   coreapplication.UUID("app-uuid"),
+			Life:                   domainlife.Alive,
+			Name:                   s.applicationName,
+			IsApplicationSynthetic: false,
+		}, nil)
+	s.resourceService.EXPECT().GetResourceWithoutApplication(gomock.Any(), s.resourceUUID).Return(
 		s.resource, nil,
 	)
 
@@ -405,9 +538,17 @@ func (s *ResourcesHandlerSuite) TestPutNotValidOrigin(c *tc.C) {
 	req := s.newUploadRequest(c)
 	req.URL.RawQuery += fmt.Sprintf("&pendingid=%s", s.resourceUUID)
 
+	s.applicationServiceGetter.EXPECT().Application(gomock.Any()).Return(s.applicationService, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), s.applicationName).Return(
+		application.ApplicationDetails{
+			UUID:                   coreapplication.UUID("app-uuid"),
+			Life:                   domainlife.Alive,
+			Name:                   s.applicationName,
+			IsApplicationSynthetic: false,
+		}, nil)
 	res := s.resource
 	res.Origin = charmresource.OriginStore
-	s.resourceService.EXPECT().GetResource(gomock.Any(), s.resourceUUID).Return(
+	s.resourceService.EXPECT().GetResourceWithoutApplication(gomock.Any(), s.resourceUUID).Return(
 		res, nil,
 	)
 
@@ -429,7 +570,15 @@ func (s *ResourcesHandlerSuite) TestPutWithPending(c *tc.C) {
 	req := s.newUploadRequest(c)
 	req.URL.RawQuery += fmt.Sprintf("&pendingid=%s", s.resourceUUID)
 
-	s.resourceService.EXPECT().GetResource(gomock.Any(), s.resourceUUID).Return(
+	s.applicationServiceGetter.EXPECT().Application(gomock.Any()).Return(s.applicationService, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), s.applicationName).Return(
+		application.ApplicationDetails{
+			UUID:                   coreapplication.UUID("app-uuid"),
+			Life:                   domainlife.Alive,
+			Name:                   s.applicationName,
+			IsApplicationSynthetic: false,
+		}, nil)
+	s.resourceService.EXPECT().GetResourceWithoutApplication(gomock.Any(), s.resourceUUID).Return(
 		s.resource, nil,
 	)
 
@@ -440,6 +589,10 @@ func (s *ResourcesHandlerSuite) TestPutWithPending(c *tc.C) {
 		s.resource.Size,
 	).Return(s.resourceReader, nil)
 
+	// The call to StoreResource includes resource details after upload.
+	expectedResource := s.resource
+	expectedResource.Origin = charmresource.OriginUpload
+	expectedResource.Revision = -1
 	s.resourceService.EXPECT().StoreResource(gomock.Any(), domainresource.StoreResourceArgs{
 		ResourceUUID:    s.resourceUUID,
 		Reader:          s.resourceReader,
@@ -447,15 +600,7 @@ func (s *ResourcesHandlerSuite) TestPutWithPending(c *tc.C) {
 		RetrievedByType: coreresource.User,
 		Size:            s.resource.Size,
 		Fingerprint:     s.resource.Fingerprint,
-	})
-
-	// Second call to GetResource gets resource details after upload.
-	expectedResource := s.resource
-	expectedResource.Origin = charmresource.OriginUpload
-	expectedResource.Revision = -1
-	s.resourceService.EXPECT().GetResource(gomock.Any(), s.resourceUUID).Return(
-		expectedResource, nil,
-	)
+	}).Return(expectedResource, nil)
 
 	// Act:
 	s.serveHTTP(req)
@@ -464,7 +609,7 @@ func (s *ResourcesHandlerSuite) TestPutWithPending(c *tc.C) {
 	expected := mustMarshalJSON(&params.UploadResult{
 		Resource: params.Resource{
 			CharmResource: api.CharmResource2API(expectedResource.Resource),
-			UUID:          expectedResource.UUID.String(),
+			ID:            expectedResource.ID,
 			Username:      expectedResource.RetrievedBy,
 			Timestamp:     expectedResource.Timestamp,
 		},
@@ -477,6 +622,14 @@ func (s *ResourcesHandlerSuite) TestPutNotFoundError(c *tc.C) {
 	// Arrange:
 	req := s.newUploadRequest(c)
 
+	s.applicationServiceGetter.EXPECT().Application(gomock.Any()).Return(s.applicationService, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), s.applicationName).Return(
+		application.ApplicationDetails{
+			UUID:                   coreapplication.UUID("app-uuid"),
+			Life:                   domainlife.Alive,
+			Name:                   s.applicationName,
+			IsApplicationSynthetic: false,
+		}, nil)
 	s.resourceService.EXPECT().GetResourceUUIDByApplicationAndResourceName(
 		gomock.Any(),
 		s.applicationName,
@@ -487,6 +640,52 @@ func (s *ResourcesHandlerSuite) TestPutNotFoundError(c *tc.C) {
 	s.serveHTTP(req)
 
 	// Assert:
+	s.checkErrResp(c, http.StatusNotFound, "application/json")
+}
+
+func (s *ResourcesHandlerSuite) TestGetSAASApplicationNotFound(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// Arrange
+	req := s.newDownloadRequest(c)
+
+	s.applicationServiceGetter.EXPECT().Application(gomock.Any()).Return(s.applicationService, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), s.applicationName).Return(
+		application.ApplicationDetails{
+			UUID:                   coreapplication.UUID("app-uuid"),
+			Life:                   domainlife.Alive,
+			Name:                   s.applicationName,
+			IsApplicationSynthetic: true,
+		}, nil)
+
+	// Act
+	s.serveHTTP(req)
+
+	// Assert: SAAS applications should be rejected with application not found
+	// error.
+	s.checkErrResp(c, http.StatusNotFound, "application/json")
+}
+
+func (s *ResourcesHandlerSuite) TestPutSAASApplicationNotFound(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// Arrange
+	req := s.newUploadRequest(c)
+
+	s.applicationServiceGetter.EXPECT().Application(gomock.Any()).Return(s.applicationService, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), s.applicationName).Return(
+		application.ApplicationDetails{
+			UUID:                   coreapplication.UUID("app-uuid"),
+			Life:                   domainlife.Alive,
+			Name:                   s.applicationName,
+			IsApplicationSynthetic: true,
+		}, nil)
+
+	// Act
+	s.serveHTTP(req)
+
+	// Assert: SAAS applications should be rejected with application not found
+	// error.
 	s.checkErrResp(c, http.StatusNotFound, "application/json")
 }
 
@@ -544,7 +743,7 @@ func apiFailure(msg, code string) (error, string) {
 	return failure, string(data)
 }
 
-func mustMarshalJSON(v interface{}) []byte {
+func mustMarshalJSON(v any) []byte {
 	data, err := json.Marshal(v)
 	if err != nil {
 		panic(err)

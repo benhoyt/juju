@@ -26,11 +26,8 @@ import (
 	domainsequence "github.com/juju/juju/domain/sequence"
 	sequencestate "github.com/juju/juju/domain/sequence/state"
 	domainstorage "github.com/juju/juju/domain/storage"
-	storagetesting "github.com/juju/juju/domain/storage/testing"
-	"github.com/juju/juju/domain/storageprovisioning"
 	"github.com/juju/juju/domain/storageprovisioning/service"
 	"github.com/juju/juju/domain/storageprovisioning/state"
-	domaintesting "github.com/juju/juju/domain/storageprovisioning/testing"
 	changestreamtesting "github.com/juju/juju/internal/changestream/testing"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/uuid"
@@ -67,7 +64,7 @@ func (s *watcherSuite) TestWatchMachineProvisionedFilesystems(c *tc.C) {
 
 	harness := watchertest.NewHarness(s, watchertest.NewWatcherC(c, watcher))
 	var (
-		fsOneUUID, fsTwoUUID storageprovisioning.FilesystemUUID
+		fsOneUUID, fsTwoUUID domainstorage.FilesystemUUID
 		fsOneID, fsTwoID     string
 		fsaTwoUUID           string
 	)
@@ -249,11 +246,19 @@ func (s *watcherSuite) TestWatchModelProvisionedFilesystemAttachments(c *tc.C) {
 	})
 
 	// Assert that changing something about a filesystem attachment which isn't
-	// the life does not produce a change in the watcher.
+	// life or provider_id, does not produce a change in the watcher.
 	harness.AddTest(c, func(c *tc.C) {
 		s.changeFilesystemAttachmentMountPoint(c, fsaTwoUUID)
 	}, func(w watchertest.WatcherC[[]string]) {
 		w.AssertNoChange()
+	})
+
+	// Assert that changing filesystem attachment provider id is reported in the
+	// watcher.
+	harness.AddTest(c, func(c *tc.C) {
+		s.changeFilesystemAttachmentProviderID(c, fsaTwoUUID)
+	}, func(w watchertest.WatcherC[[]string]) {
+		w.AssertChange()
 	})
 
 	// Assert that deleting a filesystem attachment is reported in the watcher.
@@ -307,12 +312,19 @@ func (s *watcherSuite) TestWatchModelProvisionedFilesystems(c *tc.C) {
 		)
 	})
 
-	// Assert that changing something about a filesystem which isn't the life
-	// does not produce a change in the watcher.
+	// Assert that changing something about a filesystem which isn't the life or
+	// provider_id, does not produce a change in the watcher.
+	harness.AddTest(c, func(c *tc.C) {
+		s.changeFilesystemSizeMiB(c, fsTwoUUID)
+	}, func(w watchertest.WatcherC[[]string]) {
+		w.AssertNoChange()
+	})
+
+	// Assert that changing filesystem provider id is reported in the watcher.
 	harness.AddTest(c, func(c *tc.C) {
 		s.changeFilesystemProviderID(c, fsTwoUUID)
 	}, func(w watchertest.WatcherC[[]string]) {
-		w.AssertNoChange()
+		w.AssertChange()
 	})
 
 	// Assert that deleting a filesystem is reported in the watcher.
@@ -339,7 +351,7 @@ func (s *watcherSuite) TestWatchMachineProvisionedVolumes(c *tc.C) {
 
 	harness := watchertest.NewHarness(s, watchertest.NewWatcherC(c, watcher))
 	var (
-		vsOneUUID, vsTwoUUID storageprovisioning.VolumeUUID
+		vsOneUUID, vsTwoUUID domainstorage.VolumeUUID
 		vsOneID, vsTwoID     string
 		vsaTwoUUID           string
 	)
@@ -614,7 +626,7 @@ func (s *watcherSuite) TestWatchVolumeAttachmentPlans(c *tc.C) {
 
 	// Assert new volume attachment plans come out in the watcher.
 	harness.AddTest(c, func(c *tc.C) {
-		var vUUID storageprovisioning.VolumeUUID
+		var vUUID domainstorage.VolumeUUID
 		vUUID, vsOneID = s.newMachineVolume(c)
 		s.newVolumeAttachmentPlanForMachine(c, vUUID.String(), machineUUID)
 	}, func(w watchertest.WatcherC[[]string]) {
@@ -626,7 +638,7 @@ func (s *watcherSuite) TestWatchVolumeAttachmentPlans(c *tc.C) {
 
 	// Assert new volume attachment plans come out in the watcher.
 	harness.AddTest(c, func(c *tc.C) {
-		var vUUID storageprovisioning.VolumeUUID
+		var vUUID domainstorage.VolumeUUID
 		vUUID, vsTwoID = s.newMachineVolume(c)
 		vapTwoUUID = s.newVolumeAttachmentPlanForMachine(c, vUUID.String(), machineUUID)
 
@@ -716,9 +728,9 @@ func (s *watcherSuite) TestWatchStorageAttachmentsForUnit(c *tc.C) {
 	// Attach the three storage instances to the unit. This MUST create three
 	// events in the watcher each containing the id of the storage instance.
 	var (
-		storageAttachmentUUID1 storageprovisioning.StorageAttachmentUUID
-		storageAttachmentUUID2 storageprovisioning.StorageAttachmentUUID
-		storageAttachmentUUID3 storageprovisioning.StorageAttachmentUUID
+		storageAttachmentUUID1 domainstorage.StorageAttachmentUUID
+		storageAttachmentUUID2 domainstorage.StorageAttachmentUUID
+		storageAttachmentUUID3 domainstorage.StorageAttachmentUUID
 	)
 	harness.AddTest(c, func(c *tc.C) {
 		attachmenUUIDs := s.newStorageAttachmentsForInstances(
@@ -747,7 +759,7 @@ func (s *watcherSuite) TestWatchStorageAttachmentsForUnit(c *tc.C) {
 	harness.AddTest(c, func(c *tc.C) {
 		s.changeStorageAttachmentLives(
 			c,
-			map[storageprovisioning.StorageAttachmentUUID]domainlife.Life{
+			map[domainstorage.StorageAttachmentUUID]domainlife.Life{
 				storageAttachmentUUID1: domainlife.Dying,
 				storageAttachmentUUID2: domainlife.Dying,
 			},
@@ -766,7 +778,7 @@ func (s *watcherSuite) TestWatchStorageAttachmentsForUnit(c *tc.C) {
 	harness.AddTest(c, func(c *tc.C) {
 		s.changeStorageAttachmentLives(
 			c,
-			map[storageprovisioning.StorageAttachmentUUID]domainlife.Life{
+			map[domainstorage.StorageAttachmentUUID]domainlife.Life{
 				storageAttachmentUUID1: domainlife.Dead,
 				storageAttachmentUUID3: domainlife.Dying,
 			},
@@ -927,7 +939,7 @@ func (s *watcherSuite) TestWatchStorageAttachmentForFilesystem(c *tc.C) {
 // value of zero or more storage attachment uuids. This function is designed
 // to perform all of the changes within a single transaction.
 func (s *watcherSuite) changeStorageAttachmentLives(
-	c *tc.C, changes map[storageprovisioning.StorageAttachmentUUID]domainlife.Life,
+	c *tc.C, changes map[domainstorage.StorageAttachmentUUID]domainlife.Life,
 ) {
 	if len(changes) == 0 {
 		return
@@ -1029,7 +1041,7 @@ WHERE  uuid = ?
 
 // changeFilesystemProviderID is a utility function for changing the provider id
 // of a filesystem to a value chosen by this func. The purpose of this is to
-// change something about a filesystem that isn't the life.
+// help test changing the provider id, which the watcher is interested in.
 func (s *watcherSuite) changeFilesystemProviderID(
 	c *tc.C, uuid string,
 ) {
@@ -1038,6 +1050,49 @@ func (s *watcherSuite) changeFilesystemProviderID(
 			ctx,
 			`
 UPDATE storage_filesystem
+SET    provider_id = 'foobar'
+WHERE  uuid = ?
+`,
+			uuid,
+		)
+		return err
+	})
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+// changeFilesystemSizeMiB is a utility function for changing the size_mib of a
+// filesystem to a value chosen by this func. The purpose of this is to change
+// something about a filesystem that isn't the life or provider_id.
+func (s *watcherSuite) changeFilesystemSizeMiB(
+	c *tc.C, uuid string,
+) {
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(
+			ctx,
+			`
+UPDATE storage_filesystem
+SET    size_mib = 9001
+WHERE  uuid = ?
+`,
+			uuid,
+		)
+		return err
+	})
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+// changeFilesystemAttachmentProviderID is a utility function for changing the
+// provider id of a filesystem attachment to a value chosen by this func. The
+// purpose of this is to help test changing the provider id, which the watcher is
+// interested in.
+func (s *watcherSuite) changeFilesystemAttachmentProviderID(
+	c *tc.C, uuid string,
+) {
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(
+			ctx,
+			`
+UPDATE storage_filesystem_attachment
 SET    provider_id = 'foobar'
 WHERE  uuid = ?
 `,
@@ -1342,8 +1397,8 @@ func (s *watcherSuite) newMachineCloudInstance(
 
 // newMachineFilesystem creates a new filesystem in the model with machine
 // provision scope. Returned is the uuid and filesystem id of the entity.
-func (s *watcherSuite) newMachineFilesystem(c *tc.C) (storageprovisioning.FilesystemUUID, string) {
-	fsUUID := domaintesting.GenFilesystemUUID(c)
+func (s *watcherSuite) newMachineFilesystem(c *tc.C) (domainstorage.FilesystemUUID, string) {
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID)
 
 	fsID := fmt.Sprintf("foo/%s", fsUUID.String())
 
@@ -1591,8 +1646,8 @@ VALUES (?, ?, ?, 0, 1)
 
 // newMachineVolume creates a new volume in the model with machine
 // provision scope. Returned is the uuid and volume id of the entity.
-func (s *watcherSuite) newMachineVolume(c *tc.C) (storageprovisioning.VolumeUUID, string) {
-	vsUUID := domaintesting.GenVolumeUUID(c)
+func (s *watcherSuite) newMachineVolume(c *tc.C) (domainstorage.VolumeUUID, string) {
+	vsUUID := tc.Must(c, domainstorage.NewVolumeUUID)
 
 	vsID := fmt.Sprintf("foo/%s", vsUUID.String())
 
@@ -1798,7 +1853,7 @@ VALUES (?, ?, ?)`, spUUID.String(), k, v)
 func (s *watcherSuite) newStorageInstance(c *tc.C) (
 	domainstorage.StorageInstanceUUID, string,
 ) {
-	storageInstanceUUID := storagetesting.GenStorageInstanceUUID(c)
+	storageInstanceUUID := tc.Must(c, domainstorage.NewStorageInstanceUUID)
 	seq := s.nextStorageSequenceNumber(c)
 	storageName := fmt.Sprintf("mystorage-%d", seq)
 	storageID := fmt.Sprintf("mystorage/%d", seq)
@@ -1828,8 +1883,8 @@ func (s *watcherSuite) newStorageAttachment(
 	storageInstanceUUID domainstorage.StorageInstanceUUID,
 	unitUUID coreunit.UUID,
 	life domainlife.Life,
-) storageprovisioning.StorageAttachmentUUID {
-	saUUID := domaintesting.GenStorageAttachmentUUID(c)
+) domainstorage.StorageAttachmentUUID {
+	saUUID := tc.Must(c, domainstorage.NewStorageAttachmentUUID)
 	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 INSERT INTO storage_attachment (uuid, storage_instance_uuid, unit_uuid, life_id)
@@ -1851,14 +1906,14 @@ func (s *watcherSuite) newStorageAttachmentsForInstances(
 	c *tc.C,
 	unitUUID coreunit.UUID,
 	instances ...domainstorage.StorageInstanceUUID,
-) []storageprovisioning.StorageAttachmentUUID {
-	rval := make([]storageprovisioning.StorageAttachmentUUID, 0, len(instances))
+) []domainstorage.StorageAttachmentUUID {
+	rval := make([]domainstorage.StorageAttachmentUUID, 0, len(instances))
 
 	err := s.TxnRunner().StdTxn(
 		c.Context(),
 		func(ctx context.Context, tx *sql.Tx) error {
 			for _, instUUID := range instances {
-				attachmentUUID, err := storageprovisioning.NewStorageAttachmentUUID()
+				attachmentUUID, err := domainstorage.NewStorageAttachmentUUID()
 				if err != nil {
 					return err
 				}
@@ -1889,7 +1944,7 @@ VALUES (?, ?, ?, ?)
 
 func (s *watcherSuite) newStorageInstanceFilesystem(
 	c *tc.C, instanceUUID domainstorage.StorageInstanceUUID,
-	filesystemUUID storageprovisioning.FilesystemUUID,
+	filesystemUUID domainstorage.FilesystemUUID,
 ) {
 	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
@@ -1902,7 +1957,7 @@ VALUES (?, ?)`, instanceUUID.String(), filesystemUUID.String())
 
 func (s *watcherSuite) newStorageInstanceVolume(
 	c *tc.C, instanceUUID domainstorage.StorageInstanceUUID,
-	volumeUUID storageprovisioning.VolumeUUID,
+	volumeUUID domainstorage.VolumeUUID,
 ) {
 	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `

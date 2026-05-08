@@ -17,7 +17,9 @@ func addPackageCommandsCommon(
 	addUpgradeScripts bool,
 ) error {
 	// Set the package mirror.
-	cfg.SetPackageMirror(proxyCfg.AptMirror())
+	if proxyCfg.AptMirror() != "" {
+		cfg.SetPackageMirror(proxyCfg.AptMirror())
+	}
 
 	// Bring packages up-to-date.
 	cfg.SetSystemUpdate(addUpdateScripts)

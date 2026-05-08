@@ -9,6 +9,7 @@ import (
 	stdtesting "testing"
 	"time"
 
+	"github.com/canonical/sqlair"
 	"github.com/juju/collections/set"
 	"github.com/juju/tc"
 	"github.com/juju/utils/v4"
@@ -16,9 +17,7 @@ import (
 	"github.com/juju/juju/cloud"
 	corecloud "github.com/juju/juju/core/cloud"
 	cloudtesting "github.com/juju/juju/core/cloud/testing"
-	coreerrors "github.com/juju/juju/core/errors"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
@@ -275,6 +274,14 @@ func (s *stateSuite) TestCreateCloudUpdateExisting(c *tc.C) {
 	c.Assert(originalUUID, tc.Equals, cloudUUID)
 }
 
+func (s *stateSuite) TestCreateCloudWithExistingNameNewUUID(c *tc.C) {
+	st := NewState(s.TxnRunnerFactory())
+	s.assertInsertCloud(c, st, testCloud)
+
+	err := st.CreateCloud(c.Context(), usertesting.GenNewName(c, "admin"), uuid.MustNewUUID().String(), testCloud)
+	c.Assert(err, tc.ErrorIs, clouderrors.AlreadyExists)
+}
+
 func (s *stateSuite) TestCreateCloudInvalidType(c *tc.C) {
 	cld := testCloud
 	cld.Type = "mycloud"
@@ -282,15 +289,6 @@ func (s *stateSuite) TestCreateCloudInvalidType(c *tc.C) {
 	st := NewState(s.TxnRunnerFactory())
 	err := st.CreateCloud(c.Context(), usertesting.GenNewName(c, "admin"), uuid.MustNewUUID().String(), cld)
 	c.Assert(err, tc.ErrorMatches, `.* cloud type "mycloud" not valid`)
-}
-
-func (s *stateSuite) TestCloudWithEmptyNameFails(c *tc.C) {
-	cld := testCloud
-	cld.Name = ""
-
-	st := NewState(s.TxnRunnerFactory())
-	err := st.CreateCloud(c.Context(), usertesting.GenNewName(c, "admin"), uuid.MustNewUUID().String(), cld)
-	c.Assert(err, tc.ErrorIs, coreerrors.NotValid)
 }
 
 func (s *stateSuite) TestCreateCloudInvalidAuthType(c *tc.C) {
@@ -336,25 +334,32 @@ func (s *stateSuite) TestCloudIsControllerCloud(c *tc.C) {
 		c.Assert(cloud.IsControllerCloud, tc.Equals, false)
 	}
 
-	modelUUID := modeltesting.GenModelUUID(c)
-	modelSt := statecontroller.NewState(s.TxnRunnerFactory())
 	modelstatetesting.CreateInternalSecretBackend(c, s.ControllerTxnRunner())
 	c.Assert(err, tc.ErrorIsNil)
-	err = modelSt.Create(
-		c.Context(),
-		modelUUID,
-		coremodel.IAAS,
-		model.GlobalModelCreationArgs{
-			Cloud:         testCloud.Name,
-			Name:          coremodel.ControllerModelName,
-			Qualifier:     "admin",
-			AdminUsers:    []user.UUID{user.UUID(s.adminUUID.String())},
-			SecretBackend: juju.BackendName,
-		},
-	)
-	c.Assert(err, tc.ErrorIsNil)
 
-	err = modelSt.Activate(c.Context(), modelUUID)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
+	err = s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		err := statecontroller.Create(
+			ctx,
+			preparer{},
+			tx,
+			modelUUID,
+			coremodel.IAAS,
+			model.GlobalModelCreationArgs{
+				Cloud:         testCloud.Name,
+				Name:          coremodel.ControllerModelName,
+				Qualifier:     "admin",
+				AdminUsers:    []user.UUID{user.UUID(s.adminUUID.String())},
+				SecretBackend: juju.BackendName,
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		activator := statecontroller.GetActivator()
+		return activator(ctx, preparer{}, tx, modelUUID)
+	})
 	c.Assert(err, tc.ErrorIsNil)
 
 	clouds, err = st.ListClouds(c.Context())
@@ -411,34 +416,140 @@ func (s *stateSuite) TestDeleteCloudInUse(c *tc.C) {
 	st := NewState(s.TxnRunnerFactory())
 	s.assertInsertCloud(c, st, testCloud)
 
-	credUUID := uuid.MustNewUUID().String()
-	var numRows int64
-	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		stmt := `
-INSERT INTO cloud_credential (uuid, name, cloud_uuid, auth_type_id, owner_uuid)
-SELECT ?, 'default', uuid, 1, ? FROM cloud
-WHERE cloud.name = ?
-`
-		result, err := tx.ExecContext(ctx, stmt, credUUID, s.adminUUID.String(), "fluffy")
+	// Create a model referencing the cloud to make it "in use".
+	modelstatetesting.CreateInternalSecretBackend(c, s.ControllerTxnRunner())
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
+	err := s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		err := statecontroller.Create(
+			ctx,
+			preparer{},
+			tx,
+			modelUUID,
+			coremodel.IAAS,
+			model.GlobalModelCreationArgs{
+				Cloud:         testCloud.Name,
+				Name:          coremodel.ControllerModelName,
+				Qualifier:     "admin",
+				AdminUsers:    []user.UUID{user.UUID(s.adminUUID.String())},
+				SecretBackend: juju.BackendName,
+			},
+		)
 		if err != nil {
 			return err
 		}
-		numRows, err = result.RowsAffected()
-		if err != nil {
-			return err
-		}
-
-		return nil
+		activator := statecontroller.GetActivator()
+		return activator(ctx, preparer{}, tx, modelUUID)
 	})
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(numRows, tc.Equals, int64(1))
 
 	err = st.DeleteCloud(c.Context(), "fluffy")
-	c.Assert(err, tc.ErrorMatches, "cannot delete cloud as it is still in use")
+	c.Assert(err, tc.ErrorIs, clouderrors.CloudStillInUse)
 
-	cloud, err := st.Cloud(c.Context(), "fluffy")
+	cld, err := st.Cloud(c.Context(), "fluffy")
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(cloud.Name, tc.Equals, "fluffy")
+	c.Assert(cld.Name, tc.Equals, "fluffy")
+}
+
+func (s *stateSuite) TestDeleteCloudWithCredentials(c *tc.C) {
+	st := NewState(s.TxnRunnerFactory())
+	s.assertInsertCloud(c, st, testCloud)
+
+	credUUID := uuid.MustNewUUID().String()
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		// Insert a credential for the cloud.
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO cloud_credential (uuid, name, cloud_uuid, auth_type_id, owner_uuid)
+SELECT ?, 'default', uuid, 1, ? FROM cloud WHERE cloud.name = ?
+`, credUUID, s.adminUUID.String(), "fluffy")
+		if err != nil {
+			return err
+		}
+		// Insert a credential attribute.
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO cloud_credential_attribute (cloud_credential_uuid, "key", value)
+VALUES (?, 'username', 'admin')
+`, credUUID)
+		return err
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Deleting the cloud should succeed and cascade to credentials.
+	err = st.DeleteCloud(c.Context(), "fluffy")
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = st.Cloud(c.Context(), "fluffy")
+	c.Assert(err, tc.ErrorIs, clouderrors.NotFound)
+
+	// Verify credentials and their attributes are also gone.
+	var credCount, attrCount int
+	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM cloud_credential WHERE uuid = ?", credUUID).Scan(&credCount)
+		if err != nil {
+			return err
+		}
+		return tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM cloud_credential_attribute WHERE cloud_credential_uuid = ?`, credUUID).Scan(&attrCount)
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(credCount, tc.Equals, 0)
+	c.Assert(attrCount, tc.Equals, 0)
+}
+
+func (s *stateSuite) TestDeleteCloudWithCredentialAndModel(c *tc.C) {
+	st := NewState(s.TxnRunnerFactory())
+	s.assertInsertCloud(c, st, testCloud)
+
+	// Insert a credential for the cloud.
+	credUUID := uuid.MustNewUUID().String()
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO cloud_credential (uuid, name, cloud_uuid, auth_type_id, owner_uuid)
+SELECT ?, 'default', uuid, 1, ? FROM cloud WHERE cloud.name = ?
+`, credUUID, s.adminUUID.String(), "fluffy")
+		return err
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Create a model referencing the cloud.
+	modelstatetesting.CreateInternalSecretBackend(c, s.ControllerTxnRunner())
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
+	err = s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		err := statecontroller.Create(
+			ctx,
+			preparer{},
+			tx,
+			modelUUID,
+			coremodel.IAAS,
+			model.GlobalModelCreationArgs{
+				Cloud:         testCloud.Name,
+				Name:          coremodel.ControllerModelName,
+				Qualifier:     "admin",
+				AdminUsers:    []user.UUID{user.UUID(s.adminUUID.String())},
+				SecretBackend: juju.BackendName,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		activator := statecontroller.GetActivator()
+		return activator(ctx, preparer{}, tx, modelUUID)
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Deletion should fail because a model references the cloud.
+	err = st.DeleteCloud(c.Context(), "fluffy")
+	c.Assert(err, tc.ErrorIs, clouderrors.CloudStillInUse)
+
+	cld, err := st.Cloud(c.Context(), "fluffy")
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(cld.Name, tc.Equals, "fluffy")
+
+	// Verify the credential is still intact.
+	var credCount int
+	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM cloud_credential WHERE uuid = ?", credUUID).Scan(&credCount)
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(credCount, tc.Equals, 1)
 }
 
 // TestNullCloudType is a regression test to make sure that we don't allow null
@@ -522,4 +633,10 @@ func (s *stateSuite) TestGetCloudForUUID(c *tc.C) {
 	cloud, err := st.GetCloudForUUID(c.Context(), uuid)
 	c.Check(err, tc.ErrorIsNil)
 	c.Check(cloud, tc.DeepEquals, testCloud)
+}
+
+type preparer struct{}
+
+func (p preparer) Prepare(query string, args ...any) (*sqlair.Statement, error) {
+	return sqlair.Prepare(query, args...)
 }

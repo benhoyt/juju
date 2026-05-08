@@ -1,4 +1,7 @@
 ---
+myst:
+  html_meta:
+    description: "Learn to deploy and manage applications on Kubernetes or machines with Juju, an open-source orchestration engine for operators called charms."
 relatedlinks: "[Charmcraft](https://documentation.ubuntu.com/charmcraft/), [Charmlibs](https://canonical-charmlibs.readthedocs-hosted.com/), [Concierge](https://github.com/canonical/concierge), [JAAS](https://documentation.ubuntu.com/jaas/), [Jubilant](https://documentation.ubuntu.com/jubilant/), [Ops](https://documentation.ubuntu.com/ops/), [Pebble](https://documentation.ubuntu.com/pebble/), [Terraform &nbsp; Provider &nbsp; for &nbsp; Juju](https://documentation.ubuntu.com/terraform-provider-juju/)"
 ---
 
@@ -14,6 +17,7 @@ howto/index
 reference/index
 explanation/index
 For contributors <contributor/index>
+releasenotes/index
 ```
 
 Juju is an open source orchestration engine for software operators that enables the deployment, integration, and lifecycle management of applications in the cloud using special software operators called ‘charms’.
@@ -75,7 +79,7 @@ Whether you are a CIO or SysAdmin, DevOps engineer, or SRE, Juju helps you take 
 
 Juju is an open source project that warmly welcomes community projects, contributions, suggestions, fixes and constructive feedback.
 
-* [Roadmap & Releases](./reference/juju/juju-roadmap-and-releases.md)
+* [Roadmap & Releases](releasenotes/index.md)
 * [Code of Conduct ](https://ubuntu.com/community/code-of-conduct)
 * [Join our chat](https://matrix.to/#/#charmhub-juju:ubuntu.com)
 * [Join our forum ](https://discourse.charmhub.io/)

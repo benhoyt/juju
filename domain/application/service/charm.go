@@ -9,6 +9,7 @@ import (
 
 	"github.com/juju/juju/core/changestream"
 	corecharm "github.com/juju/juju/core/charm"
+	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/core/trace"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/domain/application"
@@ -16,8 +17,8 @@ import (
 	"github.com/juju/juju/domain/application/charm"
 	"github.com/juju/juju/domain/application/charm/store"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
-	internalcharm "github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/charm/resource"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
+	"github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -77,13 +78,6 @@ type CharmState interface {
 	// the charm does not exist, a [applicationerrors.CharmNotFound] error is
 	// returned.
 	GetCharmConfig(context.Context, corecharm.ID) (charm.Config, error)
-
-	// GetCharmLXDProfile returns the LXD profile along with the revision of the
-	// charm using the charm ID. The revision
-	//
-	// If the charm does not exist, a [applicationerrors.CharmNotFound] error is
-	// returned.
-	GetCharmLXDProfile(context.Context, corecharm.ID) ([]byte, charm.Revision, error)
 
 	// GetCharmArchivePath returns the archive storage path for the charm using
 	// the charm ID. If the charm does not exist, a
@@ -180,7 +174,7 @@ type CharmStore interface {
 
 	// GetBySHA256Prefix retrieves a ReadCloser for a charm archive who's SHA256
 	// hash starts with the provided prefix.
-	GetBySHA256Prefix(ctx context.Context, sha256Prefix string) (io.ReadCloser, error)
+	GetBySHA256Prefix(ctx context.Context, sha256Prefix string) (io.ReadCloser, objectstore.Digest, error)
 }
 
 // getCharmID returns the charm ID for the given charm locator.
@@ -549,32 +543,6 @@ func (s *Service) GetCharmConfig(ctx context.Context, locator charm.CharmLocator
 	return decoded, nil
 }
 
-// GetCharmLXDProfile returns the LXD profile along with the revision of the
-// charm using the charm name, source and revision.
-//
-// If the charm does not exist, a [applicationerrors.CharmNotFound] error is
-// returned.
-func (s *Service) GetCharmLXDProfile(ctx context.Context, locator charm.CharmLocator) (internalcharm.LXDProfile, charm.Revision, error) {
-	ctx, span := trace.Start(ctx, trace.NameFromFunc())
-	defer span.End()
-
-	args := argsFromLocator(locator)
-	id, err := s.getCharmID(ctx, args)
-	if err != nil {
-		return internalcharm.LXDProfile{}, -1, errors.Errorf("charm id: %w", err)
-	}
-	profile, revision, err := s.st.GetCharmLXDProfile(ctx, id)
-	if err != nil {
-		return internalcharm.LXDProfile{}, -1, errors.Capture(err)
-	}
-
-	decoded, err := decodeLXDProfile(profile)
-	if err != nil {
-		return internalcharm.LXDProfile{}, -1, errors.Capture(err)
-	}
-	return decoded, revision, nil
-}
-
 // GetCharmArchivePath returns the archive storage path for the charm using the
 // charm name, source and revision.
 //
@@ -631,18 +599,18 @@ func (s *Service) GetCharmArchive(ctx context.Context, locator charm.CharmLocato
 //
 // If the charm does not exist, a [applicationerrors.CharmNotFound] error is
 // returned.
-func (s *Service) GetCharmArchiveBySHA256Prefix(ctx context.Context, sha256Prefix string) (io.ReadCloser, error) {
+func (s *Service) GetCharmArchiveBySHA256Prefix(ctx context.Context, sha256Prefix string) (io.ReadCloser, objectstore.Digest, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
-	reader, err := s.charmStore.GetBySHA256Prefix(ctx, sha256Prefix)
+	reader, digest, err := s.charmStore.GetBySHA256Prefix(ctx, sha256Prefix)
 	if errors.Is(err, store.ErrNotFound) {
-		return nil, applicationerrors.CharmNotFound
+		return nil, objectstore.Digest{}, applicationerrors.CharmNotFound
 	} else if err != nil {
-		return nil, errors.Capture(err)
+		return nil, objectstore.Digest{}, errors.Capture(err)
 	}
 
-	return reader, nil
+	return reader, digest, nil
 }
 
 // IsCharmAvailable returns whether the charm is available for use. This
@@ -864,7 +832,7 @@ func (s *Service) resolveMigratingUploadedCharm(ctx context.Context, args charm.
 	charmID, err := s.getCharmID(ctx, charm.GetCharmArgs{
 		Source:   source,
 		Name:     args.Name,
-		Revision: ptr(args.Revision),
+		Revision: new(args.Revision),
 	})
 	if err != nil {
 		return charm.CharmLocator{}, errors.Errorf("locating existing charm: %w", err)
@@ -901,7 +869,7 @@ func (s *Service) resolveMigratingUploadedCharm(ctx context.Context, args charm.
 		ObjectStoreUUID: result.ObjectStoreUUID,
 		Hash:            digest.SHA256,
 		DownloadInfo: &charm.DownloadInfo{
-			Provenance: charm.ProvenanceMigration,
+			Provenance: charm.ProvenanceLegacyMigration,
 		},
 
 		// This is correct, we want to use the unique name of the stored charm
@@ -1096,7 +1064,7 @@ func encodeCharm(ch internalcharm.Charm) (charm.Charm, []string, error) {
 func argsFromLocator(locator charm.CharmLocator) charm.GetCharmArgs {
 	return charm.GetCharmArgs{
 		Name:     locator.Name,
-		Revision: ptr(locator.Revision),
+		Revision: new(locator.Revision),
 		Source:   locator.Source,
 	}
 }

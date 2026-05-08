@@ -38,6 +38,9 @@ import (
 	applicationservice "github.com/juju/juju/domain/application/service"
 	crossmodelrelationerrors "github.com/juju/juju/domain/crossmodelrelation/errors"
 	crossmodelrelationservice "github.com/juju/juju/domain/crossmodelrelation/service"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
+	domainlife "github.com/juju/juju/domain/life"
 	"github.com/juju/juju/domain/relation"
 	relationerrors "github.com/juju/juju/domain/relation/errors"
 	"github.com/juju/juju/domain/removal"
@@ -45,8 +48,6 @@ import (
 	"github.com/juju/juju/domain/resolve"
 	resolveerrors "github.com/juju/juju/domain/resolve/errors"
 	"github.com/juju/juju/environs/bootstrap"
-	internalcharm "github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	"github.com/juju/juju/internal/uuid"
 	"github.com/juju/juju/rpc/params"
 )
@@ -87,8 +88,8 @@ func (s *applicationSuite) TestDeploy(c *tc.C) {
 						Channel: "24.04",
 					},
 					Architecture: "amd64",
-					Revision:     ptr(42),
-					Track:        ptr("1.0"),
+					Revision:     new(42),
+					Track:        new("1.0"),
 					Risk:         "stable",
 				},
 			},
@@ -129,8 +130,8 @@ func (s *applicationSuite) TestDeployWithPendingResources(c *tc.C) {
 						Channel: "24.04",
 					},
 					Architecture: "amd64",
-					Revision:     ptr(42),
-					Track:        ptr("1.0"),
+					Revision:     new(42),
+					Track:        new("1.0"),
 					Risk:         "stable",
 				},
 				Resources: map[string]string{"foo": resourceUUID.String()},
@@ -147,7 +148,7 @@ func (s *applicationSuite) TestDeployWithApplicationConfig(c *tc.C) {
 
 	s.setupAPI(c)
 	s.expectCharm(c, charmParams{name: "foo"})
-	config := map[string]interface{}{"stringOption": "hey"}
+	config := map[string]any{"stringOption": "hey"}
 	s.expectCreateApplicationForDeployWithConfig(c, "foo", config, nil)
 
 	errorResults, err := s.api.Deploy(c.Context(), params.ApplicationsDeploy{
@@ -163,8 +164,8 @@ func (s *applicationSuite) TestDeployWithApplicationConfig(c *tc.C) {
 						Channel: "24.04",
 					},
 					Architecture: "amd64",
-					Revision:     ptr(42),
-					Track:        ptr("1.0"),
+					Revision:     new(42),
+					Track:        new("1.0"),
 					Risk:         "stable",
 				},
 				Config: map[string]string{"stringOption": "hey"},
@@ -206,8 +207,8 @@ func (s *applicationSuite) TestDeploySubordinate(c *tc.C) {
 						Channel: "24.04",
 					},
 					Architecture: "", // Empty arch in args should resolve to the charm's base arch.
-					Revision:     ptr(42),
-					Track:        ptr("1.0"),
+					Revision:     new(42),
+					Track:        new("1.0"),
 					Risk:         "stable",
 				},
 			},
@@ -244,8 +245,8 @@ func (s *applicationSuite) TestDeployFailureDeletesPendingResources(c *tc.C) {
 						Channel: "24.04",
 					},
 					Architecture: "amd64",
-					Revision:     ptr(42),
-					Track:        ptr("1.0"),
+					Revision:     new(42),
+					Track:        new("1.0"),
 					Risk:         "stable",
 				},
 				Resources: map[string]string{"bar": resourceUUID.String()},
@@ -287,8 +288,8 @@ func (s *applicationSuite) TestDeployMismatchedResources(c *tc.C) {
 						Channel: "24.04",
 					},
 					Architecture: "amd64",
-					Revision:     ptr(42),
-					Track:        ptr("1.0"),
+					Revision:     new(42),
+					Track:        new("1.0"),
 					Risk:         "stable",
 				},
 				Resources: map[string]string{"bar": resourceUUID.String()},
@@ -318,8 +319,8 @@ func (s *applicationSuite) TestDeployInvalidSource(c *tc.C) {
 						Channel: "24.04",
 					},
 					Architecture: "amd64",
-					Revision:     ptr(42),
-					Track:        ptr("1.0"),
+					Revision:     new(42),
+					Track:        new("1.0"),
 					Risk:         "stable",
 				},
 			},
@@ -357,7 +358,7 @@ func (s *applicationSuite) TestGetCharmURLOrigin(c *tc.C) {
 	}, nil)
 	s.applicationService.EXPECT().GetApplicationCharmOrigin(gomock.Any(), "foo").Return(corecharm.Origin{
 		Source:   corecharm.CharmHub,
-		Revision: ptr(42),
+		Revision: new(42),
 		Channel: &internalcharm.Channel{
 			Track: "1.0",
 			Risk:  "stable",
@@ -376,9 +377,9 @@ func (s *applicationSuite) TestGetCharmURLOrigin(c *tc.C) {
 	c.Check(res.URL, tc.Equals, "ch:arm64/foo-42")
 	c.Check(res.Origin, tc.DeepEquals, params.CharmOrigin{
 		Source:       "charm-hub",
-		Revision:     ptr(42),
+		Revision:     new(42),
 		Risk:         "stable",
-		Track:        ptr("1.0"),
+		Track:        new("1.0"),
 		Architecture: "arm64",
 		Base: params.Base{
 			Name:    "ubuntu",
@@ -402,7 +403,7 @@ func (s *applicationSuite) TestGetCharmURLOriginNoOptionals(c *tc.C) {
 	}, nil)
 	s.applicationService.EXPECT().GetApplicationCharmOrigin(gomock.Any(), "foo").Return(corecharm.Origin{
 		Source:   corecharm.Local,
-		Revision: ptr(42),
+		Revision: new(42),
 		Platform: corecharm.Platform{
 			OS:           ostype.Ubuntu.String(),
 			Channel:      "24.04",
@@ -417,7 +418,7 @@ func (s *applicationSuite) TestGetCharmURLOriginNoOptionals(c *tc.C) {
 	c.Check(res.URL, tc.Equals, fmt.Sprintf("local:%s/foo-42", arch))
 	c.Check(res.Origin, tc.DeepEquals, params.CharmOrigin{
 		Source:       "local",
-		Revision:     ptr(42),
+		Revision:     new(42),
 		Architecture: arch,
 		Base: params.Base{
 			Name:    "ubuntu",
@@ -569,13 +570,13 @@ func (s *applicationSuite) TestGetApplicationConstraints(c *tc.C) {
 	s.setupAPI(c)
 
 	s.applicationService.EXPECT().GetApplicationUUIDByName(gomock.Any(), "foo").Return(application.UUID("app-foo"), nil)
-	s.applicationService.EXPECT().GetApplicationConstraints(gomock.Any(), application.UUID("app-foo")).Return(constraints.Value{Mem: ptr(uint64(42))}, nil)
+	s.applicationService.EXPECT().GetApplicationConstraints(gomock.Any(), application.UUID("app-foo")).Return(constraints.Value{Mem: new(uint64(42))}, nil)
 
 	res, err := s.api.GetConstraints(c.Context(), params.Entities{
 		Entities: []params.Entity{{Tag: "application-foo"}},
 	})
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(res.Results[0].Constraints, tc.DeepEquals, constraints.Value{Mem: ptr(uint64(42))})
+	c.Check(res.Results[0].Constraints, tc.DeepEquals, constraints.Value{Mem: new(uint64(42))})
 }
 
 func (s *applicationSuite) TestSetApplicationConstraintsAppNotFound(c *tc.C) {
@@ -587,7 +588,7 @@ func (s *applicationSuite) TestSetApplicationConstraintsAppNotFound(c *tc.C) {
 
 	err := s.api.SetConstraints(c.Context(), params.SetConstraints{
 		ApplicationName: "foo",
-		Constraints:     constraints.Value{Mem: ptr(uint64(42))},
+		Constraints:     constraints.Value{Mem: new(uint64(42))},
 	})
 	c.Assert(err, tc.ErrorMatches, "application foo not found")
 }
@@ -598,11 +599,11 @@ func (s *applicationSuite) TestSetApplicationConstraintsError(c *tc.C) {
 	s.setupAPI(c)
 
 	s.applicationService.EXPECT().GetApplicationUUIDByName(gomock.Any(), "foo").Return(application.UUID("app-foo"), nil)
-	s.applicationService.EXPECT().SetApplicationConstraints(gomock.Any(), application.UUID("app-foo"), constraints.Value{Mem: ptr(uint64(42))}).Return(errors.New("boom"))
+	s.applicationService.EXPECT().SetApplicationConstraints(gomock.Any(), application.UUID("app-foo"), constraints.Value{Mem: new(uint64(42))}).Return(errors.New("boom"))
 
 	err := s.api.SetConstraints(c.Context(), params.SetConstraints{
 		ApplicationName: "foo",
-		Constraints:     constraints.Value{Mem: ptr(uint64(42))},
+		Constraints:     constraints.Value{Mem: new(uint64(42))},
 	})
 	c.Assert(err, tc.ErrorMatches, "boom")
 }
@@ -613,11 +614,11 @@ func (s *applicationSuite) TestSetApplicationConstraints(c *tc.C) {
 	s.setupAPI(c)
 
 	s.applicationService.EXPECT().GetApplicationUUIDByName(gomock.Any(), "foo").Return(application.UUID("app-foo"), nil)
-	s.applicationService.EXPECT().SetApplicationConstraints(gomock.Any(), application.UUID("app-foo"), constraints.Value{Mem: ptr(uint64(42))}).Return(nil)
+	s.applicationService.EXPECT().SetApplicationConstraints(gomock.Any(), application.UUID("app-foo"), constraints.Value{Mem: new(uint64(42))}).Return(nil)
 
 	err := s.api.SetConstraints(c.Context(), params.SetConstraints{
 		ApplicationName: "foo",
-		Constraints:     constraints.Value{Mem: ptr(uint64(42))},
+		Constraints:     constraints.Value{Mem: new(uint64(42))},
 	})
 	c.Assert(err, tc.ErrorIsNil)
 }
@@ -855,7 +856,7 @@ func (s *applicationSuite) TestCharmConfigApplicationNotFound(c *tc.C) {
 
 	s.setupAPI(c)
 
-	s.applicationService.EXPECT().GetApplicationUUIDByName(gomock.Any(), "foo").Return("", applicationerrors.ApplicationNotFound)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), "foo").Return(domainapplication.ApplicationDetails{}, applicationerrors.ApplicationNotFound)
 
 	res, err := s.api.CharmConfig(c.Context(), params.ApplicationGetArgs{
 		Args: []params.ApplicationGet{{
@@ -873,7 +874,12 @@ func (s *applicationSuite) TestCharmConfig(c *tc.C) {
 	s.setupAPI(c)
 	appID := tc.Must(c, application.NewUUID)
 
-	s.applicationService.EXPECT().GetApplicationUUIDByName(gomock.Any(), "foo").Return(appID, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), "foo").Return(domainapplication.ApplicationDetails{
+		UUID:                   appID,
+		Life:                   domainlife.Alive,
+		Name:                   "foo",
+		IsApplicationSynthetic: false,
+	}, nil)
 	s.applicationService.EXPECT().GetApplicationAndCharmConfig(gomock.Any(), appID).Return(applicationservice.ApplicationConfig{
 		CharmName: "ch",
 		ApplicationConfig: internalcharm.Config{
@@ -904,14 +910,14 @@ func (s *applicationSuite) TestCharmConfig(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(res.Results, tc.HasLen, 1)
 	c.Assert(res.Results[0].Error, tc.IsNil)
-	c.Assert(res.Results[0].Config, tc.DeepEquals, map[string]interface{}{
-		"foo": map[string]interface{}{
+	c.Assert(res.Results[0].Config, tc.DeepEquals, map[string]any{
+		"foo": map[string]any{
 			"description": "a foo",
 			"type":        "string",
 			"value":       "doink",
 			"source":      "user",
 		},
-		"bar": map[string]interface{}{
+		"bar": map[string]any{
 			"description": "a bar",
 			"type":        "int",
 			"value":       18,
@@ -921,11 +927,35 @@ func (s *applicationSuite) TestCharmConfig(c *tc.C) {
 	})
 }
 
+func (s *applicationSuite) TestCharmConfigSAASApplicationNotFound(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	s.setupAPI(c)
+	appID := tc.Must(c, application.NewUUID)
+
+	// SAAS applications should be rejected with application not found error
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), "saas-app").Return(domainapplication.ApplicationDetails{
+		UUID:                   appID,
+		Life:                   domainlife.Alive,
+		Name:                   "saas-app",
+		IsApplicationSynthetic: true,
+	}, nil)
+
+	res, err := s.api.CharmConfig(c.Context(), params.ApplicationGetArgs{
+		Args: []params.ApplicationGet{{
+			ApplicationName: "saas-app",
+		}},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(res.Results, tc.HasLen, 1)
+	c.Assert(res.Results[0].Error, tc.Satisfies, params.IsCodeNotFound)
+}
+
 func (s *applicationSuite) TestSetCharm(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	s.setupAPI(c)
-	revisionPtr := ptr(42)
+	revisionPtr := new(42)
 	s.applicationService.EXPECT().SetApplicationCharm(gomock.Any(), "foo", applicationcharm.CharmLocator{
 		Name:         "foo",
 		Revision:     42,
@@ -947,6 +977,7 @@ func (s *applicationSuite) TestSetCharm(c *tc.C) {
 			},
 		},
 		CharmUpgradeOnError: true,
+		ForceBase:           true,
 		EndpointBindings: map[string]network.SpaceName{
 			"binding-1": "endpoint-1",
 			"binding-2": "endpoint-2",
@@ -965,10 +996,11 @@ func (s *applicationSuite) TestSetCharm(c *tc.C) {
 			},
 			Architecture: "arm64",
 			Revision:     revisionPtr,
-			Track:        ptr("1.0"),
+			Track:        new("1.0"),
 			Risk:         "stable",
 		},
-		Force: true,
+		Force:     true,
+		ForceBase: true,
 		EndpointBindings: map[string]string{
 			"binding-1": "endpoint-1",
 			"binding-2": "endpoint-2",
@@ -999,7 +1031,7 @@ func (s *applicationSuite) TestSetConfigsApplicationNotFound(c *tc.C) {
 
 	s.setupAPI(c)
 
-	s.applicationService.EXPECT().GetApplicationUUIDByName(gomock.Any(), "foo").Return("", applicationerrors.ApplicationNotFound)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), "foo").Return(domainapplication.ApplicationDetails{}, applicationerrors.ApplicationNotFound)
 
 	res, err := s.api.SetConfigs(c.Context(), params.ConfigSetArgs{
 		Args: []params.ConfigSet{{
@@ -1017,7 +1049,7 @@ func (s *applicationSuite) TestSetConfigsNotValidApplicationName(c *tc.C) {
 
 	s.setupAPI(c)
 
-	s.applicationService.EXPECT().GetApplicationUUIDByName(gomock.Any(), "foo").Return("", applicationerrors.ApplicationNameNotValid)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), "foo").Return(domainapplication.ApplicationDetails{}, applicationerrors.ApplicationNameNotValid)
 
 	res, err := s.api.SetConfigs(c.Context(), params.ConfigSetArgs{
 		Args: []params.ConfigSet{{
@@ -1036,7 +1068,12 @@ func (s *applicationSuite) TestSetConfigsInvalidConfig(c *tc.C) {
 	s.setupAPI(c)
 	appID := tc.Must(c, application.NewUUID)
 
-	s.applicationService.EXPECT().GetApplicationUUIDByName(gomock.Any(), "foo").Return(appID, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), "foo").Return(domainapplication.ApplicationDetails{
+		UUID:                   appID,
+		Life:                   domainlife.Alive,
+		Name:                   "foo",
+		IsApplicationSynthetic: false,
+	}, nil)
 	s.applicationService.EXPECT().UpdateApplicationConfig(gomock.Any(), appID, gomock.Any()).Return(applicationerrors.InvalidApplicationConfig)
 
 	res, err := s.api.SetConfigs(c.Context(), params.ConfigSetArgs{
@@ -1056,7 +1093,12 @@ func (s *applicationSuite) TestSetConfigs(c *tc.C) {
 	s.setupAPI(c)
 	appID := tc.Must(c, application.NewUUID)
 
-	s.applicationService.EXPECT().GetApplicationUUIDByName(gomock.Any(), "foo").Return(appID, nil)
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), "foo").Return(domainapplication.ApplicationDetails{
+		UUID:                   appID,
+		Life:                   domainlife.Alive,
+		Name:                   "foo",
+		IsApplicationSynthetic: false,
+	}, nil)
 	s.applicationService.EXPECT().UpdateApplicationConfig(gomock.Any(), appID, map[string]string{"foo": "bar"}).Return(nil)
 
 	res, err := s.api.SetConfigs(c.Context(), params.ConfigSetArgs{
@@ -1068,6 +1110,31 @@ func (s *applicationSuite) TestSetConfigs(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(res.Results, tc.HasLen, 1)
 	c.Assert(res.Results[0].Error, tc.IsNil)
+}
+
+func (s *applicationSuite) TestSetConfigsSAASApplicationNotFound(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	s.setupAPI(c)
+	appID := tc.Must(c, application.NewUUID)
+
+	// SAAS applications should be rejected with application not found error
+	s.applicationService.EXPECT().GetApplicationDetailsByName(gomock.Any(), "saas-app").Return(domainapplication.ApplicationDetails{
+		UUID:                   appID,
+		Life:                   domainlife.Alive,
+		Name:                   "saas-app",
+		IsApplicationSynthetic: true,
+	}, nil)
+
+	res, err := s.api.SetConfigs(c.Context(), params.ConfigSetArgs{
+		Args: []params.ConfigSet{{
+			ApplicationName: "saas-app",
+			Config:          map[string]string{"foo": "bar"},
+		}},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(res.Results, tc.HasLen, 1)
+	c.Assert(res.Results[0].Error, tc.Satisfies, params.IsCodeNotFound)
 }
 
 func (s *applicationSuite) TestResolveUnitErrorsAllAndEntitesMutuallyExclusive(c *tc.C) {
@@ -1289,7 +1356,7 @@ func (s *applicationSuite) TestDestroyRelationRelationNotFound(c *tc.C) {
 	err := s.api.DestroyRelation(c.Context(), arg)
 
 	// Assert
-	c.Assert(err, tc.ErrorIs, relationerrors.RelationNotFound)
+	c.Assert(err, tc.Satisfies, errors.IsNotFound)
 }
 
 func (s *applicationSuite) TestDestroyRelationByID(c *tc.C) {
@@ -1329,7 +1396,7 @@ func (s *applicationSuite) TestDestroyRelationWithForceMaxWait(c *tc.C) {
 
 	arg := params.DestroyRelation{
 		RelationId: getUUIDArgs.RelationID,
-		Force:      ptr(true),
+		Force:      new(true),
 		MaxWait:    &maxWait,
 	}
 
@@ -1352,7 +1419,7 @@ func (s *applicationSuite) TestDestroyRelationCrossModel(c *tc.C) {
 	removalUUID := tc.Must(c, removal.NewUUID)
 
 	s.removalService.EXPECT().RemoveRelation(gomock.Any(), relUUID, false, time.Duration(0)).Return("", removalerrors.RelationIsCrossModel)
-	s.removalService.EXPECT().RemoveRemoteRelation(gomock.Any(), relUUID, false, time.Duration(0)).Return(removalUUID, nil)
+	s.removalService.EXPECT().RemoveRelationWithRemoteOfferer(gomock.Any(), relUUID, false, time.Duration(0)).Return(removalUUID, nil)
 
 	arg := params.DestroyRelation{
 		RelationId: getUUIDArgs.RelationID,
@@ -1445,15 +1512,15 @@ func (s *applicationSuite) testUnitsInfoCAAS(c *tc.C, inputTag names.Tag, result
 					RelationId:      3,
 					Endpoint:        "relation",
 					RelatedEndpoint: "fake-provides",
-					ApplicationData: map[string]interface{}{},
+					ApplicationData: map[string]any{},
 					UnitRelationData: map[string]params.RelationData{
 						"foo/0": {
 							InScope:  true,
-							UnitData: map[string]interface{}{"foo": "bar"},
+							UnitData: map[string]any{"foo": "bar"},
 						},
 						"foo/1": {
 							InScope:  true,
-							UnitData: map[string]interface{}{"foo": "baz"},
+							UnitData: map[string]any{"foo": "baz"},
 						},
 					},
 				}},
@@ -1555,7 +1622,7 @@ func (s *applicationSuite) TestConsume(c *tc.C) {
 	s.crossModelRelationService.EXPECT().AddRemoteApplicationOfferer(gomock.Any(), "my-offer", crossmodelrelationservice.AddRemoteApplicationOffererArgs{
 		OfferUUID:             offerUUID,
 		OfferURL:              tc.Must1(c, crossmodel.ParseOfferURL, "controller:qualifier/model.my-offer"),
-		OffererControllerUUID: ptr(controllerUUID),
+		OffererControllerUUID: new(controllerUUID),
 		OffererModelUUID:      modelUUID,
 		Endpoints: []applicationcharm.Relation{{
 			Name:      "db",
@@ -1795,6 +1862,91 @@ func (s *applicationSuite) TestConsumeInvalidEndpointRole(c *tc.C) {
 	})
 }
 
+func (s *applicationSuite) TestConsumeWithEmptyApplicationAlias(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	modelUUID := tc.Must(c, uuid.NewUUID).String()
+	offerUUID := tc.Must(c, offer.NewUUID)
+	macaroon := newMacaroon(c, "test")
+
+	// When ApplicationAlias is empty, the application name should be parsed from the offer URL
+	s.crossModelRelationService.EXPECT().AddRemoteApplicationOfferer(gomock.Any(), "my-offer", crossmodelrelationservice.AddRemoteApplicationOffererArgs{
+		OfferUUID:        offerUUID,
+		OfferURL:         tc.Must1(c, crossmodel.ParseOfferURL, "controller:qualifier/model.my-offer"),
+		OffererModelUUID: modelUUID,
+		Endpoints: []applicationcharm.Relation{{
+			Name:      "db",
+			Role:      applicationcharm.RoleRequirer,
+			Interface: "db",
+			Limit:     1,
+		}},
+		Macaroon: macaroon,
+	}).Return(nil)
+
+	s.setupAPI(c)
+
+	results, err := s.api.Consume(c.Context(), params.ConsumeApplicationArgsV5{
+		Args: []params.ConsumeApplicationArgV5{{
+			ApplicationOfferDetailsV5: params.ApplicationOfferDetailsV5{
+				OfferUUID:      offerUUID.String(),
+				OfferName:      "my-offer",
+				OfferURL:       "controller:qualifier/model.my-offer",
+				SourceModelTag: names.NewModelTag(modelUUID).String(),
+				Endpoints: []params.RemoteEndpoint{{
+					Name:      "db",
+					Role:      "requirer",
+					Interface: "db",
+					Limit:     1,
+				}},
+			},
+			// ApplicationAlias is empty, should default to name from offer URL
+			ApplicationAlias: "",
+			Macaroon:         macaroon,
+		}},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(results, tc.DeepEquals, params.ErrorResults{
+		Results: []params.ErrorResult{{}},
+	})
+}
+
+func (s *applicationSuite) TestConsumeWithInvalidOfferURL(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	modelUUID := tc.Must(c, uuid.NewUUID).String()
+	offerUUID := tc.Must(c, offer.NewUUID)
+
+	s.setupAPI(c)
+
+	results, err := s.api.Consume(c.Context(), params.ConsumeApplicationArgsV5{
+		Args: []params.ConsumeApplicationArgV5{{
+			ApplicationOfferDetailsV5: params.ApplicationOfferDetailsV5{
+				OfferUUID:      offerUUID.String(),
+				OfferName:      "my-offer",
+				OfferURL:       "invalid-offer-url",
+				SourceModelTag: names.NewModelTag(modelUUID).String(),
+				Endpoints: []params.RemoteEndpoint{{
+					Name:      "db",
+					Role:      "requirer",
+					Interface: "db",
+					Limit:     1,
+				}},
+			},
+			// ApplicationAlias is empty, will try to parse offer URL.
+			ApplicationAlias: "",
+		}},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(results, tc.DeepEquals, params.ErrorResults{
+		Results: []params.ErrorResult{{
+			Error: &params.Error{
+				Code:    params.CodeBadRequest,
+				Message: `parsing offer URL: offer URL is missing the name`,
+			},
+		}},
+	})
+}
+
 func (s *applicationSuite) TestSetRelationsSuspended(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
@@ -1915,6 +2067,54 @@ func (s *applicationSuite) TestSetRelationsSuspendedNotFound(c *tc.C) {
 				Message: "relation 42 not found",
 			},
 		}},
+	})
+}
+
+func (s *applicationSuite) TestGetApplicationStorageDirectivesInfo(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	s.setupAPI(c)
+
+	appUUID := tc.Must(c, application.NewUUID)
+	s.applicationService.EXPECT().GetApplicationUUIDByName(
+		gomock.Any(),
+		"kafka",
+	).Return(
+		appUUID,
+		nil,
+	)
+
+	poolName := "my-loop"
+	size := uint64(20)
+	count := uint64(1)
+	s.applicationService.EXPECT().GetApplicationStorageDirectivesInfo(
+		gomock.Any(),
+		appUUID,
+	).Return(
+		map[string]domainapplication.ApplicationStorageInfo{
+			"logs": {
+				StoragePoolName: poolName,
+				SizeMiB:         size,
+				Count:           count,
+			},
+		},
+		nil,
+	)
+
+	res, err := s.api.GetApplicationStorage(c.Context(), params.Entities{
+		Entities: []params.Entity{{Tag: "application-kafka"}},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(res.Results, tc.HasLen, 1)
+	c.Assert(res.Results[0].Error, tc.IsNil)
+
+	sc := res.Results[0].StorageConstraints
+	c.Check(sc, tc.DeepEquals, map[string]params.StorageDirectives{
+		"logs": {
+			Pool:    poolName,
+			SizeMiB: &size,
+			Count:   &count,
+		},
 	})
 }
 

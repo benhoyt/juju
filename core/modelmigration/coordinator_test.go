@@ -9,6 +9,7 @@ import (
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
+	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/testhelpers"
@@ -125,7 +126,7 @@ func (s *migrationSuite) setupMocks(c *tc.C) *gomock.Controller {
 	s.txnRunner = NewMockTxnRunner(ctrl)
 	s.model = NewMockModel(ctrl)
 
-	s.scope = NewScope(nil, nil, nil)
+	s.scope = NewScope(nil, nil, nil, nil, tc.Must0(c, model.NewUUID))
 
 	return ctrl
 }

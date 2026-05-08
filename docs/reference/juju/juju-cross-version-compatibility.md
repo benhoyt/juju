@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn Juju component version compatibility rules for CLI, controllers, agents, Python Libjuju, and Terraform provider across releases."
+---
+
 (juju-cross-version-compatibility)=
 # Juju component cross-version compatibility
 

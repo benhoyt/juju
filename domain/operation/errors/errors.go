@@ -3,7 +3,11 @@
 
 package errors
 
-import "github.com/juju/juju/internal/errors"
+import (
+	"fmt"
+
+	"github.com/juju/juju/internal/errors"
+)
 
 const (
 	// OperationNotFound describes an error that occurs when the given operation does not exist.
@@ -17,3 +21,19 @@ const (
 	// is queried and does not have a pending status.
 	TaskNotPending = errors.ConstError("task not pending")
 )
+
+// ActionNotDefined describes an error that occurs when the given charm does
+// not define the given action.
+type ActionNotDefined struct {
+	// CharmName is the name of the charm missing the action.
+	CharmName string
+	// UnitName is the name of the unit where the action has been requested.
+	UnitName string
+	// HasActions is true if the charm defines some actions.
+	HasActions bool
+}
+
+// Error implements builtin.error
+func (a ActionNotDefined) Error() string {
+	return fmt.Sprintf("action not defined for charm %q (target unit: %q)", a.CharmName, a.UnitName)
+}

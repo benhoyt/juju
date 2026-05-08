@@ -28,7 +28,7 @@ func TestStateSuite(t *testing.T) {
 func (s *stateSuite) TestCheckApplicationNameAvailable(c *tc.C) {
 	s.createIAASApplication(c, "foo", life.Alive)
 
-	st := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	err := s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return st.checkApplicationNameAvailable(ctx, tx, "foo")
@@ -49,7 +49,7 @@ SELECT charm_uuid FROM application WHERE uuid = ?
 	})
 	c.Assert(err, tc.ErrorIsNil)
 
-	st := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	err = s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return st.checkApplicationNameAvailable(ctx, tx, "foo")
@@ -58,7 +58,7 @@ SELECT charm_uuid FROM application WHERE uuid = ?
 }
 
 func (s *stateSuite) TestCheckApplicationNameAvailableNoApplication(c *tc.C) {
-	st := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	err := s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return st.checkApplicationNameAvailable(ctx, tx, "foo")
@@ -69,7 +69,7 @@ func (s *stateSuite) TestCheckApplicationNameAvailableNoApplication(c *tc.C) {
 func (s *stateSuite) TestCheckApplication(c *tc.C) {
 	id := s.createIAASApplication(c, "foo", life.Alive)
 
-	st := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	err := s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return st.checkApplicationNotDead(ctx, tx, id)
@@ -90,16 +90,16 @@ SELECT charm_uuid FROM application WHERE uuid = ?
 	})
 	c.Assert(err, tc.ErrorIsNil)
 
-	st := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	err = s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return st.checkApplicationNotDead(ctx, tx, id)
 	})
-	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationNotFound)
+	c.Assert(err, tc.ErrorIsNil)
 }
 
 func (s *stateSuite) TestCheckApplicationExistsNotFound(c *tc.C) {
-	st := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	err := s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return st.checkApplicationNotDead(ctx, tx, "foo")
@@ -110,7 +110,7 @@ func (s *stateSuite) TestCheckApplicationExistsNotFound(c *tc.C) {
 func (s *stateSuite) TestCheckApplicationDying(c *tc.C) {
 	id := s.createIAASApplication(c, "foo", life.Dying)
 
-	st := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	err := s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return st.checkApplicationNotDead(ctx, tx, id)
@@ -121,7 +121,7 @@ func (s *stateSuite) TestCheckApplicationDying(c *tc.C) {
 func (s *stateSuite) TestCheckApplicationExistsDead(c *tc.C) {
 	id := s.createIAASApplication(c, "foo", life.Dead)
 
-	st := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	err := s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
 		return st.checkApplicationNotDead(ctx, tx, id)
@@ -130,33 +130,33 @@ func (s *stateSuite) TestCheckApplicationExistsDead(c *tc.C) {
 }
 
 func (s *stateSuite) TestCheckApplicationExistsAlive(c *tc.C) {
-	id := s.createIAASApplication(c, "foo", life.Dying)
+	appUUID := s.createIAASApplication(c, "foo", life.Dying)
 
-	st := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	err := s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
-		return st.checkApplicationAlive(ctx, tx, id)
+		return st.checkApplicationAlive(ctx, tx, appUUID.String())
 	})
 	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationNotAlive)
 }
 
 func (s *stateSuite) TestCheckApplicationExistsAliveSyntheticCMRApplication(c *tc.C) {
-	id := s.createIAASApplication(c, "foo", life.Dying)
+	appUUID := s.createIAASApplication(c, "foo", life.Dying)
 
 	// Switch the source_id of a charm to a synthetic CMR charm.
 	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 UPDATE charm SET source_id = 2, architecture_id = NULL WHERE uuid = (
 SELECT charm_uuid FROM application WHERE uuid = ?
-)`, id)
+)`, appUUID)
 		return err
 	})
 	c.Assert(err, tc.ErrorIsNil)
 
-	st := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	err = s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
-		return st.checkApplicationAlive(ctx, tx, id)
+		return st.checkApplicationAlive(ctx, tx, appUUID.String())
 	})
-	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationNotFound)
+	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationNotAlive)
 }

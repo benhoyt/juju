@@ -9,8 +9,8 @@ import (
 	"github.com/juju/names/v6"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/core/secrets"
-	"github.com/juju/juju/internal/cmd"
 )
 
 type secretRevokeCommand struct {
@@ -55,7 +55,7 @@ case just that unit's access is revoked.'
 	return jujucmd.Info(&cmd.Info{
 		Name:     "secret-revoke",
 		Args:     "<ID>",
-		Purpose:  "Revoke access to a secret.",
+		Purpose:  "Revokes access to a secret.",
 		Doc:      doc,
 		Examples: examples,
 	})
@@ -63,11 +63,11 @@ case just that unit's access is revoked.'
 
 // SetFlags implements cmd.Command.
 func (c *secretRevokeCommand) SetFlags(f *gnuflag.FlagSet) {
-	f.StringVar(&c.app, "app", "", "the application to revoke access")
+	f.StringVar(&c.app, "app", "", "Specifies the application for which to revoke access.")
 	f.StringVar(&c.app, "application", "", "")
-	f.StringVar(&c.unit, "unit", "", "the unit to revoke access")
-	f.Var(c.relationIdProxy, "r", "the relation for which to revoke the grant")
-	f.Var(c.relationIdProxy, "relation", "the relation for which to revoke the grant")
+	f.StringVar(&c.unit, "unit", "", "Specifies the unit for which to revoke access.")
+	f.Var(c.relationIdProxy, "r", "Specifies the relation for which to revoke the grant.")
+	f.Var(c.relationIdProxy, "relation", "Specifies the relation for which to revoke the grant.")
 }
 
 // Init implements cmd.Command.

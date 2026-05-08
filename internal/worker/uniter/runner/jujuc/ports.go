@@ -11,8 +11,8 @@ import (
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/core/network"
-	"github.com/juju/juju/internal/cmd"
 )
 
 const (
@@ -35,8 +35,8 @@ func (c *portCommand) Info() *cmd.Info {
 }
 
 func (c *portCommand) SetFlags(f *gnuflag.FlagSet) {
-	f.StringVar(&c.formatFlag, "format", "", "deprecated format flag")
-	f.StringVar(&c.endpoints, "endpoints", "", "a comma-delimited list of application endpoints to target with this operation")
+	f.StringVar(&c.formatFlag, "format", "", "(DEPRECATED) Specifies the format.")
+	f.StringVar(&c.endpoints, "endpoints", "", "Specifies a comma-delimited list of application endpoints to target with this operation.")
 }
 
 func (c *portCommand) Init(args []string) error {
@@ -63,36 +63,38 @@ func (c *portCommand) Run(ctx *cmd.Context) error {
 var openPortInfo = &cmd.Info{
 	Name:    "open-port",
 	Args:    portFormat,
-	Purpose: "Register a request to open a port or port range.",
+	Purpose: "Registers a request to open a port or port range.",
 	Doc: `
-open-port registers a request to open the specified port or port range.
+` + "`open-port`" + ` registers a request to open the specified port or port range.
 
 By default, the specified port or port range will be opened for all defined
-application endpoints. The --endpoints option can be used to constrain the
+application endpoints. The ` + "`--endpoints`" + ` option can be used to constrain the
 open request to a comma-delimited list of application endpoints.
 
 The behavior differs a little bit between machine charms and Kubernetes charms.
 
-Machine charms
+### Machine charms
+
 On public clouds the port will only be open while the application is exposed.
 It accepts a single port or range of ports with an optional protocol, which
-may be icmp, udp, or tcp. tcp is the default.
+may be ` + "`icmp`" + `, ` + "`udp`" + `, or ` + "`tcp`" + `. ` + "`tcp`" + ` is the default.
 
-open-port will not have any effect if the application is not exposed, and may
+` + "`open-port`" + ` will not have any effect if the application is not exposed, and may
 have a somewhat delayed effect even if it is. This operation is transactional,
 so changes will not be made unless the hook exits successfully.
 
 Prior to Juju 2.9, when charms requested a particular port range to be opened,
 Juju would automatically mark that port range as opened for all defined
 application endpoints. As of Juju 2.9, charms can constrain opened port ranges
-to a set of application endpoints by providing the --endpoints flag followed by
+to a set of application endpoints by providing the ` + "`--endpoints`" + ` flag followed by
 a comma-delimited list of application endpoints.
 
-Kubernetes charms
+### Kubernetes charms
+
 The port will open directly regardless of whether the application is exposed or not.
-This connects to the fact that juju expose currently has no effect on sidecar charms.
+This connects to the fact that ` + "`juju expose`" + ` currently has no effect on sidecar charms.
 Additionally, it is currently not possible to designate a range of ports to open for
-Kubernetes charms; to open a range, you will have to run open-port multiple times.
+Kubernetes charms; to open a range, you will have to run ` + "`open-port`" + ` multiple times.
 `,
 	Examples: `
     # Open port 80 to TCP traffic:
@@ -120,12 +122,12 @@ func NewOpenPortCommand(ctx Context) (cmd.Command, error) {
 var closePortInfo = &cmd.Info{
 	Name:    "close-port",
 	Args:    portFormat,
-	Purpose: "Register a request to close a port or port range.",
+	Purpose: "Registers a request to close a port or port range.",
 	Doc: `
-close-port registers a request to close the specified port or port range.
+` + "`close-port`" + ` registers a request to close the specified port or port range.
 
 By default, the specified port or port range will be closed for all defined
-application endpoints. The --endpoints option can be used to constrain the
+application endpoints. The ` + "`--endpoints`" + ` option can be used to constrain the
 close request to a comma-delimited list of application endpoints.
 `,
 	Examples: `
@@ -157,7 +159,7 @@ func makePortRangeCommand(op func(string, network.PortRange) error) func(*portCo
 			return op("", c.portRange)
 		}
 
-		for _, endpoint := range strings.Split(c.endpoints, ",") {
+		for endpoint := range strings.SplitSeq(c.endpoints, ",") {
 			endpoint = strings.TrimSpace(endpoint)
 			if err := op(endpoint, c.portRange); err != nil {
 				return errors.Trace(err)

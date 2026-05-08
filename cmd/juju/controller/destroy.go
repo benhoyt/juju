@@ -23,6 +23,7 @@ import (
 	"github.com/juju/juju/caas"
 	"github.com/juju/juju/cloud"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/block"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/controller"
@@ -30,7 +31,6 @@ import (
 	"github.com/juju/juju/environs"
 	environscloudspec "github.com/juju/juju/environs/cloudspec"
 	"github.com/juju/juju/environs/config"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -154,7 +154,7 @@ type destroyControllerAPI interface {
 
 type modelConfigAPI interface {
 	Close() error
-	ModelGet(ctx context.Context) (map[string]interface{}, error)
+	ModelGet(ctx context.Context) (map[string]any, error)
 }
 
 // Info implements Command.Info.
@@ -484,7 +484,7 @@ func (c *destroyCommand) ensureUserFriendlyErrorLog(destroyErr error, ctx *cmd.C
 			models, err := api.ListBlockedModels(ctx)
 			out := &bytes.Buffer{}
 			if err == nil {
-				var info interface{}
+				var info any
 				info, err = block.FormatModelBlockInfo(models)
 				if err != nil {
 					return errors.Trace(err)

@@ -18,9 +18,9 @@ import (
 	gomock "go.uber.org/mock/gomock"
 	"gopkg.in/macaroon.v2"
 
+	apimacaroon "github.com/juju/juju/api/macaroon"
 	coreerrors "github.com/juju/juju/core/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
-	internalmacaroon "github.com/juju/juju/internal/macaroon"
 )
 
 type jaasBakerySuite struct {
@@ -30,15 +30,14 @@ type jaasBakerySuite struct {
 func TestJAASBakerySuite(t *testing.T) {
 	tc.Run(t, &jaasBakerySuite{})
 }
-
 func (s *jaasBakerySuite) TestNewJAASOfferBakery(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	checker := checkers.New(internalmacaroon.MacaroonNamespace)
+	checker := checkers.New(apimacaroon.MacaroonNamespace)
 	bakery, err := NewJAASOfferBakery(
 		s.keyPair,
 		"juju model",
-		"http://offer-access",
+		"http://offer-access/.well-known/jwks.json",
 		s.store,
 		checker,
 		s.authorizer,
@@ -49,6 +48,25 @@ func (s *jaasBakerySuite) TestNewJAASOfferBakery(c *tc.C) {
 
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(bakery, tc.Not(tc.IsNil))
+}
+
+func (s *jaasBakerySuite) TestNewJAASOfferBakeryError(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	checker := checkers.New(apimacaroon.MacaroonNamespace)
+	_, err := NewJAASOfferBakery(
+		s.keyPair,
+		"juju model",
+		"http://offer-access/public-key",
+		s.store,
+		checker,
+		s.authorizer,
+		s.httpClient,
+		s.clock,
+		loggertesting.WrapCheckLog(c),
+	)
+
+	c.Assert(err, tc.ErrorMatches, "failed to cut .well-known.*")
 }
 
 func (s *jaasBakerySuite) TestParseCaveatNoOfferPermission(c *tc.C) {
@@ -179,7 +197,7 @@ func (s *jaasBakerySuite) TestCreateDischargeMacaroon(c *tc.C) {
 			offerUUIDKey:   "mysql-uuid",
 		},
 		DeclaredValues{
-			userName:        ptr("mary"),
+			userName:        new("mary"),
 			sourceModelUUID: s.modelUUID.String(),
 			relationKey:     "mediawiki:db mysql:server",
 		},

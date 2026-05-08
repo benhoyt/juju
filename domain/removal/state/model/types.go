@@ -8,6 +8,11 @@ import (
 	"time"
 
 	"github.com/juju/collections/set"
+	"github.com/juju/collections/transform"
+
+	coreerrors "github.com/juju/juju/core/errors"
+	coresecrets "github.com/juju/juju/core/secrets"
+	"github.com/juju/juju/internal/errors"
 )
 
 // removalJob represents a record in the removal table
@@ -41,6 +46,16 @@ type entityUUID struct {
 	UUID string `db:"uuid"`
 }
 
+// entityUUIDs is a slice of entityUUID, used to hold multiple UUIDs.
+type entityUUIDs []entityUUID
+
+// uuids returns the uuids held in the entityUUIDs typed slice.
+func (u entityUUIDs) uuids() uuids {
+	return transform.Slice(u, func(u entityUUID) string {
+		return u.UUID
+	})
+}
+
 // entityAssociationCount holds a Count in int form and the UUID in string form
 // for the associated entity.
 type entityAssociationCount struct {
@@ -54,8 +69,8 @@ type count struct {
 	Count int `db:"count"`
 }
 
-// unitMachineLifeSummary holds the counts of alive, not alive, and machine parent
-// entities associated with a unit identified by the UUID. It is used to
+// unitMachineLifeSummary holds the counts of alive, not alive, and machine
+// parent entities associated with a unit identified by the UUID. It is used to
 // summarize the state of a unit in terms of its associated entities.
 type unitMachineLifeSummary struct {
 	// UUID uniquely identifies a associated domain entity.
@@ -69,9 +84,20 @@ type unitMachineLifeSummary struct {
 	MachineParentCount int `db:"machine_parent_count"`
 }
 
-// entityLife holds an entity's life in integer
+// entityLife holds an entity's life in integer.
 type entityLife struct {
 	Life int `db:"life_id"`
+}
+
+// entityName holds an entity's name.
+type entityName struct {
+	// Name is the name of the entity.
+	Name string `db:"name"`
+}
+
+// entityStatus holds an entity's status in integer.
+type entityStatus struct {
+	StatusID int `db:"status_id"`
 }
 
 // unitUUID holds a unit UUID in string form.
@@ -94,11 +120,6 @@ type linkLayerDevice struct {
 	UUID            string `db:"uuid"`
 }
 
-type consumerApplicationUUID struct {
-	ConsumerApplicationUUID string `db:"consumer_application_uuid"`
-	SynthApplicationUUID    string `db:"uuid"`
-}
-
 // storageAttachmentDetachInfo represents the information needed to make a
 // decision if a given storage attachment can be detached from a unit safely.
 // This information assumes the case where the unit will continue to run after
@@ -110,6 +131,50 @@ type storageAttachmentDetachInfo struct {
 	LifeID           int    `db:"life_id"`
 	UnitLifeID       int    `db:"unit_life_id"`
 	UnitUUID         string `db:"unit_uuid"`
+}
+
+type secretID struct {
+	ID string `db:"secret_id"`
+}
+
+type secretIDs []string
+type secretIDList []secretID
+
+func (rows secretIDList) toSecretMetadataForDrain(revRows secretExternalRevisions) ([]*coresecrets.SecretMetadataForDrain, error) {
+	if len(rows) != len(revRows) {
+		// Should never happen.
+		return nil, errors.New("row length mismatch composing secret results")
+	}
+
+	var (
+		result  []*coresecrets.SecretMetadataForDrain
+		current *coresecrets.SecretMetadataForDrain
+	)
+	for i, row := range rows {
+		if current == nil || current.URI.ID != row.ID {
+			// Encountered a new record.
+			uri, err := coresecrets.ParseURI(row.ID)
+			if err != nil {
+				return nil, errors.Errorf("secret URI %q %w", row.ID, coreerrors.NotValid)
+			}
+			md := coresecrets.SecretMetadataForDrain{
+				URI: uri,
+			}
+			current = &md
+			result = append(result, current)
+		}
+		rev := coresecrets.SecretExternalRevision{
+			Revision: revRows[i].Revision,
+		}
+		if revRows[i].BackendUUID != "" {
+			rev.ValueRef = &coresecrets.ValueRef{
+				BackendID:  revRows[i].BackendUUID,
+				RevisionID: revRows[i].RevisionID,
+			}
+		}
+		current.Revisions = append(current.Revisions, rev)
+	}
+	return result, nil
 }
 
 type secretRevision struct {
@@ -132,4 +197,21 @@ func (srs secretRevisions) split() (uuids, uuids) {
 	}
 
 	return revisionUUIDs, secretUUIDs.Values()
+}
+
+type secretExternalRevision struct {
+	Revision    int    `db:"revision"`
+	BackendUUID string `db:"backend_uuid"`
+	RevisionID  string `db:"revision_id"`
+}
+
+type secretExternalRevisions []secretExternalRevision
+
+type storageRemoval struct {
+	Obliterate bool `db:"obliterate"`
+}
+
+// dbModelType represents the model type from the model table.
+type dbModelType struct {
+	Type string `db:"type"`
 }

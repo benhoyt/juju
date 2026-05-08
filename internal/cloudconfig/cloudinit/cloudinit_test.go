@@ -63,7 +63,16 @@ var ctests = []struct {
 }, {
 	"PackageMirror",
 	map[string]any{
-		"apt_mirror": "http://foo.com",
+		"apt": map[string][]cloudinit.AptMirrorInfo{
+			"primary": {cloudinit.AptMirrorInfo{
+				"search": {"http://foo.com"},
+				"arches": {"default"},
+			}},
+			"security": {cloudinit.AptMirrorInfo{
+				"search": {"http://foo.com"},
+				"arches": {"default"},
+			}},
+		},
 	},
 	func(cfg cloudinit.CloudConfig) error {
 		cfg.SetPackageMirror("http://foo.com")

@@ -5,6 +5,7 @@ package service
 
 import (
 	"context"
+	"math/rand/v2"
 	"regexp"
 
 	"github.com/juju/juju/core/changestream"
@@ -12,6 +13,7 @@ import (
 	"github.com/juju/juju/core/trace"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/core/watcher/eventsource"
+	domainobjectstore "github.com/juju/juju/domain/objectstore"
 	objectstoreerrors "github.com/juju/juju/domain/objectstore/errors"
 	"github.com/juju/juju/internal/errors"
 )
@@ -47,7 +49,24 @@ type State interface {
 	GetMetadataBySHA256Prefix(ctx context.Context, sha256 string) (objectstore.Metadata, error)
 
 	// PutMetadata adds a new specified path for the persistence metadata.
-	PutMetadata(ctx context.Context, metadata objectstore.Metadata) (objectstore.UUID, error)
+	PutMetadata(ctx context.Context, uuid string, metadata objectstore.Metadata) (string, error)
+
+	// GetControllerIDHints returns the controller ID hints for the specified
+	// SHA384. This is used to indicate which controller might have the object
+	// with the specified SHA384, which can be used for optimization in certain
+	// scenarios.
+	GetControllerIDHints(ctx context.Context, sha384 string) ([]string, error)
+
+	// PutMetadataWithControllerIDHint adds a new specified path for the
+	// persistence metadata with a controller ID hint. This is used to route the
+	// request to the correct controller in a multi-controller environment.
+	PutMetadataWithControllerIDHint(ctx context.Context, uuid string, metadata objectstore.Metadata, controllerIDHint string) (string, error)
+
+	// AddControllerIDHint adds a controller ID hint for the specified SHA384.
+	// This is used to indicate that a controller might have the object with the
+	// specified SHA384, which can be used for optimization in certain
+	// scenarios.
+	AddControllerIDHint(ctx context.Context, sha384 string, controllerIDHint string) error
 
 	// ListMetadata returns the persistence metadata for all paths.
 	ListMetadata(ctx context.Context) ([]objectstore.Metadata, error)
@@ -64,12 +83,24 @@ type State interface {
 // phase of the object store.
 type DrainingState interface {
 	State
-	// GetActiveDrainingPhase returns the active draining phase of the object
+
+	// GetActiveDrainingInfo returns the active draining info of the object
 	// store.
-	GetActiveDrainingPhase(ctx context.Context) (string, objectstore.Phase, error)
+	GetActiveDrainingInfo(ctx context.Context) (domainobjectstore.DrainingInfo, error)
+
+	// StartDraining initiates the draining process for the object store.
+	StartDraining(ctx context.Context, uuid string) error
 
 	// SetDrainingPhase sets the phase of the object store to draining.
 	SetDrainingPhase(ctx context.Context, uuid string, phase objectstore.Phase) error
+
+	// TransitionBackendToS3 sets the object store to use S3 with the provided
+	// credentials. This is used to update the object store information when the
+	// object store is set to use S3 as the backend.
+	TransitionBackendToS3(ctx context.Context, uuid string, credential domainobjectstore.S3Credentials) error
+
+	// InitialWatchBackendTable returns the table for the object store backend.
+	InitialWatchBackendTable() (string, string)
 
 	// InitialWatchDrainingTable returns the table for the draining phase.
 	InitialWatchDrainingTable() string
@@ -213,7 +244,12 @@ func (s *Service) PutMetadata(ctx context.Context, metadata objectstore.Metadata
 		return "", errors.Errorf("missing hash384: %w", objectstoreerrors.ErrMissingHash)
 	}
 
-	uuid, err := s.st.PutMetadata(ctx, objectstore.Metadata{
+	uuid, err := objectstore.NewUUID()
+	if err != nil {
+		return "", err
+	}
+
+	resultUUID, err := s.st.PutMetadata(ctx, uuid.String(), objectstore.Metadata{
 		SHA256: metadata.SHA256,
 		SHA384: metadata.SHA384,
 		Path:   metadata.Path,
@@ -223,7 +259,108 @@ func (s *Service) PutMetadata(ctx context.Context, metadata objectstore.Metadata
 		return "", errors.Errorf("adding path %s: %w", metadata.Path, err)
 	}
 
-	return uuid, nil
+	return objectstore.UUID(resultUUID), nil
+}
+
+// GetControllerIDHints returns the controller ID hints for the specified
+// SHA384. This is used to indicate which controllers might have the object with
+// the specified SHA384, which can be used for optimization in certain
+// scenarios.
+//
+// The hints are returned in random order to ensure that no particular
+// controller is favored, which helps to distribute the load more evenly across
+// controllers. If there are no hints, an
+// [objectstoreerrors.ErrNoHints] error is returned, and the caller
+// can decide how to handle this case, for example by trying to retrieve from
+// any controller.
+func (s *Service) GetControllerIDHints(ctx context.Context, sha384 string) ([]string, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	if sha384 == "" {
+		return nil, errors.Errorf("missing hash384").Add(objectstoreerrors.ErrMissingHash)
+	}
+
+	hints, err := s.st.GetControllerIDHints(ctx, sha384)
+	if err != nil {
+		return nil, errors.Errorf("getting controller ID hint for sha384 %s: %w", sha384, err)
+	}
+
+	// Handle the case where there are no hints.
+	if len(hints) == 0 {
+		return nil, objectstoreerrors.ErrNoHints
+	}
+
+	// Shuffle them if we have multiple hints to help distribute the load more
+	// evenly across controllers.
+	rand.Shuffle(len(hints), func(i, j int) {
+		hints[i], hints[j] = hints[j], hints[i]
+	})
+
+	return hints, nil
+}
+
+// PutMetadataWithControllerIDHint adds a new specified path for the persistence
+// metadata, along with the controller ID hint. If any hash is missing, a
+// [objectstoreerrors.ErrMissingHash] error is returned. It is expected that the
+// caller supplies both hashes or none and they should be consistent with the
+// object. That's the caller's responsibility.
+func (s *Service) PutMetadataWithControllerIDHint(
+	ctx context.Context,
+	metadata objectstore.Metadata,
+	controllerID string,
+) (objectstore.UUID, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	// If you have one hash, you must have the other.
+	if h1, h2 := metadata.SHA384, metadata.SHA256; h1 != "" && h2 == "" {
+		return "", errors.Errorf("missing hash256").Add(objectstoreerrors.ErrMissingHash)
+	} else if h1 == "" && h2 != "" {
+		return "", errors.Errorf("missing hash384").Add(objectstoreerrors.ErrMissingHash)
+	}
+
+	if controllerID == "" {
+		return "", errors.Errorf("missing controller ID hint").Add(objectstoreerrors.ErrMissingControllerID)
+	}
+
+	uuid, err := objectstore.NewUUID()
+	if err != nil {
+		return "", err
+	}
+
+	pUUID, err := s.st.PutMetadataWithControllerIDHint(ctx, uuid.String(), objectstore.Metadata{
+		SHA256: metadata.SHA256,
+		SHA384: metadata.SHA384,
+		Path:   metadata.Path,
+		Size:   metadata.Size,
+	}, controllerID)
+	if err != nil {
+		return "", errors.Errorf("adding path %s: %w", metadata.Path, err)
+	}
+
+	return objectstore.UUID(pUUID), nil
+}
+
+// AddControllerIDHint adds a controller ID hint for the specified SHA384.
+// This is used to indicate that a controller might have the object with the
+// specified SHA384, which can be used for optimization in certain
+// scenarios.
+func (s *Service) AddControllerIDHint(ctx context.Context, sha384 string, controllerID string) error {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	if sha384 == "" {
+		return errors.Errorf("missing hash384").Add(objectstoreerrors.ErrMissingHash)
+	}
+	if controllerID == "" {
+		return errors.Errorf("missing controller ID hint").Add(objectstoreerrors.ErrMissingControllerID)
+	}
+
+	if err := s.st.AddControllerIDHint(ctx, sha384, controllerID); err != nil {
+		return errors.Errorf("adding controller ID hint for sha384 %s: %w", sha384, err)
+	}
+	return nil
 }
 
 // RemoveMetadata removes the specified path for the persistence metadata.
@@ -299,16 +436,19 @@ func (s *WatchableDrainingService) SetDrainingPhase(ctx context.Context, phase o
 		return errors.Errorf("invalid phase %q", phase)
 	}
 
-	uuid, current, err := s.st.GetActiveDrainingPhase(ctx)
+	hasPhase := true
+	phaseInfo, err := s.st.GetActiveDrainingInfo(ctx)
 	if errors.Is(err, objectstoreerrors.ErrDrainingPhaseNotFound) {
-		uuid, err := objectstore.NewUUID()
-		if err != nil {
-			return errors.Errorf("creating new uuid: %w", err)
-		}
-
-		return s.st.SetDrainingPhase(ctx, uuid.String(), phase)
+		hasPhase = false
 	} else if err != nil {
 		return errors.Errorf("getting active draining phase: %w", err)
+	}
+
+	// If there is no active draining phase, we consider the current phase to be
+	// unknown, otherwise we use the active draining phase.
+	current := objectstore.PhaseUnknown
+	if hasPhase {
+		current = objectstore.Phase(phaseInfo.Phase)
 	}
 
 	if _, err := current.TransitionTo(phase); errors.Is(err, objectstore.ErrTerminalPhase) {
@@ -317,8 +457,19 @@ func (s *WatchableDrainingService) SetDrainingPhase(ctx context.Context, phase o
 		return errors.Errorf("transitioning phase: %w", err)
 	}
 
+	// If the phase is draining, we need to start the draining process,
+	// otherwise we just update the phase in the state.
+	if phase.IsDraining() {
+		uuid, err := objectstore.NewUUID()
+		if err != nil {
+			return errors.Errorf("creating new uuid: %w", err)
+		}
+
+		return s.st.StartDraining(ctx, uuid.String())
+	}
+
 	// Set the phase in the state.
-	if err := s.st.SetDrainingPhase(ctx, uuid, phase); err != nil {
+	if err := s.st.SetDrainingPhase(ctx, phaseInfo.UUID, phase); err != nil {
 		return errors.Errorf("setting draining phase: %w", err)
 	}
 	return nil
@@ -329,13 +480,100 @@ func (s *WatchableDrainingService) GetDrainingPhase(ctx context.Context) (object
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
-	_, phase, err := s.st.GetActiveDrainingPhase(ctx)
+	info, err := s.st.GetActiveDrainingInfo(ctx)
 	if errors.Is(err, objectstoreerrors.ErrDrainingPhaseNotFound) {
 		return objectstore.PhaseUnknown, nil
 	} else if err != nil {
 		return "", errors.Errorf("getting draining phase: %w", err)
 	}
-	return phase, nil
+	return objectstore.Phase(info.Phase), nil
+}
+
+// BackendInfo represents the information about an object store backend,
+// including the uuid and the type of the object store.
+type BackendInfo struct {
+	// UUID is the uuid for the backend.
+	UUID objectstore.UUID
+
+	// Type is the type of the object store.
+	Type objectstore.BackendType
+
+	// Endpoint, AccessKey, SecretKey, and Region are only used for S3 backend.
+	Endpoint *string
+
+	// AccessKey is not returned for security reasons, but it is expected to be
+	// set in the state when the backend is S3, and it will be used to create
+	// the S3 client for the draining process.
+	AccessKey *string
+	// SecretKey is not returned for security reasons, but it is expected to be
+	// set in the state when the backend is S3, and it will be used to create
+	// the S3 client for the draining process.
+	SecretKey *string
+}
+
+// S3Credentials returns the S3 credentials if the object store type is S3, and
+// returns false otherwise.
+func (s BackendInfo) S3Credentials() (domainobjectstore.S3Credentials, bool) {
+	if s.Type != objectstore.S3Backend {
+		return domainobjectstore.S3Credentials{}, false
+	}
+
+	return domainobjectstore.S3Credentials{
+		Endpoint:  deref(s.Endpoint),
+		AccessKey: deref(s.AccessKey),
+		SecretKey: deref(s.SecretKey),
+	}, true
+}
+
+// GetActiveObjectStoreBackend returns the active object store backend
+// information.
+func (s *WatchableDrainingService) GetActiveObjectStoreBackend(ctx context.Context) (BackendInfo, error) {
+	_, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	return BackendInfo{
+		Type: objectstore.FileBackend,
+	}, nil
+}
+
+// TransitionBackendToS3 sets the object store to use S3 with the provided
+// credentials. This is used to update the object store information when the
+// object store is set to use S3 as the backend.
+func (s *WatchableDrainingService) TransitionBackendToS3(ctx context.Context, credential domainobjectstore.S3Credentials) error {
+	_, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	// Validate the credentials before transitioning the backend to S3.
+	if err := credential.Validate(); err != nil {
+		return errors.Errorf("validating S3 credentials: %w", err)
+	}
+
+	uuid, err := objectstore.NewUUID()
+	if err != nil {
+		return errors.Errorf("creating new uuid: %w", err)
+	}
+
+	if err := s.st.TransitionBackendToS3(ctx, uuid.String(), credential); err != nil {
+		return errors.Errorf("transitioning backend to S3: %w", err)
+	}
+
+	return nil
+}
+
+// WatchObjectStoreBackend returns a watcher that watches the object store
+// backend. The watcher emits the backend changes that either have been added or
+// removed.
+func (s *WatchableDrainingService) WatchObjectStoreBackend(ctx context.Context) (watcher.StringsWatcher, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	table, stmt := s.st.InitialWatchBackendTable()
+	return s.watcherFactory.NewNamespaceWatcher(
+		ctx,
+		eventsource.InitialNamespaceChanges(stmt),
+		"objectstore backend watcher",
+		eventsource.NamespaceFilter(table, changestream.All),
+	)
 }
 
 // WatchDraining returns a watcher that watches the draining phase of the
@@ -351,4 +589,12 @@ func (s *WatchableDrainingService) WatchDraining(ctx context.Context) (watcher.N
 		"objectstore draining watcher",
 		eventsource.NamespaceFilter(table, changestream.All),
 	)
+}
+
+func deref[T any](ptr *T) T {
+	if ptr == nil {
+		var t T
+		return t
+	}
+	return *ptr
 }

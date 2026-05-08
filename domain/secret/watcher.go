@@ -8,8 +8,8 @@ import (
 	"fmt"
 
 	"github.com/juju/collections/set"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 
 	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/watcher"
@@ -28,7 +28,9 @@ type secretWatcher[T any] struct {
 }
 
 // NewSecretStringWatcher returns a new secrets watcher from the source watcher
-// and tracks already seen secret URIs to ensure they are only notified once.
+// and tracks already seen secret URIs to ensure they are only notified once
+// during an event batch. This is possible when we track revision or consumer
+// events, since a unique secret can generate several events in such cases.
 func NewSecretStringWatcher[T any](
 	sourceWatcher watcher.StringsWatcher, logger logger.Logger,
 	processChanges func(ctx context.Context, events ...string) ([]T, error),
@@ -55,12 +57,21 @@ func (w *secretWatcher[T]) scopedContext() (context.Context, context.CancelFunc)
 func (w *secretWatcher[T]) loop() error {
 	defer close(w.out)
 
+	// Secret watchers must always emit an initial event before any deltas.
+	// Send that empty initial state deterministically before reading from the
+	// source watcher, otherwise a buffered source event can win the select and
+	// be emitted first.
+	select {
+	case <-w.catacomb.Dying():
+		return w.catacomb.ErrDying()
+	case w.out <- nil:
+	}
+
 	var (
 		historyIDs set.Strings
 		changes    []T
 	)
-	// To allow the initial event to be sent.
-	out := w.out
+	var out chan []T
 	addChanges := func(events set.Strings) error {
 		if len(events) == 0 {
 			return nil
@@ -87,7 +98,9 @@ func (w *secretWatcher[T]) loop() error {
 			historyIDs.Add(id)
 		}
 
-		out = w.out
+		if len(changes) != 0 {
+			out = w.out
+		}
 		return nil
 	}
 
@@ -103,6 +116,7 @@ func (w *secretWatcher[T]) loop() error {
 				return errors.Capture(err)
 			}
 		case out <- changes:
+			historyIDs = nil
 			changes = nil
 			out = nil
 		}

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Complete Juju charm reference: operators for deploying applications. Learn charm taxonomy, structure, lifecycle, and Charmhub integration."
+---
+
 (charm)=
 # Charm
 

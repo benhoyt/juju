@@ -15,14 +15,28 @@ import (
 	"github.com/juju/juju/core/leadership"
 	"github.com/juju/juju/core/logger"
 	corerelation "github.com/juju/juju/core/relation"
+	corestatus "github.com/juju/juju/core/status"
 	"github.com/juju/juju/core/trace"
 	"github.com/juju/juju/core/unit"
+	domainapplication "github.com/juju/juju/domain/application"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	"github.com/juju/juju/domain/relation"
 	relationerrors "github.com/juju/juju/domain/relation/errors"
 	"github.com/juju/juju/domain/relation/internal"
+	"github.com/juju/juju/domain/status"
+	"github.com/juju/juju/domain/unitstate"
 	"github.com/juju/juju/internal/errors"
+	"github.com/juju/juju/internal/statushistory"
 )
+
+// StatusHistory records the status of a juju entity to display as its
+// status history when requested.
+type StatusHistory interface {
+	// RecordStatus records the given status information.
+	// If the status data cannot be marshalled, it will not be recorded, instead
+	// the error will be logged under the data_error key.
+	RecordStatus(context.Context, statushistory.Namespace, corestatus.StatusInfo) error
+}
 
 // State describes retrieval and persistence methods for relations.
 type State interface {
@@ -31,8 +45,8 @@ type State interface {
 	// ApplicationExists checks if the given application exists.
 	ApplicationExists(ctx context.Context, applicationID application.UUID) error
 
-	// ApplicationRelationEndpointNames returns a slice of names of the given application's
-	// relation endpoints.
+	// ApplicationRelationsInfo returns all endpoint data for the application
+	// with the input UUID.
 	ApplicationRelationsInfo(
 		ctx context.Context,
 		applicationID application.UUID,
@@ -42,24 +56,18 @@ type State interface {
 	// by ep1 and ep2 and returns the created endpoints.
 	AddRelation(ctx context.Context, ep1, ep2 relation.CandidateEndpointIdentifier, cidrs ...string) (relation.Endpoint, relation.Endpoint, error)
 
-	// NeedsSubordinateUnit checks if there is a subordinate application
-	// related to the principal unit that needs a subordinate unit created.
-	NeedsSubordinateUnit(
-		ctx context.Context,
-		relationUUID corerelation.UUID,
-		principalUnitName unit.Name,
-	) (*application.UUID, error)
-
 	// EnterScope indicates that the provided unit has joined the relation. When
 	// the unit has already entered its relation scope, EnterScope will report
-	// success but make no changes to state. The unit's settings are created or
-	// overwritten in the relation according to the supplied map.
+	// success but make no changes to state. The unit's settings are created in
+	// the relation according to the supplied map.
+	// Returns [relationerrors.RelationUnitAlreadyExists] if the unit is already
+	// in the relation.
 	EnterScope(
 		ctx context.Context,
 		relationUUID corerelation.UUID,
 		unitName unit.Name,
 		settings map[string]string,
-	) error
+	) (internal.SubordinateUnitStatusHistoryData, error)
 
 	// SetRelationRemoteApplicationAndUnitSettings will set the application and
 	// unit settings for a remote relation. If the unit has not yet entered
@@ -104,6 +112,13 @@ type State interface {
 		relationUUID corerelation.UUID,
 		applicationUUID application.UUID,
 	) (relation.FullRelationUnitChange, error)
+
+	// GetInScopeUnits returns the units of an application that are in scope for the
+	// given relation.
+	GetInScopeUnits(ctx context.Context, applicationUUID, relationUUID string) ([]string, error)
+
+	// GetUnitSettingsForUnits returns the settings for the given units
+	GetUnitSettingsForUnits(ctx context.Context, relationUUID string, unitNames []string) ([]relation.UnitSettings, error)
 
 	// GetGoalStateRelationDataForApplication returns GoalStateRelationData for
 	// all relations the given application is in, modulo peer relations.
@@ -171,10 +186,10 @@ type State interface {
 	// It takes a list of unit UUIDs and application UUIDs, returning the
 	// current setting version for each one, or departed if any unit is not
 	// found
-	GetRelationUnitChanges(ctx context.Context, unitUUIDs []unit.UUID, appUUIDs []application.UUID) (relation.RelationUnitsChange, error)
+	GetRelationUnitChanges(ctx context.Context, relationUUID string, unitUUIDs []unit.UUID, appUUIDs []application.UUID) (relation.RelationUnitsChange, error)
 
-	// GetRelationUnit retrieves the UUID of a relation unit based on the given
-	// relation UUID and unit name.
+	// GetRelationUnitUUID retrieves the UUID of a relation unit based on the
+	// given relation UUID and unit name.
 	GetRelationUnitUUID(
 		ctx context.Context,
 		relationUUID corerelation.UUID,
@@ -203,6 +218,10 @@ type State interface {
 	// provided relation endpoint uuid.
 	GetRelationUnitUUIDsByEndpointUUID(ctx context.Context, relationEndpointUUID string) ([]string, error)
 
+	// GetRelationUUIDsByUnitName retrieves the UUIDs of all in scope relations
+	// for the specified unit.
+	GetRelationUUIDsByUnitName(ctx context.Context, unitName string) ([]string, error)
+
 	// InferRelationUUIDByEndpoints infers the relation based on two endpoints.
 	InferRelationUUIDByEndpoints(
 		ctx context.Context,
@@ -213,19 +232,12 @@ type State interface {
 	// relation UUID is for a peer relation.
 	IsPeerRelation(ctx context.Context, relationUUID string) (bool, error)
 
-	// SetRelationApplicationAndUnitSettings records settings for a unit and
-	// an application in a relation.
-	SetRelationApplicationAndUnitSettings(
-		ctx context.Context,
-		relationUnitUUID corerelation.UnitUUID,
-		applicationSettings, unitSettings map[string]string,
-	) error
-
 	// SetRelationUnitSettings records settings for a specific relation unit.
 	SetRelationUnitSettings(
 		ctx context.Context,
 		relationUnitUUID corerelation.UnitUUID,
 		settings map[string]string,
+		unset []string,
 	) error
 }
 
@@ -242,10 +254,11 @@ type LeadershipService struct {
 func NewLeadershipService(
 	st State,
 	leaderEnsurer leadership.Ensurer,
+	statusHistory StatusHistory,
 	logger logger.Logger,
 ) *LeadershipService {
 	return &LeadershipService{
-		Service:       NewService(st, logger),
+		Service:       NewService(st, statusHistory, logger),
 		leaderEnsurer: leaderEnsurer,
 	}
 }
@@ -299,7 +312,9 @@ func (s *LeadershipService) GetRelationApplicationSettingsWithLeader(
 	return settings, nil
 }
 
-// SetRelationUnitSettings records settings for a unit in a relation.
+// SetRelationUnitSettings records settings for a unit in a relation. If a
+// setting with the same key already exists, it is updated. If a key with
+// no value is provided, the setting is removed from the database.
 //
 // The following error types can be expected to be returned:
 //   - [relationerrors.RelationUnitNotFound] is returned if the
@@ -313,10 +328,7 @@ func (s *LeadershipService) SetRelationUnitSettings(
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
-	// Note: do not check if the settings are length 0 here, as we want to
-	// enable clearing settings by passing empty maps. If the maps are nil, then
-	// it becomes a no-op.
-	if unitSettings == nil {
+	if len(unitSettings) == 0 {
 		return nil
 	}
 
@@ -333,72 +345,48 @@ func (s *LeadershipService) SetRelationUnitSettings(
 		return errors.Capture(fmt.Errorf("getting relation unit: %w", err))
 	}
 
-	return errors.Capture(s.st.SetRelationUnitSettings(ctx, relationUnitUUID, unitSettings))
+	settings, unset := parseForSetAndUnsetSettings(unitSettings)
+
+	return errors.Capture(s.st.SetRelationUnitSettings(ctx, relationUnitUUID, settings, unset))
 }
 
-// SetRelationApplicationAndUnitSettings records settings for a unit and
-// an application in a relation.
-//
-// The following error types can be expected to be returned:
-//   - [corelease.ErrNotHeld] if the unit is not the leader and
-//     applicationSettings has a none zero length.
-//   - [relationerrors.RelationUnitNotFound] is returned if the
-//     relation unit is not found.
-func (s *LeadershipService) SetRelationApplicationAndUnitSettings(
-	ctx context.Context,
-	unitName unit.Name,
-	relationUUID corerelation.UUID,
-	applicationSettings, unitSettings map[string]string,
-) error {
-	ctx, span := trace.Start(ctx, trace.NameFromFunc())
-	defer span.End()
-
-	// Note: do not check if the settings are length 0 here, as we want to
-	// enable clearing settings by passing empty maps. If the maps are nil, then
-	// it becomes a no-op.
-	if applicationSettings == nil && unitSettings == nil {
-		return nil
+func parseForSetAndUnsetSettings(in unitstate.Settings) (unitstate.Settings, []string) {
+	if len(in) == 0 {
+		return nil, nil
 	}
 
-	if err := unitName.Validate(); err != nil {
-		return errors.Capture(err)
-	}
-	if err := relationUUID.Validate(); err != nil {
-		return errors.Errorf(
-			"%w:%w", relationerrors.RelationUUIDNotValid, err)
-	}
-
-	relationUnitUUID, err := s.st.GetRelationUnitUUID(ctx, relationUUID, unitName)
-	if err != nil {
-		return errors.Capture(fmt.Errorf("getting relation unit: %w", err))
+	// Determine the keys to set and unset.
+	out := make(unitstate.Settings, 0)
+	var unset []string
+	for k, v := range in {
+		if v == "" {
+			unset = append(unset, k)
+		} else {
+			out[k] = v
+		}
 	}
 
-	// Unless application settings are nil, we must be the leader.
-	// This includes an empty map, which implies deletion.
-	if applicationSettings == nil {
-		return errors.Capture(s.st.SetRelationUnitSettings(ctx, relationUnitUUID, unitSettings))
-	}
-	err = s.leaderEnsurer.WithLeader(ctx, unitName.Application(), unitName.String(), func(ctx context.Context) error {
-		err := s.st.SetRelationApplicationAndUnitSettings(ctx, relationUnitUUID, applicationSettings, unitSettings)
-		return errors.Capture(err)
-	})
-	return errors.Capture(err)
+	return out, unset
 }
 
 // Service provides the API for working with relations.
 type Service struct {
 	st     State
 	logger logger.Logger
+
+	statusHistory StatusHistory
 }
 
 // NewService returns a new service reference wrapping the input state.
 func NewService(
 	st State,
+	statusHistory StatusHistory,
 	logger logger.Logger,
 ) *Service {
 	return &Service{
-		st:     st,
-		logger: logger,
+		st:            st,
+		logger:        logger,
+		statusHistory: statusHistory,
 	}
 }
 
@@ -456,13 +444,12 @@ func (s *Service) ApplicationRelationsInfo(
 }
 
 // EnterScope indicates that the provided unit has joined the relation.
-// When the unit has already entered its relation scope, EnterScope will report
-// success but make no changes to state. The unit's settings are created or
-// overwritten in the relation according to the supplied map.
+// The unit's settings are created in the relation according to the supplied
+// map. When the unit has already entered its relation scope, EnterScope will
+// report success but make no changes to state, nor trigger a subordinate unit.
 //
 // If there is a subordinate application related to the unit entering scope that
-// needs a subordinate unit creating, then the subordinate unit will be created
-// with the provided createSubordinate function.
+// needs a subordinate unit created, then the subordinate unit will be created.
 //
 // The following error types can be expected to be returned:
 //   - [relationerrors.PotentialRelationUnitNotValid] if the unit entering
@@ -478,7 +465,6 @@ func (s *Service) EnterScope(
 	relationUUID corerelation.UUID,
 	unitName unit.Name,
 	settings map[string]string,
-	subordinateCreator relation.SubordinateCreator,
 ) error {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
@@ -492,27 +478,64 @@ func (s *Service) EnterScope(
 	}
 
 	// Enter the unit into the relation scope.
-	if err := s.st.EnterScope(ctx, relationUUID, unitName, settings); err != nil {
+	warning := func(key string) {
+		s.logger.Warningf(ctx, "dropping empty value for key %q in unit %q settings of relation %q",
+			key, unitName, relationUUID)
+	}
+	subordinateUnitStatusHistoryData, err := s.st.EnterScope(
+		ctx,
+		relationUUID,
+		unitName,
+		ensureNoEmptySettingsValues(warning, settings),
+	)
+	if errors.Is(err, relationerrors.RelationUnitAlreadyExists) {
+		return nil
+	} else if err != nil {
 		return errors.Capture(err)
 	}
 
-	// Check if a subordinate unit needs creating.
-	subID, err := s.st.NeedsSubordinateUnit(ctx, relationUUID, unitName)
-	if err != nil {
-		return errors.Capture(err)
-	} else if subID != nil {
-		// Create the required unit on the related subordinate application.
-		//
-		// TODO(aflynn): In 3.6 the subordinate was created in the same
-		// transaction as the principal entering scope. This is not the case
-		// here. If the subordinate creation fails, there should be some retry
-		// mechanism, or a rollback of enter scope.
-		if subordinateCreator == nil {
-			return errors.Errorf("subordinate creator is nil")
+	// If the subordinate unit was not created, exit here.
+	if !subordinateUnitStatusHistoryData.SubordinateCreated() {
+		return nil
+	}
+
+	if err := s.recordUnitStatusHistory(ctx, unitName, subordinateUnitStatusHistoryData.UnitStatus); err != nil {
+		return errors.Errorf("recording status history: %w", err)
+	}
+
+	return nil
+}
+
+// recordUnitStatusHistory records the initial status history for the unit
+// being added to the application.
+func (s *Service) recordUnitStatusHistory(
+	ctx context.Context,
+	unitName unit.Name,
+	statusArg domainapplication.UnitStatusArg,
+) error {
+	// The agent and workload status are required to be provided when adding
+	// a unit.
+	if statusArg.AgentStatus == nil || statusArg.WorkloadStatus == nil {
+		return errors.Errorf("unit %q status not provided", unitName)
+	}
+
+	// Force the presence to be recorded as true, as the unit has just been
+	// added.
+	if agentStatus, err := decodeUnitAgentStatus(&status.UnitStatusInfo[status.UnitAgentStatusType]{
+		StatusInfo: *statusArg.AgentStatus,
+		Present:    true,
+	}); err == nil && agentStatus != nil {
+		if err := s.statusHistory.RecordStatus(ctx, status.UnitAgentNamespace.WithID(unitName.String()), *agentStatus); err != nil {
+			s.logger.Warningf(ctx, "recording agent status for unit %q: %v", unitName, err)
 		}
-		err := subordinateCreator.CreateSubordinate(ctx, *subID, unitName)
-		if err != nil {
-			return errors.Errorf("creating subordinate unit on application %q: %w", *subID, err)
+	}
+
+	if workloadStatus, err := decodeUnitWorkloadStatus(&status.UnitStatusInfo[status.WorkloadStatusType]{
+		StatusInfo: *statusArg.WorkloadStatus,
+		Present:    true,
+	}); err == nil && workloadStatus != nil {
+		if err := s.statusHistory.RecordStatus(ctx, status.UnitWorkloadNamespace.WithID(unitName.String()), *workloadStatus); err != nil {
+			s.logger.Warningf(ctx, "recording workload status for unit %q: %v", unitName, err)
 		}
 	}
 
@@ -554,20 +577,48 @@ func (s *Service) SetRelationRemoteApplicationAndUnitSettings(
 		if err := unitName.Validate(); err != nil {
 			return errors.Capture(err)
 		}
+		warningUnit := func(key string) {
+			s.logger.Warningf(ctx, "dropping empty value for key %q in unit %s settings of relation %q",
+				key, unitName, relationUUID)
+		}
+		uSettings[unitName.String()] = ensureNoEmptySettingsValues(warningUnit, settings)
+	}
 
-		uSettings[unitName.String()] = settings
+	warningApp := func(key string) {
+		s.logger.Warningf(ctx, "dropping empty value for key %q in application %q settings of relation %q",
+			key, applicationUUID, relationUUID)
 	}
 
 	// Enter the units into the relation scope.
 	if err := s.st.SetRelationRemoteApplicationAndUnitSettings(
 		ctx,
-		applicationUUID.String(), relationUUID.String(),
-		applicationSettings, uSettings,
+		applicationUUID.String(),
+		relationUUID.String(),
+		ensureNoEmptySettingsValues(warningApp, applicationSettings),
+		uSettings,
 	); err != nil {
 		return errors.Capture(err)
 	}
 
 	return nil
+}
+
+func ensureNoEmptySettingsValues(
+	warning func(string),
+	settings map[string]string,
+) map[string]string {
+	if len(settings) == 0 {
+		return nil
+	}
+	out := make(map[string]string)
+	for k, v := range settings {
+		if v == "" {
+			warning(k)
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // SetRemoteRelationSuspendedState sets the suspended state of the specified
@@ -661,20 +712,16 @@ func (s *Service) GetRelationDetails(
 		return relation.RelationDetails{}, errors.Capture(err)
 	}
 
-	var identifiers []corerelation.EndpointIdentifier
-	for _, e := range relationDetails.Endpoints {
-		identifiers = append(identifiers, e.EndpointIdentifier())
-	}
-	key, err := corerelation.NewKey(identifiers)
-	if err != nil {
-		return relation.RelationDetails{}, errors.Errorf("generating relation key: %w", err)
+	identifiers := make(corerelation.Key, len(relationDetails.Endpoints))
+	for i, e := range relationDetails.Endpoints {
+		identifiers[i] = e.EndpointIdentifier()
 	}
 
 	return relation.RelationDetails{
 		Life:         relationDetails.Life,
 		UUID:         relationDetails.UUID,
 		ID:           relationDetails.ID,
-		Key:          key,
+		Key:          identifiers,
 		Endpoints:    relationDetails.Endpoints,
 		Suspended:    relationDetails.Suspended,
 		InScopeUnits: relationDetails.InScopeUnits,
@@ -706,13 +753,9 @@ func (s *Service) GetRelationsStatusForUnit(
 
 	var statuses []relation.RelationUnitStatus
 	for _, result := range results {
-		var identifiers []corerelation.EndpointIdentifier
-		for _, e := range result.Endpoints {
-			identifiers = append(identifiers, e.EndpointIdentifier())
-		}
-		key, err := corerelation.NewKey(identifiers)
-		if err != nil {
-			return nil, errors.Errorf("generating relation key: %w", err)
+		key := make(corerelation.Key, len(result.Endpoints))
+		for i, e := range result.Endpoints {
+			key[i] = e.EndpointIdentifier()
 		}
 		statuses = append(statuses, relation.RelationUnitStatus{
 			Key:       key,
@@ -764,9 +807,14 @@ func (s *Service) getRelationUnitByID(
 // GetRelationUnitChanges validates the given unit and application UUIDs,
 // and retrieves related unit changes.
 // If any UUID is invalid, an appropriate error is returned.
-func (s *Service) GetRelationUnitChanges(ctx context.Context, unitUUIDs []unit.UUID, appUUIDs []application.UUID) (relation.RelationUnitsChange, error) {
+func (s *Service) GetRelationUnitChanges(ctx context.Context, relUUID corerelation.UUID, unitUUIDs []unit.UUID, appUUIDs []application.UUID) (relation.RelationUnitsChange, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
+
+	if err := relUUID.Validate(); err != nil {
+		return relation.RelationUnitsChange{}, errors.Errorf(
+			"%w: %w", relationerrors.RelationUUIDNotValid, err)
+	}
 
 	for _, uuid := range unitUUIDs {
 		if err := uuid.Validate(); err != nil {
@@ -779,7 +827,7 @@ func (s *Service) GetRelationUnitChanges(ctx context.Context, unitUUIDs []unit.U
 		}
 	}
 
-	return s.st.GetRelationUnitChanges(ctx, unitUUIDs, appUUIDs)
+	return s.st.GetRelationUnitChanges(ctx, relUUID.String(), unitUUIDs, appUUIDs)
 }
 
 // GetRelationUnitSettings returns the relation settings for the input unit in
@@ -855,14 +903,9 @@ func (s *Service) GetRelationLifeSuspendedStatus(
 		return relation.RelationLifeSuspendedStatus{}, errors.Capture(err)
 	}
 
-	identifiers := transform.Slice(change.Endpoints, func(in relation.Endpoint) corerelation.EndpointIdentifier {
+	key := corerelation.Key(transform.Slice(change.Endpoints, func(in relation.Endpoint) corerelation.EndpointIdentifier {
 		return in.EndpointIdentifier()
-	})
-
-	key, err := corerelation.NewKey(identifiers)
-	if err != nil {
-		return relation.RelationLifeSuspendedStatus{}, errors.Errorf("generating relation key: %w", err)
-	}
+	}))
 
 	return relation.RelationLifeSuspendedStatus{
 		Key:             key.String(),
@@ -933,6 +976,8 @@ func (s *Service) GetRelationUUIDByKey(ctx context.Context, relationKey corerela
 // The following error types can be expected to be returned:
 //   - [relationerrors.RelationNotFound] is returned if endpoints cannot be
 //     found.
+//   - [relationerrors.AmbiguousRelation] is returned if multiple existing
+//     relations are found between the two applications.
 func (s *Service) GetRelationUUIDForRemoval(
 	ctx context.Context,
 	args relation.GetRelationUUIDForRemovalArgs,
@@ -972,6 +1017,8 @@ func (s *Service) GetRelationUUIDForRemoval(
 // The following error types can be expected to be returned:
 //   - [relationerrors.RelationNotFound] is returned if endpoints cannot be
 //     found.
+//   - [relationerrors.AmbiguousRelation] is returned if multiple existing
+//     relations are found between the two applications.
 func (s *Service) inferRelationUUIDByEndpoints(ctx context.Context, ep1, ep2 string) (corerelation.UUID, error) {
 	idep1, err := relation.NewCandidateEndpointIdentifier(ep1)
 	if err != nil {
@@ -1095,31 +1142,33 @@ func (s *Service) GetInScopeUnits(
 			"validating application uuid: %w", err).Add(applicationerrors.ApplicationUUIDNotValid)
 	}
 
-	// TODO: implement this
-	return []unit.Name{}, nil
-}
-
-// GetUnitSettingsForUnits returns the settings for the given units.
-func (s *Service) GetUnitSettingsForUnits(ctx context.Context, unitNames []unit.Name) (map[unit.Name]map[string]interface{}, error) {
-	_, span := trace.Start(ctx, trace.NameFromFunc())
-	defer span.End()
-
-	// TODO: implement this
-	return nil, nil
-}
-
-// GetSettingsForApplication returns the settings for the given application.
-func (s *Service) GetSettingsForApplication(ctx context.Context, applicationUUID application.UUID) (map[string]interface{}, error) {
-	_, span := trace.Start(ctx, trace.NameFromFunc())
-	defer span.End()
-
-	if err := applicationUUID.Validate(); err != nil {
-		return nil, errors.Errorf(
-			"validating application uuid: %w", err).Add(applicationerrors.ApplicationUUIDNotValid)
+	unitNames, err := s.st.GetInScopeUnits(ctx, applicationUUID.String(), relationUUID.String())
+	if err != nil {
+		return nil, errors.Capture(err)
 	}
 
-	// TODO: implement this
-	return nil, nil
+	return transform.SliceOrErr(unitNames, unit.NewName)
+}
+
+// GetUnitSettingsForUnits returns the settings for the given units, indexed by
+// the unit name
+func (s *Service) GetUnitSettingsForUnits(ctx context.Context, relationUUID corerelation.UUID, unitNames []unit.Name) ([]relation.UnitSettings, error) {
+	_, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	for _, unitName := range unitNames {
+		if err := unitName.Validate(); err != nil {
+			return nil, err
+		}
+	}
+
+	settings, err := s.st.GetUnitSettingsForUnits(ctx, relationUUID.String(), transform.Slice(unitNames,
+		func(in unit.Name) string { return in.String() }))
+	if err != nil {
+		return nil, err
+	}
+
+	return settings, nil
 }
 
 // GetConsumerRelationUnitsChange returns the versions of the relation units
@@ -1145,40 +1194,43 @@ func (s *Service) GetConsumerRelationUnitsChange(
 }
 
 // GetRelationKeyByUUID returns the relation Key for the given UUID.
-func (s *Service) GetRelationKeyByUUID(ctx context.Context, relationUUIDStr string) (corerelation.Key, error) {
+func (s *Service) GetRelationKeyByUUID(ctx context.Context, relationUUID corerelation.UUID) (corerelation.Key, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
-	_, err := corerelation.ParseUUID(relationUUIDStr)
+	if err := relationUUID.Validate(); err != nil {
+		return corerelation.Key{}, errors.Errorf(
+			"getting relation key:%w", err).Add(relationerrors.RelationUUIDNotValid)
+	}
+
+	relationEndpoints, err := s.st.GetRelationEndpoints(ctx, relationUUID.String())
 	if err != nil {
 		return corerelation.Key{}, errors.Capture(err)
 	}
 
-	relationEndpoints, err := s.st.GetRelationEndpoints(ctx, relationUUIDStr)
-	if err != nil {
-		return corerelation.Key{}, errors.Capture(err)
-	}
-
-	identifiers := transform.Slice(relationEndpoints, func(in relation.Endpoint) corerelation.EndpointIdentifier {
+	key := corerelation.Key(transform.Slice(relationEndpoints, func(in relation.Endpoint) corerelation.EndpointIdentifier {
 		return in.EndpointIdentifier()
-	})
-
-	key, err := corerelation.NewKey(identifiers)
-	if err != nil {
-		return corerelation.Key{}, errors.Errorf("generating relation key: %w", err)
-	}
+	}))
 
 	return key, nil
 }
 
-func settingsMap(in map[string]interface{}) (map[string]string, error) {
-	var errs error
-	return transform.Map(in, func(k string, v interface{}) (string, string) {
-		switch v.(type) {
-		case string:
-		default:
-			errs = errors.Join(errs, errors.Errorf("%+v no a string", v))
-		}
-		return k, fmt.Sprintf("%v", v)
-	}), errs
+// GetRelationUUIDsByUnitName returns a slice of relation UUIDs for relations
+// the given unit is part of and in scope.
+func (s *Service) GetRelationUUIDsByUnitName(ctx context.Context, unitName unit.Name) ([]corerelation.UUID, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	if err := unitName.Validate(); err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	results, err := s.st.GetRelationUUIDsByUnitName(ctx, unitName.String())
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	return transform.Slice(results, func(in string) corerelation.UUID {
+		return corerelation.UUID(in)
+	}), nil
 }

@@ -18,7 +18,6 @@ import (
 	"github.com/juju/juju/core/constraints"
 	coreerrors "github.com/juju/juju/core/errors"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/permission"
 	domainagentbinary "github.com/juju/juju/domain/agentbinary"
 	blockcommanderrors "github.com/juju/juju/domain/blockcommand/errors"
@@ -50,7 +49,11 @@ func TestModelconfigSuite(t *testing.T) {
 
 func (s *modelconfigSuite) SetUpTest(c *tc.C) {
 	s.controllerUUID = uuid.MustNewUUID().String()
-	s.modelUUID = modeltesting.GenModelUUID(c)
+	s.modelUUID = tc.Must0(c, coremodel.NewUUID)
+	c.Cleanup(func() {
+		s.controllerUUID = ""
+		s.modelUUID = ""
+	})
 }
 
 func (s *modelconfigSuite) setupMocks(c *tc.C) *gomock.Controller {
@@ -61,6 +64,14 @@ func (s *modelconfigSuite) setupMocks(c *tc.C) *gomock.Controller {
 	s.mockModelSecretBackendService = NewMockModelSecretBackendService(ctrl)
 	s.mockModelService = NewMockModelService(ctrl)
 	s.mockBlockCommandService = NewMockBlockCommandService(ctrl)
+	c.Cleanup(func() {
+		s.authorizer = nil
+		s.mockModelAgentService = nil
+		s.mockModelConfigService = nil
+		s.mockModelSecretBackendService = nil
+		s.mockModelService = nil
+		s.mockBlockCommandService = nil
+	})
 	return ctrl
 }
 
@@ -190,7 +201,7 @@ func (s *modelconfigSuite) TestModelSetModelAdmin(c *tc.C) {
 	s.expectNoBlocks()
 
 	params := params.ModelSet{
-		Config: map[string]interface{}{
+		Config: map[string]any{
 			"some-key":  "value",
 			"other-key": "other value",
 		},
@@ -269,8 +280,7 @@ func (s *modelconfigSuite) assertBlocked(c *tc.C, err error, msg string) {
 	})
 }
 
-func (s *modelconfigSuite) assertModelSetBlocked(c *tc.C, args map[string]interface{}, msg string) {
-	defer s.setupMocks(c).Finish()
+func (s *modelconfigSuite) assertModelSetBlocked(c *tc.C, args map[string]any, msg string) {
 	api := s.getAPI(c)
 
 	s.expectModelWriteAccess()
@@ -281,13 +291,15 @@ func (s *modelconfigSuite) assertModelSetBlocked(c *tc.C, args map[string]interf
 }
 
 func (s *modelconfigSuite) TestBlockChangesModelSet(c *tc.C) {
-	s.mockBlockCommandService.EXPECT().GetBlockSwitchedOn(gomock.Any(), gomock.Any()).Return("TestBlockChangesModelSet", nil)
-	args := map[string]interface{}{"some-key": "value"}
+	defer s.setupMocks(c).Finish()
+
+	args := map[string]any{"some-key": "value"}
 	s.assertModelSetBlocked(c, args, "TestBlockChangesModelSet")
 }
 
 func (s *modelconfigSuite) TestAdminCanSetLogTrace(c *tc.C) {
-	modelUUID := modeltesting.GenModelUUID(c)
+	defer s.setupMocks(c).Finish()
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	oldConfig, err := config.New(config.NoDefaults, map[string]any{
 		config.UUIDKey:   modelUUID.String(),
 		config.NameKey:   "test-model",
@@ -310,7 +322,8 @@ func (s *modelconfigSuite) TestAdminCanSetLogTrace(c *tc.C) {
 }
 
 func (s *modelconfigSuite) TestUserCanSetLogNoTrace(c *tc.C) {
-	modelUUID := modeltesting.GenModelUUID(c)
+	defer s.setupMocks(c).Finish()
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	oldConfig, err := config.New(config.NoDefaults, map[string]any{
 		config.UUIDKey:   modelUUID.String(),
 		config.NameKey:   "test-model",
@@ -344,7 +357,8 @@ func (s *modelconfigSuite) TestModelSetNoWriteAccess(c *tc.C) {
 }
 
 func (s *modelconfigSuite) TestUserCannotSetLogTrace(c *tc.C) {
-	modelUUID := modeltesting.GenModelUUID(c)
+	defer s.setupMocks(c).Finish()
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	oldConfig, err := config.New(config.NoDefaults, map[string]any{
 		config.UUIDKey:   modelUUID.String(),
 		config.NameKey:   "test-model",
@@ -387,6 +401,28 @@ func (s *modelconfigSuite) TestModelUnset(c *tc.C) {
 	args := params.ModelUnset{Keys: []string{"abc"}}
 	err := api.ModelUnset(c.Context(), args)
 	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *modelconfigSuite) TestModelUnsetValidation(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+	api := s.getAPI(c)
+
+	s.expectModelWriteAccess()
+	s.expectNoBlocks()
+
+	s.mockModelConfigService.EXPECT().UpdateModelConfig(
+		gomock.Any(),
+		nil,
+		[]string{"abc"},
+		gomock.Any(),
+	).Return(&config.ValidationError{
+		InvalidAttrs: []string{"abc"},
+		Reason:       "some reason",
+	})
+
+	args := params.ModelUnset{Keys: []string{"abc"}}
+	err := api.ModelUnset(c.Context(), args)
+	c.Assert(err, tc.ErrorIs, errors.NotValid)
 }
 
 func (s *modelconfigSuite) TestBlockModelUnset(c *tc.C) {
@@ -512,6 +548,8 @@ func (s *modelconfigSuite) assertSetModelConstraintsBlocked(c *tc.C, msg string)
 }
 
 func (s *modelconfigSuite) TestBlockChangesClientSetModelConstraints(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
 	s.assertSetModelConstraintsBlocked(c, "TestBlockChangesClientSetModelConstraints")
 }
 

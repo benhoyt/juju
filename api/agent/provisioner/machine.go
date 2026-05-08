@@ -6,6 +6,7 @@ package provisioner
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
@@ -44,13 +45,13 @@ type MachineProvisioner interface {
 	Refresh(context.Context) error
 
 	// SetInstanceStatus sets the status for the provider instance.
-	SetInstanceStatus(ctx context.Context, status status.Status, message string, data map[string]interface{}) error
+	SetInstanceStatus(ctx context.Context, status status.Status, message string, data map[string]any) error
 
 	// InstanceStatus returns the status of the provider instance.
 	InstanceStatus(ctx context.Context) (status.Status, string, error)
 
 	// SetStatus sets the status of the machine.
-	SetStatus(ctx context.Context, status status.Status, info string, data map[string]interface{}) error
+	SetStatus(ctx context.Context, status status.Status, info string, data map[string]any) error
 
 	// Status returns the status of the machine.
 	Status(ctx context.Context) (status.Status, string, error)
@@ -58,10 +59,6 @@ type MachineProvisioner interface {
 	// EnsureDead sets the machine lifecycle to Dead if it is Alive or
 	// Dying. It does nothing otherwise.
 	EnsureDead(ctx context.Context) error
-
-	// Remove removes the machine from state. It will fail if the machine
-	// is not Dead.
-	Remove(ctx context.Context) error
 
 	// MarkForRemoval indicates that the machine is ready to have any
 	// provider-level resources cleaned up and be removed.
@@ -77,17 +74,22 @@ type MachineProvisioner interface {
 	// to distribute instances for high availability.
 	DistributionGroup(ctx context.Context) ([]instance.Id, error)
 
-	// SetInstanceInfo sets the provider specific instance id, nonce, metadata,
-	// network config for this machine. Once set, the instance id cannot be changed.
+	// SetInstanceInfo sets the provider-specific instance id,
+	// nonce, metadata, network config for this machine.
+	// Once set, the instance id cannot be changed.
 	SetInstanceInfo(
 		ctx context.Context,
-		id instance.Id, displayName string, nonce string, characteristics *instance.HardwareCharacteristics,
-		networkConfig []params.NetworkConfig, volumes []params.Volume,
-		volumeAttachments map[string]params.VolumeAttachmentInfo, charmProfiles []string,
+		id instance.Id,
+		displayName string,
+		nonce string,
+		characteristics *instance.HardwareCharacteristics,
+		networkConfig []params.NetworkConfig,
+		volumes []params.Volume,
+		volumeAttachments map[string]params.VolumeAttachmentInfo,
 	) error
 
-	// InstanceId returns the provider specific instance id for the
-	// machine or an CodeNotProvisioned error, if not set.
+	// InstanceId returns the provider-specific instance id for the
+	// machine or a CodeNotProvisioned error, if not set.
 	InstanceId(ctx context.Context) (instance.Id, error)
 
 	// KeepInstance returns the value of the keep-instance
@@ -109,9 +111,6 @@ type MachineProvisioner interface {
 
 	// SupportedContainers returns a list of containers supported by this machine.
 	SupportedContainers(ctx context.Context) ([]instance.ContainerType, bool, error)
-
-	// SetCharmProfiles records the given slice of charm profile names.
-	SetCharmProfiles(context.Context, []string) error
 }
 
 // Machine represents a juju machine as seen by the provisioner worker.
@@ -171,7 +170,7 @@ func (m *Machine) Refresh(ctx context.Context) error {
 }
 
 // SetInstanceStatus implements MachineProvisioner.SetInstanceStatus.
-func (m *Machine) SetInstanceStatus(ctx context.Context, status status.Status, message string, data map[string]interface{}) error {
+func (m *Machine) SetInstanceStatus(ctx context.Context, status status.Status, message string, data map[string]any) error {
 	var result params.ErrorResults
 	args := params.SetStatus{Entities: []params.EntityStatusArgs{
 		{Tag: m.tag.String(), Status: status.String(), Info: message, Data: data},
@@ -205,7 +204,7 @@ func (m *Machine) InstanceStatus(ctx context.Context) (status.Status, string, er
 }
 
 // SetStatus implements MachineProvisioner.SetStatus.
-func (m *Machine) SetStatus(ctx context.Context, status status.Status, info string, data map[string]interface{}) error {
+func (m *Machine) SetStatus(ctx context.Context, status status.Status, info string, data map[string]any) error {
 	var result params.ErrorResults
 	args := params.SetStatus{
 		Entities: []params.EntityStatusArgs{
@@ -247,19 +246,6 @@ func (m *Machine) EnsureDead(ctx context.Context) error {
 		Entities: []params.Entity{{Tag: m.tag.String()}},
 	}
 	err := m.st.facade.FacadeCall(ctx, "EnsureDead", args, &result)
-	if err != nil {
-		return err
-	}
-	return result.OneError()
-}
-
-// Remove implements MachineProvisioner.Remove.
-func (m *Machine) Remove(ctx context.Context) error {
-	var result params.ErrorResults
-	args := params.Entities{
-		Entities: []params.Entity{{Tag: m.tag.String()}},
-	}
-	err := m.st.facade.FacadeCall(ctx, "Remove", args, &result)
 	if err != nil {
 		return err
 	}
@@ -322,9 +308,13 @@ func (m *Machine) DistributionGroup(ctx context.Context) ([]instance.Id, error) 
 // SetInstanceInfo implements MachineProvisioner.SetInstanceInfo.
 func (m *Machine) SetInstanceInfo(
 	ctx context.Context,
-	id instance.Id, displayName string, nonce string, characteristics *instance.HardwareCharacteristics,
-	networkConfig []params.NetworkConfig, volumes []params.Volume,
-	volumeAttachments map[string]params.VolumeAttachmentInfo, charmProfiles []string,
+	id instance.Id,
+	displayName string,
+	nonce string,
+	characteristics *instance.HardwareCharacteristics,
+	networkConfig []params.NetworkConfig,
+	volumes []params.Volume,
+	volumeAttachments map[string]params.VolumeAttachmentInfo,
 ) error {
 	var result params.ErrorResults
 	args := params.InstancesInfo{
@@ -337,7 +327,6 @@ func (m *Machine) SetInstanceInfo(
 			Volumes:           volumes,
 			VolumeAttachments: volumeAttachments,
 			NetworkConfig:     networkConfig,
-			CharmProfiles:     charmProfiles,
 		}},
 	}
 	err := m.st.facade.FacadeCall(ctx, "SetInstanceInfo", args, &result)
@@ -410,13 +399,7 @@ func (m *Machine) WatchContainers(ctx context.Context, ctype instance.ContainerT
 	if string(ctype) == "" {
 		return nil, fmt.Errorf("container type must be specified")
 	}
-	supported := false
-	for _, c := range instance.ContainerTypes {
-		if ctype == c {
-			supported = true
-			break
-		}
-	}
+	supported := slices.Contains(instance.ContainerTypes, ctype)
 	if !supported {
 		return nil, fmt.Errorf("unsupported container type %q", ctype)
 	}
@@ -489,29 +472,4 @@ func (m *Machine) SupportedContainers(ctx context.Context) ([]instance.Container
 	}
 	result := results.Results[0]
 	return result.ContainerTypes, result.Determined, nil
-}
-
-// SetCharmProfiles implements MachineProvisioner.SetCharmProfiles.
-func (m *Machine) SetCharmProfiles(ctx context.Context, profiles []string) error {
-	var results params.ErrorResults
-	args := params.SetProfileArgs{
-		Args: []params.SetProfileArg{
-			{
-				Entity:   params.Entity{Tag: m.tag.String()},
-				Profiles: profiles,
-			},
-		},
-	}
-	err := m.st.facade.FacadeCall(ctx, "SetCharmProfiles", args, &results)
-	if err != nil {
-		return err
-	}
-	if len(results.Results) != 1 {
-		return fmt.Errorf("expected 1 result, got %d", len(results.Results))
-	}
-	result := results.Results[0]
-	if result.Error != nil {
-		return result.Error
-	}
-	return nil
 }

@@ -11,13 +11,12 @@ import (
 	"time"
 
 	"github.com/juju/collections/set"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/controller"
 	"github.com/juju/juju/core/network"
-	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/internal/docker"
 	"github.com/juju/juju/internal/docker/registry"
 	"github.com/juju/juju/internal/docker/registry/mocks"
@@ -147,6 +146,52 @@ var newConfigTests = []struct {
 	},
 	expectError: `invalid audit log exclude methods: should be a list of "Facade.Method" names \(or "ReadOnlyMethods"\), got "Sharon Jones" at position 3`,
 }, {
+	about: "idle-connection-timeout not a string",
+	config: controller.Config{
+		controller.IdleConnectionTimeout: 99,
+	},
+	expectError: `idle-connection-timeout: expected string or time.Duration, got int\(99\)`,
+}, {
+	about: "idle-connection-timeout not a duration",
+	config: controller.Config{
+		controller.IdleConnectionTimeout: "99",
+	},
+	expectError: `idle-connection-timeout: conversion to duration: time: missing unit in duration "99"`,
+}, {
+	about: "http-server-read-timeout not a string",
+	config: controller.Config{
+		controller.HTTPServerReadTimeout: 99,
+	},
+	expectError: `http-server-read-timeout: expected string or time.Duration, got int\(99\)`,
+}, {
+	about: "http-server-read-timeout not a duration",
+	config: controller.Config{
+		controller.HTTPServerReadTimeout: "99",
+	},
+	expectError: `http-server-read-timeout: conversion to duration: time: missing unit in duration "99"`,
+}, {
+	about: "http-server-write-timeout not a string",
+	config: controller.Config{
+		controller.HTTPServerWriteTimeout: 99,
+	},
+	expectError: `http-server-write-timeout: expected string or time.Duration, got int\(99\)`,
+}, {
+	about: "http-server-write-timeout not a duration",
+	config: controller.Config{
+		controller.HTTPServerWriteTimeout: "99",
+	},
+	expectError: `http-server-write-timeout: conversion to duration: time: missing unit in duration "99"`,
+}, {
+	about: "http-server-read-timeout set to non-zero value",
+	config: controller.Config{
+		controller.HTTPServerReadTimeout: "30s",
+	},
+}, {
+	about: "http-server-write-timeout set to non-zero value",
+	config: controller.Config{
+		controller.HTTPServerWriteTimeout: "45s",
+	},
+}, {
 	about: "txn-prune-sleep-time not a duration",
 	config: controller.Config{
 		controller.PruneTxnSleepTime: "15",
@@ -249,12 +294,12 @@ var newConfigTests = []struct {
 	},
 	expectError: `invalid max agent state size: should be a number of bytes \(or 0 to disable limit\), got -42`,
 }, {
-	about: "combined charm/agent state cannot exceed mongo's 16M limit/doc",
+	about: "combined charm/agent state cannot exceed 16M limit/doc",
 	config: controller.Config{
 		controller.MaxCharmStateSize: "14000000",
 		controller.MaxAgentStateSize: "3000000",
 	},
-	expectError: `invalid max charm/agent state sizes: combined value should not exceed mongo's 16M per-document limit, got 17000000`,
+	expectError: `invalid max charm/agent state sizes: combined value should not exceed 16M per-document limit, got 17000000`,
 }, {
 	about: "public-dns-address: expect string, got number",
 	config: controller.Config{
@@ -309,6 +354,18 @@ var newConfigTests = []struct {
 	},
 	expectError: `query-tracing-threshold value "-1s" must be a positive duration`,
 }, {
+	about: "invalid dqlite busy timeout value",
+	config: controller.Config{
+		controller.DqliteBusyTimeout: "invalid",
+	},
+	expectError: `dqlite-busy-timeout: conversion to duration: time: invalid duration "invalid"`,
+}, {
+	about: "negative dqlite busy timeout duration",
+	config: controller.Config{
+		controller.DqliteBusyTimeout: "-1s",
+	},
+	expectError: `dqlite-busy-timeout value "-1s" must be a positive duration`,
+}, {
 	about: "invalid open telemetry tracing enabled value",
 	config: controller.Config{
 		controller.OpenTelemetryEnabled: "invalid",
@@ -338,42 +395,6 @@ var newConfigTests = []struct {
 		controller.OpenTelemetryTailSamplingThreshold: "invalid",
 	},
 	expectError: `open-telemetry-tail-sampling-threshold: conversion to duration: time: invalid duration "invalid"`,
-}, {
-	about: "invalid object store type value",
-	config: controller.Config{
-		controller.ObjectStoreType: "invalid",
-	},
-	expectError: `invalid object store type "invalid" not valid`,
-}, {
-	about: "invalid object store type type",
-	config: controller.Config{
-		controller.ObjectStoreType: 1,
-	},
-	expectError: `object-store-type: expected string, got int\(1\)`,
-}, {
-	about: "invalid object store s3 endpoint value",
-	config: controller.Config{
-		controller.ObjectStoreS3Endpoint: 1,
-	},
-	expectError: `object-store-s3-endpoint: expected string, got int\(1\)`,
-}, {
-	about: "invalid object store s3 static key value",
-	config: controller.Config{
-		controller.ObjectStoreS3StaticKey: 1,
-	},
-	expectError: `object-store-s3-static-key: expected string, got int\(1\)`,
-}, {
-	about: "invalid object store s3 static secret value",
-	config: controller.Config{
-		controller.ObjectStoreS3StaticSecret: 1,
-	},
-	expectError: `object-store-s3-static-secret: expected string, got int\(1\)`,
-}, {
-	about: "invalid object store s3 static session value",
-	config: controller.Config{
-		controller.ObjectStoreS3StaticSession: 1,
-	},
-	expectError: `object-store-s3-static-session: expected string, got int\(1\)`,
 }, {
 	about: "invalid jujud-controller-snap-source value",
 	config: controller.Config{
@@ -423,7 +444,7 @@ func (s *ConfigSuite) TestResourceDownloadLimits(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			"application-resource-download-limit": "42",
 			"controller-resource-download-limit":  "666",
 		},
@@ -443,7 +464,7 @@ func (s *ConfigSuite) TestTxnLogConfigValue(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			"max-txn-log-size": "8G",
 		},
 	)
@@ -462,7 +483,7 @@ func (s *ConfigSuite) TestMaxPruneTxnConfigValue(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			"max-prune-txn-batch-size": "12345678",
 			"max-prune-txn-passes":     "10",
 		},
@@ -476,7 +497,7 @@ func (s *ConfigSuite) TestPruneTxnQueryCount(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			"prune-txn-query-count": "500",
 			"prune-txn-sleep-time":  "5ms",
 		},
@@ -490,7 +511,7 @@ func (s *ConfigSuite) TestPublicDNSAddressConfigValue(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			"public-dns-address": "controller.test.com:12345",
 		},
 	)
@@ -504,7 +525,7 @@ func (s *ConfigSuite) TestNetworkSpaceConfigValues(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			controller.JujuManagementSpace: managementSpace,
 		},
 	)
@@ -516,7 +537,7 @@ func (s *ConfigSuite) TestNetworkSpaceConfigDefaults(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{},
+		map[string]any{},
 	)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(cfg.JujuManagementSpace(), tc.Equals, network.SpaceName(""))
@@ -537,7 +558,7 @@ func (s *ConfigSuite) TestAuditLogValues(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			"auditing-enabled":          false,
 			"audit-log-capture-args":    true,
 			"audit-log-max-size":        "100M",
@@ -561,7 +582,7 @@ func (s *ConfigSuite) TestAuditLogExcludeMethodsType(c *tc.C) {
 	_, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			"audit-log-exclude-methods": []int{2, 3, 4},
 		},
 	)
@@ -583,7 +604,7 @@ func (s *ConfigSuite) TestConfigAllSpacesAsMergedConstraints(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			controller.JujuManagementSpace: managementSpace,
 		},
 	)
@@ -597,7 +618,7 @@ func (s *ConfigSuite) TestConfigNoSpacesNilSpaceConfigPreserved(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{},
+		map[string]any{},
 	)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(cfg.AsSpaceConstraints(nil), tc.IsNil)
@@ -638,7 +659,7 @@ func (s *ConfigSuite) TestCAASImageRepo(c *tc.C) {
 		cfg, err := controller.NewConfig(
 			testing.ControllerTag.Id(),
 			testing.CACert,
-			map[string]interface{}{
+			map[string]any{
 				controller.CAASImageRepo: imageRepo.content,
 			},
 		)
@@ -658,7 +679,7 @@ func (s *ConfigSuite) TestControllerNameSetGet(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			controller.ControllerName: "test",
 		},
 	)
@@ -670,7 +691,7 @@ func (s *ConfigSuite) TestMaxDebugLogDuration(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			"max-debug-log-duration": "90m",
 		},
 	)
@@ -682,7 +703,7 @@ func (s *ConfigSuite) TestMaxDebugLogDurationSchemaCoerce(c *tc.C) {
 	_, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			"max-debug-log-duration": "12",
 		},
 	)
@@ -693,7 +714,7 @@ func (s *ConfigSuite) TestFeatureFlags(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			controller.Features: "foo,bar",
 		},
 	)
@@ -705,7 +726,7 @@ func (s *ConfigSuite) TestDefaults(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{},
+		map[string]any{},
 	)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(cfg.AgentRateLimitMax(), tc.Equals, controller.DefaultAgentRateLimitMax)
@@ -727,7 +748,7 @@ func (s *ConfigSuite) TestAgentLogfile(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			"agent-logfile-max-size":    "35M",
 			"agent-logfile-max-backups": "17",
 		},
@@ -741,7 +762,7 @@ func (s *ConfigSuite) TestAgentLogfileBackupErr(c *tc.C) {
 	_, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			"agent-logfile-max-backups": "two",
 		},
 	)
@@ -752,7 +773,7 @@ func (s *ConfigSuite) TestModelLogfile(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			"model-logfile-max-size":    "25M",
 			"model-logfile-max-backups": "15",
 		},
@@ -766,7 +787,7 @@ func (s *ConfigSuite) TestModelLogfileBackupErr(c *tc.C) {
 	_, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			"model-logfile-max-backups": "two",
 		},
 	)
@@ -777,7 +798,7 @@ func (s *ConfigSuite) TestAgentRateLimitMax(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			"agent-ratelimit-max": "0",
 		},
 	)
@@ -888,7 +909,7 @@ func (s *ConfigSuite) TestOpenTelemetryEndpointSettingValue(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			controller.OpenTelemetryEndpoint: mURL,
 		},
 	)
@@ -924,7 +945,7 @@ func (s *ConfigSuite) TestSSHServerPort(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			controller.SSHServerPort: 10,
 		},
 	)
@@ -936,51 +957,10 @@ func (s *ConfigSuite) TestSSHServerConcurrentConnections(c *tc.C) {
 	cfg, err := controller.NewConfig(
 		testing.ControllerTag.Id(),
 		testing.CACert,
-		map[string]interface{}{
+		map[string]any{
 			controller.SSHMaxConcurrentConnections: 10,
 		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(cfg.SSHMaxConcurrentConnections(), tc.Equals, 10)
-}
-
-func (s *ConfigSuite) TestObjectStoreType(c *tc.C) {
-	backendType := "file"
-	cfg, err := controller.NewConfig(
-		testing.ControllerTag.Id(),
-		testing.CACert,
-		map[string]interface{}{
-			controller.ObjectStoreType: backendType,
-		},
-	)
-	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(cfg.ObjectStoreType(), tc.Equals, objectstore.FileBackend)
-}
-
-func (s *ConfigSuite) TestObjectStoreS3Endpoint(c *tc.C) {
-	cfg, err := controller.NewConfig(
-		testing.ControllerTag.Id(),
-		testing.CACert,
-		map[string]interface{}{
-			controller.ObjectStoreS3Endpoint: "http://localhost:9000",
-		},
-	)
-	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(cfg.ObjectStoreS3Endpoint(), tc.Equals, "http://localhost:9000")
-}
-
-func (s *ConfigSuite) TestObjectStoreS3Credentials(c *tc.C) {
-	cfg, err := controller.NewConfig(
-		testing.ControllerTag.Id(),
-		testing.CACert,
-		map[string]interface{}{
-			controller.ObjectStoreS3StaticKey:     "key",
-			controller.ObjectStoreS3StaticSecret:  "secret",
-			controller.ObjectStoreS3StaticSession: "session",
-		},
-	)
-	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(cfg.ObjectStoreS3StaticKey(), tc.Equals, "key")
-	c.Assert(cfg.ObjectStoreS3StaticSecret(), tc.Equals, "secret")
-	c.Assert(cfg.ObjectStoreS3StaticSession(), tc.Equals, "session")
 }

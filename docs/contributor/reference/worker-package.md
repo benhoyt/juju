@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn about the Juju worker package providing utilities, interfaces, and dependency management for long-lived worker goroutines in Juju."
+---
+
 (worker-package)=
 # Worker package
 

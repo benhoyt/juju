@@ -51,10 +51,10 @@ In addition to hook commands, Juju charms also have access to a set of action-sp
 These action commands are available when an action is running, and are used to log progress
 and report the outcome of the action.
 The currently available charm action commands include:
-    action-fail  Set action fail status with message.
-    action-get   Get action parameters.
-    action-log   Record a progress message for the current action.
-    action-set   Set action results.
+    action-fail  Sets action fail status with message.
+    action-get   Gets action parameters.
+    action-log   Records a progress message for the current action.
+    action-set   Sets action results.
 
 Examples:
 
@@ -90,11 +90,12 @@ func (suite *HelpActionCommandsSuite) TestHelpActionCommandsName(c *tc.C) {
 	expectedHelp := `Usage: action-fail ["<failure message>"]
 
 Summary:
-Set action fail status with message.
+Sets action fail status with message.
 
 Details:
-action-fail sets the fail state of the action with a given error message.  Using
-action-fail without a failure message will set a default message indicating a
+` + "`action-fail`" + ` sets the fail state of the action with a given error message.
+
+Using ` + "`action-fail`" + ` without a failure message will set a default message indicating a
 problem with the action.
 
 Examples:

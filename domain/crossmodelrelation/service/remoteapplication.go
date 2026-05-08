@@ -5,8 +5,9 @@ package service
 
 import (
 	"context"
-	"strings"
 
+	"github.com/juju/collections/set"
+	"github.com/juju/collections/transform"
 	"gopkg.in/macaroon.v2"
 
 	coreapplication "github.com/juju/juju/core/application"
@@ -57,13 +58,17 @@ type ModelRemoteApplicationState interface {
 	// application offerers in the local model.
 	GetRemoteApplicationOfferers(context.Context) ([]crossmodelrelation.RemoteApplicationOfferer, error)
 
-	// GetRemoteApplicationOffererByApplicationName returns the UUID of the remote
-	// application offerer for the given application name.
+	// GetRemoteApplicationOffererByApplicationName returns the UUID of the
+	// remote application offerer for the given application name.
 	GetRemoteApplicationOffererByApplicationName(context.Context, string) (string, error)
 
 	// GetRemoteApplicationConsumers returns all the current non-dead remote
 	// application consumers in the local model.
 	GetRemoteApplicationConsumers(context.Context) ([]crossmodelrelation.RemoteApplicationConsumer, error)
+
+	// GetRemoteConsumerApplicationName returns the sanem of the synthetic
+	// application for the specified UUID.
+	GetRemoteConsumerApplicationName(ctx context.Context, consumingAppUUID string) (string, error)
 
 	// NamespaceRemoteApplicationOfferers returns the database namespace
 	// for remote application offerers.
@@ -81,38 +86,39 @@ type ModelRemoteApplicationState interface {
 	// remote application.
 	SaveMacaroonForRelation(context.Context, string, []byte) error
 
-	// GetMacaroonForRelation gets the macaroon for the specified remote relation,
-	// returning an error satisfying [crossmodelrelationerrors.MacaroonNotFound]
-	// if the macaroon is not found.
+	// GetMacaroonForRelation gets the macaroon for the specified remote
+	// relation.
 	GetMacaroonForRelation(context.Context, string) (*macaroon.Macaroon, error)
 
-	// GetApplicationNameAndUUIDByOfferUUID returns the application name and UUID
-	// for the given offer UUID.
-	// Returns [applicationerrors.ApplicationNotFound] if the offer or associated
-	// application is not found.
-	GetApplicationNameAndUUIDByOfferUUID(ctx context.Context, offerUUID string) (string, coreapplication.UUID, error)
+	// GetApplicationNameAndUUIDByOfferUUID returns the application name and
+	// UUID for the given offer UUID.
+	GetApplicationNameAndUUIDByOfferUUID(ctx context.Context, offerUUID string) (string, string, error)
 
-	// EnsureUnitsExist ensures that the given synthetic units exist in the local
-	// model.
+	// GetSyntheticApplicationUUIDByRemoteToken returns the
+	// synthetic application UUID for the given offer UUID and remote relation
+	// UUID.
+	GetSyntheticApplicationUUIDByRemoteToken(ctx context.Context, offerUUID string, remoteRelationUUID string) (string, error)
+
+	// EnsureUnitsExist ensures that the given synthetic units exist in the
+	// local model.
 	EnsureUnitsExist(ctx context.Context, appUUID string, units []string) error
 
 	// IsRelationWithEndpointIdentifiersSuspended returns the suspended status
 	// of a relation with the specified endpoints.
-	// The following error types can be expected:
-	//   - [relationerrors.RelationNotFound]: when no relation exists for the given
-	//     endpoints.
 	IsRelationWithEndpointIdentifiersSuspended(
 		ctx context.Context,
 		endpoint1, endpoint2 corerelation.EndpointIdentifier,
 	) (bool, error)
 
 	// InitialWatchStatementForConsumerRelations returns the namespace and the
-	// initial query function for watching relation UUIDs that are associated with
-	// remote offerer applications present in this model (i.e. consumer side).
+	// initial query function for watching relation UUIDs that are associated
+	// with remote offerer applications present in this model (i.e. consumer
+	// side).
 	InitialWatchStatementForConsumerRelations() (string, eventsource.NamespaceQuery)
 
 	// GetConsumerRelationUUIDs filters the provided relation UUIDs and returns
-	// only those that are associated with remote offerer applications in this model.
+	// only those that are associated with remote offerer applications in this
+	// model.
 	GetConsumerRelationUUIDs(ctx context.Context, relationUUIDs ...string) ([]string, error)
 
 	// GetOfferingApplicationToken returns the offering application token (uuid)
@@ -128,20 +134,28 @@ type ModelRemoteApplicationState interface {
 	GetAllOffererRelationUUIDs(ctx context.Context) ([]string, error)
 
 	// InitialWatchStatementForOffererRelations returns the namespace and the
-	// initial query function for watching relation UUIDs that are associated with
-	// remote consumer applications present in this model (i.e. offerer side).
+	// initial query function for watching relation UUIDs that are associated
+	// with remote consumer applications present in this model (i.e. offerer
+	// side).
 	InitialWatchStatementForOffererRelations() (string, eventsource.NamespaceQuery)
 
-	// GetOffererModelUUID returns the offering model UUID for a remote application
-	// offerer, based on the given application name.
-	// The following error types can be expected:
-	//   - [crossmodelrelationerrors.RemoteApplicationNotFound]: when the application
-	//     is not a remote offerer application.
+	// GetOffererModelUUID returns the offering model UUID for a remote
+	// application offerer, based on the given application name.
 	GetOffererModelUUID(ctx context.Context, appName string) (coremodel.UUID, error)
 
-	// IsApplicationSynthetic checks if the given application exists in the model
-	// and is a synthetic application, based on the charm source being 'cmr'.
+	// IsApplicationSynthetic checks if the given application exists in the
+	// model and is a synthetic application, based on the charm source being
+	// 'cmr'.
 	IsApplicationSynthetic(ctx context.Context, appName string) (bool, error)
+
+	// IsRemoteApplicationConsumer checks if the remote application is a
+	// consumer in this model i.e. they're a proxy consumer for an application.
+	IsRemoteApplicationConsumer(ctx context.Context, appUUID string) (bool, error)
+
+	// GetRelationRemoteModelUUID returns the remote model UUID for the given
+	// relation UUID. This method works for both offerer and consumer side
+	// relations.
+	GetRelationRemoteModelUUID(ctx context.Context, relationUUID corerelation.UUID) (coremodel.UUID, error)
 }
 
 // AddRemoteApplicationOfferer adds a new synthetic application representing
@@ -229,7 +243,7 @@ func (s *Service) AddConsumedRelation(ctx context.Context, args AddConsumedRelat
 
 	// The synthetic application name is prefixed with "remote-" to avoid
 	// name clashes with local applications.
-	synthApplicationName := "remote-" + strings.ReplaceAll(synthApplicationUUID.String(), "-", "")
+	synthApplicationName := coreapplication.RemoteApplicationNameFromUUID(synthApplicationUUID)
 	if !application.IsValidApplicationName(synthApplicationName) {
 		return applicationerrors.ApplicationNameNotValid
 	}
@@ -260,6 +274,13 @@ func (s *Service) AddConsumedRelation(ctx context.Context, args AddConsumedRelat
 	charmUUID, err := corecharm.NewID()
 	if err != nil {
 		return internalerrors.Errorf("creating charm uuid: %w", err)
+	}
+
+	// Check that the charm has only one endpoint. There can be multiple
+	// synthetic applications per offer, but only one endpoint per synthetic
+	// application. To do otherwise requires design and facade changes.
+	if err := synthCharmHasOnlyOneEndpoint(args.ConsumerApplicationEndpoint.Name, syntheticCharm); err != nil {
+		return internalerrors.Errorf("adding consumed relation: %w", err)
 	}
 
 	if err := s.modelState.AddConsumedRelation(ctx, synthApplicationName, crossmodelrelation.AddRemoteApplicationConsumerArgs{
@@ -308,7 +329,7 @@ func (s *Service) recordInitRemoteApplicationStatusHistory(
 ) {
 	statusInfo := corestatus.StatusInfo{
 		Status: corestatus.Unknown,
-		Since:  ptr(s.clock.Now()),
+		Since:  new(s.clock.Now()),
 	}
 
 	if err := s.statusHistory.RecordStatus(ctx, status.RemoteApplication.WithID(applicationName), statusInfo); err != nil {
@@ -416,9 +437,8 @@ func (s *Service) GetMacaroonForRelation(ctx context.Context, relationUUID corer
 }
 
 // GetApplicationNameAndUUIDByOfferUUID returns the application name and UUID
-// for the given offer UUID.
-// Returns crossmodelrelationerrors.OfferNotFound if the offer or associated
-// application is not found.
+// for the given offer UUID. Returns crossmodelrelationerrors.OfferNotFound if
+// the offer or associated application is not found.
 func (s *Service) GetApplicationNameAndUUIDByOfferUUID(ctx context.Context, offerUUID offer.UUID) (string, coreapplication.UUID, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
@@ -431,7 +451,28 @@ func (s *Service) GetApplicationNameAndUUIDByOfferUUID(ctx context.Context, offe
 	if err != nil {
 		return "", "", internalerrors.Capture(err)
 	}
-	return appName, appUUID, nil
+	return appName, coreapplication.UUID(appUUID), nil
+}
+
+// GetSyntheticApplicationUUIDByRemoteToken returns the
+// synthetic application UUID for the given offer UUID and remote relation UUID.
+func (s *Service) GetSyntheticApplicationUUIDByRemoteToken(ctx context.Context, offerUUID offer.UUID, remoteRelationUUID corerelation.UUID) (coreapplication.UUID, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	if err := offerUUID.Validate(); err != nil {
+		return "", internalerrors.Errorf("validating offer UUID: %w", err)
+	}
+
+	if err := remoteRelationUUID.Validate(); err != nil {
+		return "", internalerrors.Errorf("validating remote relation UUID: %w", err)
+	}
+
+	appUUID, err := s.modelState.GetSyntheticApplicationUUIDByRemoteToken(ctx, offerUUID.String(), remoteRelationUUID.String())
+	if err != nil {
+		return "", internalerrors.Capture(err)
+	}
+	return coreapplication.UUID(appUUID), nil
 }
 
 // GetOfferingApplicationToken returns the offering application token (UUID)
@@ -452,6 +493,19 @@ func (s *Service) GetOfferingApplicationToken(
 	}
 
 	return coreapplication.ParseUUID(appUUID)
+}
+
+// GetRemoteConsumerApplicationName returns the name of the synthetic application representing
+// a consuming application in the offering model.
+func (s *Service) GetRemoteConsumerApplicationName(ctx context.Context, consumingAppUUID coreapplication.UUID) (string, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	if err := consumingAppUUID.Validate(); err != nil {
+		return "", applicationerrors.ApplicationUUIDNotValid
+	}
+
+	return s.modelState.GetRemoteConsumerApplicationName(ctx, consumingAppUUID.String())
 }
 
 // IsCrossModelRelationValidForApplication checks that the cross model relation is valid for the application.
@@ -543,6 +597,19 @@ func (s *Service) IsApplicationSynthetic(ctx context.Context, appName string) (b
 	return s.modelState.IsApplicationSynthetic(ctx, appName)
 }
 
+// IsRemoteApplicationConsumer checks if the remote application is a
+// consumer in this model i.e. they're a proxy consumer for an application.
+func (s *Service) IsRemoteApplicationConsumer(ctx context.Context, appUUID coreapplication.UUID) (bool, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	if err := appUUID.Validate(); err != nil {
+		return false, applicationerrors.ApplicationUUIDNotValid
+	}
+
+	return s.modelState.IsRemoteApplicationConsumer(ctx, appUUID.String())
+}
+
 // GetOffererModelUUID returns the offering model UUID, based on a given
 // application.
 func (s *Service) GetOffererModelUUID(ctx context.Context, appName string) (coremodel.UUID, error) {
@@ -554,4 +621,36 @@ func (s *Service) GetOffererModelUUID(ctx context.Context, appName string) (core
 		return coremodel.UUID(""), internalerrors.Capture(err)
 	}
 	return modelUUID, nil
+}
+
+// GetRelationRemoteModelUUID returns the remote model UUID for the given
+// relation UUID. This method works for both offerer and consumer side
+// relations.
+func (s *Service) GetRelationRemoteModelUUID(ctx context.Context, relationUUID corerelation.UUID) (coremodel.UUID, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	modelUUID, err := s.modelState.GetRelationRemoteModelUUID(ctx, relationUUID)
+	if err != nil {
+		return coremodel.UUID(""), internalerrors.Capture(err)
+	}
+	return modelUUID, nil
+}
+
+func synthCharmHasOnlyOneEndpoint(endpoint string, ch charm.Charm) error {
+	provides := transform.MapToSlice(ch.Metadata.Provides, func(k string, _ charm.Relation) []string {
+		return []string{k}
+	})
+	requires := transform.MapToSlice(ch.Metadata.Requires, func(k string, _ charm.Relation) []string {
+		return []string{k}
+	})
+	providesSet := set.NewStrings(provides...)
+	requiresSet := set.NewStrings(requires...)
+	cnt := providesSet.Size() + requiresSet.Size()
+	if cnt > 1 {
+		return internalerrors.Errorf("application in relation has more than one potential endpoint").Add(relationerrors.AmbiguousRelation)
+	} else if providesSet.Union(requiresSet).Contains(endpoint) && cnt == 1 {
+		return nil
+	}
+	return internalerrors.Errorf("endpoint %q", endpoint).Add(relationerrors.RelationEndpointNotFound)
 }

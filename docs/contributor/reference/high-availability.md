@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Configure Juju high availability with multiple state machines, MongoDB replicaset mode, and voting member management strategies."
+---
+
 (high-availability-cont)=
 # High Availability (HA)
 

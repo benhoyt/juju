@@ -10,7 +10,7 @@ import (
 	"github.com/juju/juju/apiserver/facade"
 	facademocks "github.com/juju/juju/apiserver/facade/mocks"
 	"github.com/juju/juju/core/leadership"
-	modeltesting "github.com/juju/juju/core/model/testing"
+	coremodel "github.com/juju/juju/core/model"
 )
 
 //go:generate go run go.uber.org/mock/mockgen -typed -package action -destination package_mock_test.go github.com/juju/juju/apiserver/facades/client/action ApplicationService,ModelInfoService,OperationService
@@ -62,7 +62,7 @@ func (s *MockBaseSuite) newActionAPI(c *tc.C) *ActionAPI {
 }
 
 func (s *MockBaseSuite) newActionAPIWithAuthorizer(c *tc.C, authorizer facade.Authorizer) *ActionAPI {
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 
 	api, err := newActionAPI(
 		authorizer,

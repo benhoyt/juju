@@ -146,39 +146,6 @@ func (c *Client) Relation(ctx context.Context, tag names.RelationTag) (*Relation
 	}, nil
 }
 
-// WatchEgressAddressesForRelation returns a watcher that notifies when addresses,
-// from which connections will originate to the provider side of the relation, change.
-// Each event contains the entire set of addresses which the provider side is required
-// to allow for access from the other side of the relation.
-func (c *Client) WatchEgressAddressesForRelation(ctx context.Context, relationTag names.RelationTag) (watcher.StringsWatcher, error) {
-	args := params.Entities{Entities: []params.Entity{{Tag: relationTag.String()}}}
-	var results params.StringsWatchResults
-	err := c.facade.FacadeCall(ctx, "WatchEgressAddressesForRelations", args, &results)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	if len(results.Results) != 1 {
-		return nil, errors.Errorf("expected 1 result, got %d", len(results.Results))
-	}
-	result := results.Results[0]
-	if result.Error != nil {
-		return nil, result.Error
-	}
-	w := apiwatcher.NewStringsWatcher(c.facade.RawAPICaller(), result)
-	return w, nil
-}
-
-// WatchIngressAddressesForRelation returns a watcher that notifies when addresses,
-// from which connections will originate for the relation, change.
-// Each event contains the entire set of addresses which are required
-// for ingress into this model from the other requirer side of the relation.
-func (c *Client) WatchIngressAddressesForRelation(ctx context.Context, relationTag names.RelationTag) (watcher.StringsWatcher, error) {
-	// todo(gfouillet): re-enable this watcher call whenever CMR will be fully
-	//   implemented in the new domain. The facade implementation return a
-	//   not implemented exception, so it is not necessary to try to fetch it.
-	return common.NewDisabledWatcher(), nil
-}
-
 // ControllerAPIInfoForModels returns the controller api connection details for the specified model.
 func (c *Client) ControllerAPIInfoForModel(ctx context.Context, modelUUID string) (*api.Info, error) {
 	modelTag := names.NewModelTag(modelUUID)

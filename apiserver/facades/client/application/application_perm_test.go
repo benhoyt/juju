@@ -32,7 +32,7 @@ func (s *permBaseSuite) TestAPIConstruction(c *tc.C) {
 		s.authorizer,
 		nil,
 		s.controllerUUID, s.modelUUID, "",
-		nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil,
 		clock.WallClock,
 	)
 	c.Assert(err, tc.ErrorIs, apiservererrors.ErrPerm)
@@ -48,7 +48,7 @@ func (s *permBaseSuite) TestAPIServiceConstruction(c *tc.C) {
 		s.authorizer,
 		nil,
 		s.controllerUUID, s.modelUUID, "",
-		nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil,
 		clock.WallClock,
 	)
 	c.Assert(err, tc.ErrorIs, errors.NotValid)
@@ -146,7 +146,7 @@ func (s *permBaseSuite) TestSetCharmValidOrigin(c *tc.C) {
 		},
 	})
 
-	c.Assert(err, tc.ErrorIs, errors.NotFound)
+	c.Assert(err, tc.Satisfies, params.IsCodeNotFound)
 }
 
 func (s *permBaseSuite) TestGetCharmURLOriginPermission(c *tc.C) {
@@ -593,19 +593,7 @@ func (s *permBaseSuite) TestDeployFromRepositoryBlocked(c *tc.C) {
 	c.Assert(err, tc.ErrorMatches, "blocked")
 }
 
-type permSuiteIAAS struct {
-	permBaseSuite
-}
-
-func TestPermSuiteIAAS(t *testing.T) {
-	tc.Run(t, &permSuiteIAAS{})
-}
-
-func (s *permSuiteIAAS) SetUpTest(c *tc.C) {
-	s.newAPI = s.newIAASAPI
-}
-
-func (s *permSuiteIAAS) TestAddUnitsPermission(c *tc.C) {
+func (s *permBaseSuite) TestAddUnitsPermission(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	s.expectAuthClient()
@@ -619,7 +607,7 @@ func (s *permSuiteIAAS) TestAddUnitsPermission(c *tc.C) {
 	c.Assert(err, tc.ErrorIs, apiservererrors.ErrPerm)
 }
 
-func (s *permSuiteIAAS) TestAddUnitsBlocked(c *tc.C) {
+func (s *permBaseSuite) TestAddUnitsBlocked(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	s.expectAuthClient()
@@ -632,6 +620,18 @@ func (s *permSuiteIAAS) TestAddUnitsBlocked(c *tc.C) {
 		ApplicationName: "foo",
 	})
 	c.Assert(err, tc.ErrorMatches, "blocked")
+}
+
+type permSuiteIAAS struct {
+	permBaseSuite
+}
+
+func TestPermSuiteIAAS(t *testing.T) {
+	tc.Run(t, &permSuiteIAAS{})
+}
+
+func (s *permSuiteIAAS) SetUpTest(c *tc.C) {
+	s.newAPI = s.newIAASAPI
 }
 
 func (s *permSuiteIAAS) TestDestroyUnitPermission(c *tc.C) {
@@ -680,30 +680,6 @@ func TestPermSuiteCAAS(t *testing.T) {
 
 func (s *permSuiteCAAS) SetUpTest(c *tc.C) {
 	s.newAPI = s.newCAASAPI
-}
-
-func (s *permSuiteCAAS) TestAddUnitsInvalidForCAAS(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	s.expectAuthClient()
-
-	s.newAPI(c)
-
-	_, err := s.api.AddUnits(c.Context(), params.AddApplicationUnits{
-		ApplicationName: "foo",
-	})
-	c.Assert(err, tc.ErrorIs, errors.NotSupported)
-}
-
-func (s *permSuiteCAAS) TestDestroyUnitInvalidForCAAS(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	s.expectAuthClient()
-
-	s.newAPI(c)
-
-	_, err := s.api.DestroyUnit(c.Context(), params.DestroyUnitsParams{})
-	c.Assert(err, tc.ErrorIs, errors.NotSupported)
 }
 
 func (s *permSuiteCAAS) TestScaleApplicationsPermission(c *tc.C) {

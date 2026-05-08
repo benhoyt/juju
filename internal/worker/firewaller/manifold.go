@@ -7,8 +7,8 @@ import (
 	"context"
 
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
 
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/api"
@@ -144,7 +144,6 @@ func (cfg ManifoldConfig) start(ctx context.Context, getter dependency.Getter) (
 		CrossModelRelationService: domainServices.CrossModelRelation(),
 		FirewallerAPI:             firewallerAPI,
 		PortsService:              domainServices.Port(),
-		MachineService:            domainServices.Machine(),
 		ApplicationService:        domainServices.Application(),
 		RelationService:           domainServices.Relation(),
 		EnvironFirewaller:         fwEnv,

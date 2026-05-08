@@ -17,9 +17,9 @@ import (
 	remoteapplicationtesting "github.com/juju/juju/core/remoteapplication/testing"
 	corestatus "github.com/juju/juju/core/status"
 	crossmodelrelationerrors "github.com/juju/juju/domain/crossmodelrelation/errors"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/domain/life"
 	"github.com/juju/juju/domain/status"
-	internalcharm "github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/internal/statushistory"
 )
@@ -115,7 +115,7 @@ func (s *serviceSuite) TestGetRemoteApplicationOffererStatuses(c *tc.C) {
 			Status: corestatus.StatusInfo{
 				Status:  corestatus.Active,
 				Message: "it's active",
-				Data:    map[string]interface{}{"foo": "bar"},
+				Data:    map[string]any{"foo": "bar"},
 				Since:   &now,
 			},
 			Life:     corelife.Alive,
@@ -130,7 +130,7 @@ func (s *serviceSuite) TestGetRemoteApplicationOffererStatuses(c *tc.C) {
 			Status: corestatus.StatusInfo{
 				Status:  corestatus.Error,
 				Message: "it's error",
-				Data:    map[string]interface{}{"bar": "foo"},
+				Data:    map[string]any{"bar": "foo"},
 				Since:   &now,
 			},
 			Life:     corelife.Dying,

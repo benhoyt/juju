@@ -16,9 +16,9 @@ import (
 	corelogger "github.com/juju/juju/core/logger"
 	coreresource "github.com/juju/juju/core/resource"
 	coreunit "github.com/juju/juju/core/unit"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/domain/resource"
 	resourceerrors "github.com/juju/juju/domain/resource/errors"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	"github.com/juju/juju/internal/errors"
 	internallogger "github.com/juju/juju/internal/logger"
 	"github.com/juju/juju/internal/resource/charmhub"
@@ -154,6 +154,10 @@ func (ro ResourceOpener) getResource(
 	resName string,
 	done func(),
 ) (opened coreresource.Opened, err error) {
+	if resName == "" {
+		return coreresource.Opened{}, errors.Errorf("resource name cannot be empty")
+	}
+
 	defer func() {
 		// Call done if not returning a ReadCloser that calls done on Close.
 		if err != nil {
@@ -180,9 +184,7 @@ func (ro ResourceOpener) getResource(
 	} else if err == nil {
 		// If the resource was stored on the controller, return immediately.
 		return coreresource.Opened{
-			Resource: coreresource.Resource{
-				Resource: res.Resource,
-			},
+			Resource: res,
 			ReadCloser: &resourceAccess{
 				ReadCloser: reader,
 				done:       done,
@@ -234,9 +236,7 @@ func (ro ResourceOpener) getResource(
 	}
 
 	return coreresource.Opened{
-		Resource: coreresource.Resource{
-			Resource: res.Resource,
-		},
+		Resource: res,
 		ReadCloser: &resourceAccess{
 			ReadCloser: reader,
 			done:       done,
@@ -254,7 +254,7 @@ func (ro ResourceOpener) store(
 	size int64,
 	fingerprint charmresource.Fingerprint,
 ) (_ coreresource.Resource, _ io.ReadCloser, err error) {
-	err = ro.resourceService.StoreResource(
+	_, err = ro.resourceService.StoreResource(
 		ctx, resource.StoreResourceArgs{
 			ResourceUUID:    resourceUUID,
 			Reader:          reader,

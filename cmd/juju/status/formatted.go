@@ -75,9 +75,13 @@ type machineStatus struct {
 	Containers         map[string]machineStatus      `json:"containers,omitempty" yaml:"containers,omitempty"`
 	Constraints        string                        `json:"constraints,omitempty" yaml:"constraints,omitempty"`
 	Hardware           string                        `json:"hardware,omitempty" yaml:"hardware,omitempty"`
-	HAStatus           string                        `json:"controller-member-status,omitempty" yaml:"controller-member-status,omitempty"`
-	HAPrimary          bool                          `json:"ha-primary,omitempty" yaml:"ha-primary,omitempty"`
 	LXDProfiles        map[string]lxdProfileContents `json:"lxd-profiles,omitempty" yaml:"lxd-profiles,omitempty"`
+	HAClusterRole      *string                       `json:"controller-cluster-role,omitempty" yaml:"controller-cluster-role,omitempty"`
+
+	// These fields should be deprecated in favour of HAClusterRole. Remove
+	// them in the next version of the API client version.
+	HAStatus  string `json:"controller-member-status,omitempty" yaml:"controller-member-status,omitempty"`
+	HAPrimary *bool  `json:"ha-primary,omitempty" yaml:"ha-primary,omitempty"`
 }
 
 // A goyaml bug means we can't declare these types
@@ -91,7 +95,7 @@ func (s machineStatus) MarshalJSON() ([]byte, error) {
 	return json.Marshal(machineStatusNoMarshal(s))
 }
 
-func (s machineStatus) MarshalYAML() (interface{}, error) {
+func (s machineStatus) MarshalYAML() (any, error) {
 	if s.Err != nil {
 		return errorStatus{s.Err.Error()}, nil
 	}
@@ -157,7 +161,7 @@ func (s applicationStatus) MarshalJSON() ([]byte, error) {
 	return json.Marshal(applicationStatusNoMarshal(s))
 }
 
-func (s applicationStatus) MarshalYAML() (interface{}, error) {
+func (s applicationStatus) MarshalYAML() (any, error) {
 	if s.Err != nil {
 		return errorStatus{s.Err.Error()}, nil
 	}
@@ -188,7 +192,7 @@ func (s remoteApplicationStatus) MarshalJSON() ([]byte, error) {
 	return json.Marshal(remoteApplicationStatusNoMarshal(s))
 }
 
-func (s remoteApplicationStatus) MarshalYAML() (interface{}, error) {
+func (s remoteApplicationStatus) MarshalYAML() (any, error) {
 	if s.Err != nil {
 		return errorStatus{s.Err.Error()}, nil
 	}
@@ -214,7 +218,7 @@ func (s offerStatus) MarshalJSON() ([]byte, error) {
 	return json.Marshal(offerStatusNoMarshal(s))
 }
 
-func (s offerStatus) MarshalYAML() (interface{}, error) {
+func (s offerStatus) MarshalYAML() (any, error) {
 	if s.Err != nil {
 		return errorStatus{s.Err.Error()}, nil
 	}
@@ -297,7 +301,7 @@ func (s statusInfoContents) MarshalJSON() ([]byte, error) {
 	return json.Marshal(statusInfoContentsNoMarshal(s))
 }
 
-func (s statusInfoContents) MarshalYAML() (interface{}, error) {
+func (s statusInfoContents) MarshalYAML() (any, error) {
 	if s.Err != nil {
 		return errorStatus{s.Err.Error()}, nil
 	}
@@ -313,7 +317,7 @@ func (s unitStatus) MarshalJSON() ([]byte, error) {
 	return json.Marshal(unitStatusNoMarshal(s))
 }
 
-func (s unitStatus) MarshalYAML() (interface{}, error) {
+func (s unitStatus) MarshalYAML() (any, error) {
 	if s.WorkloadStatusInfo.Err != nil {
 		return errorStatus{s.WorkloadStatusInfo.Err.Error()}, nil
 	}

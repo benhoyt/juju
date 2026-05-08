@@ -96,8 +96,9 @@ func (j *JWTAuthenticator) Authenticate(req *http.Request) (authentication.AuthI
 	}
 
 	return authentication.AuthInfo{
-		Tag:       userTag,
-		Delegator: &PermissionDelegator{token},
+		Tag:                       userTag,
+		Delegator:                 &PermissionDelegator{Token: token},
+		IsExternallyAuthenticated: true,
 	}, nil
 }
 
@@ -118,8 +119,9 @@ func (j *JWTAuthenticator) AuthenticateLoginRequest(
 	}
 
 	return authentication.AuthInfo{
-		Tag:       userTag,
-		Delegator: &PermissionDelegator{token},
+		Tag:                       userTag,
+		Delegator:                 &PermissionDelegator{Token: token},
+		IsExternallyAuthenticated: true,
 	}, nil
 }
 
@@ -187,7 +189,7 @@ func PermissionFromToken(token jwt.Token, subject permission.ID) (permission.Acc
 	default:
 		return "", errors.NotValidf("%q as a target", subject)
 	}
-	accessClaims, ok := token.PrivateClaims()["access"].(map[string]interface{})
+	accessClaims, ok := token.PrivateClaims()["access"].(map[string]any)
 	if !ok || len(accessClaims) == 0 {
 		return permission.NoAccess, nil
 	}

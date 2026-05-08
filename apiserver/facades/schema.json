@@ -6206,6 +6206,9 @@
                         "base": {
                             "$ref": "#/definitions/Base"
                         },
+                        "cluster-role": {
+                            "type": "string"
+                        },
                         "constraints": {
                             "type": "string"
                         },
@@ -6874,6 +6877,17 @@
                         },
                         "Result": {
                             "$ref": "#/definitions/ErrorResults"
+                        }
+                    }
+                },
+                "CheckCredentialsModels": {
+                    "type": "object",
+                    "properties": {
+                        "Params": {
+                            "$ref": "#/definitions/TaggedCredentials"
+                        },
+                        "Result": {
+                            "$ref": "#/definitions/UpdateCredentialResults"
                         }
                     }
                 },
@@ -7807,7 +7821,7 @@
     {
         "Name": "Controller",
         "Description": "",
-        "Version": 13,
+        "Version": 14,
         "Schema": {
             "type": "object",
             "properties": {
@@ -7816,6 +7830,17 @@
                     "properties": {
                         "Result": {
                             "$ref": "#/definitions/UserModelList"
+                        }
+                    }
+                },
+                "CloudSpec": {
+                    "type": "object",
+                    "properties": {
+                        "Params": {
+                            "$ref": "#/definitions/Entities"
+                        },
+                        "Result": {
+                            "$ref": "#/definitions/CloudSpecResults"
                         }
                     }
                 },
@@ -8060,6 +8085,30 @@
                         "type",
                         "name"
                     ]
+                },
+                "CloudSpecResult": {
+                    "type": "object",
+                    "properties": {
+                        "error": {
+                            "$ref": "#/definitions/Error"
+                        },
+                        "result": {
+                            "$ref": "#/definitions/CloudSpec"
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "CloudSpecResults": {
+                    "type": "object",
+                    "properties": {
+                        "results": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/CloudSpecResult"
+                            }
+                        }
+                    },
+                    "additionalProperties": false
                 },
                 "ControllerAPIInfoResult": {
                     "type": "object",
@@ -8340,6 +8389,9 @@
                 "InitiateMigrationArgs": {
                     "type": "object",
                     "properties": {
+                        "dry-run": {
+                            "type": "boolean"
+                        },
                         "specs": {
                             "type": "array",
                             "items": {
@@ -8882,6 +8934,255 @@
         "Version": 1,
         "Schema": {
             "type": "object"
+        }
+    },
+    {
+        "Name": "HighAvailability",
+        "Description": "",
+        "Version": 3,
+        "Schema": {
+            "type": "object",
+            "properties": {
+                "ControllerDetails": {
+                    "type": "object",
+                    "properties": {
+                        "Result": {
+                            "$ref": "#/definitions/ControllerDetailsResults"
+                        }
+                    }
+                },
+                "EnableHA": {
+                    "type": "object",
+                    "properties": {
+                        "Params": {
+                            "$ref": "#/definitions/ControllersSpecs"
+                        },
+                        "Result": {
+                            "$ref": "#/definitions/ControllersChangeResults"
+                        }
+                    }
+                }
+            },
+            "definitions": {
+                "ControllerDetails": {
+                    "type": "object",
+                    "properties": {
+                        "api-addresses": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "controller-id": {
+                            "type": "string"
+                        },
+                        "error": {
+                            "$ref": "#/definitions/Error"
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                        "controller-id",
+                        "api-addresses"
+                    ]
+                },
+                "ControllerDetailsResults": {
+                    "type": "object",
+                    "properties": {
+                        "results": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/ControllerDetails"
+                            }
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                        "results"
+                    ]
+                },
+                "ControllersChangeResult": {
+                    "type": "object",
+                    "properties": {
+                        "error": {
+                            "$ref": "#/definitions/Error"
+                        },
+                        "result": {
+                            "$ref": "#/definitions/ControllersChanges"
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                        "result"
+                    ]
+                },
+                "ControllersChangeResults": {
+                    "type": "object",
+                    "properties": {
+                        "results": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/ControllersChangeResult"
+                            }
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                        "results"
+                    ]
+                },
+                "ControllersChanges": {
+                    "type": "object",
+                    "properties": {
+                        "added": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "converted": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "maintained": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "removed": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "ControllersSpec": {
+                    "type": "object",
+                    "properties": {
+                        "constraints": {
+                            "$ref": "#/definitions/Value"
+                        },
+                        "num-controllers": {
+                            "type": "integer"
+                        },
+                        "placement": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                        "num-controllers"
+                    ]
+                },
+                "ControllersSpecs": {
+                    "type": "object",
+                    "properties": {
+                        "specs": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/ControllersSpec"
+                            }
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                        "specs"
+                    ]
+                },
+                "Error": {
+                    "type": "object",
+                    "properties": {
+                        "code": {
+                            "type": "string"
+                        },
+                        "info": {
+                            "type": "object",
+                            "patternProperties": {
+                                ".*": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        },
+                        "message": {
+                            "type": "string"
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                        "message",
+                        "code"
+                    ]
+                },
+                "Value": {
+                    "type": "object",
+                    "properties": {
+                        "allocate-public-ip": {
+                            "type": "boolean"
+                        },
+                        "arch": {
+                            "type": "string"
+                        },
+                        "container": {
+                            "type": "string"
+                        },
+                        "cores": {
+                            "type": "integer"
+                        },
+                        "cpu-power": {
+                            "type": "integer"
+                        },
+                        "image-id": {
+                            "type": "string"
+                        },
+                        "instance-role": {
+                            "type": "string"
+                        },
+                        "instance-type": {
+                            "type": "string"
+                        },
+                        "mem": {
+                            "type": "integer"
+                        },
+                        "root-disk": {
+                            "type": "integer"
+                        },
+                        "root-disk-source": {
+                            "type": "string"
+                        },
+                        "spaces": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "virt-type": {
+                            "type": "string"
+                        },
+                        "zones": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            }
         }
     },
     {
@@ -10746,6 +11047,9 @@
                         },
                         "region": {
                             "type": "string"
+                        },
+                        "target-controller": {
+                            "type": "string"
                         }
                     },
                     "additionalProperties": false,
@@ -10932,6 +11236,9 @@
                             "items": {
                                 "$ref": "#/definitions/SupportedFeature"
                             }
+                        },
+                        "target-controller": {
+                            "type": "string"
                         },
                         "type": {
                             "type": "string"

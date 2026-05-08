@@ -8,6 +8,7 @@ import (
 
 	"github.com/juju/collections/set"
 
+	"github.com/juju/juju/core/changestream"
 	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/machine"
 	"github.com/juju/juju/core/migration"
@@ -16,6 +17,7 @@ import (
 	"github.com/juju/juju/core/trace"
 	"github.com/juju/juju/core/unit"
 	"github.com/juju/juju/core/watcher"
+	"github.com/juju/juju/core/watcher/eventsource"
 	"github.com/juju/juju/domain/modelmigration"
 	"github.com/juju/juju/environs/instances"
 	"github.com/juju/juju/internal/errors"
@@ -30,17 +32,16 @@ type InstanceProvider interface {
 // ResourceProvider describes a provider for managing cloud resources on behalf
 // of a model.
 type ResourceProvider interface {
-	// AdoptResources is called when the model is moved from one
-	// controller to another using model migration. Some providers tag
-	// instances, disks, and cloud storage with the controller UUID to
-	// aid in clean destruction. This method will be called on the
-	// environ for the target controller so it can update the
-	// controller tags for all of those things. For providers that do
-	// not track the controller UUID, a simple method returning nil
-	// will suffice. The version number of the source controller is
-	// provided for backwards compatibility - if the technique used to
-	// tag items changes, the version number can be used to decide how
-	// to remove the old tags correctly.
+	// AdoptResources is called when the model is moved from one controller to
+	// another using model migration. Some providers tag instances, disks, and
+	// cloud storage with the controller UUID to aid in clean destruction. This
+	// method will be called on the environ for the target controller so it can
+	// update the controller tags for all of those things. For providers that do
+	// not track the controller UUID, a simple method returning nil will
+	// suffice. The version number of the source controller is provided for
+	// backwards compatibility - if the technique used to tag items changes, the
+	// version number can be used to decide how to remove the old tags
+	// correctly.
 	AdoptResources(context.Context, string, semversion.Number) error
 }
 
@@ -54,31 +55,88 @@ type Service struct {
 
 	// resourceProviderGetter is a getter for getting access to the model's
 	// [ResourceProvider]
-	resourceProviderGettter func(context.Context) (ResourceProvider, error)
+	resourceProviderGetter func(context.Context) (ResourceProvider, error)
 
-	st State
+	controllerState ControllerState
+	modelState      ModelState
+	watcherFactory  WatcherFactory
+	modelUUID       string
 }
 
-// State defines the interface required for accessing the underlying state of
-// the model during migration.
-type State interface {
+// WatcherFactory describes methods for creating watchers used by the
+// [Service].
+type WatcherFactory interface {
+	// NewNotifyWatcher returns a new watcher that filters changes from the
+	// input base watcher's db/queue. A single filter option is required,
+	// though additional filter options can be provided.
+	NewNotifyWatcher(
+		ctx context.Context,
+		summary string,
+		filterOption eventsource.FilterOption,
+		filterOptions ...eventsource.FilterOption,
+	) (watcher.NotifyWatcher, error)
+}
+
+// ControllerState defines the interface required for accessing the underlying
+// state of the model during migration.
+type ControllerState interface {
+	// GetControllerTargetVersion returns the target controller version in use
+	// by the cluster.
+	GetControllerTargetVersion(ctx context.Context) (string, error)
+
+	// DeleteModelImportingStatus removes the entry from the model_migrating
+	// table in the model database, indicating that the model import has
+	// completed or been aborted.
+	DeleteModelImportingStatus(ctx context.Context, modelUUID string) error
+}
+
+// ModelState defines the interface required for accessing the underlying state
+// of the model during migration.
+type ModelState interface {
+	// GetControllerUUID returns the UUID of the controller that owns this
+	// model.
 	GetControllerUUID(context.Context) (string, error)
 	// GetAllInstanceIDs returns all instance IDs from the current model as
 	// juju/collections set.
 	GetAllInstanceIDs(ctx context.Context) (set.Strings, error)
+	// GetModelTargetAgentVersion returns the target agent version for this
+	// model.
+	GetModelTargetAgentVersion(context.Context) (string, error)
+	// SetModelTargetAgentVersion is responsible for setting the current target
+	// agent version of the model. This function expects a precondition version
+	// to be supplied. The model's target version at the time the operation is
+	// applied must match the preCondition version or else an error is returned.
+	SetModelTargetAgentVersion(
+		ctx context.Context, preCondition, toVersion string,
+	) error
+	// DeleteModelImportingStatus removes the entry from the model_migrating
+	// table in the model database, indicating that the model import has
+	// completed or been aborted.
+	DeleteModelImportingStatus(ctx context.Context) error
+
+	// GetNamespaceModelMigrating returns the name of the model_migrating
+	// changestream namespace. A change in this namespace indicates that this
+	// model has started or stopped undergoing a migration.
+	GetNamespaceModelMigrating() string
 }
 
-// NewService is responsible for constructing a new [Service] to handle model migration
-// tasks.
+// NewService is responsible for constructing a new [Service] to handle model
+// migration tasks.
 func NewService(
+	controllerState ControllerState,
+	modelState ModelState,
+	modelUUID string,
+	watcherFactory WatcherFactory,
 	instanceProviderGetter providertracker.ProviderGetter[InstanceProvider],
 	resourceProviderGetter providertracker.ProviderGetter[ResourceProvider],
-	st State,
 ) *Service {
 	return &Service{
-		instanceProviderGetter:  instanceProviderGetter,
-		resourceProviderGettter: resourceProviderGetter,
-		st:                      st,
+		controllerState:        controllerState,
+		modelState:             modelState,
+		watcherFactory:         watcherFactory,
+		instanceProviderGetter: instanceProviderGetter,
+		resourceProviderGetter: resourceProviderGetter,
+		modelUUID:              modelUUID,
 	}
 }
 
@@ -91,7 +149,7 @@ func (s *Service) AdoptResources(
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
-	provider, err := s.resourceProviderGettter(ctx)
+	provider, err := s.resourceProviderGetter(ctx)
 
 	// Provider doesn't support adopting resources and this is ok!
 	if errors.Is(err, coreerrors.NotSupported) {
@@ -103,7 +161,7 @@ func (s *Service) AdoptResources(
 		)
 	}
 
-	controllerUUID, err := s.st.GetControllerUUID(ctx)
+	controllerUUID, err := s.modelState.GetControllerUUID(ctx)
 	if err != nil {
 		return errors.Errorf(
 			"cannot get controller uuid while adopting model cloud resources: %w",
@@ -164,7 +222,7 @@ func (s *Service) CheckMachines(
 		providerInstanceIDsSet.Add(instance.Id().String())
 	}
 
-	instanceIDsSet, err := s.st.GetAllInstanceIDs(ctx)
+	instanceIDsSet, err := s.modelState.GetAllInstanceIDs(ctx)
 	if err != nil {
 		return nil, errors.Errorf("cannot get all instance IDs for model when checking machines: %w", err)
 	}
@@ -210,10 +268,18 @@ func (s *Service) InitiateMigration(ctx context.Context, targetInfo migration.Ta
 // WatchForMigration returns a notification watcher that fires when this model
 // undergoes migration.
 func (s *Service) WatchForMigration(ctx context.Context) (watcher.NotifyWatcher, error) {
-	_, span := trace.Start(ctx, trace.NameFromFunc())
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
-	// TODO(modelmigration): implement migration watcher.
-	return watcher.TODO[struct{}](), nil
+
+	return s.watcherFactory.NewNotifyWatcher(
+		ctx,
+		"watch for model migration",
+		eventsource.PredicateFilter(
+			s.modelState.GetNamespaceModelMigrating(),
+			changestream.All,
+			eventsource.EqualsPredicate(s.modelUUID),
+		),
+	)
 }
 
 // WatchMigrationPhase returns a notification watcher that fires when this
@@ -277,18 +343,91 @@ func (s *Service) MinionReports(ctx context.Context) (migration.MinionReports, e
 	return migration.MinionReports{}, errors.ConstError("getting minion reports is not implemented")
 }
 
-// AbortImport stops the import of the model.
-func (s *Service) AbortImport(ctx context.Context) error {
-	_, span := trace.Start(ctx, trace.NameFromFunc())
-	defer span.End()
-	// TODO(modelmigration): implement aborting model import.
-	return errors.ConstError("aborting the import of a model is not implemented")
-}
-
-// ActivateImport finalises the import of the model.
+// ActivateImport finalises the import of the model by clearing the
+// model_migrating table entry in the model database.
 func (s *Service) ActivateImport(ctx context.Context) error {
-	_, span := trace.Start(ctx, trace.NameFromFunc())
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
-	// TODO(modelmigration): implement activate imported model.
-	return errors.ConstError("activating an imported model is not implemented")
+
+	// Before we activate the model after the import, we need to update the
+	// agent version to match the current controller version. This ensures that
+	// all agents after a migration are running the correct version. This was
+	// done previously in two steps, and could cause a model after a migration
+	// to be in a state where it was running a very old agent version until the
+	// the operator manually upgraded the agents.
+
+	desiredTargetVersionStr, err := s.controllerState.GetControllerTargetVersion(ctx)
+	if err != nil {
+		return errors.Errorf("getting current controller agent version: %w", err)
+	} else if desiredTargetVersionStr == "" {
+		// This shouldn't happen, and indicates a programming error somewhere.
+		return errors.Errorf("current controller agent version is not set")
+	}
+
+	desiredTargetVersion, err := semversion.Parse(desiredTargetVersionStr)
+	if err != nil {
+		return errors.Errorf(
+			"parsing current controller agent version %q: %w",
+			desiredTargetVersionStr,
+			err,
+		)
+	}
+
+	currentTargetVersionStr, err := s.modelState.GetModelTargetAgentVersion(ctx)
+	if err != nil {
+		return errors.Errorf("getting current model agent version: %w", err)
+	}
+
+	currentTargetVersion, err := semversion.Parse(currentTargetVersionStr)
+	if err != nil {
+		return errors.Errorf(
+			"parsing current model agent version %q: %w",
+			currentTargetVersionStr,
+			err,
+		)
+	}
+
+	// TODO (stickupkid): We should validate if we have all the binaries
+	// architectures for the desired target version here.
+
+	// If the current target version doesn't match the desired target version,
+	// we need to update it.
+	if currentTargetVersion != desiredTargetVersion {
+		// Update the model target agent version to match the controller's
+		// target agent version.
+		if err = s.modelState.SetModelTargetAgentVersion(
+			ctx, currentTargetVersion.String(), desiredTargetVersion.String(),
+		); err != nil {
+			return errors.Capture(err)
+		}
+	}
+
+	// Delete the migration importing status from the model database. This
+	// should ensure that the model is no longer considered to be importing.
+
+	// As we need to affect both the controller and model databases, we need to
+	// attempt this is a best effort manner. The state layer should ensure
+	// idempotency, so if one operation succeeds and the other fails, we can
+	// retry safely.
+
+	// Attempt to delete the importing status from the model database first, as
+	// that should allow the model to be considered active in this controller.
+	// The controller database entry can be removed later if this step fails,
+	// it shouldn't prevent the model from being used (in theory).
+
+	if err := s.modelState.DeleteModelImportingStatus(ctx); err != nil {
+		return errors.Errorf(
+			"deleting model importing status from model database: %w",
+			err,
+		)
+	}
+
+	if err := s.controllerState.DeleteModelImportingStatus(ctx, s.modelUUID); err != nil {
+		return errors.Errorf(
+			"deleting model importing status from controller database: %w",
+			err,
+		)
+	}
+
+	return nil
 }

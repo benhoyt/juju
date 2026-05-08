@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
+	"github.com/juju/worker/v5"
 
 	corelogger "github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/watcher"

@@ -32,13 +32,20 @@ const (
 
 	// VXLANDevice is used for Virtual Extensible LAN devices.
 	VXLANDevice LinkLayerDeviceType = "vxlan"
+
+	// VirtualEthernetDevice is used for virtual Ethernet devices.
+	VirtualEthernetDevice LinkLayerDeviceType = "veth"
 )
+
+func (t LinkLayerDeviceType) String() string {
+	return string(t)
+}
 
 // IsValidLinkLayerDeviceType returns whether the given value is a valid
 // link-layer network device type.
 func IsValidLinkLayerDeviceType(value string) bool {
 	switch LinkLayerDeviceType(value) {
-	case LoopbackDevice, EthernetDevice, VLAN8021QDevice, BondDevice, BridgeDevice, VXLANDevice:
+	case LoopbackDevice, EthernetDevice, VLAN8021QDevice, BondDevice, BridgeDevice, VXLANDevice, VirtualEthernetDevice:
 		return true
 	}
 	return false

@@ -5,7 +5,7 @@ package service
 
 import (
 	"context"
-	"math"
+	"maps"
 	"strconv"
 
 	"github.com/juju/collections/set"
@@ -13,12 +13,14 @@ import (
 
 	coreapplication "github.com/juju/juju/core/application"
 	"github.com/juju/juju/core/arch"
+	corebase "github.com/juju/juju/core/base"
 	corecharm "github.com/juju/juju/core/charm"
 	coreconstraints "github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/devices"
 	coreerrors "github.com/juju/juju/core/errors"
 	corelife "github.com/juju/juju/core/life"
 	coremachine "github.com/juju/juju/core/machine"
+	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/os/ostype"
 	"github.com/juju/juju/core/resource"
@@ -31,12 +33,14 @@ import (
 	"github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	"github.com/juju/juju/domain/application/internal"
+	"github.com/juju/juju/domain/application/service/storage"
 	"github.com/juju/juju/domain/constraints"
 	"github.com/juju/juju/domain/deployment"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/domain/life"
 	objectstoreerrors "github.com/juju/juju/domain/objectstore/errors"
-	internalcharm "github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
+	domainstorage "github.com/juju/juju/domain/storage"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -70,10 +74,24 @@ type ApplicationState interface {
 	// found.
 	CreateCAASApplication(context.Context, string, application.AddCAASApplicationArg, []application.AddCAASUnitArg) (coreapplication.UUID, error)
 
-	// UpsertCloudService updates the cloud service for the specified application.
+	// UpsertK8sService updates the cloud service for the specified application.
 	// The following errors may be returned:
 	// - [applicationerrors.ApplicationNotFound] if the application doesn't exist
-	UpsertCloudService(ctx context.Context, appName, providerID string, sAddrs network.ProviderAddresses) error
+	UpsertK8sService(ctx context.Context, appName, providerID string, sAddrs network.ProviderAddresses) error
+
+	// SetApplicationHasK8sResources records that the provisioner is managing
+	// k8s resources for the given application. This blocks removal until
+	// cleared.
+	// The following errors may be returned:
+	// - [applicationerrors.ApplicationNotFound] if the application doesn't exist
+	SetApplicationHasK8sResources(ctx context.Context, appUUID coreapplication.UUID) error
+
+	// ClearApplicationHasK8sResources records that the provisioner has
+	// finished managing k8s resources for the given application, unblocking
+	// removal.
+	// The following errors may be returned:
+	// - [applicationerrors.ApplicationNotFound] if the application doesn't exist
+	ClearApplicationHasK8sResources(ctx context.Context, appUUID coreapplication.UUID) error
 
 	// IsSubordinateApplication returns true if the application is a subordinate
 	// application.
@@ -93,13 +111,13 @@ type ApplicationState interface {
 
 	// GetApplicationLife looks up the life of the specified application,
 	// returning an error satisfying
-	// [applicationerrors.ApplicationNotFoundError] if the application is not
+	// [applicationerrors.ApplicationNotFound] if the application is not
 	// found.
 	GetApplicationLife(ctx context.Context, appUUID coreapplication.UUID) (life.Life, error)
 
 	// GetApplicationLifeByName looks up the life of the specified application,
 	// returning an error satisfying
-	// [applicationerrors.ApplicationNotFoundError] if the application is not
+	// [applicationerrors.ApplicationNotFound] if the application is not
 	// found.
 	GetApplicationLifeByName(ctx context.Context, appName string) (coreapplication.UUID, life.Life, error)
 
@@ -109,12 +127,21 @@ type ApplicationState interface {
 	// the application does not exist.
 	GetApplicationDetails(ctx context.Context, appUUID coreapplication.UUID) (application.ApplicationDetails, error)
 
-	// CheckAllApplicationsAndUnitsAreAlive checks that all applications and units
-	// in the model are alive, returning an error if any are not.
+	// GetApplicationDetailsByName returns the application details for the given
+	// application name. This includes the UUID, life status, name, and whether
+	// the application is synthetic.
+	// Returns an error satisfying [applicationerrors.ApplicationNotFound] if
+	// the application does not exist.
+	GetApplicationDetailsByName(ctx context.Context, name string) (application.ApplicationDetails, error)
+
+	// CheckApplicationsForMigration checks that all applications are ready
+	// for migration. All applications and units in the model are alive and no
+	// units are in the process of upgrading.
 	// The following errors may be returned:
 	// - [applicationerrors.ApplicationNotAlive] if any applications are not alive.
 	// - [applicationerrors.UnitNotAlive] if any units are not alive.
-	CheckAllApplicationsAndUnitsAreAlive(context.Context) error
+	// - [applicationerrors.UnitUpgrading] if any units are still upgrading.
+	CheckApplicationsForMigration(context.Context) error
 
 	// SetApplicationScalingState sets the scaling details for the given caas
 	// application Scale is optional and is only set if not nil.
@@ -385,6 +412,10 @@ type ApplicationState interface {
 	// [applicationerrors.ApplicationNotFound] is returned.
 	GetExposedEndpoints(ctx context.Context, appUUID coreapplication.UUID) (map[string]application.ExposedEndpoint, error)
 
+	// GetAllExposedEndpoints returns all exposed endpoints in the model,
+	// grouped by application name and endpoint name.
+	GetAllExposedEndpoints(ctx context.Context) (map[string]map[string]application.ExposedEndpoint, error)
+
 	// UnsetExposeSettings removes the expose settings for the provided list of
 	// endpoint names. If the resulting exposed endpoints map for the application
 	// becomes empty after the settings are removed, the application will be
@@ -420,7 +451,7 @@ type ApplicationState interface {
 	// should upgrade to the latest version of the application charm even if
 	// they are in error state.
 	//
-	// An error satisfying [applicationerrors.ApplicationNotFoundError]
+	// An error satisfying [applicationerrors.ApplicationNotFound]
 	// is returned if the application doesn't exist.
 	ShouldAllowCharmUpgradeOnError(ctx context.Context, appName string) (bool, error)
 
@@ -430,6 +461,15 @@ type ApplicationState interface {
 	// GetMachinesForApplication returns the names of the machines which have a unit.
 	// of the specified application deployed to it.
 	GetMachinesForApplication(ctx context.Context, appUUID string) ([]string, error)
+
+	// GetModelStoragePools returns the default storage pools
+	// that have been set for the model.
+	GetModelStoragePools(
+		context.Context,
+	) (internal.ModelStoragePools, error)
+
+	// GetModelType returns the model type for the current model.
+	GetModelType(ctx context.Context) (model.ModelType, error)
 }
 
 func validateCharmAndApplicationParams(
@@ -466,7 +506,7 @@ func validateCharmAndApplicationParams(
 
 	// Validate the origin of the charm.
 	if err := origin.Validate(); err != nil {
-		return errors.Errorf("%w: %v", applicationerrors.CharmOriginNotValid, err)
+		return errors.Errorf("%w: %w", applicationerrors.CharmOriginNotValid, err)
 	}
 
 	return nil
@@ -496,15 +536,15 @@ func validateCharmStorage(charmStorage map[string]internalcharm.Storage) error {
 
 		if storage.CountMin < 0 {
 			return errors.Errorf(
-				"charm storage %q has a minimum count less than zero, negative storage count cannot be achieved",
-				name,
+				"charm storage %q has a minimum count %d less than zero, negative storage count cannot be achieved",
+				name, storage.CountMin,
 			)
 		}
 
 		if storage.CountMax >= 0 && storage.CountMin > storage.CountMax {
 			return errors.Errorf(
-				"charm storage %q has a minimum count greater than maximum count, this is can't be achieved",
-				name,
+				"charm storage %q has a minimum count %d greater than maximum count %d, this can't be achieved",
+				name, storage.CountMin, storage.CountMax,
 			)
 		}
 	}
@@ -623,107 +663,6 @@ func validateDeviceConstraints(cons map[string]devices.Constraints, charmMeta *i
 	return nil
 }
 
-// validateApplicationStorageDirectives performs a sanity check on the
-// directives for the application to make sure they are in a sane state to be
-// persisted to the state layer.
-//
-// The following errors may be returned:
-// - [applicationerrors.MissingStorageDirective] when one or more storage
-// directives are missing that are required by the charm.
-func validateApplicationStorageDirectives(
-	charmStorageDefs map[string]internalcharm.Storage,
-	directives []internal.CreateApplicationStorageDirectiveArg,
-) error {
-	// seenDirectives acts as a sanity check to see if a directive by a name has
-	// been witnessed.
-	seenDirectives := map[string]struct{}{}
-	for _, directive := range directives {
-		charmStorageDef, exists := charmStorageDefs[directive.Name.String()]
-		if !exists {
-			return errors.Errorf(
-				"invalid storage directive, charm has no storage %q",
-				directive.Name,
-			)
-		}
-
-		if _, seen := seenDirectives[directive.Name.String()]; seen {
-			return errors.Errorf(
-				"duplicate storage directive for %q exists", directive.Name,
-			)
-		}
-		seenDirectives[directive.Name.String()] = struct{}{}
-
-		err := validateApplicationStorageDirective(charmStorageDef, directive)
-		if err != nil {
-			return errors.Capture(err)
-		}
-	}
-
-	// This is a sanity to check to make sure that for each required storage in
-	// the charm there exists a directive for it.
-	for charmStorageName, charmStorageDef := range charmStorageDefs {
-		if charmStorageDef.CountMin == 0 {
-			// We skip storage definitions that don't require at least one
-			// storage instance. If the directive is missing that is fine.
-			continue
-		}
-
-		if _, seen := seenDirectives[charmStorageName]; !seen {
-			return errors.Errorf(
-				"missing storage directive for charm storage %q",
-				charmStorageName,
-			).Add(applicationerrors.MissingStorageDirective)
-		}
-	}
-	return nil
-}
-
-// validateApplicationStorageDirective checks a single storage directive against
-// a charm storage definition. This checks the definition is inline with the
-// expectations of the charm storage definition.
-func validateApplicationStorageDirective(
-	charmStorageDef internalcharm.Storage,
-	directive internal.CreateApplicationStorageDirectiveArg,
-) error {
-	minCount := uint32(0)
-	if charmStorageDef.CountMin > 0 {
-		minCount = uint32(charmStorageDef.CountMin)
-	}
-	maxCount := uint32(math.MaxUint32)
-	if charmStorageDef.CountMax > 0 {
-		maxCount = uint32(charmStorageDef.CountMax)
-	}
-
-	if directive.Count < minCount {
-		return errors.Errorf(
-			"charm requires min %q storage %q instances, %d specified",
-			minCount, directive.Name, directive.Count,
-		)
-	}
-	if directive.Count > maxCount {
-		return errors.Errorf(
-			"charm requires at most %d instances of storage %q, %d specified",
-			maxCount, directive.Name, directive.Count,
-		)
-	}
-
-	if directive.Size < charmStorageDef.MinimumSize {
-		return errors.Errorf(
-			"storage directive %q must be at least of size %d defined by the charm",
-			directive.Name, charmStorageDef.MinimumSize,
-		)
-	}
-
-	if err := directive.PoolUUID.Validate(); err != nil {
-		return errors.Errorf(
-			"storage directive %q pool uuid is not valid: %w",
-			directive.Name, err,
-		)
-	}
-
-	return nil
-}
-
 // GetApplicationUUIDByUnitName returns the application UUID for the named unit,
 // returning an error satisfying [applicationerrors.UnitNotFound] if the unit
 // doesn't exist.
@@ -754,33 +693,6 @@ func makeResourcesArgs(resolvedResources ResolvedResources) []application.AddApp
 	return result
 }
 
-// SetApplicationCharm sets a new charm for the application, validating that aspects such
-// as storage are still viable with the new charm.
-func (s *Service) SetApplicationCharm(ctx context.Context, appName string, charmLocator charm.CharmLocator, params application.SetCharmParams) error {
-	ctx, span := trace.Start(ctx, trace.NameFromFunc())
-	defer span.End()
-
-	appUUID, err := s.st.GetApplicationUUIDByName(ctx, appName)
-	if err != nil {
-		return errors.Errorf("getting application UUID: %w", err)
-	}
-	charmID, err := s.st.GetCharmID(ctx, charmLocator.Name, charmLocator.Revision, charmLocator.Source)
-	if err != nil {
-		return errors.Errorf("getting charm ID: %w", err)
-	}
-
-	paramsState, err := makeSetCharmStateArg(params)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	err = s.st.SetApplicationCharm(ctx, appUUID, charmID, paramsState)
-	if err != nil {
-		return errors.Errorf("setting application %q charm: %w", appName, err)
-	}
-	return nil
-}
-
 // GetApplicationName returns the name of the specified application.
 // The following errors may be returned:
 // - [applicationerrors.ApplicationNotFound] if the application does not exist
@@ -802,6 +714,9 @@ func (s *Service) GetApplicationName(ctx context.Context, appUUID coreapplicatio
 // GetApplicationUUIDByName returns an application UUID by application name. It
 // returns an error if the application can not be found by the name.
 //
+// Deprecated: Use GetApplicationDetailsByName instead, which provides UUID along with
+// other application details in a single call.
+//
 // Returns [applicationerrors.ApplicationNameNotValid] if the name is not valid,
 // and [applicationerrors.ApplicationNotFound] if the application is not found.
 func (s *Service) GetApplicationUUIDByName(ctx context.Context, name string) (coreapplication.UUID, error) {
@@ -817,6 +732,25 @@ func (s *Service) GetApplicationUUIDByName(ctx context.Context, name string) (co
 		return "", errors.Capture(err)
 	}
 	return appUUID, nil
+}
+
+// GetApplicationDetailsByName returns the application details for the named application.
+// This includes the UUID, life status, name, and whether the application is synthetic.
+// If no application is found, an error satisfying [applicationerrors.ApplicationNotFound]
+// is returned.
+func (s *Service) GetApplicationDetailsByName(ctx context.Context, name string) (application.ApplicationDetails, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	if !application.IsValidApplicationName(name) {
+		return application.ApplicationDetails{}, applicationerrors.ApplicationNameNotValid
+	}
+
+	details, err := s.st.GetApplicationDetailsByName(ctx, name)
+	if err != nil {
+		return application.ApplicationDetails{}, errors.Capture(err)
+	}
+	return details, nil
 }
 
 // GetCharmLocatorByApplicationName returns a CharmLocator by application name.
@@ -926,21 +860,39 @@ func (s *Service) GetCharmByApplicationUUID(ctx context.Context, id coreapplicat
 	), locator, nil
 }
 
-// UpsertCloudService updates the cloud service for the specified application.
+// UpsertK8sService updates the cloud service for the specified application.
 // The following errors may be returned:
 // - [applicationerrors.ApplicationNotFound] if the application doesn't exist
-func (s *Service) UpdateCloudService(ctx context.Context, appName, providerID string, sAddrs network.ProviderAddresses) error {
+func (s *Service) UpdateK8sService(ctx context.Context, appName, providerID string, sAddrs network.ProviderAddresses) error {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
 	if providerID == "" {
 		return errors.Errorf("empty provider ID %w", coreerrors.NotValid)
 	}
-	return s.st.UpsertCloudService(ctx, appName, providerID, sAddrs)
+	return errors.Capture(s.st.UpsertK8sService(ctx, appName, providerID, sAddrs))
+}
+
+// SetApplicationHasK8sResources records that the provisioner is managing k8s
+// resources for the given application. This blocks removal until cleared.
+func (s *Service) SetApplicationHasK8sResources(ctx context.Context, appUUID coreapplication.UUID) error {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	return errors.Capture(s.st.SetApplicationHasK8sResources(ctx, appUUID))
+}
+
+// ClearApplicationHasK8sResources records that the provisioner has finished
+// managing k8s resources for the given application, unblocking removal.
+func (s *Service) ClearApplicationHasK8sResources(ctx context.Context, appUUID coreapplication.UUID) error {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	return errors.Capture(s.st.ClearApplicationHasK8sResources(ctx, appUUID))
 }
 
 // GetApplicationLife looks up the life of the specified application, returning
-// an error satisfying [applicationerrors.ApplicationNotFoundError] if the
+// an error satisfying [applicationerrors.ApplicationNotFound] if the
 // application is not found.
 func (s *Service) GetApplicationLife(ctx context.Context, appUUID coreapplication.UUID) (corelife.Value, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
@@ -958,7 +910,7 @@ func (s *Service) GetApplicationLife(ctx context.Context, appUUID coreapplicatio
 }
 
 // GetApplicationLifeByName looks up the life of the specified application, returning
-// an error satisfying [applicationerrors.ApplicationNotFoundError] if the
+// an error satisfying [applicationerrors.ApplicationNotFound] if the
 // application is not found.
 func (s *Service) GetApplicationLifeByName(ctx context.Context, appName string) (corelife.Value, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
@@ -973,7 +925,7 @@ func (s *Service) GetApplicationLifeByName(ctx context.Context, appName string) 
 
 // GetApplicationDetails looks up the details of the specified application,
 // which includes the life and name. Returns an error satisfying
-// [applicationerrors.ApplicationNotFoundError] if the application is not found.
+// [applicationerrors.ApplicationNotFound] if the application is not found.
 func (s *Service) GetApplicationDetails(ctx context.Context, appUUID coreapplication.UUID) (application.ApplicationDetails, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
@@ -989,16 +941,18 @@ func (s *Service) GetApplicationDetails(ctx context.Context, appUUID coreapplica
 	return details, nil
 }
 
-// CheckAllApplicationsAndUnitsAreAlive checks that all applications and units
-// in the model are alive, returning an error if any are not.
+// CheckApplicationsForMigration checks that all applications are ready
+// for migration. All applications and units in the model are alive and no
+// units are in the process of upgrading.
 // The following errors may be returned:
 // - [applicationerrors.ApplicationNotAlive] if any applications are not alive.
 // - [applicationerrors.UnitNotAlive] if any units are not alive.
-func (s *Service) CheckAllApplicationsAndUnitsAreAlive(ctx context.Context) error {
+// - [applicationerrors.UnitUpgrading] if any units are still upgrading.
+func (s *Service) CheckApplicationsForMigration(ctx context.Context) error {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
-	return s.st.CheckAllApplicationsAndUnitsAreAlive(ctx)
+	return s.st.CheckApplicationsForMigration(ctx)
 }
 
 // IsSubordinateApplication returns true if the application is a subordinate
@@ -1078,7 +1032,7 @@ func (s *Service) GetApplicationScale(ctx context.Context, appName string) (int,
 // upgrade to the latest version of the application charm even if they are in
 // error state.
 //
-// An error satisfying [applicationerrors.ApplicationNotFoundError]
+// An error satisfying [applicationerrors.ApplicationNotFound]
 // is returned if the application doesn't exist.
 func (s *Service) ShouldAllowCharmUpgradeOnError(ctx context.Context, appName string) (bool, error) {
 	ok, err := s.st.ShouldAllowCharmUpgradeOnError(ctx, appName)
@@ -1090,7 +1044,7 @@ func (s *Service) ShouldAllowCharmUpgradeOnError(ctx context.Context, appName st
 }
 
 // ChangeApplicationScale alters the existing scale by the provided change amount, returning the new amount.
-// It returns an error satisfying [applicationerrors.ApplicationNotFoundError] if the application
+// It returns an error satisfying [applicationerrors.ApplicationNotFound] if the application
 // doesn't exist.
 // This is used on CAAS models.
 func (s *Service) ChangeApplicationScale(ctx context.Context, appName string, scaleChange int) (int, error) {
@@ -1110,7 +1064,7 @@ func (s *Service) ChangeApplicationScale(ctx context.Context, appName string, sc
 }
 
 // SetApplicationScalingState updates the scale state of an application, returning an error
-// satisfying [applicationerrors.ApplicationNotFoundError] if the application doesn't exist.
+// satisfying [applicationerrors.ApplicationNotFound] if the application doesn't exist.
 // This is used on CAAS models.
 func (s *Service) SetApplicationScalingState(ctx context.Context, appName string, scaleTarget int, scaling bool) error {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
@@ -1123,7 +1077,7 @@ func (s *Service) SetApplicationScalingState(ctx context.Context, appName string
 }
 
 // GetApplicationScalingState returns the scale state of an application,
-// returning an error satisfying [applicationerrors.ApplicationNotFoundError] if
+// returning an error satisfying [applicationerrors.ApplicationNotFound] if
 // the application doesn't exist. This is used on CAAS models.
 func (s *Service) GetApplicationScalingState(ctx context.Context, appName string) (ScalingState, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
@@ -1190,10 +1144,9 @@ func (s *Service) ResolveCharmDownload(ctx context.Context, appUUID coreapplicat
 	// This has the added benefit of returning the charm hash, so that we can
 	// verify the charm download. We don't want it to be passed in the resolve
 	// charm download, in case the caller has the wrong hash.
-	info, err := s.GetAsyncCharmDownloadInfo(ctx, appUUID)
+	info, err := s.st.GetAsyncCharmDownloadInfo(ctx, appUUID)
 	// There is nothing to do if the charm is already downloaded or resolved.
-	if errors.Is(err, applicationerrors.CharmAlreadyAvailable) ||
-		errors.Is(err, applicationerrors.CharmAlreadyResolved) {
+	if errors.Is(err, applicationerrors.CharmAlreadyAvailable) {
 		return nil
 	} else if err != nil {
 		return errors.Capture(err)
@@ -1658,6 +1611,210 @@ func (s *Service) GetMachinesForApplication(ctx context.Context, appName string)
 	}), nil
 }
 
+func overrideStorageDirectives(
+	toCreate []domainstorage.DirectiveArg,
+	toUpdate []domainstorage.DirectiveArg,
+	overrides map[string]storage.StorageDirectiveOverride,
+) ([]domainstorage.DirectiveArg, []domainstorage.DirectiveArg) {
+	created := append([]domainstorage.DirectiveArg{}, toCreate...)
+	updated := append([]domainstorage.DirectiveArg{}, toUpdate...)
+
+	for i, dir := range created {
+		override, exists := overrides[dir.Name.String()]
+		if !exists {
+			continue
+		}
+		if override.PoolUUID != nil {
+			created[i].PoolUUID = *override.PoolUUID
+		}
+		if override.Count != nil {
+			created[i].Count = *override.Count
+		}
+		if override.Size != nil {
+			created[i].Size = *override.Size
+		}
+	}
+	for i, dir := range updated {
+		override, exists := overrides[dir.Name.String()]
+		if !exists {
+			continue
+		}
+		if override.PoolUUID != nil {
+			updated[i].PoolUUID = *override.PoolUUID
+		}
+		if override.Count != nil {
+			updated[i].Count = *override.Count
+		}
+		if override.Size != nil {
+			updated[i].Size = *override.Size
+		}
+	}
+	return created, updated
+}
+
+// SetApplicationCharm sets a new charm for the application, validating that aspects such
+// as storage are still viable with the new charm. It reconciles existing application
+// storage directives with the new charm's storage requirements.
+func (s *ProviderService) SetApplicationCharm(ctx context.Context, appName string, charmLocator charm.CharmLocator, params application.SetCharmParams) error {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	appUUID, err := s.st.GetApplicationUUIDByName(ctx, appName)
+	if err != nil {
+		return errors.Errorf("getting application UUID: %w", err)
+	}
+	charmID, err := s.st.GetCharmID(ctx, charmLocator.Name, charmLocator.Revision, charmLocator.Source)
+	if err != nil {
+		return errors.Errorf("getting charm ID: %w", err)
+	}
+
+	if err := s.validateCharmBaseCompatibility(ctx, appUUID, params); err != nil {
+		return errors.Capture(err)
+	}
+
+	// 1. Validate storage requirements between the existing and new charm.
+	// Prevent refresh if the new charm’s storage configuration is incompatible.
+	// For example, removing previously defined storage names is disallowed,
+	// as it may cause important hooks (e.g., storage-attached) to be skipped.
+
+	// Get new charm's storage requirements.
+	newCharmMetadataStorage, err := s.st.GetCharmMetadataStorage(ctx, charmID)
+	if err != nil {
+		return errors.Errorf("getting charm storage metadata: %w", err)
+	}
+	newCharmStorage, err := decodeMetadataStorage(newCharmMetadataStorage)
+	if err != nil {
+		return errors.Errorf("decoding charm storage: %w", err)
+	}
+	// Initial validation for the new charm's storage requirements.
+	if err := validateCharmStorage(newCharmStorage); err != nil {
+		return errors.Errorf("validating charm storage: %w", err)
+	}
+	// Retrieve the current charm storage metadata.
+	currentCharm, err := s.st.GetCharmByApplicationUUID(ctx, appUUID)
+	if err != nil {
+		return errors.Errorf("getting current application charm ID: %w", err)
+	}
+	currentCharmMetadataStorage := currentCharm.Metadata.Storage
+	currentCharmStorage, err := decodeMetadataStorage(currentCharmMetadataStorage)
+	if err != nil {
+		return errors.Errorf("decoding current charm storage: %w", err)
+	}
+	// Validate new charm storage against existing charm storage.
+	modelType, err := s.st.GetModelType(ctx)
+	if err != nil {
+		return errors.Errorf("getting model type: %w", err)
+	}
+	if modelType == model.CAAS {
+		sameStorage := maps.EqualFunc(
+			newCharmStorage, currentCharmStorage, internalcharm.Storage.Equal,
+		)
+		if !sameStorage {
+			return errors.Errorf(
+				"updating storage directives on a k8s application %s",
+				"during charm upgrade is not supported",
+			).Add(coreerrors.NotSupported)
+		}
+	}
+	err = storage.ValidateNewCharmStorageAgainstExistingCharmStorage(newCharmStorage, currentCharmStorage)
+	if err != nil {
+		return errors.Errorf("validating new charm storage against existing charm storage: %w", err)
+	}
+
+	// 2. Reconcile existing storage directives with the new charm’s storage definitions
+	// and handle any newly added storage definitions.
+
+	// Retrieve the current storage directives for the application.
+	storageDirectives, err := s.storageService.GetApplicationStorageDirectives(ctx, appUUID)
+	if err != nil {
+		return errors.Errorf("getting application storage directives: %w", err)
+	}
+	// Reconcile storage directives between existing and new charm storage.
+	toCreate, toUpdate, err := s.storageService.ReconcileStorageDirectivesAgainstCharmStorage(ctx, storageDirectives, newCharmStorage)
+	if err != nil {
+		return errors.Errorf("reconciling storage directives: %w", err)
+	}
+
+	// 3. Validate and apply any user provided storage directive overrides.
+
+	// Validate that the user provided storage directive overrides are valid
+	// against the new charm storage requirements.
+	userStorageDirectiveOverrides := params.StorageDirectiveOverrides
+	charmStorageDefsForValidation := internal.StorageDefinitionsForValidationFromCharm(
+		newCharmStorage,
+	)
+	if err := s.storageService.ValidateApplicationStorageDirectiveOverrides(
+		ctx, charmStorageDefsForValidation, userStorageDirectiveOverrides,
+	); err != nil {
+		return errors.Errorf("validating storage directives: %w", err)
+	}
+	// Apply user-provided overrides to the reconciled directives.
+	toCreate, toUpdate = overrideStorageDirectives(
+		toCreate, toUpdate, params.StorageDirectiveOverrides,
+	)
+
+	// 4. Do a final sanity validation to ensure that the final storage directives are valid against the new charm storage requirements.
+	finalStorageDirectives := append(toCreate, toUpdate...)
+	if err := storage.ValidateApplicationStorageDirectives(newCharmStorage, finalStorageDirectives); err != nil {
+		return errors.Errorf("validating final storage directives against charm storage: %w", err)
+	}
+
+	paramsState, err := makeSetCharmStateArg(params, toCreate, toUpdate)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	err = s.st.SetApplicationCharm(ctx, appUUID, charmID, paramsState)
+	if err != nil {
+		return errors.Errorf("setting application %q charm: %w", appName, err)
+	}
+	return nil
+}
+
+func (s *ProviderService) validateCharmBaseCompatibility(
+	ctx context.Context,
+	appUUID coreapplication.UUID,
+	params application.SetCharmParams,
+) error {
+	if params.ForceBase {
+		return nil
+	}
+
+	requestedPlatform := params.CharmOrigin.Platform
+	if requestedPlatform.OS == "" || requestedPlatform.Channel == "" {
+		return nil
+	}
+
+	currentOrigin, err := s.st.GetApplicationCharmOrigin(ctx, appUUID)
+	if err != nil {
+		return errors.Errorf("getting application charm origin: %w", err)
+	}
+
+	currentPlatform := currentOrigin.Platform
+	if currentPlatform.OSType == deployment.Unknown || currentPlatform.Channel == "" {
+		return nil
+	}
+
+	currentBase, err := corebase.ParseBase(currentPlatform.OSType.String(), currentPlatform.Channel)
+	if err != nil {
+		return errors.Errorf("parsing current application base: %w", err)
+	}
+	requestedBase, err := corebase.ParseBase(requestedPlatform.OS, requestedPlatform.Channel)
+	if err != nil {
+		return errors.Errorf("parsing requested charm base: %w", err)
+	}
+
+	if currentBase.Empty() || requestedBase.Empty() || currentBase.IsCompatible(requestedBase) {
+		return nil
+	}
+
+	return errors.Errorf(
+		"refreshing application from base %q to %q",
+		currentBase.DisplayString(),
+		requestedBase.DisplayString(),
+	).Add(applicationerrors.IncompatibleBase)
+}
+
 func getTrustSettingFromConfig(cfg map[string]string) (*bool, error) {
 	trust, ok := cfg[coreapplication.TrustConfigOptionName]
 	if !ok {
@@ -1776,7 +1933,7 @@ func decodeArchitecture(a architecture.Architecture) (arch.Arch, error) {
 	case architecture.Unknown:
 		return "", nil
 	default:
-		return "", errors.Errorf("unsupported architecture %q", a)
+		return "", errors.Errorf("unsupported architecture %d", a)
 	}
 }
 
@@ -1843,7 +2000,7 @@ func decodeApplicationConfig(cfg map[string]application.ApplicationConfig) (inte
 	return result, nil
 }
 
-func coerceValue(t charm.OptionType, value string) (interface{}, error) {
+func coerceValue(t charm.OptionType, value string) (any, error) {
 	switch t {
 	case charm.OptionString, charm.OptionSecret:
 		return value, nil
@@ -1871,14 +2028,28 @@ func coerceValue(t charm.OptionType, value string) (interface{}, error) {
 
 }
 
-func makeSetCharmStateArg(setCharmParams application.SetCharmParams) (application.SetCharmStateParams, error) {
+func makeSetCharmStateArg(setCharmParams application.SetCharmParams,
+	toCreate []domainstorage.DirectiveArg,
+	toUpdate []domainstorage.DirectiveArg) (application.SetCharmStateParams, error) {
 	channel, err := encodeChannel(setCharmParams.CharmOrigin.Channel)
 	if err != nil {
 		return application.SetCharmStateParams{}, errors.Errorf("encoding charm channel: %w", err)
 	}
 
+	var platform *deployment.Platform
+	if setCharmParams.CharmOrigin.Platform != (corecharm.Platform{}) {
+		encodedPlatform, err := encodePlatform(setCharmParams.CharmOrigin.Platform)
+		if err != nil {
+			return application.SetCharmStateParams{}, errors.Errorf("encoding charm platform: %w", err)
+		}
+		platform = &encodedPlatform
+	}
+
 	return application.SetCharmStateParams{
-		Channel:          channel,
-		EndpointBindings: setCharmParams.EndpointBindings,
+		Channel:                   channel,
+		Platform:                  platform,
+		EndpointBindings:          setCharmParams.EndpointBindings,
+		StorageDirectivesToCreate: toCreate,
+		StorageDirectivesToUpdate: toUpdate,
 	}, nil
 }

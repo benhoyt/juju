@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path"
@@ -31,12 +32,13 @@ import (
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/model"
+	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/core/paths"
 	"github.com/juju/juju/core/semversion"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/environs/imagemetadata"
 	"github.com/juju/juju/environs/tags"
-	"github.com/juju/juju/internal/charm"
 	internallogger "github.com/juju/juju/internal/logger"
 	"github.com/juju/juju/internal/service"
 	"github.com/juju/juju/internal/service/common"
@@ -106,7 +108,7 @@ type InstanceConfig struct {
 
 	// CloudInitUserData defines key/value pairs from the model-config
 	// specified by the user.
-	CloudInitUserData map[string]interface{}
+	CloudInitUserData map[string]any
 
 	// MachineId identifies the new machine.
 	MachineId string
@@ -228,14 +230,6 @@ type BootstrapConfig struct {
 	// server.
 	ControllerAgentInfo controller.ControllerAgentInfo
 
-	// JujuDbSnapPath is the path to a .snap file that will be used as the juju-db
-	// service.
-	JujuDbSnapPath string
-
-	// JujuDbSnapAssertions is a path to a .assert file that will be used
-	// to verify the .snap at JujuDbSnapPath
-	JujuDbSnapAssertionsPath string
-
 	// ControllerServiceType is the service type of a k8s controller.
 	ControllerServiceType string
 
@@ -317,7 +311,7 @@ type StateInitializationParams struct {
 	// ("the controller cloud"). These default config attributes do not actually
 	// get applied to every model in reality just to models that use the same
 	// cloud as the controller.
-	ControllerInheritedConfig map[string]interface{}
+	ControllerInheritedConfig map[string]any
 
 	// RegionInheritedConfig holds region specific configuration attributes to
 	// be shared across all models in the same controller on a particular
@@ -362,7 +356,7 @@ type stateInitializationParamsInternal struct {
 	ControllerModelConfig                   map[string]any                    `yaml:"controller-model-config"`
 	ControllerModelAuthorizedKeys           []string                          `yaml:"controller-model-authorized-keys"`
 	ControllerModelEnvironVersion           int                               `yaml:"controller-model-version"`
-	ControllerInheritedConfig               map[string]interface{}            `yaml:"controller-config-defaults,omitempty"`
+	ControllerInheritedConfig               map[string]any                    `yaml:"controller-config-defaults,omitempty"`
 	RegionInheritedConfig                   cloud.RegionConfig                `yaml:"region-inherited-config,omitempty"`
 	StoragePools                            map[string]storage.Attrs          `yaml:"storage-pools,omitempty"`
 	BootstrapMachineInstanceId              instance.Id                       `yaml:"bootstrap-machine-instance-id,omitempty"`
@@ -520,13 +514,14 @@ func (cfg *InstanceConfig) AgentConfig(
 		configParams.AgentLogfileMaxSizeMB = cfg.ControllerConfig.AgentLogfileMaxSizeMB()
 		configParams.QueryTracingEnabled = cfg.ControllerConfig.QueryTracingEnabled()
 		configParams.QueryTracingThreshold = cfg.ControllerConfig.QueryTracingThreshold()
+		configParams.DqliteBusyTimeout = cfg.ControllerConfig.DqliteBusyTimeout()
 		configParams.OpenTelemetryEnabled = cfg.ControllerConfig.OpenTelemetryEnabled()
 		configParams.OpenTelemetryEndpoint = cfg.ControllerConfig.OpenTelemetryEndpoint()
 		configParams.OpenTelemetryInsecure = cfg.ControllerConfig.OpenTelemetryInsecure()
 		configParams.OpenTelemetryStackTraces = cfg.ControllerConfig.OpenTelemetryStackTraces()
 		configParams.OpenTelemetrySampleRatio = cfg.ControllerConfig.OpenTelemetrySampleRatio()
 		configParams.OpenTelemetryTailSamplingThreshold = cfg.ControllerConfig.OpenTelemetryTailSamplingThreshold()
-		configParams.ObjectStoreType = cfg.ControllerConfig.ObjectStoreType()
+		configParams.ObjectStoreType = objectstore.FileBackend
 	}
 	if cfg.Bootstrap == nil {
 		return agent.NewAgentConfig(configParams)
@@ -636,30 +631,6 @@ func copyToolsList(in coretools.List) coretools.List {
 		out[i] = &copied
 	}
 	return out
-}
-
-// SetSnapSource annotates the instance configuration
-// with the location of a local .snap to upload during
-// the instance's provisioning.
-func (cfg *InstanceConfig) SetSnapSource(snapPath string, snapAssertionsPath string) error {
-	if snapPath == "" {
-		return nil
-	}
-
-	_, err := os.Stat(snapPath)
-	if err != nil {
-		return errors.Annotatef(err, "unable set local snap (at %s)", snapPath)
-	}
-
-	_, err = os.Stat(snapAssertionsPath)
-	if err != nil {
-		return errors.Annotatef(err, "unable set local snap .assert (at %s)", snapAssertionsPath)
-	}
-
-	cfg.Bootstrap.JujuDbSnapPath = snapPath
-	cfg.Bootstrap.JujuDbSnapAssertionsPath = snapAssertionsPath
-
-	return nil
 }
 
 // SetControllerCharm annotates the instance configuration
@@ -829,10 +800,8 @@ func NewBootstrapInstanceConfig(
 		return nil, err
 	}
 	icfg.PublicImageSigningKey = publicImageSigningKey
-	icfg.ControllerConfig = make(map[string]interface{})
-	for k, v := range config {
-		icfg.ControllerConfig[k] = v
-	}
+	icfg.ControllerConfig = make(map[string]any)
+	maps.Copy(icfg.ControllerConfig, config)
 	icfg.Bootstrap = &BootstrapConfig{
 		StateInitializationParams: StateInitializationParams{
 			BootstrapMachineConstraints: cons,
@@ -913,7 +882,7 @@ func PopulateInstanceConfig(icfg *InstanceConfig,
 	proxyCfg ProxyConfiguration,
 	enableOSRefreshUpdates bool,
 	enableOSUpgrade bool,
-	cloudInitUserData map[string]interface{},
+	cloudInitUserData map[string]any,
 	profiles []string,
 ) error {
 	if icfg.AgentEnvironment == nil {

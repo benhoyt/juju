@@ -75,6 +75,7 @@ func FakeControllerConfig() controller.Config {
 		"audit-log-max-size":        "200M",
 		"audit-log-max-backups":     5,
 		"query-tracing-threshold":   "1s",
+		"dqlite-busy-timeout":       "1s",
 		"object-store-type":         objectstore.FileBackend,
 	}
 }
@@ -133,8 +134,6 @@ func CustomModelConfig(c tc.LikeC, extra Attrs) *config.Config {
 	c.Assert(err, tc.ErrorIsNil)
 	return cfg
 }
-
-const DefaultMongoPassword = "conn-from-name-secret"
 
 // FakeJujuXDGDataHomeSuite isolates the user's home directory and
 // sets up a Juju home with a sample environment and certificate.

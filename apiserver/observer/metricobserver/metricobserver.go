@@ -107,7 +107,7 @@ type metrics struct {
 func (*Observer) Login(context.Context, names.Tag, names.ModelTag, model.UUID, bool, string) {}
 
 // Join is part of the observer.Observer interface.
-func (*Observer) Join(context.Context, *http.Request, uint64) {}
+func (*Observer) Join(context.Context, *http.Request, uint64, int) {}
 
 // Leave is part of the observer.Observer interface.
 func (*Observer) Leave(context.Context) {}
@@ -127,12 +127,12 @@ type rpcObserver struct {
 }
 
 // ServerRequest is part of the rpc.Observer interface.
-func (o *rpcObserver) ServerRequest(ctx context.Context, hdr *rpc.Header, body interface{}) {
+func (o *rpcObserver) ServerRequest(ctx context.Context, hdr *rpc.Header, body any) {
 	o.requestStart = o.clock.Now()
 }
 
 // ServerReply is part of the rpc.Observer interface.
-func (o *rpcObserver) ServerReply(ctx context.Context, req rpc.Request, hdr *rpc.Header, body interface{}) {
+func (o *rpcObserver) ServerReply(ctx context.Context, req rpc.Request, hdr *rpc.Header, body any) {
 	// The following reduces the number permutations around the cardinality.
 	// All errors will be reported as "error" to remove this issue of exploding
 	// out of quantiles.

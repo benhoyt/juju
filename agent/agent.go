@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path"
@@ -31,7 +32,6 @@ import (
 	"github.com/juju/juju/core/paths"
 	"github.com/juju/juju/core/semversion"
 	internallogger "github.com/juju/juju/internal/logger"
-	"github.com/juju/juju/internal/mongo"
 )
 
 var logger = internallogger.GetLogger("juju.agent")
@@ -158,7 +158,6 @@ const (
 	ContainerType     = "CONTAINER_TYPE"
 	Namespace         = "NAMESPACE"
 	AgentServiceName  = "AGENT_SERVICE_NAME"
-	MongoOplogSize    = "MONGO_OPLOG_SIZE"
 	NUMACtlPreference = "NUMA_CTL_PREFERENCE"
 
 	// LoggingOverride will set the logging for this agent to the value
@@ -241,10 +240,6 @@ type Config interface {
 	// reports whether the details are available.
 	APIInfo() (*api.Info, bool)
 
-	// MongoInfo returns details for connecting to the controller's mongo
-	// database and reports whether those details are available
-	MongoInfo() (*mongo.MongoInfo, bool)
-
 	// OldPassword returns the fallback password when connecting to the
 	// API server.
 	OldPassword() string
@@ -287,6 +282,10 @@ type Config interface {
 	// lower the threshold, the more queries will be output. A value of 0
 	// means all queries will be output.
 	QueryTracingThreshold() time.Duration
+
+	// DqliteBusyTimeout returns the busy timeout for dqlite database
+	// operations.
+	DqliteBusyTimeout() time.Duration
 
 	// OpenTelemetryEnabled returns whether the open telemetry is enabled.
 	OpenTelemetryEnabled() bool
@@ -359,6 +358,10 @@ type configSetterOnly interface {
 
 	// SetQueryTracingThreshold sets the threshold for query tracing.
 	SetQueryTracingThreshold(time.Duration)
+
+	// SetDqliteBusyTimeout sets the busy timeout for dqlite database
+	// operations.
+	SetDqliteBusyTimeout(time.Duration)
 
 	// SetOpenTelemetryEnabled sets whether open telemetry is enabled.
 	SetOpenTelemetryEnabled(bool)
@@ -460,6 +463,7 @@ type configInternal struct {
 	agentLogfileMaxBackups             int
 	queryTracingEnabled                bool
 	queryTracingThreshold              time.Duration
+	dqliteBusyTimeout                  time.Duration
 	openTelemetryEnabled               bool
 	openTelemetryEndpoint              string
 	openTelemetryInsecure              bool
@@ -488,6 +492,7 @@ type AgentConfigParams struct {
 	AgentLogfileMaxBackups             int
 	QueryTracingEnabled                bool
 	QueryTracingThreshold              time.Duration
+	DqliteBusyTimeout                  time.Duration
 	OpenTelemetryEnabled               bool
 	OpenTelemetryEndpoint              string
 	OpenTelemetryInsecure              bool
@@ -559,6 +564,7 @@ func NewAgentConfig(configParams AgentConfigParams) (ConfigSetterWriter, error) 
 		agentLogfileMaxBackups:             configParams.AgentLogfileMaxBackups,
 		queryTracingEnabled:                configParams.QueryTracingEnabled,
 		queryTracingThreshold:              configParams.QueryTracingThreshold,
+		dqliteBusyTimeout:                  configParams.DqliteBusyTimeout,
 		openTelemetryEnabled:               configParams.OpenTelemetryEnabled,
 		openTelemetryEndpoint:              configParams.OpenTelemetryEndpoint,
 		openTelemetryInsecure:              configParams.OpenTelemetryInsecure,
@@ -665,9 +671,7 @@ func (c0 *configInternal) Clone() Config {
 	c1.apiDetails = c0.apiDetails.clone()
 	c1.jobs = append([]model.MachineJob{}, c0.jobs...)
 	c1.values = make(map[string]string, len(c0.values))
-	for key, val := range c0.values {
-		c1.values[key] = val
-	}
+	maps.Copy(c1.values, c0.values)
 	if c0.controllerAgentInfo != nil {
 		info := *c0.controllerAgentInfo
 		c1.controllerAgentInfo = &info
@@ -876,6 +880,22 @@ func (c *configInternal) SetQueryTracingThreshold(v time.Duration) {
 	c.queryTracingThreshold = v
 }
 
+// DqliteBusyTimeout implements Config.
+func (c *configInternal) DqliteBusyTimeout() time.Duration {
+	return c.dqliteBusyTimeout
+}
+
+// SetDqliteBusyTimeout implements configSetterOnly.
+func (c *configInternal) SetDqliteBusyTimeout(v time.Duration) {
+	// If the value is negative, set it to zero, we don't want negative
+	// timeouts. We can't error out here as this method is called from config
+	// change processing and that doesn't handle errors (annoyingly).
+	if v < 0 {
+		v = 0
+	}
+	c.dqliteBusyTimeout = v
+}
+
 // OpenTelemetryEnabled implements Config.
 func (c *configInternal) OpenTelemetryEnabled() bool {
 	return c.openTelemetryEnabled
@@ -1017,49 +1037,6 @@ func (c *configInternal) APIInfo() (*api.Info, bool) {
 		Tag:      c.tag,
 		Nonce:    c.nonce,
 		ModelTag: c.model,
-	}, true
-}
-
-// MongoInfo is defined on Config interface.
-func (c *configInternal) MongoInfo() (info *mongo.MongoInfo, ok bool) {
-	if c.apiDetails == nil || c.apiDetails.addresses == nil {
-		return nil, false
-	}
-	if _, ok = c.ControllerAgentInfo(); !ok {
-		return nil, false
-	}
-	addrs := c.apiDetails.addresses
-	var netAddrs network.SpaceAddresses
-	for _, addr := range addrs {
-		host, _, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, false
-		}
-		if host == "localhost" {
-			continue
-		}
-		netAddrs = append(netAddrs, network.NewSpaceAddress(host))
-	}
-	// We should only be connecting to mongo on cloud local addresses,
-	// not fan or public etc.
-	hostPorts := network.SpaceAddressesWithPort(netAddrs, 37017)
-	mongoAddrs := hostPorts.AllMatchingScope(network.ScopeMatchCloudLocal)
-
-	// We return localhost first and then all addresses of known API
-	// endpoints - this lets us connect to other Mongo instances and start
-	// state even if our own Mongo has not started yet (see lp:1749383 #1).
-	// TODO(macgreagoir) IPv6. Ubuntu still always provides IPv4 loopback,
-	// and when/if this changes localhost should resolve to IPv6 loopback
-	// in any case (lp:1644009). Review.
-	local := net.JoinHostPort("localhost", strconv.Itoa(37017))
-	mongoAddrs = append([]string{local}, mongoAddrs...)
-	logger.Debugf(context.TODO(), "potential mongo addresses: %v", mongoAddrs)
-	return &mongo.MongoInfo{
-		Info: mongo.Info{
-			Addrs:  mongoAddrs,
-			CACert: c.caCert,
-		},
-		Tag: c.tag,
 	}, true
 }
 

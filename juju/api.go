@@ -91,7 +91,7 @@ func NewAPIConnection(ctx context.Context, args NewAPIConnectionParams) (_ api.C
 	// we'll update the entry correctly.
 	dnsCache := dnsCacheMap(controller.DNSCache).copy()
 	args.DialOpts.DNSCache = dnsCache
-	logger.Infof(context.TODO(), "connecting to API addresses: %v", apiInfo.Addrs)
+	logger.Infof(ctx, "connecting to API addresses: %v", apiInfo.Addrs)
 	st, err := args.OpenAPI(ctx, apiInfo, args.DialOpts)
 	if err != nil {
 		var redirErr *api.RedirectError
@@ -164,7 +164,7 @@ func NewAPIConnection(ctx context.Context, args NewAPIConnectionParams) (_ api.C
 	}
 	err = updateControllerDetailsFromLogin(args.ControllerStore, args.ControllerName, controller, params)
 	if err != nil {
-		logger.Errorf(context.TODO(), "cannot cache API addresses: %v", err)
+		logger.Errorf(ctx, "cannot cache API addresses: %v", err)
 	}
 
 	return st, nil

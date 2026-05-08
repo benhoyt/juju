@@ -119,9 +119,80 @@ func (st *State) InsertMigratingMachine(ctx context.Context, machineName string,
 		}
 		return CreateMachineWithName(ctx, tx, st, st.clock, machineName, CreateMachineArgs{
 			MachineUUID: args.MachineUUID.String(),
+			NetNodeUUID: args.NetNodeUUID.String(),
 			Platform:    args.Platform,
+			Constraints: args.Constraints,
+			Hostname:    args.Hostname,
 			Nonce:       args.Nonce,
 		})
+	})
+	return errors.Capture(err)
+}
+
+// InsertMigratingSubordinateMachine inserts a subordinate machine which is taken
+// from the description model during migration into the machine table.
+//
+// The following errors may be returned:
+// - [machineerrors.MachineAlreadyExists] if a machine with the same name
+// already exists.
+func (st *State) InsertMigratingSubordinateMachine(
+	ctx context.Context, machineName, parentUUID string, args machine.CreateMachineArgs,
+) error {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return err
+	}
+
+	parentMachineQuery := `
+INSERT INTO machine_parent (parent_uuid, machine_uuid)
+VALUES ($machineParent.*);
+`
+	p := machineParent{
+		ParentUUID:  parentUUID,
+		MachineUUID: args.MachineUUID.String(),
+	}
+	parentMachineStmt, err := st.Prepare(parentMachineQuery, p)
+	if err != nil {
+		return errors.Errorf(
+			"preparing insert statement for subordinate machine %q parent: %w",
+			machineName, err,
+		)
+	}
+
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		inUse, err := checkIfMachineNameInUse(ctx, tx, st, machineName)
+		if err != nil {
+			return errors.Errorf(
+				"checking if machine name %q already in use: %w", machineName, err,
+			)
+		}
+
+		if inUse {
+			return errors.Errorf(
+				"machine %q already exists in model", machineName,
+			).Add(machineerrors.MachineAlreadyExists)
+		}
+
+		err = CreateMachineWithName(ctx, tx, st, st.clock, machineName, CreateMachineArgs{
+			MachineUUID: args.MachineUUID.String(),
+			NetNodeUUID: args.NetNodeUUID.String(),
+			Platform:    args.Platform,
+			Constraints: args.Constraints,
+			Hostname:    args.Hostname,
+			Nonce:       args.Nonce,
+		})
+		if err != nil {
+			return err
+		}
+
+		err = tx.Query(ctx, parentMachineStmt, p).Run()
+		if err != nil {
+			return errors.Errorf(
+				"inserting machine parent for subordinate machine %q: %w",
+				machineName, err,
+			)
+		}
+		return nil
 	})
 	return errors.Capture(err)
 }

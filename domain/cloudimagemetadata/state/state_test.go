@@ -91,7 +91,7 @@ func (s *stateSuite) TestSaveMetadata(c *tc.C) {
 		obtained[i].CreationTime = time.Time{} // ignore time since already checked.
 	}
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(obtained, tc.SameContents, expected)
+	c.Check(obtained, tc.SameContents, expected)
 }
 
 // TestSaveMetadataWithDateCreated tests the SaveMetadata method by ensuring metadata is saved with the correct creation date.
@@ -118,7 +118,7 @@ func (s *stateSuite) TestSaveMetadataWithDateCreated(c *tc.C) {
 	// Assert
 	obtained, err := s.retrieveMetadataFromDB(c)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(obtained, tc.SameContents, expected)
+	c.Check(obtained, tc.SameContents, expected)
 }
 
 // TestSaveMetadataSeveralMetadata verifies that multiple metadata entries are saved correctly in the database.
@@ -140,7 +140,7 @@ func (s *stateSuite) TestSaveMetadataSeveralMetadata(c *tc.C) {
 		Version:         "12.04",
 		Arch:            "amd64",
 		Source:          "test",
-		RootStorageSize: ptr(uint64(1024)),
+		RootStorageSize: new(uint64(1024)),
 	}
 	expected := []cloudimagemetadata.Metadata{
 		{MetadataAttributes: attrs1, ImageID: "1"},
@@ -158,7 +158,7 @@ func (s *stateSuite) TestSaveMetadataSeveralMetadata(c *tc.C) {
 		obtained[i].CreationTime = time.Time{} // ignore time since already checked.
 	}
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(obtained, tc.SameContents, expected)
+	c.Check(obtained, tc.SameContents, expected)
 }
 
 func (s *stateSuite) TestSaveMetadataUpdateMetadata(c *tc.C) {
@@ -174,7 +174,7 @@ func (s *stateSuite) TestSaveMetadataUpdateMetadata(c *tc.C) {
 		Source:          "test",
 	}
 	attrs2 := attrs1
-	attrs2.RootStorageSize = ptr(uint64(1024)) // Not part of the key, but shouldn't be updated either
+	attrs2.RootStorageSize = new(uint64(1024)) // Not part of the key, but shouldn't be updated either
 
 	//  Act
 	err := s.state.SaveMetadata(c.Context(), []cloudimagemetadata.Metadata{
@@ -193,8 +193,68 @@ func (s *stateSuite) TestSaveMetadataUpdateMetadata(c *tc.C) {
 		obtained[i].CreationTime = time.Time{} // ignore time since already checked.
 	}
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(obtained, tc.SameContents, []cloudimagemetadata.Metadata{
+	c.Check(obtained, tc.SameContents, []cloudimagemetadata.Metadata{
 		{MetadataAttributes: attrs1, ImageID: "2"}, // Imageid has been updated, but other attributes don't.
+	})
+}
+
+func (s *stateSuite) TestSaveMetadataEmptyImageID(c *tc.C) {
+	// Arrange
+	testBeginTime := time.Now().Truncate(time.Second) // avoid truncate issue on dqlite creationTime check
+	attrs1 := cloudimagemetadata.MetadataAttributes{
+		Stream:          "stream",
+		Region:          "region-test",
+		Version:         "22.04",
+		Arch:            "arm64",
+		VirtType:        "virtType-test",
+		RootStorageType: "rootStorageType-test",
+		Source:          "test",
+	}
+
+	//  Act - Save with empty ImageID
+	err := s.state.SaveMetadata(c.Context(), []cloudimagemetadata.Metadata{
+		{MetadataAttributes: attrs1, ImageID: ""},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Assert - Check that it was saved with empty ImageID
+	obtained, err := s.retrieveMetadataFromDB(c)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(obtained, tc.HasLen, 1)
+	c.Check(obtained[0].ImageID, tc.Equals, "")
+
+	// Act - Update with non-empty ImageID
+	err = s.state.SaveMetadata(c.Context(), []cloudimagemetadata.Metadata{
+		{MetadataAttributes: attrs1, ImageID: "new-id"},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Assert - Check that it was updated
+	obtained, err = s.retrieveMetadataFromDB(c)
+	for i := range obtained {
+		c.Check(obtained[i].CreationTime, tc.After, testBeginTime)
+		obtained[i].CreationTime = time.Time{} // ignore time since already checked.
+	}
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(obtained, tc.SameContents, []cloudimagemetadata.Metadata{
+		{MetadataAttributes: attrs1, ImageID: "new-id"},
+	})
+
+	// Act - Update with a empty ImageID again
+	err = s.state.SaveMetadata(c.Context(), []cloudimagemetadata.Metadata{
+		{MetadataAttributes: attrs1, ImageID: ""},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Assert - Check that it was updated
+	obtained, err = s.retrieveMetadataFromDB(c)
+	for i := range obtained {
+		c.Check(obtained[i].CreationTime, tc.After, testBeginTime)
+		obtained[i].CreationTime = time.Time{} // ignore time since already checked.
+	}
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(obtained, tc.SameContents, []cloudimagemetadata.Metadata{
+		{MetadataAttributes: attrs1, ImageID: ""},
 	})
 }
 
@@ -210,7 +270,7 @@ func (s *stateSuite) TestSaveMetadataWithSameAttributes(c *tc.C) {
 		Source:          "test",
 	}
 	attrs2 := attrs1
-	attrs2.RootStorageSize = ptr(uint64(1024)) // Not part of the key, but shouldn't be updated either
+	attrs2.RootStorageSize = new(uint64(1024)) // Not part of the key, but shouldn't be updated either
 
 	//  Act
 	err := s.state.SaveMetadata(c.Context(), []cloudimagemetadata.Metadata{
@@ -277,7 +337,7 @@ VALUES
 		obtained[i].CreationTime = time.Time{} // ignore time
 	}
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(obtained, tc.SameContents, []cloudimagemetadata.Metadata{
+	c.Check(obtained, tc.SameContents, []cloudimagemetadata.Metadata{
 		{MetadataAttributes: cloudimagemetadata.MetadataAttributes{
 			Stream:          "stream",
 			Region:          "region-1",
@@ -406,7 +466,7 @@ VALUES
 	for i := range obtained {
 		obtained[i].CreationTime = time.Time{} // ignore time
 	}
-	c.Assert(obtained, tc.SameContents, []cloudimagemetadata.Metadata{{
+	c.Check(obtained, tc.SameContents, []cloudimagemetadata.Metadata{{
 		MetadataAttributes: cloudimagemetadata.MetadataAttributes{
 			Stream:          "stream",
 			Region:          "region",
@@ -434,6 +494,58 @@ VALUES
 	})
 }
 
+// TestFindMetadataCustomSourceFilteredByVersion verifies that custom-source
+// metadata is correctly filtered by version. This is a regression test for a
+// SQL operator precedence bug where the OR in
+// "source = 'custom' OR created_at >= ..." was not parenthesised, causing
+// all custom-source rows to bypass subsequent AND filters (version, region, etc).
+func (s *stateSuite) TestFindMetadataCustomSourceFilteredByVersion(c *tc.C) {
+	// Arrange: insert custom metadata for multiple versions.
+	err := s.runQuery(c, `
+INSERT INTO cloud_image_metadata (uuid,created_at,source,stream,region,version,architecture_id,virt_type,root_storage_type,priority,image_id)
+VALUES
+('a',datetime('now','localtime'), 'custom', 'released', 'region1', '20.04', 0, 'kvm', 'ssd', 50, 'img-focal'),
+('b',datetime('now','localtime'), 'custom', 'released', 'region1', '22.04', 0, 'kvm', 'ssd', 50, 'img-jammy'),
+('c',datetime('now','localtime'), 'custom', 'released', 'region1', '24.04', 0, 'kvm', 'ssd', 50, 'img-noble');
+`)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Act: query for version 24.04 only.
+	obtained, err := s.state.FindMetadata(c.Context(), cloudimagemetadata.MetadataFilter{
+		Versions: []string{"24.04"},
+	})
+
+	// Assert: only the 24.04 entry should be returned.
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(obtained, tc.HasLen, 1)
+	c.Check(obtained[0].Version, tc.Equals, "24.04")
+	c.Check(obtained[0].ImageID, tc.Equals, "img-noble")
+}
+
+// TestFindMetadataCustomSourceFilteredByRegion verifies that custom-source
+// metadata is correctly filtered by region.
+func (s *stateSuite) TestFindMetadataCustomSourceFilteredByRegion(c *tc.C) {
+	// Arrange: insert custom metadata for multiple regions.
+	err := s.runQuery(c, `
+INSERT INTO cloud_image_metadata (uuid,created_at,source,stream,region,version,architecture_id,virt_type,root_storage_type,priority,image_id)
+VALUES
+('a',datetime('now','localtime'), 'custom', 'released', 'us-east-1', '24.04', 0, 'kvm', 'ssd', 50, 'img-us-east'),
+('b',datetime('now','localtime'), 'custom', 'released', 'eu-west-1', '24.04', 0, 'kvm', 'ssd', 50, 'img-eu-west');
+`)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Act: query for region eu-west-1 only.
+	obtained, err := s.state.FindMetadata(c.Context(), cloudimagemetadata.MetadataFilter{
+		Region: "eu-west-1",
+	})
+
+	// Assert: only the eu-west-1 entry should be returned.
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(obtained, tc.HasLen, 1)
+	c.Check(obtained[0].Region, tc.Equals, "eu-west-1")
+	c.Check(obtained[0].ImageID, tc.Equals, "img-eu-west")
+}
+
 // TestAllCloudImageMetadata tests the retrieval of all cloud image metadata from the database,
 // except expired one.
 func (s *stateSuite) TestAllCloudImageMetadata(c *tc.C) {
@@ -456,7 +568,7 @@ VALUES
 	for i := range obtained {
 		obtained[i].CreationTime = time.Time{} // ignore time
 	}
-	c.Assert(obtained, tc.SameContents, []cloudimagemetadata.Metadata{
+	c.Check(obtained, tc.SameContents, []cloudimagemetadata.Metadata{
 		{
 			MetadataAttributes: cloudimagemetadata.MetadataAttributes{
 				Stream:          "stream",
@@ -503,7 +615,7 @@ VALUES
 
 	// Assert
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(obtained, tc.SameContents, []cloudimagemetadata.Metadata{}) // No non expired metadata
+	c.Check(obtained, tc.SameContents, []cloudimagemetadata.Metadata{}) // No non expired metadata
 }
 
 // TestCleanupMetatada verifies that the metadata is properly cleaned up on a new insert in the
@@ -541,7 +653,7 @@ VALUES
 		obtained[i].CreationTime = time.Time{} // ignore time for simplicity
 	}
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(obtained, tc.SameContents, append(expected,
+	c.Check(obtained, tc.SameContents, append(expected,
 		// Custom that has not expired
 		cloudimagemetadata.Metadata{MetadataAttributes: cloudimagemetadata.MetadataAttributes{
 			Stream:          "stream",
@@ -550,7 +662,7 @@ VALUES
 			Arch:            "arm64",
 			VirtType:        "virtType",
 			RootStorageType: "storage",
-			RootStorageSize: ptr(uint64(1024)),
+			RootStorageSize: new(uint64(1024)),
 			Source:          "custom",
 		}, Priority: 42, ImageID: "id"}))
 }

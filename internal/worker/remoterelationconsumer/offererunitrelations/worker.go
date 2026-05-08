@@ -10,8 +10,8 @@ import (
 	"github.com/juju/clock"
 	"github.com/juju/collections/transform"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 	"gopkg.in/macaroon.v2"
 
 	"github.com/juju/juju/api/watcher"
@@ -37,6 +37,7 @@ type RelationUnitChange struct {
 
 	// DeprecatedDepartedUnits represents the units that have departed in this
 	// relation.
+	//
 	// Deprecated: this will be removed in future releases in favour of using
 	// AvailableUnits. We can then determine departed units by comparing
 	// the previous set of available units with the current set.
@@ -84,13 +85,14 @@ type ReportableWorker interface {
 // Config contains the configuration parameters for a remote relation units
 // worker.
 type Config struct {
-	Client                 RemoteModelRelationsClient
-	ConsumerRelationUUID   corerelation.UUID
-	OffererApplicationUUID coreapplication.UUID
-	Macaroon               *macaroon.Macaroon
-	Changes                chan<- RelationUnitChange
-	Clock                  clock.Clock
-	Logger                 logger.Logger
+	Client                  RemoteModelRelationsClient
+	ConsumerRelationUUID    corerelation.UUID
+	ConsumerApplicationUUID coreapplication.UUID
+	OffererApplicationUUID  coreapplication.UUID
+	Macaroon                *macaroon.Macaroon
+	Changes                 chan<- RelationUnitChange
+	Clock                   clock.Clock
+	Logger                  logger.Logger
 }
 
 // Validate ensures the configuration is valid.
@@ -100,6 +102,9 @@ func (c Config) Validate() error {
 	}
 	if c.ConsumerRelationUUID == "" {
 		return errors.NotValidf("consumer relation uuid cannot be empty")
+	}
+	if c.ConsumerApplicationUUID == "" {
+		return errors.NotValidf("consumer application uuid cannot be empty")
 	}
 	if c.OffererApplicationUUID == "" {
 		return errors.NotValidf("offerer application token cannot be empty")
@@ -129,8 +134,9 @@ type remoteWorker struct {
 	client   RemoteModelRelationsClient
 	macaroon *macaroon.Macaroon
 
-	consumerRelationUUID   corerelation.UUID
-	offererApplicationUUID coreapplication.UUID
+	consumerRelationUUID    corerelation.UUID
+	consumerApplicationUUID coreapplication.UUID
+	offererApplicationUUID  coreapplication.UUID
 
 	changes chan<- RelationUnitChange
 
@@ -153,9 +159,10 @@ func NewWorker(cfg Config) (ReportableWorker, error) {
 	w := &remoteWorker{
 		client: cfg.Client,
 
-		consumerRelationUUID:   cfg.ConsumerRelationUUID,
-		offererApplicationUUID: cfg.OffererApplicationUUID,
-		macaroon:               cfg.Macaroon,
+		consumerRelationUUID:    cfg.ConsumerRelationUUID,
+		consumerApplicationUUID: cfg.ConsumerApplicationUUID,
+		offererApplicationUUID:  cfg.OffererApplicationUUID,
+		macaroon:                cfg.Macaroon,
 
 		changes: cfg.Changes,
 		clock:   cfg.Clock,
@@ -182,6 +189,23 @@ func (w *remoteWorker) Kill() {
 // return the error.
 func (w *remoteWorker) Wait() error {
 	return w.catacomb.Wait()
+}
+
+// Macaroon returns the macaroon used by this worker to authenticate with the
+// remote model.
+func (w *remoteWorker) Macaroon() *macaroon.Macaroon {
+	return w.macaroon
+}
+
+// RelationUUID returns the consumer relation UUID for this worker.
+func (w *remoteWorker) RelationUUID() corerelation.UUID {
+	return w.consumerRelationUUID
+}
+
+// ConsumerApplicationUUID returns the UUID of the consuming application in
+// the local (consumer) model for this relation.
+func (w *remoteWorker) ConsumerApplicationUUID() coreapplication.UUID {
+	return w.consumerApplicationUUID
 }
 
 func (w *remoteWorker) loop() error {
@@ -274,7 +298,9 @@ func (w *remoteWorker) loop() error {
 }
 
 // Report provides information for the engine report.
-func (w *remoteWorker) Report() map[string]any {
+func (w *remoteWorker) Report(ctx context.Context) map[string]any {
+	ctx = w.catacomb.Context(ctx)
+
 	result := make(map[string]any)
 	result["consumer-relation-uuid"] = w.consumerRelationUUID.String()
 	result["offerer-application-uuid"] = w.offererApplicationUUID.String()
@@ -283,9 +309,13 @@ func (w *remoteWorker) Report() map[string]any {
 	case <-time.After(time.Second):
 		result["error"] = "timed out waiting for report"
 
-	case <-w.catacomb.Dying():
-		result["error"] = "worker is dying"
-
+	case <-ctx.Done():
+		select {
+		case <-w.catacomb.Dying():
+			result["error"] = "worker is dying"
+		default:
+			result["error"] = ctx.Err().Error()
+		}
 	case event := <-w.reportRequests:
 		result["changed-units"] = transform.Slice(event.ChangedUnits, func(c UnitChange) map[string]any {
 			return map[string]any{

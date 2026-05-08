@@ -6,12 +6,12 @@ package modelmigration
 import (
 	"testing"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/clock"
+	"github.com/juju/description/v12"
 	"github.com/juju/tc"
 	gomock "go.uber.org/mock/gomock"
 
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
@@ -40,7 +40,7 @@ func (s *importSuite) TestRegisterImport(c *tc.C) {
 
 	s.coordinator.EXPECT().Add(gomock.Any())
 
-	RegisterImport(s.coordinator, loggertesting.WrapCheckLog(c))
+	RegisterImport(s.coordinator, clock.WallClock, loggertesting.WrapCheckLog(c))
 }
 
 func (s *importSuite) newImportOperation() *importOperation {
@@ -60,7 +60,7 @@ func (s *importSuite) TestImportFromModelConfig(c *tc.C) {
 	model := description.NewModel(description.ModelArgs{
 
 		Config: map[string]any{
-			"uuid":            modeltesting.GenModelUUID(c).String(),
+			"uuid":            tc.Must0(c, coremodel.NewUUID).String(),
 			"authorized-keys": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII4GpCvqUUYUJlx6d1kpUO9k/t4VhSYsf0yE0/QTqDzC existing1\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJQJ9wv0uC3yytXM3d2sJJWvZLuISKo7ZHwafHVviwVe existing2",
 		},
 	})
@@ -88,7 +88,7 @@ func (s *importSuite) TestImportFromModelDescription(c *tc.C) {
 
 	model := description.NewModel(description.ModelArgs{
 		Config: map[string]any{
-			"uuid": modeltesting.GenModelUUID(c).String(),
+			"uuid": tc.Must0(c, coremodel.NewUUID).String(),
 		},
 	})
 	model.AddAuthorizedKeys(description.UserAuthorizedKeysArgs{
@@ -128,5 +128,21 @@ func (s *importSuite) TestImportFromModelDescription(c *tc.C) {
 
 	op := s.newImportOperation()
 	err := op.Execute(c.Context(), model)
+	c.Check(err, tc.ErrorIsNil)
+}
+
+func (s *importSuite) TestRollback(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	model := description.NewModel(description.ModelArgs{
+		Config: map[string]any{
+			"uuid": tc.Must0(c, coremodel.NewUUID).String(),
+		},
+	})
+
+	s.service.EXPECT().DeleteKeysForModel(gomock.Any()).Return(nil)
+
+	op := s.newImportOperation()
+	err := op.Rollback(c.Context(), model)
 	c.Check(err, tc.ErrorIsNil)
 }

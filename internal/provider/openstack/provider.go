@@ -107,11 +107,11 @@ var cloudSchema = &jsonschema.Schema{
 			Singular:    "auth type",
 			Plural:      "auth types",
 			Type:        []jsonschema.Type{jsonschema.ArrayType},
-			UniqueItems: jsonschema.Bool(true),
+			UniqueItems: new(true),
 			Items: &jsonschema.ItemSpec{
 				Schemas: []*jsonschema.Schema{{
 					Type: []jsonschema.Type{jsonschema.StringType},
-					Enum: []interface{}{
+					Enum: []any{
 						string(cloud.AccessKeyAuthType),
 						string(cloud.UserPassAuthType),
 					},
@@ -127,7 +127,7 @@ var cloudSchema = &jsonschema.Schema{
 			AdditionalProperties: &jsonschema.Schema{
 				Type:          []jsonschema.Type{jsonschema.ObjectType},
 				Required:      []string{cloud.EndpointKey},
-				MaxProperties: jsonschema.Int(1),
+				MaxProperties: new(1),
 				Properties: map[string]*jsonschema.Schema{
 					cloud.EndpointKey: {
 						Singular:      "the API endpoint url for the region",
@@ -2144,7 +2144,7 @@ func (e *Environ) terminateInstances(ctx context.Context, ids []instance.Id) err
 	for _, id := range ids {
 		// Attempt to destroy the ports that could have been created when using
 		// spaces.
-		if err := e.terminateInstanceNetworkPorts(id); err != nil {
+		if err := e.terminateInstanceNetworkPorts(ctx, id); err != nil {
 			logger.Errorf(ctx, "error attempting to remove ports associated with instance %q: %v", id, err)
 			// Unfortunately there is nothing we can do here, there could be
 			// orphan ports left.
@@ -2177,7 +2177,7 @@ func (e *Environ) terminateInstances(ctx context.Context, ids []instance.Id) err
 	return firstErr
 }
 
-func (e *Environ) terminateInstanceNetworkPorts(id instance.Id) error {
+func (e *Environ) terminateInstanceNetworkPorts(ctx context.Context, id instance.Id) error {
 	novaClient := e.nova()
 	osInterfaces, err := novaClient.ListOSInterfaces(string(id))
 	if err != nil {
@@ -2185,7 +2185,9 @@ func (e *Environ) terminateInstanceNetworkPorts(id instance.Id) error {
 	}
 
 	client := e.neutron()
-	ports, err := client.ListPortsV2()
+	filter := neutron.NewFilter()
+	filter.Set("device_id", string(id))
+	ports, err := client.ListPortsV2(filter)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -2218,6 +2220,7 @@ func (e *Environ) terminateInstanceNetworkPorts(id instance.Id) error {
 	for _, change := range changes.SortedValues() {
 		// Delete a port. If we encounter an error add it to the list of errors
 		// and continue until we've exhausted all the ports to delete.
+		logger.Tracef(ctx, "Deleting port %s", change)
 		if err := client.DeletePortV2(change); err != nil {
 			errs = append(errs, err)
 			continue

@@ -12,7 +12,7 @@ import (
 	"github.com/juju/mutex/v2"
 	"github.com/juju/tc"
 
-	"github.com/juju/juju/internal/charm/hooks"
+	"github.com/juju/juju/domain/deployment/charm/hooks"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/testhelpers"
 	"github.com/juju/juju/internal/testing"
@@ -80,7 +80,7 @@ func (s *LoopSuite) TestAbort(c *tc.C) {
 }
 
 func (s *LoopSuite) TestOnIdle(c *tc.C) {
-	onIdleCh := make(chan interface{}, 1)
+	onIdleCh := make(chan any, 1)
 	s.onIdle = func() error {
 		onIdleCh <- nil
 		return nil
@@ -91,7 +91,7 @@ func (s *LoopSuite) TestOnIdle(c *tc.C) {
 
 	loopFn := s.loop(c)
 
-	done := make(chan interface{}, 1)
+	done := make(chan any, 1)
 	go func() {
 		_, err := loopFn(ctx)
 		done <- err
@@ -246,7 +246,7 @@ func (s *LoopSuite) TestLoopWithChange(c *tc.C) {
 	remoteStateSnapshotCount := 0
 	s.executor.run = func(op operation.Operation, rs <-chan remotestate.Snapshot) error {
 		remoteStateSnapshotChan = rs
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			// queue up a change to trigger snapshot channel.
 			s.watcher.changes <- struct{}{}
 			// wait for changes to propagate
@@ -365,27 +365,6 @@ func (s *LoopSuite) TestCheckCharmUpgradeNotInstalled(c *tc.C) {
 	s.testCheckCharmUpgradeDoesNothing(c)
 }
 
-func (s *LoopSuite) TestCheckCharmUpgradeIncorrectLXDProfile(c *tc.C) {
-	s.executor = &mockOpExecutor{
-		Executor: nil,
-		Stub:     testhelpers.Stub{},
-		st: operation.State{
-			Installed: true,
-			Started:   true,
-			Kind:      operation.Continue,
-		},
-		run: nil,
-	}
-	s.watcher = &mockRemoteStateWatcher{
-		snapshot: remotestate.Snapshot{
-			CharmURL:             "ch:trusty/mysql-2",
-			CharmProfileRequired: true,
-			LXDProfileName:       "juju-test-mysql-1",
-		},
-	}
-	s.testCheckCharmUpgradeDoesNothing(c)
-}
-
 func (s *LoopSuite) testCheckCharmUpgradeDoesNothing(c *tc.C) {
 	ctx, cancel := context.WithCancel(c.Context())
 	defer cancel()
@@ -465,27 +444,6 @@ func (s *LoopSuite) TestCheckCharmInstallMissingCharmDirInstallHookFail(c *tc.C)
 	s.testCheckCharmUpgradeCallsRun(c, "Install")
 }
 
-func (s *LoopSuite) TestCheckCharmUpgradeLXDProfile(c *tc.C) {
-	s.executor = &mockOpExecutor{
-		Executor: nil,
-		Stub:     testhelpers.Stub{},
-		st: operation.State{
-			Installed: true,
-			Started:   true,
-			Kind:      operation.Continue,
-		},
-		run: nil,
-	}
-	s.watcher = &mockRemoteStateWatcher{
-		snapshot: remotestate.Snapshot{
-			CharmURL:             "ch:trusty/mysql-2",
-			CharmProfileRequired: true,
-			LXDProfileName:       "juju-test-mysql-2",
-		},
-	}
-	s.testCheckCharmUpgradeCallsRun(c, "Upgrade")
-}
-
 func (s *LoopSuite) testCheckCharmUpgradeCallsRun(c *tc.C, op string) {
 	ctx, cancel := context.WithCancel(c.Context())
 	defer cancel()
@@ -546,7 +504,7 @@ func (s *LoopSuite) TestCancelledLockAcquisitionCausesRestart(c *tc.C) {
 	c.Assert(err, tc.Equals, resolver.ErrRestart)
 }
 
-func waitChannel(c *tc.C, ch <-chan interface{}, activity string) interface{} {
+func waitChannel(c *tc.C, ch <-chan any, activity string) any {
 	select {
 	case v := <-ch:
 		return v

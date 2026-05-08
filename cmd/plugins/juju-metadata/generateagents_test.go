@@ -15,10 +15,12 @@ import (
 	"testing"
 	"text/template"
 
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/api/jujuclient"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	jujuversion "github.com/juju/juju/core/version"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/bootstrap"
@@ -28,8 +30,6 @@ import (
 	sstestings "github.com/juju/juju/environs/simplestreams/testing"
 	"github.com/juju/juju/environs/tools"
 	toolstesting "github.com/juju/juju/environs/tools/testing"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	_ "github.com/juju/juju/internal/provider/dummy"
 	coretesting "github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/juju/keys"
@@ -48,7 +48,7 @@ func TestGenerateAgentsSuite(t *testing.T) {
 
 func (s *GenerateAgentsSuite) SetUpTest(c *tc.C) {
 	s.FakeJujuXDGDataHomeSuite.SetUpTest(c)
-	cfg, err := config.New(config.UseDefaults, map[string]interface{}{
+	cfg, err := config.New(config.UseDefaults, map[string]any{
 		"name":            "erewhemos",
 		"type":            "dummy",
 		"uuid":            coretesting.ModelTag.Id(),
@@ -92,22 +92,23 @@ var versionStrings = append([]string{
 var expectedOutputCommon = makeExpectedOutputCommon()
 
 func makeExpectedOutputCommon() string {
-	expected := "Finding agent binaries in .*\n"
+	var expected strings.Builder
+	expected.WriteString("Finding agent binaries in .*\n")
 	f := `.*Fetching agent binaries from dir "{{.ToolsDir}}" to generate hash: %s` + "\n"
 
 	// Sort the global versionStrings
 	sort.Strings(versionStrings)
 	for _, v := range versionStrings {
-		expected += fmt.Sprintf(f, regexp.QuoteMeta(v))
+		expected.WriteString(fmt.Sprintf(f, regexp.QuoteMeta(v)))
 	}
-	return strings.TrimSpace(expected)
+	return strings.TrimSpace(expected.String())
 }
 
 func makeExpectedOutput(templ, stream, toolsDir string) string {
 	t := template.Must(template.New("").Parse(templ))
 
 	var buf bytes.Buffer
-	err := t.Execute(&buf, map[string]interface{}{"Stream": stream, "ToolsDir": toolsDir})
+	err := t.Execute(&buf, map[string]any{"Stream": stream, "ToolsDir": toolsDir})
 	if err != nil {
 		panic(err)
 	}

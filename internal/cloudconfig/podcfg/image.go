@@ -12,45 +12,25 @@ import (
 
 	"github.com/juju/juju/controller"
 	"github.com/juju/juju/core/semversion"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/internal/docker"
 )
 
 const (
-	JujudOCINamespace = "ghcr.io/juju"
-	JujudOCIName      = "jujud-operator"
-	JujudbOCIName     = "juju-db"
-	CharmBaseName     = "charm-base"
+	JujudOCIName  = "jujud-operator"
+	CharmBaseName = "charm-base"
 )
+
+// JujudOCINamespace is the default container registry namespace for the jujud
+// operator and charm base images.
+//
+// NOTE: This is injected by the build system. In Makefile, we override
+// this value with the value of the PULL_OCI_REGISTRY environment variable.
+var JujudOCINamespace = "ghcr.io/juju"
 
 // GetControllerImagePath returns oci image path of jujud for a controller.
 func (cfg *ControllerPodConfig) GetControllerImagePath() (string, error) {
 	return GetJujuOCIImagePathFromControllerCfg(cfg.Controller, cfg.JujuVersion)
-}
-
-func (cfg *ControllerPodConfig) dbVersion() (semversion.Number, error) {
-	snapChannel := "4.4/stable"
-	vers := strings.Split(snapChannel, "/")[0] + ".0"
-	return semversion.Parse(vers)
-}
-
-// GetJujuDbOCIImagePath returns the juju-db oci image path.
-func (cfg *ControllerPodConfig) GetJujuDbOCIImagePath() (string, error) {
-	details, err := docker.NewImageRepoDetails(cfg.Controller.CAASImageRepo())
-	if err != nil {
-		return "", errors.Annotatef(err, "parsing %s", controller.CAASImageRepo)
-	}
-	imageRepo := details.Repository
-	if imageRepo == "" {
-		imageRepo = JujudOCINamespace
-	}
-	path := fmt.Sprintf("%s/%s", imageRepo, JujudbOCIName)
-	mongoVers, err := cfg.dbVersion()
-	if err != nil {
-		return "", errors.Annotatef(err, "cannot parse %q from controller config", "4.4/stable")
-	}
-	tag := fmt.Sprintf("%d.%d", mongoVers.Major, mongoVers.Minor)
-	return tagImagePath(path, tag)
 }
 
 // IsJujuOCIImage returns true if the image path is for a Juju operator.

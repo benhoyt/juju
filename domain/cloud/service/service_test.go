@@ -28,7 +28,8 @@ func (s *serviceSuite) TestCreateCloudSuccess(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	cloud := cloud.Cloud{
-		Name: "fluffy",
+		Name:      "fluffy",
+		AuthTypes: cloud.AuthTypes{cloud.UserPassAuthType},
 	}
 	s.state.EXPECT().CreateCloud(gomock.Any(), usertesting.GenNewName(c, "owner-name"), gomock.Any(), cloud).Return(nil)
 
@@ -40,12 +41,32 @@ func (s *serviceSuite) TestCreateCloudFail(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	cloud := cloud.Cloud{
-		Name: "fluffy",
+		Name:      "fluffy",
+		AuthTypes: cloud.AuthTypes{cloud.UserPassAuthType},
 	}
 	s.state.EXPECT().CreateCloud(gomock.Any(), usertesting.GenNewName(c, "owner-name"), gomock.Any(), cloud).Return(errors.New("boom"))
 
 	err := NewWatchableService(s.state, s.watcherFactory).CreateCloud(c.Context(), usertesting.GenNewName(c, "owner-name"), cloud)
 	c.Assert(err, tc.ErrorMatches, `creating cloud "fluffy": boom`)
+}
+
+func (s *serviceSuite) TestCreateCloudEmptyAuthTypes(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	cloud := cloud.Cloud{
+		Name: "fluffy",
+	}
+
+	err := NewWatchableService(s.state, s.watcherFactory).CreateCloud(c.Context(), usertesting.GenNewName(c, "owner-name"), cloud)
+	c.Assert(err, tc.ErrorIs, coreerrors.NotValid)
+	c.Assert(err, tc.ErrorMatches, `.*empty auth-types.*`)
+}
+
+func (s *serviceSuite) TestCreateCloudEmptyName(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	err := NewWatchableService(s.state, s.watcherFactory).CreateCloud(c.Context(), usertesting.GenNewName(c, "owner-name"), cloud.Cloud{})
+	c.Assert(err, tc.ErrorIs, coreerrors.NotValid)
 }
 
 func (s *serviceSuite) TestUpdateCloudSuccess(c *tc.C) {
@@ -70,6 +91,13 @@ func (s *serviceSuite) TestUpdateCloudError(c *tc.C) {
 
 	err := NewWatchableService(s.state, s.watcherFactory).UpdateCloud(c.Context(), cloud)
 	c.Assert(err, tc.ErrorMatches, `updating cloud "fluffy": boom`)
+}
+
+func (s *serviceSuite) TestUpdateCloudEmptyName(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	err := NewWatchableService(s.state, s.watcherFactory).UpdateCloud(c.Context(), cloud.Cloud{})
+	c.Assert(err, tc.ErrorIs, coreerrors.NotValid)
 }
 
 func (s *serviceSuite) TestDeleteCloudSuccess(c *tc.C) {

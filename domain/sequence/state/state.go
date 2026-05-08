@@ -93,27 +93,3 @@ func (s *State) ImportSequences(ctx context.Context, seqs map[string]uint64) err
 
 	return nil
 }
-
-// RemoveAllSequences removes all sequences from the database.
-func (s *State) RemoveAllSequences(ctx context.Context) error {
-	db, err := s.DB(ctx)
-	if err != nil {
-		return err
-	}
-
-	query, err := s.Prepare("DELETE FROM sequence")
-	if err != nil {
-		return err
-	}
-
-	if err := db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		if err := tx.Query(ctx, query).Run(); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-
-	return nil
-}

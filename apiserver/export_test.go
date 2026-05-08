@@ -15,6 +15,7 @@ import (
 	"github.com/juju/juju/core/flightrecorder"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/objectstore"
+	"github.com/juju/juju/core/providertracker"
 	coretrace "github.com/juju/juju/core/trace"
 	"github.com/juju/juju/internal/services"
 	"github.com/juju/juju/internal/worker/trace"
@@ -81,6 +82,10 @@ func (testingAPIRootHandler) ModelUUID() model.UUID {
 }
 
 func (testingAPIRootHandler) CrossModelAuthContext() facade.CrossModelAuthContext {
+	return nil
+}
+
+func (testingAPIRootHandler) EphemeralProviderFactory() providertracker.EphemeralProviderFactory {
 	return nil
 }
 
@@ -186,5 +191,5 @@ func SetAllowModelAccess(server *Server, allow bool) {
 // Patcher defines an interface that matches the PatchValue method on
 // CleanupSuite
 type Patcher interface {
-	PatchValue(ptr, value interface{})
+	PatchValue(ptr, value any)
 }

@@ -8,11 +8,11 @@ import (
 
 	coreapplication "github.com/juju/juju/core/application"
 	"github.com/juju/juju/core/logger"
+	"github.com/juju/juju/core/machine"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/trace"
 	coreunit "github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/port"
-	porterrors "github.com/juju/juju/domain/port/errors"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -40,9 +40,10 @@ type State interface {
 	// GetUnitUUID returns the UUID of the unit with the given name.
 	GetUnitUUID(ctx context.Context, unitName coreunit.Name) (coreunit.UUID, error)
 
-	// UpdateUnitPorts opens and closes ports for the endpoints of a given unit.
-	// The opened and closed ports for the same endpoints must not conflict.
-	UpdateUnitPorts(ctx context.Context, unitUUID coreunit.UUID, openPorts, closePorts network.GroupedPortRanges) error
+	// ImportOpenUnitPorts opens ports for the endpoints of a given unit during
+	// migration. There can be no conflicts as no other ports for this give
+	// unit exist.
+	ImportOpenUnitPorts(ctx context.Context, unit coreunit.UUID, openPorts network.GroupedPortRanges) error
 }
 
 // Service provides the API for managing the opened ports for units.
@@ -82,13 +83,11 @@ func (s *Service) GetAllOpenedPorts(ctx context.Context) (port.UnitGroupedPortRa
 // GetMachineOpenedPorts returns the opened ports for all endpoints, for all the
 // units on the machine. Opened ports are grouped first by unit name and then by
 // endpoint.
-//
-// TODO: Once we have a core static machine uuid type, use it here.
-func (s *Service) GetMachineOpenedPorts(ctx context.Context, machineUUID string) (map[coreunit.Name]network.GroupedPortRanges, error) {
+func (s *Service) GetMachineOpenedPorts(ctx context.Context, machineUUID machine.UUID) (map[coreunit.Name]network.GroupedPortRanges, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
-	return s.st.GetMachineOpenedPorts(ctx, machineUUID)
+	return s.st.GetMachineOpenedPorts(ctx, machineUUID.String())
 }
 
 // GetApplicationOpenedPorts returns the opened ports for all the units of the
@@ -148,33 +147,17 @@ func atomisePortRange(portRange network.PortRange) []network.PortRange {
 	return ret
 }
 
-// UpdateUnitPorts opens and closes ports for the endpoints of a given unit.
-//
-// NOTE: There is a special wildcard endpoint "" that represents all endpoints.
-// Any operations applied to the wildcard endpoint will logically applied to all
-// endpoints.
-//
-// That is, if we open a port range on the wildcard endpoint, we will open it as
-// usual but as a side effect we close that port range on all other endpoints.
-//
-// On the other hand, if we close a specific endpoint's port range that is open
-// on the wildcard endpoint, we will close it on the wildcard endpoint and open
-// it on all other endpoints except the targeted endpoint.
-func (s *Service) UpdateUnitPorts(ctx context.Context, unitUUID coreunit.UUID, openPorts, closePorts network.GroupedPortRanges) error {
+// ImportOpenUnitPorts opens ports for the endpoints of a given unit during
+// migration.
+func (s *Service) ImportOpenUnitPorts(ctx context.Context, unitUUID coreunit.UUID, openPorts network.GroupedPortRanges) error {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
-	if len(openPorts.UniquePortRanges())+len(closePorts.UniquePortRanges()) == 0 {
+	if len(openPorts.UniquePortRanges()) == 0 {
 		return nil
 	}
 
-	allInputPortRanges := append(openPorts.UniquePortRanges(), closePorts.UniquePortRanges()...)
-	//  verify input port ranges do not conflict with each other.
-	if err := verifyNoPortRangeConflicts(allInputPortRanges, allInputPortRanges); err != nil {
-		return errors.Errorf("cannot update unit ports with conflict(s): %w", err)
-	}
-
-	if err := s.st.UpdateUnitPorts(ctx, unitUUID, openPorts, closePorts); err != nil {
+	if err := s.st.ImportOpenUnitPorts(ctx, unitUUID, openPorts); err != nil {
 		return errors.Errorf("failed to update unit ports: %w", err)
 	}
 	return nil
@@ -189,24 +172,4 @@ func (s *Service) GetUnitUUID(ctx context.Context, unitName coreunit.Name) (core
 		return "", errors.Capture(err)
 	}
 	return s.st.GetUnitUUID(ctx, unitName)
-}
-
-// verifyNoPortRangeConflicts verifies the provided port ranges do not conflict
-// with each other.
-//
-// A conflict occurs when two (or more) port ranges across all endpoints overlap,
-// but are not equal.
-func verifyNoPortRangeConflicts(rangesA, rangesB []network.PortRange) error {
-	var conflicts []error
-	for _, portRange := range rangesA {
-		for _, otherPortRange := range rangesB {
-			if portRange != otherPortRange && portRange.ConflictsWith(otherPortRange) {
-				conflicts = append(conflicts, errors.Errorf("[%s, %s]", portRange, otherPortRange))
-			}
-		}
-	}
-	if len(conflicts) == 0 {
-		return nil
-	}
-	return errors.Errorf("%w: %w", porterrors.PortRangeConflict, errors.Join(conflicts...))
 }

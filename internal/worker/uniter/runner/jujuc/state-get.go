@@ -8,7 +8,7 @@ import (
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/cmd/cmd"
 )
 
 // StateGetCommand implements the state-get command.
@@ -30,13 +30,13 @@ func NewStateGetCommand(ctx Context) (cmd.Command, error) {
 // Info implements part of the cmd.Command interface.
 func (c *StateGetCommand) Info() *cmd.Info {
 	doc := `
-state-get prints the value of the server side state specified by key.
-If no key is given, or if the key is "-", all keys and values will be printed.
+` + "`state-get`" + ` prints the value of the server side state specified by key.
+If no key is given, or if the key is ` + "`" + `"-"` + "`" + `, all keys and values will be printed.
 `
 	return jujucmd.Info(&cmd.Info{
 		Name:    "state-get",
 		Args:    "[<key>]",
-		Purpose: "Print server-side-state value.",
+		Purpose: "Prints server-side-state value.",
 		Doc:     doc,
 		SeeAlso: []string{"state-delete", "state-set"},
 	})
@@ -46,7 +46,7 @@ If no key is given, or if the key is "-", all keys and values will be printed.
 // SetFlags implements part of the cmd.Command interface.
 func (c *StateGetCommand) SetFlags(f *gnuflag.FlagSet) {
 	c.out.AddFlags(f, "smart", cmd.DefaultFormatters.Formatters())
-	f.BoolVar(&c.strict, "strict", false, "Return an error if the requested key does not exist")
+	f.BoolVar(&c.strict, "strict", false, "Returns an error if the requested key does not exist.")
 }
 
 // Init initializes the Command before running.

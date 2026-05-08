@@ -19,10 +19,10 @@ import (
 	"gopkg.in/macaroon.v2"
 
 	"github.com/juju/juju/api/base"
+	jujumacaroon "github.com/juju/juju/api/macaroon"
 	jujuversion "github.com/juju/juju/core/version"
 	"github.com/juju/juju/internal/featureflag"
 	jujuhttp "github.com/juju/juju/internal/http"
-	jujumacaroon "github.com/juju/juju/internal/macaroon"
 	"github.com/juju/juju/rpc"
 	"github.com/juju/juju/rpc/params"
 )
@@ -35,16 +35,14 @@ func NewLegacyLoginProvider(
 	password string,
 	nonce string,
 	macaroons []macaroon.Slice,
-	bakeryClient *httpbakery.Client,
 	cookieURL *url.URL,
 ) *legacyLoginProvider {
 	return &legacyLoginProvider{
-		tag:          tag,
-		password:     password,
-		nonce:        nonce,
-		macaroons:    macaroons,
-		bakeryClient: bakeryClient,
-		cookieURL:    cookieURL,
+		tag:       tag,
+		password:  password,
+		nonce:     nonce,
+		macaroons: macaroons,
+		cookieURL: cookieURL,
 	}
 }
 
@@ -56,8 +54,13 @@ type legacyLoginProvider struct {
 	password     string
 	nonce        string
 	macaroons    []macaroon.Slice
-	bakeryClient *httpbakery.Client
+	bakeryClient base.MacaroonDischarger
 	cookieURL    *url.URL
+}
+
+// String returns a string representation of the legacy login provider.
+func (p *legacyLoginProvider) String() string {
+	return "LegacyLoginProvider"
 }
 
 // AuthHeader implements the [LoginProvider.AuthHeader] method.
@@ -104,7 +107,7 @@ func (p *legacyLoginProvider) addCookiesToHeader(h http.Header) error {
 	}
 	var cookies []*http.Cookie
 	if p.bakeryClient != nil {
-		cookies = p.bakeryClient.Client.Jar.Cookies(p.cookieURL)
+		cookies = p.bakeryClient.CookieJar().Cookies(p.cookieURL)
 		for _, c := range cookies {
 			req.AddCookie(c)
 		}
@@ -135,6 +138,10 @@ func (p *legacyLoginProvider) Login(ctx context.Context, caller base.APICaller) 
 	if p.tag != nil {
 		authTag = p.tag.String()
 	}
+	// Store the bakery client for later use in AuthHeader()
+	// when we want to authenticate HTTP requests.
+	p.bakeryClient = caller.BakeryClient()
+
 	request := &params.LoginRequest{
 		AuthTag:       authTag,
 		Credentials:   p.password,
@@ -155,7 +162,7 @@ func (p *legacyLoginProvider) Login(ctx context.Context, caller base.APICaller) 
 		// Add any macaroons from the cookie jar that might work for
 		// authenticating the login request.
 		request.Macaroons = append(request.Macaroons,
-			httpbakery.MacaroonsForURL(p.bakeryClient.Jar, p.cookieURL)...,
+			httpbakery.MacaroonsForURL(p.bakeryClient.CookieJar(), p.cookieURL)...,
 		)
 	}
 	var result params.LoginResult
@@ -165,7 +172,7 @@ func (p *legacyLoginProvider) Login(ctx context.Context, caller base.APICaller) 
 			return nil, errors.Trace(err)
 		}
 
-		if rpcErr, ok := errors.Cause(err).(*rpc.RequestError); ok {
+		if rpcErr, ok := errors.AsType[*rpc.RequestError](err); ok {
 			var redirInfo params.RedirectErrorInfo
 			err := rpcErr.UnmarshalInfo(&redirInfo)
 			if err == nil && redirInfo.CACert != "" && len(redirInfo.Servers) != 0 {
@@ -234,7 +241,7 @@ func (p *legacyLoginProvider) Login(ctx context.Context, caller base.APICaller) 
 			return nil, errors.Trace(err)
 		}
 		// Add the macaroons that have been saved by HandleError to our login request.
-		request.Macaroons = httpbakery.MacaroonsForURL(p.bakeryClient.Jar, p.cookieURL)
+		request.Macaroons = httpbakery.MacaroonsForURL(p.bakeryClient.CookieJar(), p.cookieURL)
 		result = params.LoginResult{} // zero result
 		err = caller.APICall(ctx, "Admin", 3, "", "Login", request, &result)
 		if err != nil {

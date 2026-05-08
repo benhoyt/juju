@@ -14,11 +14,11 @@ import (
 // PreUpgradeStepsFunc is the function type of PreUpgradeSteps. This may be
 // used to provide an alternative to PreUpgradeSteps to the upgrade steps
 // worker.
-type PreUpgradeStepsFunc func(_ agent.Config, isController bool) error
+type PreUpgradeStepsFunc func(_ agent.Config) error
 
 // PreUpgradeSteps runs various checks and prepares for performing an upgrade.
 // If any check fails, an error is returned which aborts the upgrade.
-func PreUpgradeSteps(agentConf agent.Config, isController bool) error {
+func PreUpgradeSteps(agentConf agent.Config) error {
 	if err := CheckFreeDiskSpace(agentConf.DataDir(), MinDiskSpaceMib); err != nil {
 		return errors.Trace(err)
 	}
@@ -28,7 +28,7 @@ func PreUpgradeSteps(agentConf agent.Config, isController bool) error {
 // PreUpgradeStepsCAAS runs various checks for CAAS and prepares for
 // performing an upgrade. If any check fails, an error is returned which
 // aborts the upgrade.
-func PreUpgradeStepsCAAS(agentConf agent.Config, isController bool) error {
+func PreUpgradeStepsCAAS(agentConf agent.Config) error {
 	return nil
 }
 

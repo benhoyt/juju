@@ -8,11 +8,8 @@ import (
 	"database/sql"
 
 	"github.com/canonical/sqlair"
-	"github.com/juju/collections/set"
-	"github.com/juju/collections/transform"
 	"gopkg.in/macaroon.v2"
 
-	coreapplication "github.com/juju/juju/core/application"
 	coredatabase "github.com/juju/juju/core/database"
 	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
@@ -23,12 +20,12 @@ import (
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	"github.com/juju/juju/domain/crossmodelrelation"
 	crossmodelrelationerrors "github.com/juju/juju/domain/crossmodelrelation/errors"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/domain/life"
 	domainrelation "github.com/juju/juju/domain/relation"
 	relationerrors "github.com/juju/juju/domain/relation/errors"
 	sequencestate "github.com/juju/juju/domain/sequence/state"
 	"github.com/juju/juju/domain/status"
-	internalcharm "github.com/juju/juju/internal/charm"
 	internaldatabase "github.com/juju/juju/internal/database"
 	"github.com/juju/juju/internal/errors"
 	internaluuid "github.com/juju/juju/internal/uuid"
@@ -121,13 +118,6 @@ func (st *State) AddConsumedRelation(
 		return errors.Capture(err)
 	}
 
-	// Check that the charm has only one endpoint. There can be multiple
-	// synthetic applications per offer, but only one endpoint per synthetic
-	// application. To do otherwise requires design and facade changes.
-	if err := synthCharmHasOnlyOneEndpoint(args.ConsumerApplicationEndpoint, args.Charm); err != nil {
-		return errors.Errorf("adding consumed relation: %w", err)
-	}
-
 	if err := db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
 		// Get the application UUID for which the offer UUID was created.
 		_, offerApplicationUUID, err := st.getApplicationNameAndUUIDByOfferUUID(ctx, tx, args.OfferUUID)
@@ -135,7 +125,7 @@ func (st *State) AddConsumedRelation(
 			return errors.Capture(err)
 		}
 
-		if err := st.checkApplicationAlive(ctx, tx, offerApplicationUUID); err != nil {
+		if err := st.checkApplicationNotDead(ctx, tx, offerApplicationUUID); err != nil {
 			return errors.Capture(err)
 		}
 
@@ -210,24 +200,6 @@ func (st *State) AddConsumedRelation(
 	}
 
 	return nil
-}
-
-func synthCharmHasOnlyOneEndpoint(endpoint string, ch charm.Charm) error {
-	provides := transform.MapToSlice(ch.Metadata.Provides, func(k string, _ charm.Relation) []string {
-		return []string{k}
-	})
-	requires := transform.MapToSlice(ch.Metadata.Requires, func(k string, _ charm.Relation) []string {
-		return []string{k}
-	})
-	providesSet := set.NewStrings(provides...)
-	requiresSet := set.NewStrings(requires...)
-	cnt := providesSet.Size() + requiresSet.Size()
-	if providesSet.Union(requiresSet).Contains(endpoint) && cnt == 1 {
-		return nil
-	} else if cnt > 1 {
-		return errors.Errorf("application in relation has more than one potential endpoint").Add(relationerrors.AmbiguousRelation)
-	}
-	return errors.Errorf("endpoint %q", endpoint).Add(relationerrors.RelationEndpointNotFound)
 }
 
 // GetRemoteApplicationOfferers returns all the current non-dead remote
@@ -318,6 +290,42 @@ WHERE a.name = $name.name`, uuid{}, name{})
 	return result.UUID, nil
 }
 
+// GetRemoteConsumerApplicationName returns the sanem of the synthetic
+// application for the specified UUID.
+// It returns an error satisfying [crossmodelrelationerrors.RemoteApplicationNotFound]
+// if the application does not exist.
+func (st *State) GetRemoteConsumerApplicationName(ctx context.Context, consumingAppUUID string) (string, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	appUUID := uuid{UUID: consumingAppUUID}
+	stmt, err := st.Prepare(`
+SELECT a.name AS &name.name 
+FROM   application a
+JOIN   application_remote_consumer AS arc ON a.uuid = arc.offer_connection_uuid
+WHERE  arc.consumer_application_uuid = $uuid.uuid`, appUUID, name{})
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	var result name
+	if err := db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err = tx.Query(ctx, stmt, appUUID).Get(&result)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return crossmodelrelationerrors.RemoteApplicationNotFound
+		} else if err != nil {
+			return errors.Capture(err)
+		}
+		return nil
+	}); err != nil {
+		return "", errors.Capture(err)
+	}
+
+	return result.Name, nil
+}
+
 // GetRemoteApplicationConsumers returns all the current non-dead remote
 // application consumers in the local model.
 func (st *State) GetRemoteApplicationConsumers(ctx context.Context) ([]crossmodelrelation.RemoteApplicationConsumer, error) {
@@ -386,20 +394,9 @@ func (st *State) EnsureUnitsExist(ctx context.Context, appUUID string, units []s
 			return errors.Errorf("getting charm UUID for application %q: %w", appUUID, err)
 		}
 
-		// Create a new unique net node uuid for each unit.
-		netNodeUUID, err := internaluuid.NewUUID()
-		if err != nil {
-			return errors.Capture(err)
-		}
-		netNodeUUIDStr := netNodeUUID.String()
-
-		if err := st.insertNetNode(ctx, tx, netNodeUUIDStr); err != nil {
-			return errors.Errorf("inserting net node: %w", err)
-		}
-
 		// Create the missing units.
 		for _, unitName := range missingUnits {
-			if err := st.insertUnit(ctx, tx, unitName, appUUID, charmUUID, netNodeUUIDStr); err != nil {
+			if err := st.insertUnit(ctx, tx, unitName, appUUID, charmUUID); err != nil {
 				return errors.Errorf("inserting unit %q: %w", unitName, err)
 			}
 		}
@@ -432,7 +429,7 @@ func (st *State) insertApplication(
 	name string,
 	args insertApplicationArgs,
 ) error {
-	appDetails := applicationDetails{
+	appDetails := setApplicationDetails{
 		UUID:      args.ApplicationUUID,
 		Name:      name,
 		CharmUUID: args.CharmUUID,
@@ -444,7 +441,7 @@ func (st *State) insertApplication(
 		SpaceUUID: network.AlphaSpaceId.String(),
 	}
 
-	createApplication := `INSERT INTO application (*) VALUES ($applicationDetails.*)`
+	createApplication := `INSERT INTO application (*) VALUES ($setApplicationDetails.*)`
 	createApplicationStmt, err := st.Prepare(createApplication, appDetails)
 	if err != nil {
 		return errors.Capture(err)
@@ -505,7 +502,7 @@ func (st *State) insertRemoteApplicationOfferer(
 	statusInfo := status.StatusInfo[status.WorkloadStatusType]{
 		Status:  status.WorkloadStatusUnknown,
 		Message: "waiting for first status update",
-		Since:   ptr(st.clock.Now().UTC()),
+		Since:   new(st.clock.Now().UTC()),
 	}
 	if err := st.insertRemoteApplicationOffererStatus(ctx, tx, args.RemoteApplicationUUID, statusInfo); err != nil {
 		return errors.Errorf("inserting remote application offerer status: %w", err)
@@ -855,14 +852,14 @@ WHERE  uuid = $uuid.uuid
 // If the application name is available, nil is returned. If the application
 // name is not available, [applicationerrors.ApplicationAlreadyExists] is
 // returned.
-func (st *State) checkApplicationNameAvailable(ctx context.Context, tx *sqlair.TX, name string) error {
-	app := applicationDetails{Name: name}
+func (st *State) checkApplicationNameAvailable(ctx context.Context, tx *sqlair.TX, appName string) error {
+	app := name{Name: appName}
 
 	var result countResult
 	existsQueryStmt, err := st.Prepare(`
 SELECT COUNT(*) AS &countResult.count
 FROM application
-WHERE name = $applicationDetails.name
+WHERE name = $name.name
 `, app, result)
 	if err != nil {
 		return errors.Capture(err)
@@ -871,7 +868,7 @@ WHERE name = $applicationDetails.name
 	if err := tx.Query(ctx, existsQueryStmt, app).Get(&result); errors.Is(err, sqlair.ErrNoRows) {
 		return nil
 	} else if err != nil {
-		return errors.Errorf("checking if application %q exists: %w", name, err)
+		return errors.Errorf("checking if application %q exists: %w", appName, err)
 	}
 	if result.Count > 0 {
 		return applicationerrors.ApplicationAlreadyExists
@@ -912,30 +909,87 @@ WHERE offer_uuid = $uuid.uuid
 // for the given offer UUID.
 // Returns [applicationerrors.ApplicationNotFound] if the offer or associated
 // application is not found.
-func (st *State) GetApplicationNameAndUUIDByOfferUUID(ctx context.Context, offerUUID string) (string, coreapplication.UUID, error) {
+func (st *State) GetApplicationNameAndUUIDByOfferUUID(ctx context.Context, offerUUID string) (string, string, error) {
 	db, err := st.DB(ctx)
 	if err != nil {
 		return "", "", errors.Capture(err)
 	}
 
-	var (
-		applicationName string
-		applicationUUID string
-	)
+	var applicationName, applicationUUID string
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		name, uuid, err := st.getApplicationNameAndUUIDByOfferUUID(ctx, tx, offerUUID)
+		var err error
+		applicationName, applicationUUID, err = st.getApplicationNameAndUUIDByOfferUUID(ctx, tx, offerUUID)
 		if err != nil {
 			return errors.Capture(err)
 		}
-		applicationName = name
-		applicationUUID = uuid
 		return nil
 	})
 	if err != nil {
 		return "", "", errors.Capture(err)
 	}
 
-	return applicationName, coreapplication.UUID(applicationUUID), nil
+	return applicationName, applicationUUID, nil
+}
+
+// GetSyntheticApplicationUUIDByRemoteToken returns the
+// synthetic application UUID for the given offer UUID and the remote relation
+// UUID. Returns [applicationerrors.ApplicationNotFound] if the offer or
+// associated synthetic application is not found.
+func (st *State) GetSyntheticApplicationUUIDByRemoteToken(ctx context.Context, offerOrAppToken string, remRelationUUID string) (string, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	// The offer connection is a mapping between the offer and the synthetic
+	// application on the consuming side. Getting the offer connection for the
+	// offer UUID and remote relation UUID allows us to retrieve the synthetic
+	// application UUID.
+	offerStmt, err := st.Prepare(`
+SELECT oc.uuid AS &uuid.uuid
+FROM   offer_connection AS oc
+WHERE  oc.offer_uuid = $uuid.uuid
+AND    oc.remote_relation_uuid = $remoteRelationUUID.uuid
+`, uuid{}, remoteRelationUUID{})
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	appStmt, err := st.Prepare(`
+SELECT a.uuid AS &uuid.uuid
+FROM application_remote_consumer AS arc
+JOIN application AS a ON a.uuid = arc.offer_connection_uuid
+WHERE arc.consumer_application_uuid = $uuid.uuid`, uuid{})
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	var res uuid
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		// Get the offer connection for the offer UUID and remote relation UUID.
+		// If it doesn't exist, attempt to look up the application of the offer
+		// UUID.
+		err := tx.Query(ctx, offerStmt, uuid{UUID: offerOrAppToken}, remoteRelationUUID{UUID: remRelationUUID}).Get(&res)
+		if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
+			return errors.Errorf("retrieving synthetic application UID from offer %q: %w", offerOrAppToken, err)
+		} else if err == nil {
+			return nil
+		}
+
+		err = tx.Query(ctx, appStmt, uuid{UUID: offerOrAppToken}).Get(&res)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return applicationerrors.ApplicationNotFound
+		} else if err != nil {
+			return errors.Errorf("retrieving synthetic application UUID from application token %q: %w", offerOrAppToken, err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	return res.UUID, nil
 }
 
 // InitialWatchStatementForConsumerRelations returns the namespace and the
@@ -1418,8 +1472,16 @@ func (st *State) insertUnit(
 	unitName string,
 	appUUID string,
 	charmUUID string,
-	netNodeUUID string,
 ) error {
+	netNodeUUID, err := internaluuid.NewUUID()
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	if err := st.insertNetNode(ctx, tx, netNodeUUID.String()); err != nil {
+		return errors.Errorf("inserting net node: %w", err)
+	}
+
 	unitUUID, err := internaluuid.NewUUID()
 	if err != nil {
 		return errors.Capture(err)
@@ -1430,7 +1492,7 @@ func (st *State) insertUnit(
 		UnitUUID:      unitUUID.String(),
 		CharmUUID:     charmUUID,
 		Name:          unitName,
-		NetNodeID:     netNodeUUID,
+		NetNodeID:     netNodeUUID.String(),
 		LifeID:        life.Alive,
 	}
 
@@ -1686,4 +1748,96 @@ AND    cs.name = 'cmr'`, countResult{}, name{})
 	}
 
 	return result.Count > 0, nil
+}
+
+// IsRemoteApplicationConsumer checks if the given application UUID exists in
+// the model and is a remote application consumer.
+func (st *State) IsRemoteApplicationConsumer(ctx context.Context, appUUID string) (bool, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return false, errors.Capture(err)
+	}
+
+	stmt, err := st.Prepare(`
+SELECT COUNT(*) AS &countResult.count
+FROM   application_remote_consumer AS a
+WHERE  a.offer_connection_uuid = $uuid.uuid
+`, countResult{}, uuid{})
+	if err != nil {
+		return false, errors.Capture(err)
+	}
+
+	var result countResult
+	if err := db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err = tx.Query(ctx, stmt, uuid{UUID: appUUID}).Get(&result)
+		if err != nil {
+			return errors.Capture(err)
+		}
+		return nil
+	}); err != nil {
+		return false, errors.Capture(err)
+	}
+
+	return result.Count > 0, nil
+}
+
+// GetRelationRemoteModelUUID returns the remote model UUID for the given
+// relation UUID. This method works for both offerer and consumer side
+// relations by checking which application in the relation is synthetic
+// (from cross-model relation tables).
+//
+// For consumer side: returns the offerer_model_uuid from
+// application_remote_offerer.
+// For offerer side: returns the consumer_model_uuid from
+// application_remote_consumer.
+//
+// The following error types can be expected:
+//   - [relationerrors.RelationNotFound]: when the relation with the
+//     given UUID does not exist.
+//   - [crossmodelrelationerrors.RelationNotCrossModel]: when the relation with
+//     the given UUID is not a cross-model relation.
+func (st *State) GetRelationRemoteModelUUID(ctx context.Context, relationUUID corerelation.UUID) (coremodel.UUID, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	stmt, err := st.Prepare(`
+SELECT COALESCE(aro.offerer_model_uuid, arc.consumer_model_uuid) AS &remoteModelUUID.uuid
+FROM   relation AS r
+JOIN   relation_endpoint AS re ON r.uuid = re.relation_uuid
+JOIN   application_endpoint AS ae ON re.endpoint_uuid = ae.uuid
+JOIN   application AS a ON ae.application_uuid = a.uuid
+LEFT JOIN application_remote_offerer AS aro ON a.uuid = aro.application_uuid
+LEFT JOIN application_remote_consumer AS arc ON a.uuid = arc.offer_connection_uuid
+WHERE  r.uuid = $remoteRelationUUID.uuid
+`, remoteModelUUID{}, remoteRelationUUID{})
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	var results []remoteModelUUID
+	relationUUIDArg := remoteRelationUUID{UUID: relationUUID.String()}
+	if err := db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err = tx.Query(ctx, stmt, relationUUIDArg).GetAll(&results)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return relationerrors.RelationNotFound
+		} else if err != nil {
+			return errors.Capture(err)
+		}
+		return nil
+	}); err != nil {
+		return "", errors.Capture(err)
+	}
+
+	// Find the first endpoint with a non-NULL remote model UUID.
+	for _, result := range results {
+		if result.UUID.Valid {
+			return coremodel.UUID(result.UUID.String), nil
+		}
+	}
+
+	// All endpoints returned NULL, meaning the relation exists but is not
+	// cross-model.
+	return "", crossmodelrelationerrors.RelationNotCrossModel
 }

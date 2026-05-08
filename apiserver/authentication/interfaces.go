@@ -40,6 +40,12 @@ type AuthInfo struct {
 	// Controller reports whether or not the authenticated
 	// entity is a controller agent.
 	Controller bool
+
+	// IsExternallyAuthenticated reports whether the entity was authenticated
+	// via an external mechanism (JWT or macaroon discharge for an external
+	// user). Set by the authenticator; used to drive external user creation at
+	// login.
+	IsExternallyAuthenticated bool
 }
 
 // AuthParams holds the info used to authenticate a login request.
@@ -60,10 +66,10 @@ type AuthParams struct {
 }
 
 // PermissionDelegator is an interface that represents a window back into the
-// original authentication method that generated an AuthInfo struct. Specifically
-// it allows users of AuthInfo to ask specific details about an entity's
-// permissions that needs response aligned with the way in which they were
-// authenticated.
+// original authentication method that generated an AuthInfo struct.
+// Specifically it allows users of AuthInfo to ask specific details about an
+// entity's permissions that needs response aligned with the way in which they
+// were authenticated.
 type PermissionDelegator interface {
 	// SubjectPermissions returns the permission the entity has for the
 	// specified subject.
@@ -88,6 +94,9 @@ type EntityAuthenticator interface {
 type Authorizer interface {
 	Authorize(context.Context, AuthInfo) error
 }
+
+// AuthorizerFunc is a func type implementing the [Authorizer] interface.
+type AuthorizerFunc func(context.Context, AuthInfo) error
 
 // HTTPAuthenticator provides an interface for authenticating a raw http request
 // from a client.
@@ -121,6 +130,11 @@ type LoginAuthenticator interface {
 type RequestAuthenticator interface {
 	HTTPAuthenticator
 	LoginAuthenticator
+}
+
+// Authorize calls the func represented by [AuthorizeFunc] return the result.
+func (f AuthorizerFunc) Authorize(c context.Context, i AuthInfo) error {
+	return f(c, i)
 }
 
 // SubjectPermissions is a convenience wrapper around the AuthInfo permissions

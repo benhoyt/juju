@@ -28,17 +28,17 @@ type SecretService interface {
 		revision *int,
 		labels domainsecret.Labels,
 	) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error)
-	ListCharmSecrets(ctx context.Context, owners ...secretservice.CharmSecretOwner) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error)
+	ListCharmSecrets(ctx context.Context, owners ...domainsecret.CharmSecretOwner) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error)
 
 	// Delete secrets.
 
-	DeleteSecret(ctx context.Context, uri *secrets.URI, params secretservice.DeleteSecretParams) error
+	DeleteSecret(ctx context.Context, uri *secrets.URI, params domainsecret.DeleteSecretParams) error
 
 	// Grant/revoke secret access.
 
 	GetSecretGrants(ctx context.Context, uri *secrets.URI, role secrets.SecretRole) ([]secretservice.SecretAccess, error)
-	GrantSecretAccess(ctx context.Context, uri *secrets.URI, p secretservice.SecretAccessParams) error
-	RevokeSecretAccess(ctx context.Context, uri *secrets.URI, p secretservice.SecretAccessParams) error
+	GrantSecretAccess(ctx context.Context, uri *secrets.URI, p domainsecret.SecretAccessParams) error
+	RevokeSecretAccess(ctx context.Context, uri *secrets.URI, p domainsecret.SecretAccessParams) error
 }
 
 // SecretBackendService provides access to the secret backend service,

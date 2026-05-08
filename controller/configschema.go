@@ -24,6 +24,9 @@ var configChecker = schema.FieldMap(schema.Fields{
 	LoginTokenRefreshURL:               schema.String(),
 	IdentityURL:                        schema.String(),
 	IdentityPublicKey:                  schema.String(),
+	IdleConnectionTimeout:              schema.TimeDuration(),
+	HTTPServerReadTimeout:              schema.TimeDuration(),
+	HTTPServerWriteTimeout:             schema.TimeDuration(),
 	SetNUMAControlPolicyKey:            schema.Bool(),
 	AutocertURLKey:                     schema.String(),
 	AutocertDNSNameKey:                 schema.String(),
@@ -50,17 +53,13 @@ var configChecker = schema.FieldMap(schema.Fields{
 	ControllerResourceDownloadLimit:    schema.ForceInt(),
 	QueryTracingEnabled:                schema.Bool(),
 	QueryTracingThreshold:              schema.TimeDurationString(),
+	DqliteBusyTimeout:                  schema.TimeDurationString(),
 	OpenTelemetryEnabled:               schema.Bool(),
 	OpenTelemetryEndpoint:              schema.String(),
 	OpenTelemetryInsecure:              schema.Bool(),
 	OpenTelemetryStackTraces:           schema.Bool(),
 	OpenTelemetrySampleRatio:           schema.String(),
 	OpenTelemetryTailSamplingThreshold: schema.TimeDurationString(),
-	ObjectStoreType:                    schema.String(),
-	ObjectStoreS3Endpoint:              schema.String(),
-	ObjectStoreS3StaticKey:             schema.String(),
-	ObjectStoreS3StaticSecret:          schema.String(),
-	ObjectStoreS3StaticSession:         schema.String(),
 	SystemSSHKeys:                      schema.String(),
 	JujudControllerSnapSource:          schema.String(),
 	SSHServerPort:                      schema.ForceInt(),
@@ -78,6 +77,9 @@ var configChecker = schema.FieldMap(schema.Fields{
 	LoginTokenRefreshURL:               schema.Omit,
 	IdentityURL:                        schema.Omit,
 	IdentityPublicKey:                  schema.Omit,
+	IdleConnectionTimeout:              DefaultIdleConnectionTimeout,
+	HTTPServerReadTimeout:              DefaultHTTPServerReadTimeout,
+	HTTPServerWriteTimeout:             DefaultHTTPServerWriteTimeout,
 	SetNUMAControlPolicyKey:            DefaultNUMAControlPolicy,
 	AutocertURLKey:                     schema.Omit,
 	AutocertDNSNameKey:                 schema.Omit,
@@ -104,17 +106,13 @@ var configChecker = schema.FieldMap(schema.Fields{
 	ControllerResourceDownloadLimit:    schema.Omit,
 	QueryTracingEnabled:                DefaultQueryTracingEnabled,
 	QueryTracingThreshold:              DefaultQueryTracingThreshold,
+	DqliteBusyTimeout:                  DefaultDqliteBusyTimeout,
 	OpenTelemetryEnabled:               DefaultOpenTelemetryEnabled,
 	OpenTelemetryEndpoint:              schema.Omit,
 	OpenTelemetryInsecure:              DefaultOpenTelemetryInsecure,
 	OpenTelemetryStackTraces:           DefaultOpenTelemetryStackTraces,
 	OpenTelemetrySampleRatio:           fmt.Sprintf("%.02f", DefaultOpenTelemetrySampleRatio),
 	OpenTelemetryTailSamplingThreshold: DefaultOpenTelemetryTailSamplingThreshold,
-	ObjectStoreType:                    DefaultObjectStoreType,
-	ObjectStoreS3Endpoint:              schema.Omit,
-	ObjectStoreS3StaticKey:             schema.Omit,
-	ObjectStoreS3StaticSecret:          schema.Omit,
-	ObjectStoreS3StaticSession:         schema.Omit,
 	SystemSSHKeys:                      schema.Omit,
 	JujudControllerSnapSource:          DefaultJujudControllerSnapSource,
 	SSHServerPort:                      DefaultSSHServerPort,
@@ -167,6 +165,25 @@ var ConfigSchema = configschema.Fields{
 	ControllerName: {
 		Type:        configschema.Tstring,
 		Description: `The canonical name of the controller`,
+	},
+	IdleConnectionTimeout: {
+		Type: configschema.Tstring,
+		Description: `The time the controller will wait between
+resets of all idle connections. By default, every 10 minutes
+the controller will close all idle connections.
+`,
+	},
+	HTTPServerReadTimeout: {
+		Type: configschema.Tstring,
+		Description: `The maximum duration for reading the entire HTTP request, including the body.
+A zero value means no timeout. The default is 0 (no timeout). Set to a non-zero value
+(e.g., 60s) if you need to prevent indefinite reads.`,
+	},
+	HTTPServerWriteTimeout: {
+		Type: configschema.Tstring,
+		Description: `The maximum duration before timing out writes of the HTTP response.
+A zero value means no timeout. The default is 0 (no timeout). Set to a non-zero value
+(e.g., 60s) if you need to prevent indefinite writes.`,
 	},
 	LoginTokenRefreshURL: {
 		Type:        configschema.Tstring,
@@ -277,9 +294,18 @@ Use "caas-image-repo" instead.`,
 	},
 	QueryTracingThreshold: {
 		Type: configschema.Tstring,
-		Description: `The minimum duration of a query for it to be traced. The lower the
-threshold, the more queries will be output. A value of 0 means all queries
-will be output if tracing is enabled.`,
+		Description: `
+The minimum duration of a query for it to be traced. The lower the
+threshold, the more queries will be output. A value of 0 means all
+queries will be output if tracing is enabled.`[1:],
+	},
+	DqliteBusyTimeout: {
+		Type: configschema.Tstring,
+		Description: `
+The timeout for how long a database operation will wait for a lock
+to be released before returning an error, that is the amount of
+time a writer will wait for others to finish writing on the
+same database.`[1:],
 	},
 	OpenTelemetryEnabled: {
 		Type:        configschema.Tbool,
@@ -304,26 +330,6 @@ will be output if tracing is enabled.`,
 	OpenTelemetryTailSamplingThreshold: {
 		Type:        configschema.Tstring,
 		Description: "Allows defining a tail sampling threshold open telemetry tracing",
-	},
-	ObjectStoreType: {
-		Type:        configschema.Tstring,
-		Description: `The type of object store backend to use for storing blobs`,
-	},
-	ObjectStoreS3Endpoint: {
-		Type:        configschema.Tstring,
-		Description: `The s3 endpoint for the object store backend`,
-	},
-	ObjectStoreS3StaticKey: {
-		Type:        configschema.Tstring,
-		Description: `The s3 static key for the object store backend`,
-	},
-	ObjectStoreS3StaticSecret: {
-		Type:        configschema.Tstring,
-		Description: `The s3 static secret for the object store backend`,
-	},
-	ObjectStoreS3StaticSession: {
-		Type:        configschema.Tstring,
-		Description: `The s3 static session for the object store backend`,
 	},
 	SystemSSHKeys: {
 		Type:        configschema.Tstring,

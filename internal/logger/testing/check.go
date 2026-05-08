@@ -8,7 +8,7 @@ import (
 	"fmt"
 
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 
 	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/model"
@@ -198,6 +198,7 @@ func (c checkLoggerContext) Config() logger.Config {
 // writer exists with the specified name, an error is returned.
 //
 // Note: we're relying on loggo.Writer here, until we do model level logging.
+//
 // Deprecated: This will be removed in the future and is only here whilst
 // we cut things across.
 func (c checkLoggerContext) AddWriter(name string, writer loggo.Writer) error {

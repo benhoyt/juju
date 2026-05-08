@@ -10,8 +10,8 @@ import (
 	"github.com/canonical/sqlair"
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 
 	"github.com/juju/juju/core/changestream"
 	coredatabase "github.com/juju/juju/core/database"
@@ -47,7 +47,7 @@ func NewWatchableDB(
 ) (WatchableDBWorker, error) {
 	stream := stream.New(tag, db, fileNotifier, clock, metrics, logger)
 
-	mux, err := eventmultiplexer.New(stream, clock, metrics, logger)
+	mux, err := eventmultiplexer.New(stream, clock, metrics, logger, 0)
 	if err != nil {
 		stream.Kill()
 		return nil, errors.Trace(err)
@@ -111,8 +111,8 @@ func (w *WatchableDB) Subscribe(summary string, opts ...changestream.Subscriptio
 }
 
 // Report returns the report from the stream muxer.
-func (w *WatchableDB) Report() map[string]any {
-	return w.mux.Report()
+func (w *WatchableDB) Report(ctx context.Context) map[string]any {
+	return w.mux.Report(ctx)
 }
 
 func (w *WatchableDB) loop() error {

@@ -5,12 +5,13 @@ package config_test
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 	stdtesting "testing"
 	"time"
 
 	"github.com/juju/collections/set"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/proxy"
 	"github.com/juju/schema"
 	"github.com/juju/tc"
@@ -54,7 +55,6 @@ var sampleConfig = testing.Attrs{
 	"development":                false,
 	"default-base":               jujuversion.DefaultSupportedLTSBase().String(),
 	"disable-network-management": false,
-	"ignore-machine-addresses":   false,
 	"automatically-retry-hooks":  true,
 	"proxy-ssh":                  false,
 	"resource-tags":              []string{},
@@ -173,25 +173,6 @@ var configTests = []configTest{
 		useDefaults: config.UseDefaults,
 		attrs: minimalConfigAttrs.Merge(testing.Attrs{
 			"disable-network-management": true,
-		}),
-	}, {
-		about:       "Invalid ignore-machine-addresses flag",
-		useDefaults: config.UseDefaults,
-		attrs: minimalConfigAttrs.Merge(testing.Attrs{
-			"ignore-machine-addresses": "invalid",
-		}),
-		err: `ignore-machine-addresses: expected bool, got string\("invalid"\)`,
-	}, {
-		about:       "ignore-machine-addresses off",
-		useDefaults: config.UseDefaults,
-		attrs: minimalConfigAttrs.Merge(testing.Attrs{
-			"ignore-machine-addresses": false,
-		}),
-	}, {
-		about:       "ignore-machine-addresses on",
-		useDefaults: config.UseDefaults,
-		attrs: minimalConfigAttrs.Merge(testing.Attrs{
-			"ignore-machine-addresses": true,
 		}),
 	}, {
 		about:       "set-numa-control-policy on",
@@ -386,7 +367,7 @@ var configTests = []configTest{
 	}, {
 		about:       "Config settings from juju actual installation",
 		useDefaults: config.NoDefaults,
-		attrs: map[string]interface{}{
+		attrs: map[string]any{
 			"name":                       "sample",
 			"development":                false,
 			"ssl-hostname-verification":  true,
@@ -398,7 +379,6 @@ var configTests = []configTest{
 			"agent-version":              "1.13.2",
 			"firewall-mode":              "instance",
 			"disable-network-management": false,
-			"ignore-machine-addresses":   false,
 			"automatically-retry-hooks":  true,
 			"proxy-ssh":                  false,
 			"resource-tags":              []string{},
@@ -735,7 +715,7 @@ func (test configTest) check(c *tc.C) {
 func (s *ConfigSuite) TestAllAttrs(c *tc.C) {
 	// Normally this is handled by jujutesting.FakeHome
 	s.PatchEnvironment(osenv.JujuLoggingConfigEnvKey, "")
-	attrs := map[string]interface{}{
+	attrs := map[string]any{
 		"type":                       "my-type",
 		"name":                       "my-name",
 		"uuid":                       "90168e4c-2f10-4e9c-83c2-1fb55a58e5a9",
@@ -744,7 +724,6 @@ func (s *ConfigSuite) TestAllAttrs(c *tc.C) {
 		"ssl-hostname-verification":  true,
 		"default-base":               jujuversion.DefaultSupportedLTSBase().String(),
 		"disable-network-management": false,
-		"ignore-machine-addresses":   false,
 		"automatically-retry-hooks":  true,
 		"proxy-ssh":                  false,
 		"development":                false,
@@ -759,9 +738,9 @@ func (s *ConfigSuite) TestAllAttrs(c *tc.C) {
 	// Default firewall mode is instance
 	attrs["firewall-mode"] = string(config.FwInstance)
 	c.Assert(cfg.AllAttrs(), tc.DeepEquals, attrs)
-	c.Assert(cfg.UnknownAttrs(), tc.DeepEquals, map[string]interface{}{"unknown": "my-unknown"})
+	c.Assert(cfg.UnknownAttrs(), tc.DeepEquals, map[string]any{"unknown": "my-unknown"})
 
-	newcfg, err := cfg.Apply(map[string]interface{}{
+	newcfg, err := cfg.Apply(map[string]any{
 		"name":        "new-name",
 		"uuid":        "6216dfc3-6e82-408f-9f74-8565e63e6158",
 		"new-unknown": "my-new-unknown",
@@ -789,17 +768,6 @@ var validationTests = []validationTest{{
 	about: "Can't change the name",
 	new:   testing.Attrs{"name": "new-name"},
 	err:   `cannot change name from "my-name" to "new-name"`,
-}, {
-	about: "Can set agent version",
-	new:   testing.Attrs{"agent-version": "1.9.13"},
-}, {
-	about: "Can change agent version",
-	old:   testing.Attrs{"agent-version": "1.9.13"},
-	new:   testing.Attrs{"agent-version": "1.9.27"},
-}, {
-	about: "Can't clear agent version",
-	old:   testing.Attrs{"agent-version": "1.9.27"},
-	err:   `cannot clear agent-version`,
 }, {
 	about: "Can't change the firewall-mode (global->instance)",
 	old:   testing.Attrs{"firewall-mode": config.FwGlobal},
@@ -916,34 +884,34 @@ func (s *ConfigSuite) addJujuFiles(c *tc.C) {
 
 func (s *ConfigSuite) TestValidateUnknownAttrs(c *tc.C) {
 	s.addJujuFiles(c)
-	cfg, err := config.New(config.UseDefaults, map[string]interface{}{
+	cfg, err := config.New(config.UseDefaults, map[string]any{
 		"name":              "myenv",
 		"type":              "other",
 		"uuid":              testing.ModelTag.Id(),
 		"extra-info":        "official extra user data",
 		"known":             "this",
 		"unknown":           "that",
-		"unknown-part-deux": []interface{}{"meshuggah"},
+		"unknown-part-deux": []any{"meshuggah"},
 	})
 	c.Assert(err, tc.ErrorIsNil)
 
 	// No fields: all attrs passed through.
 	attrs, err := cfg.ValidateUnknownAttrs(nil, nil)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(attrs, tc.DeepEquals, map[string]interface{}{
+	c.Assert(attrs, tc.DeepEquals, map[string]any{
 		"known":             "this",
 		"unknown":           "that",
-		"unknown-part-deux": []interface{}{"meshuggah"},
+		"unknown-part-deux": []any{"meshuggah"},
 	})
 
 	// Valid field: that and other attrs passed through.
 	fields := schema.Fields{"known": schema.String()}
 	attrs, err = cfg.ValidateUnknownAttrs(fields, nil)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(attrs, tc.DeepEquals, map[string]interface{}{
+	c.Assert(attrs, tc.DeepEquals, map[string]any{
 		"known":             "this",
 		"unknown":           "that",
-		"unknown-part-deux": []interface{}{"meshuggah"},
+		"unknown-part-deux": []any{"meshuggah"},
 	})
 
 	// Default field: inserted.
@@ -951,10 +919,10 @@ func (s *ConfigSuite) TestValidateUnknownAttrs(c *tc.C) {
 	defaults := schema.Defaults{"default": "the other"}
 	attrs, err = cfg.ValidateUnknownAttrs(fields, defaults)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(attrs, tc.DeepEquals, map[string]interface{}{
+	c.Assert(attrs, tc.DeepEquals, map[string]any{
 		"known":             "this",
 		"unknown":           "that",
-		"unknown-part-deux": []interface{}{"meshuggah"},
+		"unknown-part-deux": []any{"meshuggah"},
 		"default":           "the other",
 	})
 
@@ -964,7 +932,7 @@ func (s *ConfigSuite) TestValidateUnknownAttrs(c *tc.C) {
 	c.Assert(err, tc.ErrorMatches, `known: expected int, got string\("this"\)`)
 
 	// Completely unknown attr, not-simple field type: failure.
-	cfg, err = config.New(config.UseDefaults, map[string]interface{}{
+	cfg, err = config.New(config.UseDefaults, map[string]any{
 		"name":       "myenv",
 		"type":       "other",
 		"uuid":       testing.ModelTag.Id(),
@@ -978,14 +946,14 @@ func (s *ConfigSuite) TestValidateUnknownAttrs(c *tc.C) {
 	c.Assert(err.Error(), tc.Equals, `mapAttr: unknown type (map["foo":"bar"])`)
 
 	// Completely unknown attr, not-simple field type: failure.
-	cfg, err = config.New(config.UseDefaults, map[string]interface{}{
+	cfg, err = config.New(config.UseDefaults, map[string]any{
 		"name":       "myenv",
 		"type":       "other",
 		"uuid":       testing.ModelTag.Id(),
 		"extra-info": "official extra user data",
 		"known":      "this",
 		"unknown":    "that",
-		"bad":        []interface{}{1},
+		"bad":        []any{1},
 	})
 	c.Assert(err, tc.ErrorIsNil)
 	_, err = cfg.ValidateUnknownAttrs(nil, nil)
@@ -1015,7 +983,7 @@ var emptyAttributeTests = []testAttr{
 
 func (s *ConfigSuite) TestValidateUnknownEmptyAttr(c *tc.C) {
 	s.addJujuFiles(c)
-	cfg, err := config.New(config.UseDefaults, map[string]interface{}{
+	cfg, err := config.New(config.UseDefaults, map[string]any{
 		"name": "myenv",
 		"type": "other",
 		"uuid": testing.ModelTag.Id(),
@@ -1025,12 +993,12 @@ func (s *ConfigSuite) TestValidateUnknownEmptyAttr(c *tc.C) {
 
 	for i, test := range emptyAttributeTests {
 		c.Logf("test %d: %v\n", i, fmt.Sprintf(test.message, test.aKey))
-		testCfg, err := cfg.Apply(map[string]interface{}{test.aKey: test.aValue})
+		testCfg, err := cfg.Apply(map[string]any{test.aKey: test.aValue})
 		c.Assert(err, tc.ErrorIsNil)
 		attrs, err := testCfg.ValidateUnknownAttrs(nil, nil)
 		c.Assert(err, tc.ErrorIsNil)
 		// all attrs passed through
-		c.Assert(attrs, tc.DeepEquals, map[string]interface{}{test.aKey: test.aValue})
+		c.Assert(attrs, tc.DeepEquals, map[string]any{test.aKey: test.aValue})
 		//expectedWarning := fmt.Sprintf(warningTxt, test.aKey)
 		//logOutputText := strings.Replace(c.GetTestLog(), "\n", "", -1)
 		// warning displayed or not based on test expectation
@@ -1043,9 +1011,7 @@ func newTestConfig(c *tc.C, explicit testing.Attrs) *config.Config {
 		"type": "my-type", "name": "my-name",
 		"uuid": testing.ModelTag.Id(),
 	}
-	for key, value := range explicit {
-		final[key] = value
-	}
+	maps.Copy(final, explicit)
 	result, err := config.New(config.UseDefaults, final)
 	c.Assert(err, tc.ErrorIsNil)
 	return result
@@ -1381,10 +1347,10 @@ func (s *ConfigSuite) TestCloudInitUserDataFromEnvironment(c *tc.C) {
 	cfg := newTestConfig(c, testing.Attrs{
 		config.CloudInitUserDataKey: validCloudInitUserData,
 	})
-	c.Assert(cfg.CloudInitUserData(), tc.DeepEquals, map[string]interface{}{
-		"packages":        []interface{}{"python-keystoneclient", "python-glanceclient"},
-		"preruncmd":       []interface{}{"mkdir /tmp/preruncmd", "mkdir /tmp/preruncmd2"},
-		"postruncmd":      []interface{}{"mkdir /tmp/postruncmd", "mkdir /tmp/postruncmd2"},
+	c.Assert(cfg.CloudInitUserData(), tc.DeepEquals, map[string]any{
+		"packages":        []any{"python-keystoneclient", "python-glanceclient"},
+		"preruncmd":       []any{"mkdir /tmp/preruncmd", "mkdir /tmp/preruncmd2"},
+		"postruncmd":      []any{"mkdir /tmp/postruncmd", "mkdir /tmp/postruncmd2"},
 		"package_upgrade": false},
 	)
 }
@@ -1400,9 +1366,7 @@ func (s *ConfigSuite) TestSchemaNoExtra(c *tc.C) {
 	schema, err := config.Schema(nil)
 	c.Assert(err, tc.IsNil)
 	orig := make(configschema.Fields)
-	for name, field := range config.ConfigSchema {
-		orig[name] = field
-	}
+	maps.Copy(orig, config.ConfigSchema)
 	c.Assert(schema, tc.DeepEquals, orig)
 	// Check that we actually returned a copy, not the original.
 	schema["foo"] = configschema.Attr{}
@@ -1422,9 +1386,7 @@ func (s *ConfigSuite) TestSchemaWithExtraFields(c *tc.C) {
 	c.Assert(schema["foo"], tc.DeepEquals, extraField)
 	delete(schema, "foo")
 	orig := make(configschema.Fields)
-	for name, field := range config.ConfigSchema {
-		orig[name] = field
-	}
+	maps.Copy(orig, config.ConfigSchema)
 	c.Assert(schema, tc.DeepEquals, orig)
 }
 

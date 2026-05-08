@@ -16,10 +16,10 @@ import (
 
 	"github.com/juju/juju/api/client/usermanager"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/common"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/output"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -181,7 +181,7 @@ func (c *listCommand) controllerUsers(ctx *cmd.Context) error {
 	return c.out.Write(ctx, c.apiUsersToUserInfoSlice(result))
 }
 
-func (c *listCommand) formatTabular(writer io.Writer, value interface{}) error {
+func (c *listCommand) formatTabular(writer io.Writer, value any) error {
 	if c.modelName == "" {
 		return c.formatControllerUsers(writer, value)
 	}
@@ -193,7 +193,7 @@ func (c *listCommand) isLoggedInUser(username string) bool {
 	return tag.Id() == c.currentUser
 }
 
-func (c *listCommand) formatModelUsers(writer io.Writer, value interface{}) error {
+func (c *listCommand) formatModelUsers(writer io.Writer, value any) error {
 	users, ok := value.(map[string]common.ModelUserInfo)
 	if !ok {
 		return errors.Errorf("expected value of type %T, got %T", users, value)
@@ -221,7 +221,7 @@ func (c *listCommand) formatModelUsers(writer io.Writer, value interface{}) erro
 	return nil
 }
 
-func (c *listCommand) formatControllerUsers(writer io.Writer, value interface{}) error {
+func (c *listCommand) formatControllerUsers(writer io.Writer, value any) error {
 	controllerName, err := c.ControllerName()
 	if err != nil {
 		return errors.Trace(err)

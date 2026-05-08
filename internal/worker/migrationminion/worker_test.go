@@ -16,8 +16,8 @@ import (
 	"github.com/juju/names/v6"
 	"github.com/juju/retry"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/workertest"
 
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/api"
@@ -134,16 +134,49 @@ func (s *Suite) TestNonRunningPhases(c *tc.C) {
 	phases := []migration.Phase{
 		migration.UNKNOWN,
 		migration.NONE,
-		migration.LOGTRANSFER,
-		migration.REAP,
-		migration.REAPFAILED,
-		migration.DONE,
 		migration.ABORT,
 		migration.ABORTDONE,
 	}
 	for _, phase := range phases {
 		s.checkNonRunningPhase(c, phase)
 	}
+}
+
+func (s *Suite) TestPostSuccessPhasesUpdateAgentConfig(c *tc.C) {
+	phases := []migration.Phase{
+		migration.LOGTRANSFER,
+		migration.REAP,
+		migration.REAPFAILED,
+		migration.DONE,
+	}
+	for _, phase := range phases {
+		s.checkPostSuccessPhase(c, phase)
+	}
+}
+
+func (s *Suite) checkPostSuccessPhase(c *tc.C, phase migration.Phase) {
+	c.Logf("checking %s", phase)
+	s.stub.ResetCalls()
+	s.agent = newStubAgent()
+	s.config.Agent = s.agent
+	s.client.watcher.changes <- watcher.MigrationStatus{
+		MigrationId:    "id",
+		Phase:          phase,
+		TargetAPIAddrs: addrs,
+		TargetCACert:   caCert,
+	}
+	w, err := migrationminion.New(s.config)
+	c.Assert(err, tc.ErrorIsNil)
+
+	select {
+	case <-s.agent.configChanged:
+	case <-time.After(coretesting.LongWait):
+		c.Fatal("timed out")
+	}
+	workertest.CleanKill(c, w)
+	c.Assert(s.agent.conf.addrs, tc.DeepEquals, addrs)
+	c.Assert(s.agent.conf.caCert, tc.DeepEquals, caCert)
+	s.stub.CheckCallNames(c, "Watch", "API open", "API close", "Unlock")
 }
 
 func (s *Suite) checkNonRunningPhase(c *tc.C, phase migration.Phase) {
@@ -254,7 +287,7 @@ func (s *Suite) TestVALIDATIONCantConnect(c *tc.C) {
 
 	// Advance time enough for all of the retries to be exhausted.
 	sleepTime := 100 * time.Millisecond
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		err := s.clock.WaitAdvance(sleepTime, coretesting.ShortWait, 1)
 		c.Assert(err, tc.ErrorIsNil)
 		sleepTime = calculateSleepTime(i)
@@ -303,7 +336,7 @@ func (s *Suite) TestVALIDATIONCantConnectNotReportForTryAgainError(c *tc.C) {
 
 	// Advance time enough for all of the retries to be exhausted.
 	sleepTime := 100 * time.Millisecond
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		err := s.clock.WaitAdvance(sleepTime, coretesting.ShortWait, 1)
 		c.Assert(err, tc.ErrorIsNil)
 		sleepTime = calculateSleepTime(i)
@@ -350,14 +383,14 @@ func (s *Suite) TestVALIDATIONFail(c *tc.C) {
 
 	// Advance time enough for all of the retries to be exhausted.
 	sleepTime := 100 * time.Millisecond
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		err := s.clock.WaitAdvance(sleepTime, coretesting.ShortWait, 1)
 		c.Assert(err, tc.ErrorIsNil)
 		sleepTime = calculateSleepTime(i)
 	}
 
 	expectedCalls := []string{"Watch", "Lockdown"}
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		expectedCalls = append(expectedCalls, "API open", "ValidateMigration", "API close")
 	}
 	expectedCalls = append(expectedCalls, "Report")
@@ -450,7 +483,7 @@ func (s *Suite) TestSUCCESSCantConnectNotReportForTryAgainError(c *tc.C) {
 
 	// Advance time enough for all of the retries to be exhausted.
 	sleepTime := 100 * time.Millisecond
-	for i := 0; i < 9; i++ {
+	for range 9 {
 		err := s.clock.WaitAdvance(sleepTime, coretesting.ShortWait, 1)
 		c.Assert(err, tc.ErrorIsNil)
 		sleepTime = sleepTime * 2
@@ -573,7 +606,7 @@ func (s *Suite) TestValidateFailsWithRedirectLoop(c *tc.C) {
 
 	// Advance time enough for all of the retries to be exhausted.
 	sleepTime := 100 * time.Millisecond
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		err := s.clock.WaitAdvance(sleepTime, coretesting.ShortWait, 1)
 		c.Assert(err, tc.ErrorIsNil)
 		sleepTime = calculateSleepTime(i)
@@ -581,7 +614,7 @@ func (s *Suite) TestValidateFailsWithRedirectLoop(c *tc.C) {
 
 	expectedCalls := []string{"Watch", "Lockdown"}
 	// maxRetries=20 and maxRedirects=5
-	for i := 0; i < 20*5; i++ {
+	for range 20 * 5 {
 		expectedCalls = append(expectedCalls, "API open")
 	}
 	expectedCalls = append(expectedCalls, "Report")

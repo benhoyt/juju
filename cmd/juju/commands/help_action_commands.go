@@ -5,11 +5,12 @@ package commands
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/internal/worker/uniter/runner/jujuc"
 )
 
@@ -72,7 +73,7 @@ For help on a specific action command, supply the name of that action command. F
 `
 
 func listHelpActionCmds() string {
-	all := ""
+	var all strings.Builder
 	// Ripped from SuperCommand. We could Run() a SuperCommand
 	// with "help commands", but then the implicit "help" command
 	// shows up.
@@ -92,7 +93,7 @@ func listHelpActionCmds() string {
 	}
 	for _, c := range cmds {
 		info := c.Info()
-		all += fmt.Sprintf("    %-*s  %s\n", longest, info.Name, info.Purpose)
+		all.WriteString(fmt.Sprintf("    %-*s  %s\n", longest, info.Name, info.Purpose))
 	}
-	return all
+	return all.String()
 }

@@ -42,7 +42,7 @@ func Register(registry facade.FacadeRegistry) {
 		ctx facade.MultiModelContext,
 	) (facade.Facade, error) {
 		return newUpgraderFacadeV1(ctx)
-	}, reflect.TypeOf(UpgradeAPI{}))
+	}, reflect.TypeFor[UpgradeAPI]())
 }
 
 // newUpgraderFacadeV1 returns which facade to register.
@@ -65,7 +65,7 @@ func newUpgraderFacadeV1(ctx facade.MultiModelContext) (UpgradeAPI, error) {
 			modelTag,
 			auth,
 			checker,
-			domainServices.ControllerUpgraderService(),
+			domainServices.ControllerUpgrader(),
 		)
 		return UpgradeAPI{upgraderAPI}, nil
 	}

@@ -5,9 +5,11 @@ package objectstore_test
 
 import (
 	"context"
+	"database/sql"
 	stdtesting "testing"
 	"time"
 
+	"github.com/juju/clock"
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/core/changestream"
@@ -15,6 +17,7 @@ import (
 	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/core/watcher/watchertest"
 	"github.com/juju/juju/domain"
+	domainobjectstore "github.com/juju/juju/domain/objectstore"
 	objectstoreerrors "github.com/juju/juju/domain/objectstore/errors"
 	"github.com/juju/juju/domain/objectstore/service"
 	"github.com/juju/juju/domain/objectstore/state"
@@ -35,7 +38,7 @@ func (s *watcherSuite) TestWatchWithAdd(c *tc.C) {
 	factory := changestream.NewWatchableDBFactoryForNamespace(s.GetWatchableDB, "objectstore")
 
 	svc := service.NewWatchableService(
-		state.NewState(func(ctx context.Context) (database.TxnRunner, error) { return factory(ctx) }),
+		state.NewState(func(ctx context.Context) (database.TxnRunner, error) { return factory(ctx) }, clock.WallClock),
 		domain.NewWatcherFactory(factory,
 			loggertesting.WrapCheckLog(c),
 		),
@@ -73,7 +76,7 @@ func (s *watcherSuite) TestWatchWithDelete(c *tc.C) {
 	factory := changestream.NewWatchableDBFactoryForNamespace(s.GetWatchableDB, "objectstore")
 
 	svc := service.NewWatchableService(
-		state.NewState(func(ctx context.Context) (database.TxnRunner, error) { return factory(ctx) }),
+		state.NewState(func(ctx context.Context) (database.TxnRunner, error) { return factory(ctx) }, clock.WallClock),
 		domain.NewWatcherFactory(factory,
 			loggertesting.WrapCheckLog(c),
 		),
@@ -126,7 +129,7 @@ func (s *watcherSuite) TestWatchDraining(c *tc.C) {
 	factory := changestream.NewWatchableDBFactoryForNamespace(s.GetWatchableDB, "objectstore")
 
 	svc := service.NewWatchableDrainingService(
-		state.NewState(func(ctx context.Context) (database.TxnRunner, error) { return factory(ctx) }),
+		state.NewState(func(ctx context.Context) (database.TxnRunner, error) { return factory(ctx) }, clock.WallClock),
 		domain.NewWatcherFactory(factory,
 			loggertesting.WrapCheckLog(c),
 		),
@@ -137,7 +140,20 @@ func (s *watcherSuite) TestWatchDraining(c *tc.C) {
 	harness := watchertest.NewHarness(s, watchertest.NewWatcherC(c, watcher))
 
 	harness.AddTest(c, func(c *tc.C) {
-		err := svc.SetDrainingPhase(c.Context(), objectstore.PhaseDraining)
+		err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `UPDATE object_store_backend SET life_id = 1`); err != nil {
+				return err
+			}
+
+			_, err := tx.ExecContext(ctx, `
+INSERT INTO object_store_backend (uuid, life_id, type_id, updated_at) 
+VALUES ('foo', 0, 1, CURRENT_TIMESTAMP)
+`)
+			return err
+		})
+		c.Assert(err, tc.ErrorIsNil)
+
+		err = svc.SetDrainingPhase(c.Context(), objectstore.PhaseDraining)
 		c.Assert(err, tc.ErrorIsNil)
 	}, func(w watchertest.WatcherC[struct{}]) {
 		w.Check(watchertest.SliceAssert(struct{}{}))
@@ -151,4 +167,56 @@ func (s *watcherSuite) TestWatchDraining(c *tc.C) {
 	})
 
 	harness.Run(c, struct{}{})
+}
+
+func (s *watcherSuite) TestWatchObjectStoreBackend(c *tc.C) {
+	factory := changestream.NewWatchableDBFactoryForNamespace(s.GetWatchableDB, "objectstore")
+
+	svc := service.NewWatchableDrainingService(
+		state.NewState(func(ctx context.Context) (database.TxnRunner, error) {
+			return factory(ctx)
+		}, clock.WallClock),
+		domain.NewWatcherFactory(factory,
+			loggertesting.WrapCheckLog(c),
+		),
+	)
+
+	s.AssertChangeStreamIdle(c)
+
+	watcher, err := svc.WatchObjectStoreBackend(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+
+	currentBackend := getActiveBackend(c, factory)
+
+	harness := watchertest.NewHarness(s, watchertest.NewWatcherC(c, watcher))
+
+	var nextBackend string
+	harness.AddTest(c, func(c *tc.C) {
+		err := svc.TransitionBackendToS3(c.Context(), domainobjectstore.S3Credentials{
+			Endpoint:  "https://s3.example.invalid",
+			AccessKey: "access-key",
+			SecretKey: "secret-key",
+		})
+		c.Assert(err, tc.ErrorIsNil)
+
+		nextBackend = getActiveBackend(c, factory)
+		c.Assert(nextBackend, tc.Not(tc.Equals), currentBackend)
+	}, func(w watchertest.WatcherC[[]string]) {
+		w.Check(watchertest.StringSliceAssert(currentBackend, nextBackend))
+	})
+
+	harness.Run(c, []string{currentBackend})
+}
+
+func getActiveBackend(c *tc.C, factory changestream.WatchableDBFactory) string {
+	db, err := factory(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+
+	var backend string
+	err = db.StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `SELECT uuid FROM object_store_backend WHERE life_id = 0`).Scan(&backend)
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	return backend
 }

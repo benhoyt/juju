@@ -8,6 +8,7 @@ import (
 	stdtesting "testing"
 
 	"github.com/canonical/sqlair"
+	"github.com/juju/clock"
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/cloud"
@@ -16,7 +17,6 @@ import (
 	"github.com/juju/juju/core/database"
 	"github.com/juju/juju/core/machine"
 	"github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
@@ -60,7 +60,7 @@ func (s *keyUpdaterSuite) SetUpTest(c *tc.C) {
 
 	s.userID = usertesting.GenUserUUID(c)
 
-	accessState := accessstate.NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+	accessState := accessstate.NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
 	err := accessState.AddUser(
 		c.Context(), s.userID,
 		user.AdminUserName,
@@ -94,7 +94,7 @@ func (s *keyUpdaterSuite) SetUpTest(c *tc.C) {
 
 	testing.CreateInternalSecretBackend(c, s.ControllerTxnRunner())
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, model.NewUUID)
 	modelFn := modelbootstrap.CreateGlobalModelRecord(modelUUID, domainmodel.GlobalModelCreationArgs{
 		Cloud: cloudName,
 		Credential: credential.Key{
@@ -196,7 +196,7 @@ func (s *keyUpdaterSuite) TestWatchAuthorizedKeysForMachine(c *tc.C) {
 	})
 
 	userSvc := accessservice.NewUserService(
-		accessstate.NewUserState(s.ControllerSuite.TxnRunnerFactory()),
+		accessstate.NewUserState(s.ControllerSuite.TxnRunnerFactory(), clock.WallClock), clock.WallClock,
 	)
 
 	harness.AddTest(c, func(c *tc.C) {

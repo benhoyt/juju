@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	stdtesting "testing"
 
 	"github.com/juju/errors"
@@ -19,7 +20,7 @@ import (
 	apiservertesting "github.com/juju/juju/apiserver/testing"
 	jujuhttp "github.com/juju/juju/internal/http"
 	"github.com/juju/juju/internal/testing"
-	"github.com/juju/juju/rpc/params"
+	jujuparams "github.com/juju/juju/rpc/params"
 )
 
 type clientCredentialsLoginProviderProviderSuite struct {
@@ -30,7 +31,7 @@ func TestClientCredentialsLoginProviderProviderSuite(t *stdtesting.T) {
 	tc.Run(t, &clientCredentialsLoginProviderProviderSuite{})
 }
 func (s *clientCredentialsLoginProviderProviderSuite) APIInfo() *api.Info {
-	srv := apiservertesting.NewAPIServer(func(modelUUID string) (interface{}, error) {
+	srv := apiservertesting.NewAPIServer(func(modelUUID string) (any, error) {
 		var err error
 		if modelUUID != "" && modelUUID != testing.ModelTag.Id() {
 			err = fmt.Errorf("%w: %q", apiservererrors.UnknownModelError, modelUUID)
@@ -53,7 +54,7 @@ func (s *clientCredentialsLoginProviderProviderSuite) TestClientCredentialsLogin
 	clientID := "test-client-id"
 	clientSecret := "test-client-secret"
 
-	s.PatchValue(api.LoginWithClientCredentialsAPICall, func(ctx context.Context, _ base.APICaller, request interface{}, response interface{}) error {
+	s.PatchValue(api.LoginWithClientCredentialsAPICall, func(ctx context.Context, _ base.APICaller, request any, response any) error {
 		data, err := json.Marshal(request)
 		if err != nil {
 			return errors.Trace(err)
@@ -76,13 +77,13 @@ func (s *clientCredentialsLoginProviderProviderSuite) TestClientCredentialsLogin
 			return errors.Unauthorized
 		}
 
-		loginResult, ok := response.(*params.LoginResult)
+		loginResult, ok := response.(*jujuparams.LoginResult)
 		if !ok {
 			return errors.Errorf("expected %T, received %T for response type", loginResult, response)
 		}
 		loginResult.ControllerTag = names.NewControllerTag(info.ControllerUUID).String()
 		loginResult.ServerVersion = "3.4.0"
-		loginResult.UserInfo = &params.AuthUserInfo{
+		loginResult.UserInfo = &jujuparams.AuthUserInfo{
 			DisplayName:      "alice@external",
 			Identity:         names.NewUserTag("alice@external").String(),
 			ControllerAccess: "superuser",
@@ -119,4 +120,38 @@ func (s *clientCredentialsLoginProviderBasicSuite) TestClientCredentialsAuthHead
 	got, err := lp.AuthHeader()
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(got, tc.DeepEquals, expectedHeader)
+}
+
+func (s *clientCredentialsLoginProviderBasicSuite) TestNewClientCredentialsLoginProviderFromEnvironment_NotSet(c *tc.C) {
+	ctx := context.Background()
+
+	_, err := api.NewClientCredentialsLoginProviderFromEnvironment(func() {}).Login(ctx, nil)
+	c.Assert(err, tc.ErrorMatches, "both client id and client secret must be set")
+}
+
+func (s *clientCredentialsLoginProviderBasicSuite) TestNewClientCredentialsLoginProviderFromEnvironment(c *tc.C) {
+	ctx := context.Background()
+
+	os.Setenv("JUJU_CLIENT_ID", "test-client-id")
+	os.Setenv("JUJU_CLIENT_SECRET", "test-client-secret")
+	defer func() {
+		os.Unsetenv("JUJU_CLIENT_ID")
+		os.Unsetenv("JUJU_CLIENT_SECRET")
+	}()
+	res, err := api.NewClientCredentialsLoginProviderFromEnvironment(func() {}).Login(ctx, callStub{})
+	c.Assert(err, tc.IsNil)
+	c.Assert(res, tc.NotNil)
+}
+
+type callStub struct {
+	base.APICaller
+}
+
+func (c callStub) APICall(_ context.Context, objType string, version int, id string, request string, params any, response any) error {
+	if r, ok := response.(*jujuparams.LoginResult); ok {
+		r.ServerVersion = "3.6.9"
+	} else {
+		return fmt.Errorf("unexpected response type %T", response)
+	}
+	return nil
 }

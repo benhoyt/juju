@@ -5,7 +5,6 @@ package broker
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
@@ -13,7 +12,6 @@ import (
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/core/instance"
 	corelogger "github.com/juju/juju/core/logger"
-	"github.com/juju/juju/core/lxdprofile"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/instances"
 	"github.com/juju/juju/internal/cloudconfig/instancecfg"
@@ -80,12 +78,6 @@ func (broker *lxdBroker) StartInstance(ctx context.Context, args environs.StartI
 	}
 	net := container.BridgeNetworkConfig(0, interfaces)
 
-	pNames, err := broker.writeProfiles(ctx, containerMachineID)
-	if err != nil {
-		err = fmt.Errorf("cannot write charm profile: %w", err)
-		return nil, errors.WithType(err, environs.ErrAvailabilityZoneIndependent)
-	}
-
 	// The provisioner worker will provide all tools it knows about
 	// (after applying explicitly specified constraints), which may
 	// include tools for architectures other than the host's. We
@@ -116,7 +108,7 @@ func (broker *lxdBroker) StartInstance(ctx context.Context, args environs.StartI
 		config.EnableOSRefreshUpdate,
 		config.EnableOSUpgrade,
 		cloudInitUserData,
-		append([]string{"default"}, pNames...),
+		[]string{"default"},
 	); err != nil {
 		lxdLogger.Errorf(ctx, "failed to populate machine config: %v", err)
 		return nil, err
@@ -168,49 +160,4 @@ func (broker *lxdBroker) LXDProfileNames(containerName string) ([]string, error)
 		return make([]string, 0), nil
 	}
 	return nameRetriever.LXDProfileNames(containerName)
-}
-
-func (broker *lxdBroker) writeProfiles(ctx context.Context, machineID string) ([]string, error) {
-	containerTag := names.NewMachineTag(machineID)
-	profileInfo, err := broker.api.GetContainerProfileInfo(ctx, containerTag)
-	if err != nil {
-		return nil, err
-	}
-	var names []string
-	for _, profile := range profileInfo {
-		if profile == nil {
-			continue
-		}
-		if profile.Name == "" {
-			return nil, errors.Errorf("request to write LXD profile for machine %s with no profile name", machineID)
-		}
-		err := broker.MaybeWriteLXDProfile(profile.Name, lxdprofile.Profile{
-			Config:      profile.Config,
-			Description: profile.Description,
-			Devices:     profile.Devices,
-		})
-		if err != nil {
-			return nil, err
-		}
-		names = append(names, profile.Name)
-	}
-	return names, nil
-}
-
-// MaybeWriteLXDProfile implements environs.LXDProfiler.
-func (broker *lxdBroker) MaybeWriteLXDProfile(pName string, put lxdprofile.Profile) error {
-	profileMgr, ok := broker.manager.(container.LXDProfileManager)
-	if !ok {
-		return nil
-	}
-	return profileMgr.MaybeWriteLXDProfile(pName, put)
-}
-
-// AssignLXDProfiles implements environs.LXDProfiler.
-func (broker *lxdBroker) AssignLXDProfiles(instID string, profilesNames []string, profilePosts []lxdprofile.ProfilePost) ([]string, error) {
-	profileMgr, ok := broker.manager.(container.LXDProfileManager)
-	if !ok {
-		return []string{}, nil
-	}
-	return profileMgr.AssignLXDProfiles(instID, profilesNames, profilePosts)
 }

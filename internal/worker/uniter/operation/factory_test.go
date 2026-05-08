@@ -12,7 +12,7 @@ import (
 
 	"github.com/juju/juju/api/agent/uniter"
 	basetesting "github.com/juju/juju/api/base/testing"
-	"github.com/juju/juju/internal/charm/hooks"
+	"github.com/juju/juju/domain/deployment/charm/hooks"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/testhelpers"
 	"github.com/juju/juju/internal/worker/common/charmrunner"
@@ -42,7 +42,7 @@ func (s *FactorySuite) SetUpTest(c *tc.C) {
 		MockNotifyResolved: &MockNoArgs{},
 	}
 	s.actionErr = nil
-	apiCaller := basetesting.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := basetesting.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		actionResult := params.ActionResult{
 			Action: &params.Action{Name: "backup"},
 		}

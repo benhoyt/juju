@@ -144,6 +144,44 @@ func (c *MockStateAddPublicKeysForUserCall) DoAndReturn(f func(context.Context, 
 	return c
 }
 
+// DeletePublicKeysForModel mocks base method.
+func (m *MockState) DeletePublicKeysForModel(arg0 context.Context, arg1 model.UUID) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeletePublicKeysForModel", arg0, arg1)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeletePublicKeysForModel indicates an expected call of DeletePublicKeysForModel.
+func (mr *MockStateMockRecorder) DeletePublicKeysForModel(arg0, arg1 any) *MockStateDeletePublicKeysForModelCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeletePublicKeysForModel", reflect.TypeOf((*MockState)(nil).DeletePublicKeysForModel), arg0, arg1)
+	return &MockStateDeletePublicKeysForModelCall{Call: call}
+}
+
+// MockStateDeletePublicKeysForModelCall wrap *gomock.Call
+type MockStateDeletePublicKeysForModelCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockStateDeletePublicKeysForModelCall) Return(arg0 error) *MockStateDeletePublicKeysForModelCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockStateDeletePublicKeysForModelCall) Do(f func(context.Context, model.UUID) error) *MockStateDeletePublicKeysForModelCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockStateDeletePublicKeysForModelCall) DoAndReturn(f func(context.Context, model.UUID) error) *MockStateDeletePublicKeysForModelCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // DeletePublicKeysForUser mocks base method.
 func (m *MockState) DeletePublicKeysForUser(arg0 context.Context, arg1 model.UUID, arg2 user.UUID, arg3 []string) error {
 	m.ctrl.T.Helper()

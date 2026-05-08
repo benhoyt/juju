@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Check hook execution lock status across Juju agents using juju_machine_lock to see which units hold or wait for locks."
+---
+
 (juju_machine_lock)=
 # `juju_machine_lock`
 

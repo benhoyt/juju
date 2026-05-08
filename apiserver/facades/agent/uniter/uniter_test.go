@@ -10,8 +10,9 @@ import (
 
 	"github.com/juju/clock/testclock"
 	"github.com/juju/collections/transform"
-	jujuerrors "github.com/juju/errors"
+	"github.com/juju/errors"
 	"github.com/juju/names/v6"
+	"github.com/juju/proxy"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
@@ -22,19 +23,20 @@ import (
 	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/life"
 	coremachine "github.com/juju/juju/core/machine"
-	coremachinetesting "github.com/juju/juju/core/machine/testing"
-	"github.com/juju/juju/core/model"
+	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
 	corerelation "github.com/juju/juju/core/relation"
-	relationtesting "github.com/juju/juju/core/relation/testing"
 	"github.com/juju/juju/core/status"
+	corestorage "github.com/juju/juju/core/storage"
 	coreunit "github.com/juju/juju/core/unit"
-	unittesting "github.com/juju/juju/core/unit/testing"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/core/watcher/watchertest"
 	"github.com/juju/juju/domain/application/architecture"
 	domaincharm "github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
+	"github.com/juju/juju/domain/application/service"
+	crossmodelrelationerrors "github.com/juju/juju/domain/crossmodelrelation/errors"
+	"github.com/juju/juju/domain/deployment/charm"
 	machineerrors "github.com/juju/juju/domain/machine/errors"
 	domainnetwork "github.com/juju/juju/domain/network"
 	"github.com/juju/juju/domain/operation"
@@ -44,26 +46,32 @@ import (
 	"github.com/juju/juju/domain/removal"
 	"github.com/juju/juju/domain/resolve"
 	resolveerrors "github.com/juju/juju/domain/resolve/errors"
-	"github.com/juju/juju/internal/charm"
+	domainstorage "github.com/juju/juju/domain/storage"
+	tracingservice "github.com/juju/juju/domain/tracing/service"
+	"github.com/juju/juju/domain/unitstate"
 	internalerrors "github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/testhelpers"
-	coretesting "github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc/params"
 )
 
 type uniterSuite struct {
 	testhelpers.IsolationSuite
 
-	badTag names.Tag
+	badTag  names.Tag
+	authTag names.Tag
 
-	applicationService *MockApplicationService
-	machineService     *MockMachineService
-	operationService   *MockOperationService
-	networkService     *MockNetworkService
-	resolveService     *MockResolveService
-	removalService     *MockRemovalService
-	watcherRegistry    *MockWatcherRegistry
+	applicationService    *MockApplicationService
+	machineService        *MockMachineService
+	operationService      *MockOperationService
+	networkService        *MockNetworkService
+	portService           *MockPortService
+	controllerNodeService *MockControllerNodeService
+	resolveService        *MockResolveService
+	removalService        *MockRemovalService
+	tracingService        *MockTracingService
+
+	watcherRegistry *MockWatcherRegistry
 
 	uniter *UniterAPI
 }
@@ -104,7 +112,7 @@ func (s *uniterSuite) TestEnsureDead(c *tc.C) {
 
 	// Arrange
 	unitName := coreunit.Name("foo/0")
-	unitUUID := unittesting.GenUnitUUID(c)
+	unitUUID := tc.Must(c, coreunit.NewUUID)
 	s.applicationService.EXPECT().GetUnitUUID(gomock.Any(), unitName).Return(unitUUID, nil)
 	s.removalService.EXPECT().MarkUnitAsDead(gomock.Any(), unitUUID).Return(nil)
 
@@ -170,7 +178,7 @@ func (s *uniterSuite) TestDestroy(c *tc.C) {
 
 	// Arrange
 	unitName := coreunit.Name("foo/0")
-	unitUUID := unittesting.GenUnitUUID(c)
+	unitUUID := tc.Must(c, coreunit.NewUUID)
 	s.applicationService.EXPECT().GetUnitUUID(gomock.Any(), unitName).Return(unitUUID, nil)
 	s.removalService.EXPECT().RemoveUnit(gomock.Any(), unitUUID, false, false, time.Duration(0)).Return("", nil)
 
@@ -236,9 +244,9 @@ func (s *uniterSuite) TestDestroyAllSubordinates(c *tc.C) {
 	principalUnitName := coreunit.Name("foo/0")
 
 	subordinateUnitName1 := coreunit.Name("bar/1")
-	subordinateUnitUUID1 := unittesting.GenUnitUUID(c)
+	subordinateUnitUUID1 := tc.Must(c, coreunit.NewUUID)
 	subordinateUnitName2 := coreunit.Name("bar/2")
-	subordinateUnitUUID2 := unittesting.GenUnitUUID(c)
+	subordinateUnitUUID2 := tc.Must(c, coreunit.NewUUID)
 
 	s.applicationService.EXPECT().GetUnitSubordinates(gomock.Any(), principalUnitName).Return([]coreunit.Name{subordinateUnitName1, subordinateUnitName2}, nil)
 	s.applicationService.EXPECT().GetUnitUUID(gomock.Any(), subordinateUnitName1).Return(subordinateUnitUUID1, nil)
@@ -572,22 +580,15 @@ func (s *uniterSuite) TestAvailabilityZone(c *tc.C) {
 	// Arrange:
 	args := params.Entities{Entities: []params.Entity{
 		{Tag: "unit-wordpress-0"},
-		{Tag: "unit-mysql-0"},
 		{Tag: "unit-postgresql-0"},
-		{Tag: "unit-riak-0"},
 		{Tag: "unit-foo-0"},
 	}}
 
-	machineUUID := coremachinetesting.GenUUID(c)
+	machineUUID := tc.Must(c, coremachine.NewUUID)
 	s.expectGetUnitMachineUUID("wordpress/0", machineUUID, nil)
 	s.expectedGetAvailabilityZone(machineUUID, "a_zone", nil)
 
-	s.expectGetUnitMachineUUID("mysql/0", machineUUID, applicationerrors.UnitMachineNotAssigned)
-
 	s.expectGetUnitMachineUUID("postgresql/0", machineUUID, applicationerrors.UnitNotFound)
-
-	s.expectGetUnitMachineUUID("riak/0", machineUUID, nil)
-	s.expectedGetAvailabilityZone(machineUUID, "a_zone", machineerrors.AvailabilityZoneNotFound)
 
 	s.badTag = names.NewUnitTag("foo/0")
 
@@ -600,12 +601,93 @@ func (s *uniterSuite) TestAvailabilityZone(c *tc.C) {
 	c.Check(result, tc.DeepEquals, params.StringResults{
 		Results: []params.StringResult{
 			{Result: "a_zone"},
-			{Error: apiservererrors.ServerError(applicationerrors.UnitMachineNotAssigned)},
 			{Error: apiservertesting.NotFoundError(`unit "postgresql/0"`)},
-			{Error: apiservererrors.ServerError(jujuerrors.NotProvisioned)},
 			{Error: apiservertesting.ErrUnauthorized},
 		},
 	})
+}
+
+// TestAvailabilityZoneUnitNotOnMachine tests that when a unit's AZ is requested
+// but the unit is not assigned to a machine, the AZ reported is an empty
+// string.
+func (s *uniterSuite) TestAvailabilityZoneUnitNotOnMachine(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	args := params.Entities{Entities: []params.Entity{
+		{Tag: "unit-wordpress-0"},
+	}}
+
+	appSvcExp := s.applicationService.EXPECT()
+	appSvcExp.GetUnitMachineUUID(gomock.Any(), coreunit.Name("wordpress/0")).Return(
+		"", applicationerrors.UnitMachineNotAssigned,
+	)
+
+	result, err := s.uniter.AvailabilityZone(c.Context(), args)
+	c.Check(err, tc.ErrorIsNil)
+	c.Check(result, tc.DeepEquals, params.StringResults{
+		Results: []params.StringResult{
+			{Result: ""},
+		},
+	})
+}
+
+// TestAvailabilityZoneNotSetForMachine tests that when a unit's AZ is requested
+// but the underlying machine does not have the value set the facade returns an
+// empty string. This is epxected behaviour as not all clouds support AZ's.
+func (s *uniterSuite) TestAvailabilityZoneNotSetForMachine(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	args := params.Entities{Entities: []params.Entity{
+		{Tag: "unit-wordpress-0"},
+	}}
+	machineUUID := tc.Must(c, coremachine.NewUUID)
+
+	appSvcExp := s.applicationService.EXPECT()
+	appSvcExp.GetUnitMachineUUID(gomock.Any(), coreunit.Name("wordpress/0")).Return(
+		machineUUID, nil,
+	)
+
+	machineSvcExp := s.machineService.EXPECT()
+	machineSvcExp.AvailabilityZone(gomock.Any(), machineUUID).Return(
+		"", machineerrors.AvailabilityZoneNotFound,
+	)
+
+	result, err := s.uniter.AvailabilityZone(c.Context(), args)
+	c.Check(err, tc.ErrorIsNil)
+	c.Check(result, tc.DeepEquals, params.StringResults{
+		Results: []params.StringResult{
+			{Result: ""},
+		},
+	})
+}
+
+// TestAvailabilityZoneMachineNotFound tests that when translating a unit's AZ
+// from a machine and the machine is not found the caller gets back an a
+// [params.CodeNotFound]. This is a very contrived case that will most likely
+// never exist but we check the case for the sake of contract completeness.
+func (s *uniterSuite) TestAvailabilityZoneMachineNotFound(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	args := params.Entities{Entities: []params.Entity{
+		{Tag: "unit-wordpress-0"},
+	}}
+	machineUUID := tc.Must(c, coremachine.NewUUID)
+
+	appSvcExp := s.applicationService.EXPECT()
+	appSvcExp.GetUnitMachineUUID(gomock.Any(), coreunit.Name("wordpress/0")).Return(
+		machineUUID, nil,
+	)
+
+	machineSvcExp := s.machineService.EXPECT()
+	machineSvcExp.AvailabilityZone(gomock.Any(), machineUUID).Return(
+		"", machineerrors.MachineNotFound,
+	)
+
+	result, err := s.uniter.AvailabilityZone(c.Context(), args)
+	c.Check(err, tc.ErrorIsNil)
+	c.Assert(result.Results, tc.HasLen, 1)
+	c.Assert(result.Results[0].Error, tc.NotNil)
+	c.Assert(result.Results[0].Error.Code, tc.Equals, params.CodeNotFound)
 }
 
 func (s *uniterSuite) TestAssignedMachine(c *tc.C) {
@@ -905,7 +987,7 @@ func (s *uniterSuite) TestConfigSettings(c *tc.C) {
 	}
 	s.expectedGetConfigSettings("mysql/0", settings, nil)
 	s.expectedGetConfigSettings("wordpress/0", nil, nil)
-	s.expectedGetConfigSettings("postgresql/0", nil, applicationerrors.UnitNotFound)
+	s.expectedGetConfigSettings("postgresql/0", nil, applicationerrors.ApplicationNotFound)
 	s.badTag = names.NewUnitTag("foo/42")
 
 	// Act:
@@ -1195,7 +1277,7 @@ func (s *uniterSuite) TestActions(c *tc.C) {
 	s.operationService.EXPECT().GetReceiverFromTaskID(gomock.Any(), tagOne.Id()).Return("bar/0", nil)
 	taskOne := operation.TaskArgs{
 		ActionName: "one",
-		Parameters: map[string]interface{}{"foo": "bar"},
+		Parameters: map[string]any{"foo": "bar"},
 	}
 	s.operationService.EXPECT().GetPendingTaskByTaskID(gomock.Any(), tagOne.Id()).Return(taskOne, nil)
 
@@ -1203,7 +1285,7 @@ func (s *uniterSuite) TestActions(c *tc.C) {
 	s.operationService.EXPECT().GetReceiverFromTaskID(gomock.Any(), tagTwo.Id()).Return("bar/0", nil)
 	taskTwo := operation.TaskArgs{
 		ActionName: "two",
-		Parameters: map[string]interface{}{"baz": "bar"},
+		Parameters: map[string]any{"baz": "bar"},
 	}
 	s.operationService.EXPECT().GetPendingTaskByTaskID(gomock.Any(), tagTwo.Id()).Return(taskTwo, nil)
 
@@ -1218,11 +1300,11 @@ func (s *uniterSuite) TestActions(c *tc.C) {
 	c.Assert(results.Results, tc.HasLen, 2)
 	c.Check(results.Results[0].Action, tc.DeepEquals, &params.Action{
 		Name:       "one",
-		Parameters: map[string]interface{}{"foo": "bar"},
+		Parameters: map[string]any{"foo": "bar"},
 	})
 	c.Check(results.Results[1].Action, tc.DeepEquals, &params.Action{
 		Name:       "two",
-		Parameters: map[string]interface{}{"baz": "bar"},
+		Parameters: map[string]any{"baz": "bar"},
 	})
 }
 
@@ -1348,6 +1430,315 @@ func (s *uniterSuite) TestLogActionsMessages(c *tc.C) {
 	}})
 }
 
+func (s *uniterSuite) TestOpenedMachinePortRangesByEndpoint(c *tc.C) {
+	s.badTag = names.NewMachineTag("1")
+	defer s.setupMocks(c).Finish()
+
+	// Arrange
+	machine0UUID := tc.Must(c, coremachine.NewUUID)
+	s.machineService.EXPECT().GetMachineUUID(gomock.Any(), coremachine.Name("0")).Return(machine0UUID, nil)
+	returnedPortRanges := map[coreunit.Name]network.GroupedPortRanges{
+		"mysql/1": {
+			"server": []network.PortRange{{FromPort: 3306, ToPort: 3306, Protocol: "tcp"}},
+		},
+		"wordpress/0": {
+			"":                []network.PortRange{{FromPort: 100, ToPort: 200, Protocol: "tcp"}},
+			"monitoring-port": []network.PortRange{{FromPort: 10, ToPort: 20, Protocol: "udp"}},
+		},
+	}
+	s.portService.EXPECT().GetMachineOpenedPorts(gomock.Any(), machine0UUID).Return(returnedPortRanges, nil)
+
+	args := params.Entities{Entities: []params.Entity{
+		{Tag: "unit-mysql-0"},
+		{Tag: "machine-0"},
+		{Tag: "machine-1"},
+		{Tag: "unit-foo-42"},
+		{Tag: "application-wordpress"},
+	}}
+	expectPortRanges := map[string][]params.OpenUnitPortRangesByEndpoint{
+		"unit-mysql-1": {
+			{
+				Endpoint:   "server",
+				PortRanges: []params.PortRange{{FromPort: 3306, ToPort: 3306, Protocol: "tcp"}},
+			},
+		},
+		"unit-wordpress-0": {
+			{
+				Endpoint:   "",
+				PortRanges: []params.PortRange{{FromPort: 100, ToPort: 200, Protocol: "tcp"}},
+			},
+			{
+				Endpoint:   "monitoring-port",
+				PortRanges: []params.PortRange{{FromPort: 10, ToPort: 20, Protocol: "udp"}},
+			},
+		},
+	}
+
+	// Act
+	result, err := s.uniter.OpenedMachinePortRangesByEndpoint(c.Context(), args)
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result, tc.DeepEquals, params.OpenPortRangesByEndpointResults{
+		Results: []params.OpenPortRangesByEndpointResult{
+			{Error: apiservertesting.ErrUnauthorized},
+			{
+				UnitPortRanges: expectPortRanges,
+			},
+			{Error: apiservertesting.ErrUnauthorized},
+			{Error: apiservertesting.ErrUnauthorized},
+			{Error: apiservertesting.ErrUnauthorized},
+		},
+	})
+}
+
+func (s *uniterSuite) TestOpenedPortRangesByEndpoint(c *tc.C) {
+	s.authTag = names.NewUnitTag("mysql/1")
+	defer s.setupMocks(c).Finish()
+
+	// Arrange
+	mysqlUnitUUID := tc.Must(c, coreunit.NewUUID)
+	s.applicationService.EXPECT().GetUnitUUID(gomock.Any(), coreunit.Name("mysql/1")).Return(mysqlUnitUUID, nil)
+	mysqlResults := network.GroupedPortRanges{
+		"":   []network.PortRange{{FromPort: 1000, ToPort: 1000, Protocol: "tcp"}},
+		"db": []network.PortRange{{FromPort: 1111, ToPort: 1111, Protocol: "udp"}},
+	}
+	s.portService.EXPECT().GetUnitOpenedPorts(gomock.Any(), mysqlUnitUUID).Return(mysqlResults, nil)
+
+	// Get the open port ranges
+	expectPortRanges := []params.OpenUnitPortRangesByEndpoint{
+		{
+			Endpoint:   "",
+			PortRanges: []params.PortRange{{FromPort: 1000, ToPort: 1000, Protocol: "tcp"}},
+		},
+		{
+			Endpoint:   "db",
+			PortRanges: []params.PortRange{{FromPort: 1111, ToPort: 1111, Protocol: "udp"}},
+		},
+	}
+
+	// Act
+	result, err := s.uniter.OpenedPortRangesByEndpoint(c.Context())
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result, tc.DeepEquals, params.OpenPortRangesByEndpointResults{
+		Results: []params.OpenPortRangesByEndpointResult{
+			{
+				UnitPortRanges: map[string][]params.OpenUnitPortRangesByEndpoint{
+					"unit-mysql-1": expectPortRanges,
+				},
+			},
+		},
+	})
+}
+
+func (s *uniterSuite) TestGetUnitContextUnauthorized(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	s.badTag = names.NewUnitTag("foo/0")
+
+	_, err := s.uniter.GetUnitContext(c.Context(), params.Entity{Tag: s.badTag.String()})
+	c.Assert(err, tc.Satisfies, params.IsCodeUnauthorized)
+}
+
+func (s *uniterSuite) TestGetUnitContextInvalidTag(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// Act
+	_, err := s.uniter.GetUnitContext(c.Context(), params.Entity{Tag: "application-mysql"})
+
+	// Assert
+	c.Assert(err, tc.Satisfies, params.IsCodeUnauthorized)
+}
+
+func (s *uniterSuite) TestGetUnitContextIAAS(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	unitName := coreunit.Name("mysql/0")
+	unitTag := names.NewUnitTag(unitName.String())
+	privateAddress := "10.10.10.10"
+	legacyProxySettings := proxy.Settings{Http: "http://legacy-proxy:3128"}
+	jujuProxySettings := proxy.Settings{Https: "http://juju-proxy:3130"}
+	openedMachinePortRangesByEndpoint := map[coreunit.Name]network.GroupedPortRanges{
+		coreunit.Name("mysql/1"): {
+			"db": []network.PortRange{{
+				FromPort: 3306,
+				ToPort:   3306,
+				Protocol: "tcp",
+			}},
+		},
+	}
+
+	s.controllerNodeService.EXPECT().GetAllAPIAddressesForAgents(gomock.Any()).Return(
+		[]string{"10.0.0.1:17070", "10.0.0.2:17070"}, nil,
+	)
+	s.applicationService.EXPECT().GetIAASUnitContext(gomock.Any(), unitName).Return(service.IAASUnitContext{
+		CloudAPIVersion:                   "v1.2.3",
+		LegacyProxySettings:               legacyProxySettings,
+		JujuProxySettings:                 jujuProxySettings,
+		PrivateAddress:                    &privateAddress,
+		OpenedMachinePortRangesByEndpoint: openedMachinePortRangesByEndpoint,
+	}, nil)
+	s.tracingService.EXPECT().GetCharmTracingConfig(gomock.Any()).Return(
+		tracingservice.CharmTracingConfig{}, nil,
+	)
+
+	res, err := s.uniter.GetUnitContext(c.Context(), params.Entity{Tag: unitTag.String()})
+
+	c.Assert(err, tc.IsNil)
+	c.Check(res, tc.DeepEquals, params.UnitContext{
+		APIAddresses:                      []string{"10.0.0.1:17070", "10.0.0.2:17070"},
+		CloudAPIVersion:                   "v1.2.3",
+		LegacyProxySettings:               encodeProxySettings(legacyProxySettings),
+		JujuProxySettings:                 encodeProxySettings(jujuProxySettings),
+		PrivateAddress:                    &privateAddress,
+		OpenedMachinePortRangesByEndpoint: encodeOpenedPortRangesByEndpoint(openedMachinePortRangesByEndpoint),
+	})
+}
+
+func (s *uniterSuite) TestGetUnitContextIAASUnitNotFound(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	unitName := coreunit.Name("mysql/0")
+	unitTag := names.NewUnitTag(unitName.String())
+	s.applicationService.EXPECT().GetIAASUnitContext(gomock.Any(), unitName).Return(
+		service.IAASUnitContext{}, applicationerrors.UnitNotFound,
+	)
+
+	_, err := s.uniter.GetUnitContext(c.Context(), params.Entity{Tag: unitTag.String()})
+
+	c.Assert(err, tc.Satisfies, params.IsCodeNotFound)
+}
+
+func (s *uniterSuite) TestGetUnitContextCAAS(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	s.uniter.modelType = coremodel.CAAS
+	unitName := coreunit.Name("mysql/0")
+	unitTag := names.NewUnitTag(unitName.String())
+	legacyProxySettings := proxy.Settings{Http: "http://legacy-proxy:3128"}
+	jujuProxySettings := proxy.Settings{Https: "http://juju-proxy:3130"}
+	openedPortRangesByEndpoint := map[coreunit.Name]network.GroupedPortRanges{
+		coreunit.Name("mysql/0"): {
+			"": []network.PortRange{{
+				FromPort: 8080,
+				ToPort:   8080,
+				Protocol: "tcp",
+			}},
+		},
+	}
+
+	s.controllerNodeService.EXPECT().GetAllAPIAddressesForAgents(gomock.Any()).Return(
+		[]string{"10.0.0.1:17070"}, nil,
+	)
+	s.applicationService.EXPECT().GetCAASUnitContext(gomock.Any(), unitName).Return(service.CAASUnitContext{
+		CloudAPIVersion:            "v2.0.0",
+		LegacyProxySettings:        legacyProxySettings,
+		JujuProxySettings:          jujuProxySettings,
+		OpenedPortRangesByEndpoint: openedPortRangesByEndpoint,
+	}, nil)
+	s.tracingService.EXPECT().GetCharmTracingConfig(gomock.Any()).Return(
+		tracingservice.CharmTracingConfig{}, nil,
+	)
+
+	res, err := s.uniter.GetUnitContext(c.Context(), params.Entity{Tag: unitTag.String()})
+
+	c.Assert(err, tc.IsNil)
+	c.Check(res, tc.DeepEquals, params.UnitContext{
+		APIAddresses:               []string{"10.0.0.1:17070"},
+		CloudAPIVersion:            "v2.0.0",
+		LegacyProxySettings:        encodeProxySettings(legacyProxySettings),
+		JujuProxySettings:          encodeProxySettings(jujuProxySettings),
+		OpenedPortRangesByEndpoint: encodeOpenedPortRangesByEndpoint(openedPortRangesByEndpoint),
+	})
+}
+
+func (s *uniterSuite) TestGetUnitContextWithCharmTracingConfig(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	unitName := coreunit.Name("mysql/0")
+	unitTag := names.NewUnitTag(unitName.String())
+	privateAddress := "10.10.10.10"
+	legacyProxySettings := proxy.Settings{Http: "http://legacy-proxy:3128"}
+	jujuProxySettings := proxy.Settings{Https: "http://juju-proxy:3130"}
+	openedMachinePortRangesByEndpoint := map[coreunit.Name]network.GroupedPortRanges{
+		coreunit.Name("mysql/1"): {
+			"db": []network.PortRange{{
+				FromPort: 3306,
+				ToPort:   3306,
+				Protocol: "tcp",
+			}},
+		},
+	}
+	charmTracingConfig := tracingservice.CharmTracingConfig{
+		HTTPEndpoint:  "http://tracing:4317",
+		GRPCEndpoint:  "grpc://tracing:9411",
+		CACertificate: "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----",
+	}
+
+	s.controllerNodeService.EXPECT().GetAllAPIAddressesForAgents(gomock.Any()).Return(
+		[]string{"10.0.0.1:17070", "10.0.0.2:17070"}, nil,
+	)
+	s.applicationService.EXPECT().GetIAASUnitContext(gomock.Any(), unitName).Return(service.IAASUnitContext{
+		CloudAPIVersion:                   "v1.2.3",
+		LegacyProxySettings:               legacyProxySettings,
+		JujuProxySettings:                 jujuProxySettings,
+		PrivateAddress:                    &privateAddress,
+		OpenedMachinePortRangesByEndpoint: openedMachinePortRangesByEndpoint,
+	}, nil)
+	s.tracingService.EXPECT().GetCharmTracingConfig(gomock.Any()).Return(charmTracingConfig, nil)
+
+	res, err := s.uniter.GetUnitContext(c.Context(), params.Entity{Tag: unitTag.String()})
+
+	c.Assert(err, tc.IsNil)
+	c.Check(res.CharmTracingConfig, tc.DeepEquals, params.CharmTracingConfig{
+		HTTPEndpoint:  "http://tracing:4317",
+		GRPCEndpoint:  "grpc://tracing:9411",
+		CACertificate: "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----",
+	})
+	c.Check(res.APIAddresses, tc.DeepEquals, []string{"10.0.0.1:17070", "10.0.0.2:17070"})
+}
+
+func (s *uniterSuite) TestGetUnitContextWithCharmTracingConfigError(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	unitName := coreunit.Name("mysql/0")
+	unitTag := names.NewUnitTag(unitName.String())
+	privateAddress := "10.10.10.10"
+	legacyProxySettings := proxy.Settings{Http: "http://legacy-proxy:3128"}
+	jujuProxySettings := proxy.Settings{Https: "http://juju-proxy:3130"}
+	openedMachinePortRangesByEndpoint := map[coreunit.Name]network.GroupedPortRanges{
+		coreunit.Name("mysql/1"): {
+			"db": []network.PortRange{{
+				FromPort: 3306,
+				ToPort:   3306,
+				Protocol: "tcp",
+			}},
+		},
+	}
+
+	s.controllerNodeService.EXPECT().GetAllAPIAddressesForAgents(gomock.Any()).Return(
+		[]string{"10.0.0.1:17070", "10.0.0.2:17070"}, nil,
+	)
+	s.applicationService.EXPECT().GetIAASUnitContext(gomock.Any(), unitName).Return(service.IAASUnitContext{
+		CloudAPIVersion:                   "v1.2.3",
+		LegacyProxySettings:               legacyProxySettings,
+		JujuProxySettings:                 jujuProxySettings,
+		PrivateAddress:                    &privateAddress,
+		OpenedMachinePortRangesByEndpoint: openedMachinePortRangesByEndpoint,
+	}, nil)
+	s.tracingService.EXPECT().GetCharmTracingConfig(gomock.Any()).Return(
+		tracingservice.CharmTracingConfig{}, errors.New("tracing service error"),
+	)
+
+	res, err := s.uniter.GetUnitContext(c.Context(), params.Entity{Tag: unitTag.String()})
+
+	c.Assert(err, tc.IsNil)
+	c.Check(res.CharmTracingConfig, tc.DeepEquals, params.CharmTracingConfig{})
+	c.Check(res.APIAddresses, tc.DeepEquals, []string{"10.0.0.1:17070", "10.0.0.2:17070"})
+}
+
 func (s *uniterSuite) expectedGetConfigSettings(unitName coreunit.Name, settings map[string]any, err error) {
 	s.applicationService.EXPECT().GetApplicationUUIDByUnitName(gomock.Any(), unitName).Return(coreapplication.UUID(unitName.Application()), err)
 	if err == nil {
@@ -1380,12 +1771,20 @@ func (s *uniterSuite) expectGetHasSubordinates(c *tc.C, unitName coreunit.Name, 
 func (s *uniterSuite) setupMocks(c *tc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 
+	authorizer := &apiservertesting.FakeAuthorizer{
+		Tag:        s.authTag,
+		Controller: true,
+	}
+
 	s.applicationService = NewMockApplicationService(ctrl)
 	s.machineService = NewMockMachineService(ctrl)
 	s.networkService = NewMockNetworkService(ctrl)
 	s.operationService = NewMockOperationService(ctrl)
+	s.portService = NewMockPortService(ctrl)
+	s.controllerNodeService = NewMockControllerNodeService(ctrl)
 	s.resolveService = NewMockResolveService(ctrl)
 	s.removalService = NewMockRemovalService(ctrl)
+	s.tracingService = NewMockTracingService(ctrl)
 	s.watcherRegistry = NewMockWatcherRegistry(ctrl)
 
 	authFunc := func(ctx context.Context) (common.AuthFunc, error) {
@@ -1393,25 +1792,36 @@ func (s *uniterSuite) setupMocks(c *tc.C) *gomock.Controller {
 			return tag != s.badTag
 		}, nil
 	}
+
 	s.uniter = &UniterAPI{
-		applicationService: s.applicationService,
-		machineService:     s.machineService,
-		networkService:     s.networkService,
-		operationService:   s.operationService,
-		resolveService:     s.resolveService,
-		removalService:     s.removalService,
-		accessUnit:         authFunc,
-		accessApplication:  authFunc,
-		watcherRegistry:    s.watcherRegistry,
+		applicationService:    s.applicationService,
+		machineService:        s.machineService,
+		networkService:        s.networkService,
+		operationService:      s.operationService,
+		portService:           s.portService,
+		controllerNodeService: s.controllerNodeService,
+		resolveService:        s.resolveService,
+		removalService:        s.removalService,
+		tracingService:        s.tracingService,
+		auth:                  authorizer,
+		accessApplication:     authFunc,
+		accessMachine:         authFunc,
+		accessUnit:            authFunc,
+		watcherRegistry:       s.watcherRegistry,
+		logger:                loggertesting.WrapCheckLog(c),
 	}
 
 	c.Cleanup(func() {
+		s.uniter = nil
 		s.applicationService = nil
 		s.machineService = nil
 		s.networkService = nil
 		s.operationService = nil
+		s.portService = nil
+		s.controllerNodeService = nil
 		s.resolveService = nil
 		s.removalService = nil
+		s.tracingService = nil
 		s.watcherRegistry = nil
 	})
 
@@ -1431,6 +1841,9 @@ func (s *uniterSuite) expectWatchUnitResolveMode(
 	s.watcherRegistry.EXPECT().Register(gomock.Any(), gomock.Any()).Return(watcherID, nil).AnyTimes()
 }
 
+// leadershipSettings is a set of methods no longer supported by
+// the uniter API. With API version 20, their functionality has
+// been removed, though they must exist and return empty values.
 type leadershipSettings interface {
 	// Merge merges in the provided leadership settings. Only leaders for
 	// the given service may perform this operation.
@@ -1445,6 +1858,10 @@ type leadershipSettings interface {
 	WatchLeadershipSettings(ctx context.Context, bulkArgs params.Entities) (params.NotifyWatchResults, error)
 }
 
+//func TestLeadershipUniterSuite(t *testing.T) {
+//	tc.Run(t, &leadershipUniterSuite{})
+//}
+
 type leadershipUniterSuite struct {
 	testhelpers.IsolationSuite
 
@@ -1453,59 +1870,6 @@ type leadershipUniterSuite struct {
 	uniter leadershipSettings
 
 	setupMocks func(c *tc.C) *gomock.Controller
-}
-
-func (s *leadershipUniterSuite) TestLeadershipSettingsMerge(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	results, err := s.uniter.Merge(c.Context(), params.MergeLeadershipSettingsBulkParams{
-		Params: []params.MergeLeadershipSettingsParam{
-			{
-				ApplicationTag: "app1",
-				Settings: params.Settings{
-					"key1": "value1",
-				},
-			},
-		},
-	})
-	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(results, tc.DeepEquals, params.ErrorResults{
-		Results: []params.ErrorResult{{}},
-	})
-}
-
-func (s *leadershipUniterSuite) TestLeadershipSettingsRead(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	results, err := s.uniter.Read(c.Context(), params.Entities{
-		Entities: []params.Entity{
-			{
-				Tag: "app1",
-			},
-		},
-	})
-	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(results, tc.DeepEquals, params.GetLeadershipSettingsBulkResults{
-		Results: []params.GetLeadershipSettingsResult{{}},
-	})
-}
-
-func (s *leadershipUniterSuite) TestLeadershipSettingsWatchLeadershipSettings(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	results, err := s.uniter.WatchLeadershipSettings(c.Context(), params.Entities{
-		Entities: []params.Entity{
-			{
-				Tag: "app1",
-			},
-		},
-	})
-	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(results, tc.DeepEquals, params.NotifyWatchResults{
-		Results: []params.NotifyWatchResult{{
-			NotifyWatcherId: "watcher1",
-		}},
-	})
 }
 
 type uniterv19Suite struct {
@@ -1525,8 +1889,10 @@ func (s *uniterv19Suite) SetUpTest(c *tc.C) {
 
 		s.uniter = &UniterAPIv19{
 			UniterAPIv20: &UniterAPIv20{
-				UniterAPI: &UniterAPI{
-					watcherRegistry: s.watcherRegistry,
+				UniterAPIv21: &UniterAPIv21{
+					UniterAPI: &UniterAPI{
+						watcherRegistry: s.watcherRegistry,
+					},
 				},
 			},
 		}
@@ -1551,15 +1917,70 @@ func (s *uniterv20Suite) SetUpTest(c *tc.C) {
 		s.watcherRegistry.EXPECT().Register(gomock.Any(), gomock.Any()).Return("watcher1", nil).AnyTimes()
 
 		s.uniter = &UniterAPIv20{
-			UniterAPI: &UniterAPI{
-				modelUUID:       model.UUID(coretesting.ModelTag.Id()),
-				modelType:       model.IAAS,
-				watcherRegistry: s.watcherRegistry,
+			UniterAPIv21: &UniterAPIv21{
+				UniterAPI: &UniterAPI{
+					modelUUID:       tc.Must(c, coremodel.NewUUID),
+					modelType:       coremodel.IAAS,
+					watcherRegistry: s.watcherRegistry,
+				},
 			},
 		}
 
 		return ctrl
 	}
+}
+
+func (s *uniterv20Suite) TestLeadershipSettingsMerge(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	results, err := s.uniter.Merge(c.Context(), params.MergeLeadershipSettingsBulkParams{
+		Params: []params.MergeLeadershipSettingsParam{
+			{
+				ApplicationTag: "app1",
+				Settings: params.Settings{
+					"key1": "value1",
+				},
+			},
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(results, tc.DeepEquals, params.ErrorResults{
+		Results: []params.ErrorResult{{}},
+	})
+}
+
+func (s *uniterv20Suite) TestLeadershipSettingsRead(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	results, err := s.uniter.Read(c.Context(), params.Entities{
+		Entities: []params.Entity{
+			{
+				Tag: "app1",
+			},
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(results, tc.DeepEquals, params.GetLeadershipSettingsBulkResults{
+		Results: []params.GetLeadershipSettingsResult{{}},
+	})
+}
+
+func (s *uniterv20Suite) TestLeadershipSettingsWatchLeadershipSettings(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	results, err := s.uniter.WatchLeadershipSettings(c.Context(), params.Entities{
+		Entities: []params.Entity{
+			{
+				Tag: "app1",
+			},
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(results, tc.DeepEquals, params.NotifyWatchResults{
+		Results: []params.NotifyWatchResult{{
+			NotifyWatcherId: "watcher1",
+		}},
+	})
 }
 
 type uniterRelationSuite struct {
@@ -1569,11 +1990,12 @@ type uniterRelationSuite struct {
 	authTag          names.Tag
 	wordpressUnitTag names.UnitTag
 
-	applicationService *MockApplicationService
-	networkService     *MockNetworkService
-	relationService    *MockRelationService
-	statusService      *MockStatusService
-	watcherRegistry    *MockWatcherRegistry
+	applicationService        *MockApplicationService
+	crossModelRelationService *MockCrossModelRelationService
+	networkService            *MockNetworkService
+	relationService           *MockRelationService
+	statusService             *MockStatusService
+	watcherRegistry           *MockWatcherRegistry
 
 	uniter *UniterAPI
 }
@@ -1592,13 +2014,14 @@ func (s *uniterRelationSuite) SetUpSuite(c *tc.C) {
 func (s *uniterRelationSuite) TestRelation(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
-	relKey := relationtesting.GenNewKey(c, relTag.Id())
+	relKey := tc.Must1(c, corerelation.NewKeyFromString, relTag.Id())
 
-	relUUID := relationtesting.GenRelationUUID(c)
+	relUUID := tc.Must(c, corerelation.NewUUID)
 	relID := 42
 
 	s.expectGetRelationUUIDByKey(relKey, relUUID, nil)
 	s.expectGetRelationDetails(c, relUUID, relID, relTag)
+	s.expectGetRelationRemoteModelUUID(relUUID, "", crossmodelrelationerrors.RelationNotCrossModel)
 
 	args := params.RelationUnits{RelationUnits: []params.RelationUnit{
 		{Relation: relTag.String(), Unit: "unit-wordpress-0"},
@@ -1608,9 +2031,10 @@ func (s *uniterRelationSuite) TestRelation(c *tc.C) {
 	c.Check(result, tc.DeepEquals, params.RelationResultsV2{
 		Results: []params.RelationResultV2{
 			{
-				Id:   relID,
-				Key:  relTag.Id(),
-				Life: life.Alive,
+				Id:        relID,
+				Key:       relTag.Id(),
+				Life:      life.Alive,
+				Suspended: false,
 				Endpoint: params.Endpoint{
 					ApplicationName: "wordpress",
 					Relation: params.CharmRelation{
@@ -1624,7 +2048,78 @@ func (s *uniterRelationSuite) TestRelation(c *tc.C) {
 				},
 				OtherApplication: params.RelatedApplicationDetails{
 					ApplicationName: "mysql",
-					ModelUUID:       coretesting.ModelTag.Id(),
+					ModelUUID:       s.uniter.modelUUID.String(),
+				},
+			},
+		},
+	})
+}
+
+func (s *uniterRelationSuite) TestRelationSuspended(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
+	relKey := tc.Must1(c, corerelation.NewKeyFromString, relTag.Id())
+
+	relUUID := tc.Must(c, corerelation.NewUUID)
+	relID := 42
+
+	s.expectGetRelationUUIDByKey(relKey, relUUID, nil)
+	s.expectGetRelationRemoteModelUUID(relUUID, "", crossmodelrelationerrors.RelationNotCrossModel)
+	// Expect a suspended relation
+	s.relationService.EXPECT().GetRelationDetails(gomock.Any(), relUUID).Return(relation.RelationDetails{
+		Life:      life.Alive,
+		UUID:      relUUID,
+		ID:        relID,
+		Key:       relKey,
+		Suspended: true,
+		Endpoints: []relation.Endpoint{
+			{
+				ApplicationName: "wordpress",
+				Relation: charm.Relation{
+					Name:      "database",
+					Role:      charm.RoleRequirer,
+					Interface: "mysql",
+					Scope:     charm.ScopeGlobal,
+				},
+			},
+			{
+				ApplicationName: "mysql",
+				Relation: charm.Relation{
+					Name:      "mysql",
+					Role:      charm.RoleProvider,
+					Interface: "mysql",
+					Scope:     charm.ScopeGlobal,
+				},
+			},
+		},
+	}, nil)
+
+	args := params.RelationUnits{RelationUnits: []params.RelationUnit{
+		{Relation: relTag.String(), Unit: "unit-wordpress-0"},
+	}}
+	result, err := s.uniter.Relation(c.Context(), args)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(result, tc.DeepEquals, params.RelationResultsV2{
+		Results: []params.RelationResultV2{
+			{
+				Id:        relID,
+				Key:       relTag.Id(),
+				Life:      life.Alive,
+				Suspended: true,
+				Endpoint: params.Endpoint{
+					ApplicationName: "wordpress",
+					Relation: params.CharmRelation{
+						Name:      "database",
+						Role:      string(charm.RoleRequirer),
+						Interface: "mysql",
+						Optional:  false,
+						Limit:     0,
+						Scope:     string(charm.ScopeGlobal),
+					},
+				},
+				OtherApplication: params.RelatedApplicationDetails{
+					ApplicationName: "mysql",
+					ModelUUID:       s.uniter.modelUUID.String(),
 				},
 			},
 		},
@@ -1634,17 +2129,18 @@ func (s *uniterRelationSuite) TestRelation(c *tc.C) {
 func (s *uniterRelationSuite) TestPeerRelation(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("wordpress:self")
-	relKey := relationtesting.GenNewKey(c, relTag.Id())
+	relKey := tc.Must1(c, corerelation.NewKeyFromString, relTag.Id())
 
-	relUUID := relationtesting.GenRelationUUID(c)
+	relUUID := tc.Must(c, corerelation.NewUUID)
 	relID := 42
 
 	s.expectGetRelationUUIDByKey(relKey, relUUID, nil)
+	s.expectGetRelationRemoteModelUUID(relUUID, "", crossmodelrelationerrors.RelationNotCrossModel)
 	s.relationService.EXPECT().GetRelationDetails(gomock.Any(), relUUID).Return(relation.RelationDetails{
 		Life: life.Alive,
 		UUID: relUUID,
 		ID:   relID,
-		Key:  relationtesting.GenNewKey(c, relTag.Id()),
+		Key:  relKey,
 		Endpoints: []relation.Endpoint{
 			{
 				ApplicationName: "wordpress",
@@ -1666,21 +2162,24 @@ func (s *uniterRelationSuite) TestPeerRelation(c *tc.C) {
 	c.Check(result, tc.DeepEquals, params.RelationResultsV2{
 		Results: []params.RelationResultV2{
 			{
-				Id:   relID,
-				Key:  relTag.Id(),
-				Life: life.Alive,
+				Id:        relID,
+				Key:       relTag.Id(),
+				Life:      life.Alive,
+				Suspended: false,
 				Endpoint: params.Endpoint{
 					ApplicationName: "wordpress",
 					Relation: params.CharmRelation{
 						Name:      "self",
 						Role:      string(charm.RolePeer),
 						Interface: "me",
+						Optional:  false,
+						Limit:     0,
 						Scope:     string(charm.ScopeContainer),
 					},
 				},
 				OtherApplication: params.RelatedApplicationDetails{
 					ApplicationName: "wordpress",
-					ModelUUID:       coretesting.ModelTag.Id(),
+					ModelUUID:       s.uniter.modelUUID.String(),
 				},
 			},
 		},
@@ -1690,9 +2189,9 @@ func (s *uniterRelationSuite) TestPeerRelation(c *tc.C) {
 func (s *uniterRelationSuite) TestInvalidPeerRelation(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("wordpress:self")
-	relKey := relationtesting.GenNewKey(c, relTag.Id())
+	relKey := tc.Must1(c, corerelation.NewKeyFromString, relTag.Id())
 
-	relUUID := relationtesting.GenRelationUUID(c)
+	relUUID := tc.Must(c, corerelation.NewUUID)
 	relID := 42
 
 	s.expectGetRelationUUIDByKey(relKey, relUUID, nil)
@@ -1700,7 +2199,7 @@ func (s *uniterRelationSuite) TestInvalidPeerRelation(c *tc.C) {
 		Life: life.Alive,
 		UUID: relUUID,
 		ID:   relID,
-		Key:  relationtesting.GenNewKey(c, relTag.Id()),
+		Key:  relKey,
 		Endpoints: []relation.Endpoint{
 			{
 				ApplicationName: "wordpress",
@@ -1723,6 +2222,30 @@ func (s *uniterRelationSuite) TestInvalidPeerRelation(c *tc.C) {
 	c.Check(result.Results[0].Error, tc.ErrorMatches, ".*no other application found.*")
 }
 
+func (s *uniterRelationSuite) TestRelationRemoteModelUUIDNotFound(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
+	relKey := tc.Must1(c, corerelation.NewKeyFromString, relTag.Id())
+
+	relUUID := tc.Must(c, corerelation.NewUUID)
+	relID := 42
+
+	s.expectGetRelationUUIDByKey(relKey, relUUID, nil)
+	s.expectGetRelationDetails(c, relUUID, relID, relTag)
+	s.expectGetRelationRemoteModelUUID(relUUID, "", relationerrors.RelationNotFound)
+
+	args := params.RelationUnits{RelationUnits: []params.RelationUnit{
+		{Relation: relTag.String(), Unit: "unit-wordpress-0"},
+	}}
+	result, err := s.uniter.Relation(c.Context(), args)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(result.Results, tc.HasLen, 1)
+	c.Check(result.Results[0].Error, tc.DeepEquals, &params.Error{
+		Message: "not found",
+		Code:    params.CodeNotFound,
+	})
+}
+
 // TestRelationUnauthorized tests the different scenarios where
 // ErrUnauthorized will be returned. It also tests the bulk
 // functionality of the Relation facade method.
@@ -1731,7 +2254,11 @@ func (s *uniterRelationSuite) TestRelationUnauthorized(c *tc.C) {
 	// arrange
 	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
 	relTagFail := names.NewRelationTag("foo:database wordpress:mysql")
-	s.expectGetRelationUUIDByKey(relationtesting.GenNewKey(c, relTagFail.Id()), "", relationerrors.RelationNotFound)
+	s.expectGetRelationUUIDByKey(
+		tc.Must1(c, corerelation.NewKeyFromString, relTagFail.Id()),
+		"",
+		relationerrors.RelationNotFound,
+	)
 
 	// act
 	args := params.RelationUnits{
@@ -1764,7 +2291,7 @@ func (s *uniterRelationSuite) TestRelationUnauthorized(c *tc.C) {
 func (s *uniterRelationSuite) TestRelationById(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
-	relUUID := relationtesting.GenRelationUUID(c)
+	relUUID := tc.Must(c, corerelation.NewUUID)
 	relIDNotFound := -1
 	relID := 31
 	relIDUnexpectedAppName := 42
@@ -1774,6 +2301,7 @@ func (s *uniterRelationSuite) TestRelationById(c *tc.C) {
 
 	s.expectGetRelationUUIDByID(relID, relUUID, nil)
 	s.expectGetRelationDetails(c, relUUID, relID, relTag)
+	s.expectGetRelationRemoteModelUUID(relUUID, "", crossmodelrelationerrors.RelationNotCrossModel)
 
 	s.expectGetRelationUUIDByID(relIDUnexpectedAppName, relUUID, nil)
 	s.expectGetRelationDetailsUnexpectedAppName(c, relUUID)
@@ -1794,9 +2322,10 @@ func (s *uniterRelationSuite) TestRelationById(c *tc.C) {
 		Results: []params.RelationResultV2{
 			{Error: apiservertesting.ErrUnauthorized},
 			{
-				Id:   relID,
-				Key:  relTag.Id(),
-				Life: life.Alive,
+				Id:        relID,
+				Key:       relTag.Id(),
+				Life:      life.Alive,
+				Suspended: false,
 				Endpoint: params.Endpoint{
 					ApplicationName: "wordpress",
 					Relation: params.CharmRelation{
@@ -1810,10 +2339,109 @@ func (s *uniterRelationSuite) TestRelationById(c *tc.C) {
 				},
 				OtherApplication: params.RelatedApplicationDetails{
 					ApplicationName: "mysql",
-					ModelUUID:       coretesting.ModelTag.Id(),
+					ModelUUID:       s.uniter.modelUUID.String(),
 				},
 			},
 			{Error: apiservertesting.ErrUnauthorized},
+		},
+	})
+}
+
+func (s *uniterRelationSuite) TestNetworkInfoWithRelationUsesRelationNetwork(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	relID := 42
+	relUUID := tc.Must(c, corerelation.NewUUID)
+	unitName := coreunit.Name(s.wordpressUnitTag.Id())
+	args := params.NetworkInfoParams{
+		Unit:       s.wordpressUnitTag.String(),
+		Endpoints:  []string{"database"},
+		RelationId: &relID,
+	}
+
+	s.networkService.EXPECT().GetUnitEndpointNetworks(
+		gomock.Any(), unitName, args.Endpoints,
+	).Return([]domainnetwork.UnitNetwork{{
+		EndpointName:     "database",
+		IngressAddresses: []string{"192.0.2.10"},
+	}}, nil)
+	s.expectGetRelationUUIDByID(relID, relUUID, nil)
+	s.networkService.EXPECT().GetUnitRelationNetworks(
+		gomock.Any(), unitName, []corerelation.UUID{relUUID},
+	).Return(map[corerelation.UUID]domainnetwork.UnitNetwork{
+		relUUID: {
+			EndpointName:     "database",
+			IngressAddresses: []string{"198.51.100.10"},
+			EgressSubnets:    []string{"203.0.113.0/24"},
+			DeviceInfos: []domainnetwork.DeviceInfo{{
+				Name:       "eth0",
+				MACAddress: "aa:bb:cc:dd:ee:ff",
+				Addresses: []domainnetwork.AddressInfo{{
+					Hostname: "db.internal",
+					Value:    "10.0.0.10",
+					CIDR:     "10.0.0.0/24",
+				}},
+			}},
+		},
+	}, nil)
+
+	result, err := s.uniter.NetworkInfo(c.Context(), args)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result, tc.DeepEquals, params.NetworkInfoResults{
+		Results: map[string]params.NetworkInfoResult{
+			"database": {
+				Info: []params.NetworkInfo{{
+					MACAddress:    "aa:bb:cc:dd:ee:ff",
+					InterfaceName: "eth0",
+					Addresses: []params.InterfaceAddress{{
+						Hostname: "db.internal",
+						Address:  "10.0.0.10",
+						CIDR:     "10.0.0.0/24",
+					}},
+				}},
+				IngressAddresses: []string{"198.51.100.10"},
+				EgressSubnets:    []string{"203.0.113.0/24"},
+			},
+		},
+	})
+}
+
+func (s *uniterRelationSuite) TestNetworkInfoWithRelationPreservesRequestedEndpointNetworks(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	relID := 42
+	relUUID := tc.Must(c, corerelation.NewUUID)
+	unitName := coreunit.Name(s.wordpressUnitTag.Id())
+	args := params.NetworkInfoParams{
+		Unit:       s.wordpressUnitTag.String(),
+		Endpoints:  []string{"database"},
+		RelationId: &relID,
+	}
+
+	s.networkService.EXPECT().GetUnitEndpointNetworks(
+		gomock.Any(), unitName, args.Endpoints,
+	).Return([]domainnetwork.UnitNetwork{{
+		EndpointName:     "database",
+		IngressAddresses: []string{"192.0.2.10"},
+	}}, nil)
+	s.expectGetRelationUUIDByID(relID, relUUID, nil)
+	s.networkService.EXPECT().GetUnitRelationNetworks(
+		gomock.Any(), unitName, []corerelation.UUID{relUUID},
+	).Return(map[corerelation.UUID]domainnetwork.UnitNetwork{
+		relUUID: {
+			EndpointName:     "database-peers",
+			IngressAddresses: []string{"198.51.100.10"},
+			EgressSubnets:    []string{"203.0.113.0/24"},
+		},
+	}, nil)
+
+	result, err := s.uniter.NetworkInfo(c.Context(), args)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result, tc.DeepEquals, params.NetworkInfoResults{
+		Results: map[string]params.NetworkInfoResult{
+			"database": {
+				IngressAddresses: []string{"192.0.2.10"},
+			},
 		},
 	})
 }
@@ -1822,11 +2450,13 @@ func (s *uniterRelationSuite) TestReadSettingsApplication(c *tc.C) {
 	// arrange
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
-	relUUID := relationtesting.GenRelationUUID(c)
+	relUUID := tc.Must(c, corerelation.NewUUID)
 	appID := tc.Must(c, coreapplication.NewUUID)
 	settings := map[string]string{"wanda": "firebaugh"}
 
-	s.expectGetRelationUUIDByKey(relationtesting.GenNewKey(c, relTag.Id()), relUUID, nil)
+	s.expectGetRelationUUIDByKey(
+		tc.Must1(c, corerelation.NewKeyFromString, relTag.Id()), relUUID, nil,
+	)
 	s.expectGetApplicationUUIDByName(s.wordpressAppTag.Id(), appID)
 	s.expectGetRelationApplicationSettingsWithLeader(coreunit.Name(s.wordpressUnitTag.Id()), relUUID, appID, settings)
 
@@ -1851,10 +2481,12 @@ func (s *uniterRelationSuite) TestReadSettingsUnit(c *tc.C) {
 	// arrange
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
-	relUUID := relationtesting.GenRelationUUID(c)
+	relUUID := tc.Must(c, corerelation.NewUUID)
 	settings := map[string]string{"wanda": "firebaugh"}
 
-	s.expectGetRelationUUIDByKey(relationtesting.GenNewKey(c, relTag.Id()), relUUID, nil)
+	s.expectGetRelationUUIDByKey(
+		tc.Must1(c, corerelation.NewKeyFromString, relTag.Id()), relUUID, nil,
+	)
 	s.relationService.EXPECT().GetRelationUnitSettings(
 		gomock.Any(), relUUID, coreunit.Name(s.wordpressUnitTag.Id())).Return(settings, nil)
 
@@ -1878,7 +2510,7 @@ func (s *uniterRelationSuite) TestReadSettingsUnit(c *tc.C) {
 func (s *uniterRelationSuite) TestReadSettingsErrUnauthorized(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
-	relUUID := relationtesting.GenRelationUUID(c)
+	relUUID := tc.Must(c, corerelation.NewUUID)
 
 	errAuthTests := []struct {
 		description string
@@ -1893,7 +2525,9 @@ func (s *uniterRelationSuite) TestReadSettingsErrUnauthorized(c *tc.C) {
 			description: "remote unit, valid in relation, not this call",
 			arg:         params.RelationUnit{Relation: relTag.String(), Unit: "unit-mysql-0"},
 			arrange: func() {
-				s.expectGetRelationUUIDByKey(relationtesting.GenNewKey(c, relTag.Id()), relUUID, nil)
+				s.expectGetRelationUUIDByKey(
+					tc.Must1(c, corerelation.NewKeyFromString, relTag.Id()), relUUID, nil,
+				)
 			},
 		}, {
 			description: "relation tag parsing fail",
@@ -1903,7 +2537,9 @@ func (s *uniterRelationSuite) TestReadSettingsErrUnauthorized(c *tc.C) {
 			description: "unit arg not unit nor application",
 			arg:         params.RelationUnit{Relation: relTag.String(), Unit: "user-foo"},
 			arrange: func() {
-				s.expectGetRelationUUIDByKey(relationtesting.GenNewKey(c, relTag.Id()), relUUID, nil)
+				s.expectGetRelationUUIDByKey(
+					tc.Must1(c, corerelation.NewKeyFromString, relTag.Id()), relUUID, nil,
+				)
 			},
 		},
 	}
@@ -1926,11 +2562,13 @@ func (s *uniterRelationSuite) TestReadSettingsForLocalApplication(c *tc.C) {
 	// arrange
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("wordpress:mysql")
-	relUUID := relationtesting.GenRelationUUID(c)
+	relUUID := tc.Must(c, corerelation.NewUUID)
 	appID := tc.Must(c, coreapplication.NewUUID)
 	settings := map[string]string{"wanda": "firebaugh"}
 
-	s.expectGetRelationUUIDByKey(relationtesting.GenNewKey(c, relTag.Id()), relUUID, nil)
+	s.expectGetRelationUUIDByKey(
+		tc.Must1(c, corerelation.NewKeyFromString, relTag.Id()), relUUID, nil,
+	)
 	s.expectGetApplicationUUIDByName(s.wordpressAppTag.Id(), appID)
 	s.expectGetRelationApplicationSettingsWithLeader(coreunit.Name(s.wordpressUnitTag.Id()), relUUID, appID, settings)
 
@@ -1954,7 +2592,7 @@ func (s *uniterRelationSuite) TestReadSettingsForLocalApplication(c *tc.C) {
 func (s *uniterRelationSuite) TestReadRemoteSettingsErrUnauthorized(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
-	relUUID := relationtesting.GenRelationUUID(c)
+	relUUID := tc.Must(c, corerelation.NewUUID)
 
 	errAuthTests := []struct {
 		description string
@@ -1981,7 +2619,9 @@ func (s *uniterRelationSuite) TestReadRemoteSettingsErrUnauthorized(c *tc.C) {
 			description: "remote unit tag not unit nor application kinds",
 			arg:         params.RelationUnitPair{Relation: relTag.String(), LocalUnit: s.wordpressUnitTag.String(), RemoteUnit: "machine-2"},
 			arrange: func() {
-				s.expectGetRelationUUIDByKey(relationtesting.GenNewKey(c, relTag.Id()), relUUID, nil)
+				s.expectGetRelationUUIDByKey(
+					tc.Must1(c, corerelation.NewKeyFromString, relTag.Id()), relUUID, nil,
+				)
 			},
 		},
 	}
@@ -2009,10 +2649,12 @@ func (s *uniterRelationSuite) TestReadRemoteSettingsForUnit(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
 	remoteUnitTag := names.NewUnitTag("mysql/2")
-	relUUID := relationtesting.GenRelationUUID(c)
+	relUUID := tc.Must(c, corerelation.NewUUID)
 	settings := map[string]string{"wanda": "firebaugh"}
 
-	s.expectGetRelationUUIDByKey(relationtesting.GenNewKey(c, relTag.Id()), relUUID, nil)
+	s.expectGetRelationUUIDByKey(
+		tc.Must1(c, corerelation.NewKeyFromString, relTag.Id()), relUUID, nil,
+	)
 	s.relationService.EXPECT().GetRelationUnitSettings(
 		gomock.Any(), relUUID, coreunit.Name(remoteUnitTag.Id())).Return(settings, nil)
 
@@ -2042,11 +2684,13 @@ func (s *uniterRelationSuite) TestReadRemoteSettingsForApplication(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
 	remoteAppTag := names.NewApplicationTag("mysql")
-	relUUID := relationtesting.GenRelationUUID(c)
+	relUUID := tc.Must(c, corerelation.NewUUID)
 	appID := tc.Must(c, coreapplication.NewUUID)
 	settings := map[string]string{"wanda": "firebaugh"}
 
-	s.expectGetRelationUUIDByKey(relationtesting.GenNewKey(c, relTag.Id()), relUUID, nil)
+	s.expectGetRelationUUIDByKey(
+		tc.Must1(c, corerelation.NewKeyFromString, relTag.Id()), relUUID, nil,
+	)
 	s.expectGetApplicationUUIDByName(remoteAppTag.Id(), appID)
 	s.expectGetRelationApplicationSettings(relUUID, appID, settings)
 
@@ -2075,11 +2719,13 @@ func (s *uniterRelationSuite) TestReadRemoteApplicationSettingsWithLocalApplicat
 	// arrange
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("wordpress:mysql")
-	relUUID := relationtesting.GenRelationUUID(c)
+	relUUID := tc.Must(c, corerelation.NewUUID)
 	appID := tc.Must(c, coreapplication.NewUUID)
 	settings := map[string]string{"wanda": "firebaugh"}
 
-	s.expectGetRelationUUIDByKey(relationtesting.GenNewKey(c, relTag.Id()), relUUID, nil)
+	s.expectGetRelationUUIDByKey(
+		tc.Must1(c, corerelation.NewKeyFromString, relTag.Id()), relUUID, nil,
+	)
 	s.expectGetApplicationUUIDByName(s.wordpressAppTag.Id(), appID)
 	s.expectGetRelationApplicationSettings(relUUID, appID, settings)
 
@@ -2104,7 +2750,7 @@ func (s *uniterRelationSuite) TestRelationStatus(c *tc.C) {
 	// arrange
 	defer s.setupMocks(c).Finish()
 
-	unitUUID := unittesting.GenUnitUUID(c)
+	unitUUID := tc.Must(c, coreunit.NewUUID)
 	s.expectGetUnitUUID(s.wordpressUnitTag.Id(), unitUUID, nil)
 	relTagOne := names.NewRelationTag("mysql:database wordpress:mysql")
 	relTagTwo := names.NewRelationTag("redis:endpoint wordpress:endpoint")
@@ -2137,6 +2783,8 @@ func (s *uniterRelationSuite) TestRelationStatus(c *tc.C) {
 // TestRelationsStatusUnitTagNotUnitNorApplication test that a valid tag not of
 // the type application nor unit fails with unauthorized.
 func (s *uniterRelationSuite) TestRelationsStatusUnitTagNotUnitNorApplication(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
 	// act
 	args := params.Entities{Entities: []params.Entity{{Tag: "machine-0"}}}
 	result, err := s.uniter.RelationsStatus(c.Context(), args)
@@ -2150,6 +2798,8 @@ func (s *uniterRelationSuite) TestRelationsStatusUnitTagNotUnitNorApplication(c 
 // TestRelationsStatusUnitTagCannotAccess tests that a valid unit tag which is not
 // the authorized one will fail.
 func (s *uniterRelationSuite) TestRelationsStatusUnitTagCannotAccess(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
 	// act
 	args := params.Entities{Entities: []params.Entity{{Tag: "unit-mysql-0"}}}
 	result, err := s.uniter.RelationsStatus(c.Context(), args)
@@ -2164,11 +2814,11 @@ func (s *uniterRelationSuite) TestSetRelationStatus(c *tc.C) {
 	// arrange
 	defer s.setupMocks(c).Finish()
 	relID := 42
-	relationUUID := relationtesting.GenRelationUUID(c)
+	relationUUID := tc.Must(c, corerelation.NewUUID)
 	s.expectGetRelationUUIDByID(relID, relationUUID, nil)
 	relStatus := status.StatusInfo{
 		Status: status.Joined,
-		Since:  ptr(s.uniter.clock.Now()),
+		Since:  new(s.uniter.clock.Now()),
 	}
 	s.expectSetRelationStatus(s.wordpressUnitTag.Id(), relationUUID, relStatus)
 
@@ -2187,6 +2837,8 @@ func (s *uniterRelationSuite) TestSetRelationStatus(c *tc.C) {
 }
 
 func (s *uniterRelationSuite) TestSetRelationStatusUnitTagNotValid(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
 	// act
 	args := params.RelationStatusArgs{Args: []params.RelationStatusArg{{UnitTag: "foo"}}}
 	result, err := s.uniter.SetRelationStatus(c.Context(), args)
@@ -2201,7 +2853,7 @@ func (s *uniterRelationSuite) TestSetRelationStatusRelationNotFound(c *tc.C) {
 	// arrange
 	defer s.setupMocks(c).Finish()
 	relID := 42
-	relationUUID := relationtesting.GenRelationUUID(c)
+	relationUUID := tc.Must(c, corerelation.NewUUID)
 	s.expectGetRelationUUIDByID(relID, relationUUID, relationerrors.RelationNotFound)
 
 	// act
@@ -2223,7 +2875,11 @@ func (s *uniterRelationSuite) TestEnterScopeErrUnauthorized(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
 	failRelTag := names.NewRelationTag("postgresql:database wordpress:mysql")
-	s.expectGetRelationUUIDByKey(relationtesting.GenNewKey(c, failRelTag.Id()), "", relationerrors.RelationNotFound)
+	s.expectGetRelationUUIDByKey(
+		tc.Must1(c, corerelation.NewKeyFromString, failRelTag.Id()),
+		"",
+		relationerrors.RelationNotFound,
+	)
 
 	// act
 	args := params.RelationUnits{RelationUnits: []params.RelationUnit{
@@ -2251,17 +2907,21 @@ func (s *uniterRelationSuite) TestEnterScope(c *tc.C) {
 	// arrange
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
-	relUUID := relationtesting.GenRelationUUID(c)
-	relKey := relationtesting.GenNewKey(c, relTag.Id())
+	relUUID := tc.Must(c, corerelation.NewUUID)
+	relKey := tc.Must1(c, corerelation.NewKeyFromString, relTag.Id())
 	s.expectGetRelationUUIDByKey(relKey, relUUID, nil)
 	addr := "x.x.x.x"
 	unitName := coreunit.Name(s.wordpressUnitTag.Id())
 	settings := map[string]string{"ingress-address": addr}
 	s.expectEnterScope(relUUID, unitName, settings, nil)
 
-	s.networkService.EXPECT().GetUnitRelationNetwork(gomock.Any(), unitName, relKey).Return(domainnetwork.UnitNetwork{
-		EndpointName:     "mysql",
-		IngressAddresses: []string{addr},
+	s.networkService.EXPECT().GetUnitRelationNetworks(
+		gomock.Any(), unitName, []corerelation.UUID{relUUID},
+	).Return(map[corerelation.UUID]domainnetwork.UnitNetwork{
+		relUUID: {
+			EndpointName:     "mysql",
+			IngressAddresses: []string{addr},
+		},
 	}, nil)
 
 	// act
@@ -2276,6 +2936,41 @@ func (s *uniterRelationSuite) TestEnterScope(c *tc.C) {
 	c.Assert(result, tc.DeepEquals, emptyErrorResults)
 }
 
+func (s *uniterRelationSuite) TestEnterScopeWithEgress(c *tc.C) {
+	// arrange
+	defer s.setupMocks(c).Finish()
+	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
+	relUUID := tc.Must(c, corerelation.NewUUID)
+	relKey := tc.Must1(c, corerelation.NewKeyFromString, relTag.Id())
+	unitName := coreunit.Name(s.wordpressUnitTag.Id())
+	settings := map[string]string{
+		"ingress-address": "x.x.x.x",
+		"egress-subnets":  "192.168.0.0/24,10.0.0.0/8",
+	}
+
+	s.expectGetRelationUUIDByKey(relKey, relUUID, nil)
+	s.expectEnterScope(relUUID, unitName, settings, nil)
+	s.networkService.EXPECT().GetUnitRelationNetworks(
+		gomock.Any(), unitName, []corerelation.UUID{relUUID},
+	).Return(map[corerelation.UUID]domainnetwork.UnitNetwork{
+		relUUID: {
+			EndpointName:     "mysql",
+			IngressAddresses: []string{"x.x.x.x"},
+			EgressSubnets:    []string{"192.168.0.0/24", "10.0.0.0/8"},
+		},
+	}, nil)
+
+	// act
+	args := params.RelationUnits{RelationUnits: []params.RelationUnit{
+		{Relation: relTag.String(), Unit: s.wordpressUnitTag.String()},
+	}}
+	result, err := s.uniter.EnterScope(c.Context(), args)
+
+	// assert
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result, tc.DeepEquals, params.ErrorResults{Results: []params.ErrorResult{{}}})
+}
+
 // TestEnterScopeReturnsPotentialRelationUnitNotValid tests that if EnterScope
 // returns PotentialRelationUnitNotValid the facade method still returns no
 // error.
@@ -2283,17 +2978,21 @@ func (s *uniterRelationSuite) TestEnterScopeReturnsPotentialRelationUnitNotValid
 	// arrange
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
-	relUUID := relationtesting.GenRelationUUID(c)
-	relKey := relationtesting.GenNewKey(c, relTag.Id())
+	relUUID := tc.Must(c, corerelation.NewUUID)
+	relKey := tc.Must1(c, corerelation.NewKeyFromString, relTag.Id())
 	s.expectGetRelationUUIDByKey(relKey, relUUID, nil)
 	addr := "x.x.x.x"
 	unitName := coreunit.Name(s.wordpressUnitTag.Id())
 	settings := map[string]string{"ingress-address": addr}
 	s.expectEnterScope(relUUID, unitName, settings,
 		relationerrors.PotentialRelationUnitNotValid)
-	s.networkService.EXPECT().GetUnitRelationNetwork(gomock.Any(), unitName, relKey).Return(domainnetwork.UnitNetwork{
-		EndpointName:     "mysql",
-		IngressAddresses: []string{addr},
+	s.networkService.EXPECT().GetUnitRelationNetworks(
+		gomock.Any(), unitName, []corerelation.UUID{relUUID},
+	).Return(map[corerelation.UUID]domainnetwork.UnitNetwork{
+		relUUID: {
+			EndpointName:     "mysql",
+			IngressAddresses: []string{addr},
+		},
 	}, nil)
 
 	// act
@@ -2315,8 +3014,11 @@ func (s *uniterRelationSuite) TestLeaveScopeFails(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
 	failRelTag := names.NewRelationTag("postgresql:database wordpress:mysql")
-	s.expectGetRelationUUIDByKey(relationtesting.GenNewKey(c, failRelTag.Id()), "",
-		relationerrors.RelationNotFound)
+	s.expectGetRelationUUIDByKey(
+		tc.Must1(c, corerelation.NewKeyFromString, failRelTag.Id()),
+		"",
+		relationerrors.RelationNotFound,
+	)
 
 	// act
 	args := params.RelationUnits{RelationUnits: []params.RelationUnit{
@@ -2348,22 +3050,22 @@ func (s *uniterRelationSuite) TestWatchRelationUnits(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
-	relUUID := relationtesting.GenRelationUUID(c)
+	relUUID := tc.Must(c, corerelation.NewUUID)
 	relTag := names.NewRelationTag("mysql:database wordpress:mysql")
 	relKey, err := corerelation.ParseKeyFromTagString(relTag.String())
 	c.Assert(err, tc.ErrorIsNil)
 	s.expectGetRelationUUIDByKey(relKey, relUUID, nil)
 	watcherID := "watch1"
 	unitUUIDs := []coreunit.UUID{
-		unittesting.GenUnitUUID(c),
-		unittesting.GenUnitUUID(c),
+		tc.Must(c, coreunit.NewUUID),
+		tc.Must(c, coreunit.NewUUID),
 	}
 	appUUIDs := []coreapplication.UUID{
 		tc.Must(c, coreapplication.NewUUID),
 	}
 
 	unitName := coreunit.Name(s.wordpressUnitTag.Id())
-	watchedUUID := unittesting.GenUnitUUID(c)
+	watchedUUID := tc.Must(c, coreunit.NewUUID)
 	s.applicationService.EXPECT().GetUnitUUID(gomock.Any(), unitName).Return(watchedUUID, nil)
 
 	// Changes and expected results should match.
@@ -2436,9 +3138,9 @@ func (s *uniterRelationSuite) TestWatchRelationUnitsFails(c *tc.C) {
 func (s *uniterRelationSuite) TestWatchUnitRelations(c *tc.C) {
 	// Arrange
 	defer s.setupMocks(c).Finish()
-	unitUUID := unittesting.GenUnitUUID(c)
+	unitUUID := tc.Must(c, coreunit.NewUUID)
 	watcherID := "watcher-id"
-	relationKey := relationtesting.GenNewKey(c, "wordpress:db mysql:db")
+	relationKey := tc.Must1(c, corerelation.NewKeyFromString, "wordpress:db mysql:db")
 	relationChanges := make(chan []string, 1)
 	change := []string{relationKey.String()}
 	relationChanges <- change
@@ -2495,6 +3197,7 @@ func (s *uniterRelationSuite) setupMocks(c *tc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 
 	s.applicationService = NewMockApplicationService(ctrl)
+	s.crossModelRelationService = NewMockCrossModelRelationService(ctrl)
 	s.networkService = NewMockNetworkService(ctrl)
 	s.relationService = NewMockRelationService(ctrl)
 	s.statusService = NewMockStatusService(ctrl)
@@ -2518,28 +3221,30 @@ func (s *uniterRelationSuite) setupMocks(c *tc.C) *gomock.Controller {
 	}
 
 	s.uniter = &UniterAPI{
-		modelUUID:         model.UUID(coretesting.ModelTag.Id()),
-		modelType:         model.IAAS,
+		modelUUID:         tc.Must(c, coremodel.NewUUID),
+		modelType:         coremodel.IAAS,
 		accessApplication: appAuthFunc,
 		accessUnit:        unitAuthFunc,
 		auth:              authorizer,
 		clock:             testclock.NewClock(time.Now()),
 		logger:            loggertesting.WrapCheckLog(c),
 
-		applicationService: s.applicationService,
-		networkService:     s.networkService,
-		relationService:    s.relationService,
-		statusService:      s.statusService,
-		watcherRegistry:    s.watcherRegistry,
+		applicationService:        s.applicationService,
+		crossModelRelationService: s.crossModelRelationService,
+		networkService:            s.networkService,
+		relationService:           s.relationService,
+		statusService:             s.statusService,
+		watcherRegistry:           s.watcherRegistry,
 	}
 
 	c.Cleanup(func() {
 		s.applicationService = nil
+		s.crossModelRelationService = nil
 		s.networkService = nil
 		s.relationService = nil
 		s.statusService = nil
 		s.watcherRegistry = nil
-
+		s.uniter = nil
 	})
 	return ctrl
 }
@@ -2553,7 +3258,7 @@ func (s *uniterRelationSuite) expectGetRelationDetails(c *tc.C, relUUID corerela
 		Life: life.Alive,
 		UUID: relUUID,
 		ID:   relID,
-		Key:  relationtesting.GenNewKey(c, relTag.Id()),
+		Key:  tc.Must1(c, corerelation.NewKeyFromString, relTag.Id()),
 		Endpoints: []relation.Endpoint{
 			{
 				ApplicationName: "wordpress",
@@ -2584,7 +3289,7 @@ func (s *uniterRelationSuite) expectGetRelationDetailsNotFound(relUUID corerelat
 func (s *uniterRelationSuite) expectGetRelationDetailsUnexpectedAppName(c *tc.C, relUUID corerelation.UUID) {
 	s.relationService.EXPECT().GetRelationDetails(gomock.Any(), relUUID).Return(relation.RelationDetails{
 		Life: life.Alive,
-		UUID: relationtesting.GenRelationUUID(c),
+		UUID: tc.Must(c, corerelation.NewUUID),
 		ID:   101,
 		Endpoints: []relation.Endpoint{
 			{
@@ -2631,7 +3336,7 @@ func (s *uniterRelationSuite) expectedGetRelationsStatusForUnit(c *tc.C, uuid co
 		// The caller created the tag, programing error if this fails.
 		tag, _ := names.ParseRelationTag(in.RelationTag)
 		expectedStatuses[i] = relation.RelationUnitStatus{
-			Key:       relationtesting.GenNewKey(c, tag.Id()),
+			Key:       tc.Must1(c, corerelation.NewKeyFromString, tag.Id()),
 			InScope:   in.InScope,
 			Suspended: in.Suspended,
 		}
@@ -2649,7 +3354,7 @@ func (s *uniterRelationSuite) expectSetRelationStatus(unitName string, relUUID c
 }
 
 func (s *uniterRelationSuite) expectEnterScope(uuid corerelation.UUID, name coreunit.Name, settings map[string]string, err error) {
-	s.relationService.EXPECT().EnterScope(gomock.Any(), uuid, name, settings, gomock.Any()).Return(err)
+	s.relationService.EXPECT().EnterScope(gomock.Any(), uuid, name, settings).Return(err)
 }
 
 func (s *uniterRelationSuite) expectWatchRelationUnitApplicationLifeSuspendedStatus(unitUUID coreunit.UUID, watch watcher.StringsWatcher, err error) {
@@ -2675,7 +3380,7 @@ func (s *uniterRelationSuite) expectWatchRelatedUnitsChange(
 
 	s.relationService.EXPECT().WatchRelatedUnits(gomock.Any(), watchedUnitUUID, relUUID).Return(mockWatcher, nil)
 	s.watcherRegistry.EXPECT().Register(gomock.Any(), gomock.Any()).Return(watcherID, nil)
-	s.relationService.EXPECT().GetRelationUnitChanges(gomock.Any(), unitUUIDs, appUUIDS).Return(changes, nil)
+	s.relationService.EXPECT().GetRelationUnitChanges(gomock.Any(), relUUID, unitUUIDs, appUUIDS).Return(changes, nil)
 }
 
 func encodeUnitFromUUID(uuid coreunit.UUID) string {
@@ -2686,12 +3391,17 @@ func encodeAppFromUUID(uuid coreapplication.UUID) string {
 	return relation.EncodeApplicationUUID(uuid.String())
 }
 
+func (s *uniterRelationSuite) expectGetRelationRemoteModelUUID(relUUID corerelation.UUID, remoteModelUUID coremodel.UUID, err error) {
+	s.crossModelRelationService.EXPECT().GetRelationRemoteModelUUID(gomock.Any(), relUUID).Return(remoteModelUUID, err)
+}
+
 type commitHookChangesSuite struct {
 	testhelpers.IsolationSuite
 
 	applicationService *MockApplicationService
 	networkService     *MockNetworkService
 	relationService    *MockRelationService
+	unitStateService   *MockUnitStateService
 
 	uniter *UniterAPI
 }
@@ -2700,90 +3410,222 @@ func TestCommitHookChangesSuite(t *testing.T) {
 	tc.Run(t, &commitHookChangesSuite{})
 }
 
-func (s *commitHookChangesSuite) TestUpdateUnitAndApplicationSettings(c *tc.C) {
-	// arrange
+func (s *commitHookChangesSuite) TestCommitHookChangesOneTxn(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	unitTag := names.NewUnitTag("wordpress/0")
-	relTag := names.NewRelationTag("wordpress:db mysql:db")
-	relUUID := relationtesting.GenRelationUUID(c)
-	appSettings := map[string]string{"wanda": "firebaugh", "deleteme": ""}
-	unitSettings := map[string]string{"wanda": "firebaugh", "deleteme": ""}
-	relKey := relationtesting.GenNewKey(c, relTag.Id())
-	s.expectGetRelationUUIDByKey(relKey, relUUID)
-	s.expectedSetRelationApplicationAndUnitSettings(coreunit.Name(unitTag.Id()), relUUID, appSettings, unitSettings)
 
-	canAccess := func(tag names.Tag) bool {
-		return true
+	// Arrange: setup basics
+	unitName, _ := coreunit.NewName("wordpress/0")
+	unitTag := names.NewUnitTag(unitName.String())
+	relationKey, _ := corerelation.NewKeyFromString("one:db two:use")
+
+	// Arrange: SetUnitStateArg
+	arg := params.CommitHookChangesArg{
+		Tag:               unitTag.String(),
+		UpdateNetworkInfo: true,
+		SetUnitState: &params.SetUnitStateArg{
+			Tag:        unitTag.String(),
+			CharmState: &map[string]string{"key": "value"},
+		},
+		ClosePorts: []params.EntityPortRange{{
+			Tag: unitTag.String(), Protocol: "icmp", FromPort: 22, ToPort: 22, Endpoint: "ep0",
+		}},
+		OpenPorts: []params.EntityPortRange{{
+			Tag: unitTag.String(), Protocol: "icmp", FromPort: 80, ToPort: 80, Endpoint: "ep1",
+		}},
+		RelationUnitSettings: []params.RelationUnitSettings{{
+			Relation:            names.NewRelationTag(relationKey.String()).String(),
+			Unit:                unitTag.String(),
+			ApplicationSettings: map[string]string{"foo": "bar"},
+			Settings:            map[string]string{"key": "value"},
+		}},
 	}
-	arg := params.RelationUnitSettings{
-		Relation:            relTag.String(),
-		Unit:                unitTag.String(),
-		Settings:            unitSettings,
-		ApplicationSettings: appSettings,
+
+	// Arrange: update network info
+	relationUUID := tc.Must(c, corerelation.NewUUID)
+	s.relationService.EXPECT().GetRelationUUIDsByUnitName(
+		gomock.Any(), unitName,
+	).Return([]corerelation.UUID{relationUUID}, nil)
+	s.networkService.EXPECT().GetUnitRelationNetworks(
+		gomock.Any(), unitName, []corerelation.UUID{relationUUID},
+	).Return(map[corerelation.UUID]domainnetwork.UnitNetwork{
+		relationUUID: {
+			IngressAddresses: []string{"10.0.0.7"},
+			EgressSubnets:    []string{"10.0.0.0/24", "10.0.1.0/24"},
+		},
+	}, nil)
+
+	// Arrange: CommitHookChanges service call
+	domainArg := unitstate.CommitHookChangesArg{
+		UnitName:   unitName,
+		CharmState: arg.SetUnitState.CharmState,
+		UpdatedRelationNetworkInfo: map[corerelation.UUID]unitstate.Settings{
+			relationUUID: map[string]string{
+				unitstate.IngressAddressKey: "10.0.0.7",
+				unitstate.EgressSubnetsKey:  "10.0.0.0/24,10.0.1.0/24",
+			},
+		},
+		ClosePorts: network.GroupedPortRanges{
+			"ep0": []network.PortRange{{
+				Protocol: "icmp", FromPort: 22, ToPort: 22,
+			}},
+		},
+		OpenPorts: network.GroupedPortRanges{
+			"ep1": []network.PortRange{{
+				Protocol: "icmp", FromPort: 80, ToPort: 80,
+			}},
+		},
+		RelationSettings: []unitstate.RelationSettings{{
+			RelationKey:         relationKey,
+			ApplicationSettings: map[string]string{"foo": "bar"},
+			Settings:            map[string]string{"key": "value"},
+		}},
 	}
+	s.unitStateService.EXPECT().CommitHookChanges(gomock.Any(), domainArg).Return(nil)
 
-	// act
-	err := s.uniter.updateUnitAndApplicationSettings(c.Context(), arg, canAccess)
+	// Act
+	err := s.uniter.commitHookChangesForOneUnit(c.Context(), unitTag, arg)
 
-	// assert
-	c.Assert(err, tc.IsNil)
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
 }
 
-func (s *commitHookChangesSuite) TestUpdateUnitAndApplicationSettingsBadUnitTag(c *tc.C) {
-	// arrange
-	arg := params.RelationUnitSettings{
-		Unit: "machine-9",
+func (s *commitHookChangesSuite) TestCommitHookChangesAddsPreparedStorage(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	unitName, _ := coreunit.NewName("wordpress/0")
+	unitTag := names.NewUnitTag(unitName.String())
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+
+	count := uint64(2)
+	prepared := domainstorage.IAASUnitAddStorageArg{
+		UnitAddStorageArg: domainstorage.UnitAddStorageArg{
+			CountLessThanEqual: 3,
+		},
 	}
 
-	// act
-	err := s.uniter.updateUnitAndApplicationSettings(c.Context(), arg, nil)
+	s.expectGetUnitUUID(unitName, unitUUID, nil)
+	s.applicationService.EXPECT().
+		PrepareUnitAddStorage(
+			gomock.Any(),
+			corestorage.Name("data"),
+			unitUUID,
+			uint32(2),
+		).
+		Return(prepared, nil)
+	s.unitStateService.EXPECT().
+		CommitHookChanges(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, arg unitstate.CommitHookChangesArg) error {
+			c.Check(arg.UnitName, tc.Equals, unitName)
+			c.Check(arg.AddStorage, tc.DeepEquals, []unitstate.PreparedStorageAdd{{
+				StorageName: corestorage.Name("data"),
+				Storage:     prepared,
+			}})
+			return nil
+		})
 
-	// assert
-	c.Assert(err, tc.ErrorIs, apiservererrors.ErrPerm)
+	err := s.uniter.commitHookChangesForOneUnit(c.Context(), unitTag,
+		params.CommitHookChangesArg{
+			Tag: unitTag.String(),
+			AddStorage: []params.StorageAddParams{{
+				UnitTag:     unitTag.String(),
+				StorageName: "data",
+				Directives: params.StorageDirectives{
+					Count: &count,
+				},
+			}},
+		},
+	)
+
+	c.Assert(err, tc.ErrorIsNil)
 }
 
-func (s *commitHookChangesSuite) TestUpdateUnitAndApplicationSettingsFailCanAccess(c *tc.C) {
-	// arrange
-	canAccess := func(tag names.Tag) bool {
-		return false
-	}
-	arg := params.RelationUnitSettings{
-		Unit: "unit-failauth-2",
-	}
+func (s *commitHookChangesSuite) TestCommitHookChangesStoragePoolOverrideUnsupported(c *tc.C) {
+	defer s.setupMocks(c).Finish()
 
-	// act
-	err := s.uniter.updateUnitAndApplicationSettings(c.Context(), arg, canAccess)
+	unitName, _ := coreunit.NewName("wordpress/0")
+	unitTag := names.NewUnitTag(unitName.String())
+	unitUUID := tc.Must(c, coreunit.NewUUID)
 
-	// assert
-	c.Assert(err, tc.ErrorIs, apiservererrors.ErrPerm)
+	s.expectGetUnitUUID(unitName, unitUUID, nil)
+
+	err := s.uniter.commitHookChangesForOneUnit(c.Context(), unitTag,
+		params.CommitHookChangesArg{
+			Tag: unitTag.String(),
+			AddStorage: []params.StorageAddParams{{
+				UnitTag:     unitTag.String(),
+				StorageName: "data",
+				Directives: params.StorageDirectives{
+					Pool: "fast",
+				},
+			}},
+		},
+	)
+
+	c.Assert(err, tc.NotNil)
+	c.Check(params.IsCodeNotSupported(err), tc.IsTrue)
+	c.Check(err, tc.ErrorMatches, `preparing storage additions: storage directive data pool override not supported`)
 }
 
-func (s *commitHookChangesSuite) TestUpdateUnitAndApplicationSettingsBadRelationTag(c *tc.C) {
-	// arrange
-	canAccess := func(tag names.Tag) bool {
-		return true
-	}
-	arg := params.RelationUnitSettings{
-		Unit:     "unit-wordpress-2",
-		Relation: "failme",
-	}
+func (s *commitHookChangesSuite) TestCommitHookChangesStorageSizeOverrideUnsupported(c *tc.C) {
+	defer s.setupMocks(c).Finish()
 
-	// act
-	err := s.uniter.updateUnitAndApplicationSettings(c.Context(), arg, canAccess)
+	unitName, _ := coreunit.NewName("wordpress/0")
+	unitTag := names.NewUnitTag(unitName.String())
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	sizeMiB := uint64(4096)
 
-	// assert
-	c.Assert(err, tc.ErrorIs, apiservererrors.ErrPerm)
+	s.expectGetUnitUUID(unitName, unitUUID, nil)
+
+	err := s.uniter.commitHookChangesForOneUnit(c.Context(), unitTag,
+		params.CommitHookChangesArg{
+			Tag: unitTag.String(),
+			AddStorage: []params.StorageAddParams{{
+				UnitTag:     unitTag.String(),
+				StorageName: "data",
+				Directives: params.StorageDirectives{
+					SizeMiB: &sizeMiB,
+				},
+			}},
+		},
+	)
+
+	c.Assert(err, tc.NotNil)
+	c.Check(params.IsCodeNotSupported(err), tc.IsTrue)
+	c.Check(err, tc.ErrorMatches, `preparing storage additions: storage directive data size override not supported`)
+}
+
+func (s *commitHookChangesSuite) TestCommitHookChangesOpenPortFail(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// Arrange: setup basics
+	unitName, _ := coreunit.NewName("wordpress/0")
+	unitTag := names.NewUnitTag(unitName.String())
+
+	// Arrange: SetUnitStateArg, ensure it's a CAAS model to fail icmp.
+	arg := params.CommitHookChangesArg{
+		Tag: unitTag.String(),
+		OpenPorts: []params.EntityPortRange{{
+			Tag: unitTag.String(), Protocol: "icmp", FromPort: 80, ToPort: 80, Endpoint: "ep1",
+		}},
+	}
+	s.uniter.modelType = coremodel.CAAS
+
+	// Act
+	err := s.uniter.commitHookChangesForOneUnit(c.Context(), unitTag, arg)
+
+	// Assert
+	c.Assert(err, tc.ErrorIs, errors.NotSupported)
 }
 
 func (s *commitHookChangesSuite) TestSetUnitRelationNetworks(c *tc.C) {
 	// arrange
 	defer s.setupMocks(c).Finish()
 	unitName := coreunit.Name("wordpress/0")
-	unitUUID := unittesting.GenUnitUUID(c)
-	relKey1 := relationtesting.GenNewKey(c, "wordpress:db mysql:db")
-	relKey2 := relationtesting.GenNewKey(c, "wordpress:web nginx:web")
-	relUUID1 := relationtesting.GenRelationUUID(c)
-	relUUID2 := relationtesting.GenRelationUUID(c)
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	relKey1 := tc.Must1(c, corerelation.NewKeyFromString, "wordpress:db mysql:db")
+	relKey2 := tc.Must1(c, corerelation.NewKeyFromString, "wordpress:db mysql:db")
+	relUUID1 := tc.Must(c, corerelation.NewUUID)
+	relUUID2 := tc.Must(c, corerelation.NewUUID)
 
 	// Set up expectations
 	s.expectGetUnitUUID(unitName, unitUUID, nil)
@@ -2794,7 +3636,7 @@ func (s *commitHookChangesSuite) TestSetUnitRelationNetworks(c *tc.C) {
 
 	// For relation 1
 	s.expectGetRelationUUIDByKey(relKey1, relUUID1)
-	s.expectGetUnitRelationNetworkWithEgress(unitName, relKey1, "10.0.0.1", "192.168.0.0/24")
+	s.expectGetUnitRelationNetworksWithEgress(unitName, relUUID1, "10.0.0.1", "192.168.0.0/24")
 	s.expectedSetRelationUnitSettings(unitName, relUUID1, map[string]string{
 		"ingress-address": "10.0.0.1",
 		"egress-subnets":  "192.168.0.0/24",
@@ -2802,7 +3644,7 @@ func (s *commitHookChangesSuite) TestSetUnitRelationNetworks(c *tc.C) {
 
 	// For relation 2
 	s.expectGetRelationUUIDByKey(relKey2, relUUID2)
-	s.expectGetUnitRelationNetwork(unitName, relKey2, "10.0.0.2")
+	s.expectGetUnitRelationNetworks(unitName, relUUID2, "10.0.0.2")
 	s.expectedSetRelationUnitSettings(unitName, relUUID2, map[string]string{
 		"ingress-address": "10.0.0.2",
 	})
@@ -2835,7 +3677,7 @@ func (s *commitHookChangesSuite) TestSetUnitRelationNetworksGetRelationsStatusEr
 	// arrange
 	defer s.setupMocks(c).Finish()
 	unitName := coreunit.Name("wordpress/0")
-	unitUUID := unittesting.GenUnitUUID(c)
+	unitUUID := tc.Must(c, coreunit.NewUUID)
 	expectedErr := internalerrors.New("failed to get relations")
 
 	// Set up expectations
@@ -2854,8 +3696,8 @@ func (s *commitHookChangesSuite) TestSetUnitRelationNetworksGetRelationUUIDError
 	// arrange
 	defer s.setupMocks(c).Finish()
 	unitName := coreunit.Name("wordpress/0")
-	unitUUID := unittesting.GenUnitUUID(c)
-	relKey := relationtesting.GenNewKey(c, "wordpress:db mysql:db")
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	relKey := tc.Must1(c, corerelation.NewKeyFromString, "wordpress:db mysql:db")
 	expectedErr := internalerrors.New("relation not found")
 
 	// Set up expectations
@@ -2874,13 +3716,13 @@ func (s *commitHookChangesSuite) TestSetUnitRelationNetworksGetRelationUUIDError
 	c.Assert(err.Error(), tc.Matches, `getting relation UUID: relation not found`)
 }
 
-func (s *commitHookChangesSuite) TestSetUnitRelationNetworksGetUnitRelationNetworkError(c *tc.C) {
+func (s *commitHookChangesSuite) TestSetUnitRelationNetworksGetUnitRelationNetworksError(c *tc.C) {
 	// arrange
 	defer s.setupMocks(c).Finish()
 	unitName := coreunit.Name("wordpress/0")
-	unitUUID := unittesting.GenUnitUUID(c)
-	relKey := relationtesting.GenNewKey(c, "wordpress:db mysql:db")
-	relUUID := relationtesting.GenRelationUUID(c)
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	relKey := tc.Must1(c, corerelation.NewKeyFromString, "wordpress:db mysql:db")
+	relUUID := tc.Must(c, corerelation.NewUUID)
 	expectedErr := internalerrors.New("network not found")
 
 	// Set up expectations
@@ -2889,7 +3731,7 @@ func (s *commitHookChangesSuite) TestSetUnitRelationNetworksGetUnitRelationNetwo
 		{Key: relKey, InScope: true},
 	}, nil)
 	s.expectGetRelationUUIDByKey(relKey, relUUID)
-	s.expectGetUnitRelationNetworkError(unitName, relKey, expectedErr)
+	s.expectGetUnitRelationNetworksError(unitName, relUUID, expectedErr)
 
 	// act
 	err := s.uniter.setUnitRelationNetworks(c.Context(), unitName)
@@ -2903,9 +3745,9 @@ func (s *commitHookChangesSuite) TestSetUnitRelationNetworksSetRelationSettingsE
 	// arrange
 	defer s.setupMocks(c).Finish()
 	unitName := coreunit.Name("wordpress/0")
-	unitUUID := unittesting.GenUnitUUID(c)
-	relKey := relationtesting.GenNewKey(c, "wordpress:db mysql:db")
-	relUUID := relationtesting.GenRelationUUID(c)
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	relKey := tc.Must1(c, corerelation.NewKeyFromString, "wordpress:db mysql:db")
+	relUUID := tc.Must(c, corerelation.NewUUID)
 	expectedErr := internalerrors.New("failed to set settings")
 
 	// Set up expectations
@@ -2914,7 +3756,7 @@ func (s *commitHookChangesSuite) TestSetUnitRelationNetworksSetRelationSettingsE
 		{Key: relKey, InScope: true},
 	}, nil)
 	s.expectGetRelationUUIDByKey(relKey, relUUID)
-	s.expectGetUnitRelationNetwork(unitName, relKey, "10.0.0.1")
+	s.expectGetUnitRelationNetworks(unitName, relUUID, "10.0.0.1")
 	s.relationService.EXPECT().SetRelationUnitSettings(
 		gomock.Any(),
 		unitName,
@@ -2933,9 +3775,9 @@ func (s *commitHookChangesSuite) TestSetUnitRelationNetworksSkipsRelationsNotInS
 	// arrange
 	defer s.setupMocks(c).Finish()
 	unitName := coreunit.Name("wordpress/0")
-	unitUUID := unittesting.GenUnitUUID(c)
-	relKey1 := relationtesting.GenNewKey(c, "wordpress:db mysql:db")
-	relKey2 := relationtesting.GenNewKey(c, "wordpress:web nginx:web")
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	relKey1 := tc.Must1(c, corerelation.NewKeyFromString, "wordpress:db mysql:db")
+	relKey2 := tc.Must1(c, corerelation.NewKeyFromString, "wordpress:db nginx:web")
 
 	// Set up expectations
 	s.expectGetUnitUUID(unitName, unitUUID, nil)
@@ -2945,9 +3787,9 @@ func (s *commitHookChangesSuite) TestSetUnitRelationNetworksSkipsRelationsNotInS
 	}, nil)
 
 	// Only relation 2 should be processed
-	relUUID2 := relationtesting.GenRelationUUID(c)
+	relUUID2 := tc.Must(c, corerelation.NewUUID)
 	s.expectGetRelationUUIDByKey(relKey2, relUUID2)
-	s.expectGetUnitRelationNetwork(unitName, relKey2, "10.0.0.2")
+	s.expectGetUnitRelationNetworks(unitName, relUUID2, "10.0.0.2")
 	s.expectedSetRelationUnitSettings(unitName, relUUID2, map[string]string{
 		"ingress-address": "10.0.0.2",
 	})
@@ -2965,6 +3807,7 @@ func (s *commitHookChangesSuite) setupMocks(c *tc.C) *gomock.Controller {
 	s.applicationService = NewMockApplicationService(ctrl)
 	s.relationService = NewMockRelationService(ctrl)
 	s.networkService = NewMockNetworkService(ctrl)
+	s.unitStateService = NewMockUnitStateService(ctrl)
 
 	s.uniter = &UniterAPI{
 		logger: loggertesting.WrapCheckLog(c),
@@ -2972,6 +3815,7 @@ func (s *commitHookChangesSuite) setupMocks(c *tc.C) *gomock.Controller {
 		applicationService: s.applicationService,
 		networkService:     s.networkService,
 		relationService:    s.relationService,
+		unitStateService:   s.unitStateService,
 	}
 
 	c.Cleanup(func() {
@@ -2979,6 +3823,7 @@ func (s *commitHookChangesSuite) setupMocks(c *tc.C) *gomock.Controller {
 		s.networkService = nil
 		s.relationService = nil
 		s.uniter = nil
+		s.unitStateService = nil
 	})
 
 	return ctrl
@@ -2992,27 +3837,25 @@ func (s *commitHookChangesSuite) expectedSetRelationUnitSettings(unitName coreun
 	s.relationService.EXPECT().SetRelationUnitSettings(gomock.Any(), unitName, uuid, unitSettings).Return(nil)
 }
 
-func (s *commitHookChangesSuite) expectedSetRelationApplicationAndUnitSettings(unitName coreunit.Name, uuid corerelation.UUID, appSettings, unitSettings map[string]string) {
-	s.relationService.EXPECT().SetRelationApplicationAndUnitSettings(gomock.Any(), unitName, uuid, appSettings, unitSettings).Return(nil)
-}
-
-func (s *commitHookChangesSuite) expectGetUnitRelationNetwork(unitName coreunit.Name, key corerelation.Key,
+func (s *commitHookChangesSuite) expectGetUnitRelationNetworks(unitName coreunit.Name, relationUUID corerelation.UUID,
 	ingress string) {
-	s.networkService.EXPECT().GetUnitRelationNetwork(gomock.Any(), unitName, key).Return(domainnetwork.UnitNetwork{
-		IngressAddresses: []string{ingress},
+	s.networkService.EXPECT().GetUnitRelationNetworks(gomock.Any(), unitName, []corerelation.UUID{relationUUID}).Return(map[corerelation.UUID]domainnetwork.UnitNetwork{
+		relationUUID: {IngressAddresses: []string{ingress}},
 	}, nil)
 }
 
-func (s *commitHookChangesSuite) expectGetUnitRelationNetworkWithEgress(unitName coreunit.Name, key corerelation.Key,
+func (s *commitHookChangesSuite) expectGetUnitRelationNetworksWithEgress(unitName coreunit.Name, relationUUID corerelation.UUID,
 	ingress, egress string) {
-	s.networkService.EXPECT().GetUnitRelationNetwork(gomock.Any(), unitName, key).Return(domainnetwork.UnitNetwork{
-		IngressAddresses: []string{ingress},
-		EgressSubnets:    []string{egress},
+	s.networkService.EXPECT().GetUnitRelationNetworks(gomock.Any(), unitName, []corerelation.UUID{relationUUID}).Return(map[corerelation.UUID]domainnetwork.UnitNetwork{
+		relationUUID: {
+			IngressAddresses: []string{ingress},
+			EgressSubnets:    []string{egress},
+		},
 	}, nil)
 }
 
-func (s *commitHookChangesSuite) expectGetUnitRelationNetworkError(unitName coreunit.Name, key corerelation.Key, err error) {
-	s.networkService.EXPECT().GetUnitRelationNetwork(gomock.Any(), unitName, key).Return(domainnetwork.UnitNetwork{}, err)
+func (s *commitHookChangesSuite) expectGetUnitRelationNetworksError(unitName coreunit.Name, relationUUID corerelation.UUID, err error) {
+	s.networkService.EXPECT().GetUnitRelationNetworks(gomock.Any(), unitName, []corerelation.UUID{relationUUID}).Return(map[corerelation.UUID]domainnetwork.UnitNetwork{}, err)
 }
 
 func (s *commitHookChangesSuite) expectGetUnitUUID(unitName coreunit.Name, unitUUID coreunit.UUID, err error) {

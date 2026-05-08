@@ -2,8 +2,6 @@ name: "Smoke"
 on:
   push:
     branches: ["[0-9].[0-9]+", "[0-9].[0-9]+.[0-9]+", main]
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 jobs:
@@ -66,8 +64,5 @@ jobs:
         run: |
           cd tests
           export MODEL_ARCH=$(go env GOARCH)
-
-          # Skip destroy to keep the environment up.
-          export SKIP_DESTROY=true
 
           sg snap_microk8s './main.sh -c microk8s -v smoke_k8s_psql'

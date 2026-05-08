@@ -7,11 +7,12 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"slices"
 	"sync"
-	"time"
 
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/bakery"
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/bakery/checkers"
+	"github.com/go-macaroon-bakery/macaroon-bakery/v3/bakery/dbrootkeystore"
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/bakery/identchecker"
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/httpbakery"
 	"github.com/juju/clock"
@@ -19,6 +20,7 @@ import (
 	"github.com/juju/names/v6"
 	"gopkg.in/macaroon.v2"
 
+	apimacaroon "github.com/juju/juju/api/macaroon"
 	"github.com/juju/juju/apiserver/authentication"
 	"github.com/juju/juju/apiserver/bakeryutil"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
@@ -26,15 +28,9 @@ import (
 	corepermission "github.com/juju/juju/core/permission"
 	coreuser "github.com/juju/juju/core/user"
 	"github.com/juju/juju/internal/auth"
-	internalmacaroon "github.com/juju/juju/internal/macaroon"
 )
 
 var errMacaroonAuthNotConfigured = errors.New("macaroon authentication is not configured")
-
-const (
-	// TODO make this configurable via model config.
-	externalLoginExpiryTime = 24 * time.Hour
-)
 
 const (
 	localUserIdentityLocationPath = "/auth"
@@ -52,12 +48,6 @@ type AccessService interface {
 	// UpdateLastModelLogin updates the last login time for the user with the
 	// given name.
 	UpdateLastModelLogin(ctx context.Context, name coreuser.Name, modelUUID coremodel.UUID) error
-
-	// EnsureExternalUserIfAuthorized checks if an external user is missing from the
-	// database and has permissions on an object. If they do then they will be
-	// added. This ensures that juju has a record of external users that have
-	// inherited their permissions from everyone@external.
-	EnsureExternalUserIfAuthorized(ctx context.Context, subject coreuser.Name, target corepermission.ID) error
 
 	// ReadUserAccessLevelForTarget returns the user access level for the given
 	// user on the given target. A NotValid error is returned if the subject
@@ -144,8 +134,8 @@ func newAuthContext(
 	// Create a bakery for discharging third-party caveats for
 	// local user authentication. This service does not persist keys;
 	// its macaroons should be very short-lived.
-	checker := checkers.New(internalmacaroon.MacaroonNamespace)
-	checker.Register("is-authenticated-user", internalmacaroon.MacaroonURI,
+	checker := checkers.New(apimacaroon.MacaroonNamespace)
+	checker.Register("is-authenticated-user", apimacaroon.MacaroonURI,
 		// Having a macaroon with an is-authenticated-user
 		// caveat is proof that the user is "logged in".
 		// "is-authenticated-user",
@@ -173,7 +163,7 @@ func newAuthContext(
 
 	// Create a bakery service for local user authentication. This service
 	// persists keys into DQLite in a TTL collection.
-	store := internalmacaroon.NewRootKeyStore(macaroonService, internalmacaroon.DefaultExpiration, ctxClock)
+	store := apimacaroon.NewRootKeyStore(macaroonService, apimacaroon.DefaultPolicy, ctxClock)
 
 	localUserBakeryKey, err := macaroonService.GetLocalUsersKey(ctx)
 	if err != nil {
@@ -293,10 +283,8 @@ func (a authenticator) authenticatorForTag(ctx context.Context, tag names.Tag) (
 	// it.
 	// TODO (stickupkid): This should just be a switch. We don't need to loop
 	// through all the agent tags, it's pointless.
-	for _, kind := range AgentTags {
-		if tag.Kind() == kind {
-			return a.agentAuthenticator, nil
-		}
+	if slices.Contains(AgentTags, tag.Kind()) {
+		return a.agentAuthenticator, nil
 	}
 	return nil, errors.Annotatef(apiservererrors.ErrBadRequest, "unexpected login entity tag")
 }
@@ -325,7 +313,7 @@ func (ctxt *authContext) externalMacaroonAuth(ctx context.Context, identClient i
 			controllerConfigService: ctxt.controllerConfigService,
 			macaroonService:         ctxt.macaroonService,
 			clock:                   ctxt.clock,
-			expiryTime:              externalLoginExpiryTime,
+			policy:                  apimacaroon.DefaultPolicy,
 			identClient:             identClient,
 		})
 	})
@@ -339,7 +327,7 @@ type externalMacaroonAuthenticatorConfig struct {
 	controllerConfigService ControllerConfigService
 	macaroonService         MacaroonService
 	clock                   clock.Clock
-	expiryTime              time.Duration
+	policy                  dbrootkeystore.Policy
 	identClient             identchecker.IdentityClient
 }
 
@@ -374,7 +362,7 @@ func newExternalMacaroonAuth(ctx context.Context, cfg externalMacaroonAuthentica
 		Clock:            cfg.clock,
 		IdentityLocation: idURL,
 	}
-	store := internalmacaroon.NewRootKeyStore(cfg.macaroonService, cfg.expiryTime, cfg.clock)
+	store := apimacaroon.NewRootKeyStore(cfg.macaroonService, cfg.policy, cfg.clock)
 	if cfg.identClient == nil {
 		cfg.identClient = &auth
 	}

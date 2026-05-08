@@ -11,7 +11,7 @@ import (
 	"github.com/canonical/pebble/client"
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
+	"github.com/juju/worker/v5"
 	"gopkg.in/tomb.v2"
 
 	"github.com/juju/juju/core/logger"
@@ -51,7 +51,6 @@ func NewPebbleNoticer(
 		newPebbleClient:   newPebbleClient,
 	}
 	for _, name := range containerNames {
-		name := name
 		noticer.tomb.Go(func() error {
 			return noticer.run(name)
 		})

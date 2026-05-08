@@ -38,6 +38,7 @@ type Service struct {
 // State is the accumulation of all the requirements [Service] has for
 // persisting and watching changes to storage instances in the model.
 type State interface {
+	CharmState
 	FilesystemState
 	VolumeState
 
@@ -139,7 +140,7 @@ type State interface {
 	// attachment does not exist.
 	GetStorageAttachmentInfo(
 		ctx context.Context,
-		storageAttachmentUUID storageprovisioning.StorageAttachmentUUID,
+		storageAttachmentUUID storage.StorageAttachmentUUID,
 	) (storageprovisioning.StorageAttachmentInfo, error)
 
 	// GetStorageAttachmentUUIDForUnit returns the UUID of the storage
@@ -153,7 +154,7 @@ type State interface {
 	// if the storage attachment does not exist.
 	GetStorageAttachmentUUIDForUnit(
 		ctx context.Context, storageID string, unitUUID coreunit.UUID,
-	) (storageprovisioning.StorageAttachmentUUID, error)
+	) (storage.StorageAttachmentUUID, error)
 
 	// InitialWatchStatementForUnitStorageAttachments returns the initial watch
 	// statement for unit storage attachments.
@@ -397,7 +398,7 @@ func (s *Service) GetStorageResourceTagsForModel(ctx context.Context) (
 // attachment does not exist.
 func (s *Service) GetUnitStorageAttachmentInfo(
 	ctx context.Context,
-	uuid storageprovisioning.StorageAttachmentUUID,
+	uuid storage.StorageAttachmentUUID,
 ) (storageprovisioning.StorageAttachmentInfo, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
@@ -432,7 +433,7 @@ func (s *Service) GetStorageAttachmentUUIDForUnit(
 	ctx context.Context,
 	storageID string,
 	unitUUID coreunit.UUID,
-) (storageprovisioning.StorageAttachmentUUID, error) {
+) (storage.StorageAttachmentUUID, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
@@ -488,7 +489,7 @@ func (s *Service) WatchStorageAttachmentsForUnit(
 // storage attachment.
 func (s *Service) WatchStorageAttachment(
 	ctx context.Context,
-	uuid storageprovisioning.StorageAttachmentUUID,
+	uuid storage.StorageAttachmentUUID,
 ) (watcher.NotifyWatcher, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()

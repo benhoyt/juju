@@ -7,8 +7,8 @@ import (
 	"github.com/juju/errors"
 
 	jujucmd "github.com/juju/juju/cmd"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/storage"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/core/storage"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -26,19 +26,13 @@ func NewStorageAddCommand(ctx Context) (cmd.Command, error) {
 
 func (s *StorageAddCommand) Info() *cmd.Info {
 	var doc = `
-Storage add adds storage instances to unit using provided storage directives.
-A storage directive consists of a storage name as per charm specification
-and optional storage COUNT.
+` + "`storage-add`" + ` adds storage volumes to the unit using the provided storage directives.
 
-COUNT is a positive integer indicating how many instances
-of the storage to create. If unspecified, COUNT defaults to 1.
+A storage directive consists of a storage name (as defined in the charm metadata)
+and an optional storage count.
 
-Further details:
-
-storage-add adds storage volumes to the unit.
-storage-add takes the name of the storage volume (as defined in the
-charm metadata), and optionally the number of storage instances to add.
-By default, it will add a single storage instance of the name.
+The count is a positive integer indicating how many instances of the storage to create.
+If unspecified, the count defaults to 1.
 `
 
 	var examples = `
@@ -47,7 +41,7 @@ By default, it will add a single storage instance of the name.
 	return jujucmd.Info(&cmd.Info{
 		Name:     "storage-add",
 		Args:     "<charm storage name>[=count] ...",
-		Purpose:  "Add storage instances.",
+		Purpose:  "Adds storage instances.",
 		Doc:      doc,
 		Examples: examples,
 	})

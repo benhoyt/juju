@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "List running goroutines from Juju agents using juju_goroutines introspect macro to identify stuck processes and debug issues."
+---
+
 (juju_goroutines)=
 # `juju_goroutines`
 
@@ -8,7 +14,7 @@ When called without any argument the goroutines for the machine agent are return
 The output of this is mostly just useful for Juju developers to help identify where things may be stuck.
 
 ```bash
-$ juju_goroutines 
+$ juju_goroutines
 Querying @jujud-machine-0 introspection socket: /debug/pprof/goroutine?debug=1
 goroutine profile: total 234
 19 @ 0x42f59a 0x42f64e 0x406c62 0x40691b 0x951ada 0x9c34ed 0x9c0177 0x45b211

@@ -9,12 +9,11 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/core/watcher/watchertest"
 	"github.com/juju/juju/domain/crossmodelrelation"
@@ -39,10 +38,14 @@ type workerSuite struct {
 func (s *workerSuite) TestWorkerKilled(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	done := make(chan struct{})
+	started := make(chan struct{})
 	s.crossModelService.EXPECT().WatchRemoteApplicationOfferers(gomock.Any()).
 		DoAndReturn(func(ctx context.Context) (watcher.NotifyWatcher, error) {
-			defer close(done)
+			return watchertest.NewMockNotifyWatcher(make(chan struct{})), nil
+		})
+	s.crossModelService.EXPECT().WatchDyingModel(gomock.Any()).
+		DoAndReturn(func(ctx context.Context) (watcher.NotifyWatcher, error) {
+			defer close(started)
 			return watchertest.NewMockNotifyWatcher(make(chan struct{})), nil
 		})
 
@@ -50,9 +53,9 @@ func (s *workerSuite) TestWorkerKilled(c *tc.C) {
 	defer workertest.DirtyKill(c, w)
 
 	select {
-	case <-done:
+	case <-started:
 	case <-c.Context().Done():
-		c.Fatalf("timed out waiting for WatchRemoteApplications to be called")
+		c.Fatalf("timed out waiting for worker startup to complete")
 	}
 
 	workertest.CleanKill(c, w)
@@ -69,6 +72,10 @@ func (s *workerSuite) TestRemoteApplications(c *tc.C) {
 	exp.WatchRemoteApplicationOfferers(gomock.Any()).
 		DoAndReturn(func(ctx context.Context) (watcher.NotifyWatcher, error) {
 			return watchertest.NewMockNotifyWatcher(ch), nil
+		})
+	exp.WatchDyingModel(gomock.Any()).
+		DoAndReturn(func(ctx context.Context) (watcher.NotifyWatcher, error) {
+			return watchertest.NewMockNotifyWatcher(make(chan struct{})), nil
 		})
 
 	exp.GetRemoteApplicationOfferers(gomock.Any()).
@@ -115,6 +122,10 @@ func (s *workerSuite) TestRemoteApplicationsGone(c *tc.C) {
 	exp.WatchRemoteApplicationOfferers(gomock.Any()).
 		DoAndReturn(func(ctx context.Context) (watcher.NotifyWatcher, error) {
 			return watchertest.NewMockNotifyWatcher(ch), nil
+		})
+	exp.WatchDyingModel(gomock.Any()).
+		DoAndReturn(func(ctx context.Context) (watcher.NotifyWatcher, error) {
+			return watchertest.NewMockNotifyWatcher(make(chan struct{})), nil
 		})
 
 	exp.GetRemoteApplicationOfferers(gomock.Any()).
@@ -164,7 +175,7 @@ func (s *workerSuite) TestRemoteApplicationsGone(c *tc.C) {
 func (s *workerSuite) setupMocks(c *tc.C) *gomock.Controller {
 	ctrl := s.baseSuite.setupMocks(c)
 
-	s.modelUUID = modeltesting.GenModelUUID(c)
+	s.modelUUID = tc.Must0(c, model.NewUUID)
 
 	return ctrl
 }
@@ -214,4 +225,8 @@ var _ OffererApplicationWorker = (*testOffererApplicationWorker)(nil)
 
 func (w *testOffererApplicationWorker) ConsumeVersion() int {
 	return w.consumeVersion
+}
+
+func (w *testOffererApplicationWorker) PublishModelDying(ctx context.Context) error {
+	return nil
 }

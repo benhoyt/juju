@@ -23,6 +23,7 @@ import (
 	"github.com/juju/juju/core/unit"
 	blockcommanderrors "github.com/juju/juju/domain/blockcommand/errors"
 	"github.com/juju/juju/domain/operation"
+	operationerrors "github.com/juju/juju/domain/operation/errors"
 	"github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc/params"
 )
@@ -75,7 +76,7 @@ func (s *enqueueSuite) TestEnqueueSingleUnit(c *tc.C) {
 	api := s.newActionAPI(c)
 	taskArgs := operation.TaskArgs{
 		ActionName:     "do",
-		Parameters:     map[string]interface{}{"k": "v"},
+		Parameters:     map[string]any{"k": "v"},
 		IsParallel:     true,
 		ExecutionGroup: "grp",
 	}
@@ -97,9 +98,9 @@ func (s *enqueueSuite) TestEnqueueSingleUnit(c *tc.C) {
 	res, err := api.EnqueueOperation(c.Context(), params.Actions{Actions: []params.Action{{
 		Receiver:       "unit-app-0",
 		Name:           "do",
-		Parameters:     map[string]interface{}{"k": "v"},
-		Parallel:       ptr(true),
-		ExecutionGroup: ptr("grp")}}})
+		Parameters:     map[string]any{"k": "v"},
+		Parallel:       new(true),
+		ExecutionGroup: new("grp")}}})
 
 	// Assert
 	c.Assert(err, tc.ErrorIsNil)
@@ -110,9 +111,9 @@ func (s *enqueueSuite) TestEnqueueSingleUnit(c *tc.C) {
 		Tag:            "action-2",
 		Receiver:       "unit-app-0",
 		Name:           "do",
-		Parameters:     map[string]interface{}{"k": "v"},
-		Parallel:       ptr(true),
-		ExecutionGroup: ptr("grp"),
+		Parameters:     map[string]any{"k": "v"},
+		Parallel:       new(true),
+		ExecutionGroup: new("grp"),
 	})
 }
 
@@ -137,7 +138,7 @@ func (s *enqueueSuite) TestEnqueueLeaderReceiver(c *tc.C) {
 
 	// Act
 	res, err := api.EnqueueOperation(c.Context(), params.Actions{Actions: []params.Action{{Receiver: "myapp/leader",
-		Name: "do", Parallel: ptr(false)}}})
+		Name: "do", Parallel: new(false)}}})
 
 	// Assert
 	c.Assert(err, tc.ErrorIsNil)
@@ -234,9 +235,9 @@ func (s *enqueueSuite) TestEnqueueMultipleActionsErrors(c *tc.C) {
 		}, {
 			Receiver:       "unit-app-2",
 			Name:           "y",
-			Parameters:     map[string]interface{}{"a": 1},
-			Parallel:       ptr(true),
-			ExecutionGroup: ptr("eg-1"),
+			Parameters:     map[string]any{"a": 1},
+			Parallel:       new(true),
+			ExecutionGroup: new("eg-1"),
 		}}})
 
 	// Assert
@@ -301,6 +302,48 @@ func (s *enqueueSuite) TestEnqueueServiceError(c *tc.C) {
 	_, err := api.EnqueueOperation(c.Context(), params.Actions{Actions: []params.Action{{Receiver: "unit-app-0",
 		Name: "do"}}})
 	c.Assert(err, tc.ErrorMatches, "boom")
+}
+
+// TestEnqueueActionNotDefinedForUnit verifies the error mapping when the
+// requested action is not defined for a charm that does define other actions.
+func (s *enqueueSuite) TestEnqueueActionNotDefinedForUnit(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+	api := s.newActionAPI(c)
+
+	// Arrange: Operation service reports the action is not defined for the unit,
+	// but the charm does define some actions.
+	s.OperationService.EXPECT().AddActionOperation(gomock.Any(), gomock.Any(), gomock.Any()).Return(
+		operation.RunResult{},
+		operationerrors.ActionNotDefined{CharmName: "mycharm", UnitName: "app/0", HasActions: true},
+	)
+
+	// Act
+	_, err := api.EnqueueOperation(c.Context(), params.Actions{Actions: []params.Action{{
+		Receiver: "unit-app-0",
+		Name:     "do",
+	}}})
+
+	// Assert
+	c.Assert(err, tc.ErrorMatches, "action \"do\" not defined for unit \"app/0\"\\.")
+}
+
+// TestEnqueueNoActionsDefinedForCharm verifies the error mapping when the
+// charm has no actions defined at all.
+func (s *enqueueSuite) TestEnqueueNoActionsDefinedForCharm(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+	api := s.newActionAPI(c)
+
+	s.OperationService.EXPECT().AddActionOperation(gomock.Any(), gomock.Any(), gomock.Any()).Return(
+		operation.RunResult{},
+		operationerrors.ActionNotDefined{CharmName: "mycharm", HasActions: false},
+	)
+
+	_, err := api.EnqueueOperation(c.Context(), params.Actions{Actions: []params.Action{{
+		Receiver: "unit-app-0",
+		Name:     "do",
+	}}})
+
+	c.Assert(err, tc.ErrorMatches, "no actions defined for charm mycharm\\.")
 }
 
 // TestEnqueueUnexpectedExtraResult verifies the behavior when an unexpected
@@ -451,8 +494,8 @@ func (s *runSuite) TestRunSuccessMapping(c *tc.C) {
 		Units:          []string{"bass/leader", "app/1", "db/0", "boss/leader"},
 		Commands:       "echo hello",
 		Timeout:        5 * time.Second,
-		Parallel:       ptr(false),
-		ExecutionGroup: ptr("eg-1"),
+		Parallel:       new(false),
+		ExecutionGroup: new("eg-1"),
 	}
 	s.OperationService.EXPECT().AddExecOperation(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, target operation.Receivers, args operation.ExecArgs) (operation.RunResult, error) {
@@ -746,8 +789,8 @@ func (s *runAllSuite) TestRunOnAllMachinesSuccess(c *tc.C) {
 	params := params.RunParams{
 		Commands:       "whoami",
 		Timeout:        time.Second,
-		Parallel:       ptr(true),
-		ExecutionGroup: ptr("test"),
+		Parallel:       new(true),
+		ExecutionGroup: new("test"),
 	}
 	s.OperationService.EXPECT().AddExecOperationOnAllMachines(gomock.Any(), operation.ExecArgs{
 		Command:        params.Commands,

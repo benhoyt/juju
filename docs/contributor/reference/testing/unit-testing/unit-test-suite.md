@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Create structured unit test suites with distinct setup and teardown logic using util suite composition for Juju testing."
+---
+
 (unit-test-suite)=
 # Unit test suite
 > See also: {ref}`create-a-unit-test-suite`

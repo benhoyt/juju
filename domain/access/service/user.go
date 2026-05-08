@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/juju/clock"
 	"golang.org/x/crypto/nacl/secretbox"
 
 	coreerrors "github.com/juju/juju/core/errors"
@@ -22,14 +23,16 @@ import (
 
 // UserService provides the API for working with users.
 type UserService struct {
-	st UserState
+	st    UserState
+	clock clock.Clock
 }
 
 // NewUserService returns a new UserService for interacting with the underlying user
 // state.
-func NewUserService(st UserState) *UserService {
+func NewUserService(st UserState, clock clock.Clock) *UserService {
 	return &UserService{
-		st: st,
+		st:    st,
+		clock: clock,
 	}
 }
 
@@ -117,11 +120,21 @@ func (s *UserService) GetUserUUIDByName(
 	return uuid, nil
 }
 
-// GetUserByAuth will find and return the user with UUID. If there is no
-// user for the name and password, then an error that satisfies
-// accesserrors.NotFound will be returned. If supplied with an invalid user name
-// then an error that satisfies accesserrors.UserNameNotValid will be returned.
-// It will not return users that have been previously removed.
+// GetUserByAuth will find and return the user identified by the supplied user
+// name confirming that the users password also matches. Only users that are
+// active within the current controller will be considered.
+//
+// The following errors may be returned:
+// - [accesserrors.UserNotFound] when no user exists matching the supplied
+// user name.
+// - [accesserrors.UserUnauthorized] when the supplied password does not match
+// the controllers stored password for the user.
+// - [accesserrors.UserNameNotValid] when the supplied user name is
+// not considered valid.
+// - [auth.ErrPasswordDestroyed] when the supplied password has already been
+// accessed and cannot be used again.
+// - [auth.ErrPasswordNotValid] when the supplied password is not considered
+// valid.
 func (s *UserService) GetUserByAuth(
 	ctx context.Context,
 	name user.Name,
@@ -131,7 +144,9 @@ func (s *UserService) GetUserByAuth(
 	defer span.End()
 
 	if name.IsZero() {
-		return user.User{}, errors.Errorf("empty username: %w", accesserrors.UserNameNotValid)
+		return user.User{}, errors.Errorf(
+			"empty username: %w", accesserrors.UserNameNotValid,
+		)
 	}
 
 	if err := password.Validate(); err != nil {
@@ -253,6 +268,23 @@ func (s *UserService) AddExternalUser(ctx context.Context, name user.Name, displ
 	return s.st.AddUser(ctx, uuid, name, displayName, true, creatorUUID)
 }
 
+// EnsureExternalUser ensures that the given external user exists in the
+// database, creating them if necessary.
+// The following error types are possible from this function:
+//   - accesserrors.UserNameNotValid: When the provided subject is empty.
+func (s *UserService) EnsureExternalUser(ctx context.Context, subject user.Name) error {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	if subject.IsZero() {
+		return errors.New("external user to ensure is empty").Add(accesserrors.UserNameNotValid)
+	}
+	if subject.IsLocal() {
+		return errors.Errorf("cannot ensure local user %q as external", subject).Add(coreerrors.NotValid)
+	}
+	return errors.Capture(s.st.EnsureExternalUser(ctx, subject))
+}
+
 // RemoveUser marks the user as removed and removes any credentials or
 // activation codes for the current users. Once a user is removed they are no
 // longer usable in Juju and should never be un removed.
@@ -363,7 +395,7 @@ func (s *UserService) UpdateLastModelLogin(ctx context.Context, name user.Name, 
 		return errors.Errorf("empty username: %w", accesserrors.UserNameNotValid)
 	}
 
-	if err := s.st.UpdateLastModelLogin(ctx, name, modelUUID, time.Now()); err != nil {
+	if err := s.st.UpdateLastModelLogin(ctx, name, modelUUID, s.clock.Now().UTC()); err != nil {
 		return errors.Errorf("updating last login for user %q: %w", name, err)
 	}
 	return nil

@@ -1,7 +1,7 @@
 (hook-command-secret-remove)=
 # `secret-remove`
 ## Summary
-Remove an existing secret.
+Removes an existing secret.
 
 ## Usage
 ``` secret-remove [options] <ID>```
@@ -9,7 +9,7 @@ Remove an existing secret.
 ### Options
 | Flag | Default | Usage |
 | --- | --- | --- |
-| `--revision` | 0 | remove the specified revision |
+| `--revision` | 0 | Removes the specified revision. |
 
 ## Examples
 

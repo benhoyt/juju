@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -36,7 +37,6 @@ import (
 	corelogger "github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
-	"github.com/juju/juju/core/objectstore"
 	coreoffer "github.com/juju/juju/core/offer"
 	"github.com/juju/juju/core/os/ostype"
 	"github.com/juju/juju/core/permission"
@@ -50,13 +50,14 @@ import (
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	crossmodelrelationerrors "github.com/juju/juju/domain/crossmodelrelation/errors"
 	crossmodelrelationservice "github.com/juju/juju/domain/crossmodelrelation/service"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/domain/relation"
 	relationerrors "github.com/juju/juju/domain/relation/errors"
 	removalerrors "github.com/juju/juju/domain/removal/errors"
 	"github.com/juju/juju/domain/resolve"
 	resolveerrors "github.com/juju/juju/domain/resolve/errors"
+	domainstorage "github.com/juju/juju/domain/storage"
 	"github.com/juju/juju/environs/bootstrap"
-	"github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/charmhub"
 	"github.com/juju/juju/internal/configschema"
 	internalerrors "github.com/juju/juju/internal/errors"
@@ -87,8 +88,6 @@ type APIv19 struct {
 // APIBase implements the shared application interface and is the concrete
 // implementation of the api end point.
 type APIBase struct {
-	store objectstore.ObjectStore
-
 	authorizer facade.Authorizer
 	check      BlockChecker
 	repoDeploy DeployFromRepository
@@ -112,15 +111,15 @@ type APIBase struct {
 
 	leadershipReader leadership.Reader
 
-	caasBroker            CaasBrokerInterface
-	deployApplicationFunc DeployApplicationFunc
+	caasBroker                 CaasBrokerInterface
+	deployApplicationLocalRepo DeployApplicationLocalRepo
 
 	logger corelogger.Logger
 	clock  clock.Clock
 }
 
 type CaasBrokerInterface interface {
-	ValidateStorageClass(ctx context.Context, config map[string]interface{}) error
+	ValidateStorageClass(ctx context.Context, config map[string]any) error
 }
 
 func newFacadeBase(stdCtx context.Context, ctx facade.ModelContext) (*APIBase, error) {
@@ -141,7 +140,7 @@ func newFacadeBase(stdCtx context.Context, ctx facade.ModelContext) (*APIBase, e
 
 	charmhubHTTPClient, err := ctx.HTTPClient(corehttp.CharmhubPurpose)
 	if err != nil {
-		return nil, fmt.Errorf(
+		return nil, internalerrors.Errorf(
 			"getting charm hub http client: %w",
 			err,
 		)
@@ -165,6 +164,7 @@ func newFacadeBase(stdCtx context.Context, ctx facade.ModelContext) (*APIBase, e
 	repoDeploy := NewDeployFromRepositoryAPI(
 		modelInfo.Type,
 		applicationService,
+		storageService,
 		ctx.ObjectStore(),
 		makeDeployFromRepositoryValidator(stdCtx, validatorCfg),
 		repoLogger,
@@ -194,25 +194,19 @@ func newFacadeBase(stdCtx context.Context, ctx facade.ModelContext) (*APIBase, e
 		modelInfo.Type,
 		leadershipReader,
 		repoDeploy,
-		DeployApplication,
+		deployApplicationLocalRepo{
+			applicationService: applicationService,
+			clock:              ctx.Clock(),
+			logger:             ctx.Logger().Child("application"),
+			modelType:          modelInfo.Type,
+			store:              ctx.ObjectStore(),
+			storageService:     storageService,
+		},
 		nil,
-		ctx.ObjectStore(),
 		ctx.Logger().Child("application"),
 		ctx.Clock(),
 	)
 }
-
-// DeployApplicationFunc is a function that deploys an application.
-type DeployApplicationFunc = func(
-	context.Context,
-	model.ModelType,
-	ApplicationService,
-	StorageService,
-	objectstore.ObjectStore,
-	DeployApplicationParams,
-	corelogger.Logger,
-	clock.Clock,
-) error
 
 // NewAPIBase returns a new application API facade.
 func NewAPIBase(
@@ -224,9 +218,8 @@ func NewAPIBase(
 	modelType model.ModelType,
 	leadershipReader Leadership,
 	repoDeploy DeployFromRepository,
-	deployApplication DeployApplicationFunc,
+	deployApplicationLocalRepo DeployApplicationLocalRepo,
 	caasBroker CaasBrokerInterface,
-	store objectstore.ObjectStore,
 	logger corelogger.Logger,
 	clock clock.Clock,
 ) (*APIBase, error) {
@@ -239,16 +232,15 @@ func NewAPIBase(
 	}
 
 	return &APIBase{
-		authorizer:            authorizer,
-		repoDeploy:            repoDeploy,
-		check:                 blockChecker,
-		controllerUUID:        controllerUUID,
-		modelUUID:             modelUUID,
-		modelType:             modelType,
-		leadershipReader:      leadershipReader,
-		deployApplicationFunc: deployApplication,
-		caasBroker:            caasBroker,
-		store:                 store,
+		authorizer:                 authorizer,
+		repoDeploy:                 repoDeploy,
+		check:                      blockChecker,
+		controllerUUID:             controllerUUID,
+		modelUUID:                  modelUUID,
+		modelType:                  modelType,
+		leadershipReader:           leadershipReader,
+		deployApplicationLocalRepo: deployApplicationLocalRepo,
+		caasBroker:                 caasBroker,
 
 		externalControllerService: services.ExternalControllerService,
 		applicationService:        services.ApplicationService,
@@ -398,13 +390,13 @@ func splitTrustFromApplicationConfigFromYAML(inYaml, appName string) (
 	applicationConfig charm.Config,
 	_ error,
 ) {
-	var allSettings map[string]interface{}
+	var allSettings map[string]any
 	if err := goyaml.Unmarshal([]byte(inYaml), &allSettings); err != nil {
 		return false, nil, errors.Annotate(err, "cannot parse settings data")
 	}
 
-	if val, ok := allSettings[appName].(map[interface{}]interface{}); ok {
-		subSettings := make(map[string]interface{})
+	if val, ok := allSettings[appName].(map[any]any); ok {
+		subSettings := make(map[string]any)
 		for k, v := range val {
 			strK, ok := k.(string)
 			if !ok {
@@ -562,9 +554,7 @@ func (api *APIBase) deployApplication(
 		Resources:         args.Resources,
 		Force:             args.Force,
 	}
-	// TODO: replace model with model info/config services
-	err = api.deployApplicationFunc(ctx, api.modelType, api.applicationService,
-		api.storageService, api.store, appParams, api.logger, api.clock)
+	err = api.deployApplicationLocalRepo.Deploy(ctx, appParams)
 	return errors.Trace(err)
 }
 
@@ -629,7 +619,7 @@ func parseApplicationConfig(
 
 	trustFromMap, applicationConfigFromMap := splitTrustFromApplicationConfig(transform.Map(
 		cfg,
-		func(k string, v string) (string, interface{}) { return k, v }),
+		func(k string, v string) (string, any) { return k, v }),
 	)
 
 	trustFromYAML, applicationConfigFromYAML, err := splitTrustFromApplicationConfigFromYAML(configYaml, appName)
@@ -704,22 +694,157 @@ func (api *APIBase) SetCharm(ctx context.Context, args params.ApplicationSetChar
 	if err != nil {
 		return errors.Trace(err)
 	}
-	err = api.applicationService.SetApplicationCharm(ctx, args.ApplicationName, newCharmLocator, application.SetCharmParams{
-		CharmOrigin: charmOrigin,
 
-		// Storage: args.StorageDirectives,
-		CharmUpgradeOnError: args.Force,
-		EndpointBindings:    transform.Map(args.EndpointBindings, func(k, v string) (string, network.SpaceName) { return k, network.SpaceName(v) }),
-	})
-	if errors.Is(err, applicationerrors.ApplicationNotFound) {
-		return errors.NotFoundf("application %q", args.ApplicationName)
-	} else if errors.Is(err, applicationerrors.CharmNotFound) {
-		return errors.NotFoundf("charm %q", args.CharmURL)
-	} else if err != nil {
+	storageDirectiveOverrides, err := convertToApplicationStorageDirectiveOverrides(ctx, api.storageService, args.StorageDirectives)
+	if err != nil {
 		return errors.Trace(err)
 	}
 
+	err = api.applicationService.SetApplicationCharm(ctx, args.ApplicationName, newCharmLocator, application.SetCharmParams{
+		CharmOrigin:               charmOrigin,
+		CharmUpgradeOnError:       args.Force,
+		ForceBase:                 args.ForceBase,
+		EndpointBindings:          transform.Map(args.EndpointBindings, func(k, v string) (string, network.SpaceName) { return k, network.SpaceName(v) }),
+		StorageDirectiveOverrides: storageDirectiveOverrides,
+	})
+	switch {
+	case errors.Is(err, applicationerrors.ApplicationNotFound):
+		return apiservererrors.ParamsErrorf(
+			params.CodeNotFound, "application %q not found", args.ApplicationName,
+		)
+	case errors.Is(err, applicationerrors.CharmNotFound):
+		return apiservererrors.ParamsErrorf(
+			params.CodeNotFound, "charm %q not found", args.CharmURL,
+		)
+	case errors.HasType[applicationerrors.CharmStorageDefinitionRemoved](err):
+		defErr, _ := errors.AsType[applicationerrors.CharmStorageDefinitionRemoved](err)
+		return apiservererrors.ParamsErrorf(
+			params.CodeNotSupported,
+			"cannot set charm %q because %s", args.CharmURL, defErr.Error(),
+		)
+	case errors.HasType[applicationerrors.CharmStorageDefinitionMinSizeViolation](err):
+		sizeErr, _ := errors.AsType[applicationerrors.CharmStorageDefinitionMinSizeViolation](err)
+		return apiservererrors.ParamsErrorf(
+			params.CodeNotSupported,
+			"cannot set charm %q because %s", args.CharmURL, sizeErr.Error(),
+		)
+	case errors.HasType[applicationerrors.CharmStorageDefinitionMinCountViolation](err):
+		minErr, _ := errors.AsType[applicationerrors.CharmStorageDefinitionMinCountViolation](err)
+		return apiservererrors.ParamsErrorf(
+			params.CodeNotSupported,
+			"cannot set charm %q because %s", args.CharmURL, minErr.Error(),
+		)
+	case errors.HasType[applicationerrors.CharmStorageDefinitionMaxCountViolation](err):
+		maxErr, _ := errors.AsType[applicationerrors.CharmStorageDefinitionMaxCountViolation](err)
+		return apiservererrors.ParamsErrorf(
+			params.CodeNotSupported,
+			"cannot set charm %q because %s", args.CharmURL, maxErr.Error(),
+		)
+	case errors.HasType[applicationerrors.CharmStorageDefinitionSingleToMultipleViolation](err):
+		multiErr, _ := errors.AsType[applicationerrors.CharmStorageDefinitionSingleToMultipleViolation](err)
+		return apiservererrors.ParamsErrorf(
+			params.CodeNotSupported,
+			"cannot set charm %q because %s", args.CharmURL, multiErr.Error(),
+		)
+	case errors.HasType[applicationerrors.CharmStorageDefinitionSharedChanged](err):
+		sharedErr, _ := errors.AsType[applicationerrors.CharmStorageDefinitionSharedChanged](err)
+		return apiservererrors.ParamsErrorf(
+			params.CodeNotSupported,
+			"cannot set charm %q because %s", args.CharmURL, sharedErr.Error(),
+		)
+	case errors.HasType[applicationerrors.CharmStorageDefinitionReadOnlyChanged](err):
+		readOnlyErr, _ := errors.AsType[applicationerrors.CharmStorageDefinitionReadOnlyChanged](err)
+		return apiservererrors.ParamsErrorf(
+			params.CodeNotSupported,
+			"cannot set charm %q because %s", args.CharmURL, readOnlyErr.Error(),
+		)
+	case errors.HasType[applicationerrors.CharmStorageDefinitionLocationChanged](err):
+		locationErr, _ := errors.AsType[applicationerrors.CharmStorageDefinitionLocationChanged](err)
+		return apiservererrors.ParamsErrorf(
+			params.CodeNotSupported,
+			"cannot set charm %q because %s", args.CharmURL, locationErr.Error(),
+		)
+	case errors.Is(err, applicationerrors.IncompatibleBase):
+		return apiservererrors.ParamsErrorf(
+			params.CodeIncompatibleBase,
+			"cannot set charm %q: %s", args.CharmURL, err.Error(),
+		)
+	case errors.HasType[applicationerrors.CharmStorageTypeChanged](err):
+		typeErr, _ := errors.AsType[applicationerrors.CharmStorageTypeChanged](err)
+		return apiservererrors.ParamsErrorf(
+			params.CodeNotSupported,
+			"cannot set charm %q because %s", args.CharmURL, typeErr.Error(),
+		)
+	case err != nil:
+		return err
+	}
+
 	return nil
+}
+
+func convertToApplicationStorageDirectiveOverrides(
+	ctx context.Context,
+	storageService StorageService,
+	in map[string]params.StorageDirectives,
+) (map[string]application.ApplicationStorageDirectiveOverride, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+
+	storagePoolNamesMap := make(map[string]struct{})
+	for name, sd := range in {
+		// Pool is not a required field in the storage directive override, so only validate if it's provided.
+		if len(sd.Pool) == 0 {
+			continue
+		}
+		if isValidPoolName := domainstorage.IsValidStoragePoolName(sd.Pool); !isValidPoolName {
+			return nil, apiservererrors.ParamsErrorf(params.CodeNotValid,
+				"storage directive %q references an invalid pool", name)
+		}
+		storagePoolNamesMap[sd.Pool] = struct{}{}
+	}
+	storagePoolNames := make([]string, 0, len(storagePoolNamesMap))
+	for name := range storagePoolNamesMap {
+		storagePoolNames = append(storagePoolNames, name)
+	}
+	storagePoolUUIDs, err := storageService.GetStoragePoolUUIDsByName(ctx, storagePoolNames)
+	if err != nil {
+		return nil, apiservererrors.ParamsErrorf(params.CodeNotValid,
+			"getting storage pool uuids for user supplied storage directive overrides: %v", err)
+	}
+
+	out := make(map[string]application.ApplicationStorageDirectiveOverride, len(in))
+	for name, dir := range in {
+		override := application.ApplicationStorageDirectiveOverride{}
+		// Validate count before we assign it to the override, as the domain expects uint32, but the user input is uint64.
+		// This is to prevent overflow when the count is assigned to the override.
+		if dir.Count != nil {
+			if *dir.Count > math.MaxUint32 {
+				return nil, apiservererrors.ParamsErrorf(params.CodeNotValid,
+					"storage directive %q override count %d exceeds maximum %d",
+					name,
+					*dir.Count,
+					math.MaxUint32,
+				)
+			}
+			count := uint32(*dir.Count)
+			override.Count = &count
+		}
+		// Validate pool name is not empty and exists before we assign the pool UUID to the override.
+		if dir.Pool != "" {
+			poolUUID, exists := storagePoolUUIDs[dir.Pool]
+			if !exists {
+				return nil, apiservererrors.ParamsErrorf(params.CodeNotFound,
+					"storage directive %q references unknown storage pool %q", name, dir.Pool)
+			}
+			override.PoolUUID = &poolUUID
+		}
+
+		override.Size = dir.SizeMiB
+		out[name] = override
+	}
+
+	return out, nil
 }
 
 // GetCharmURLOrigin returns the charm URL and charm origin the given
@@ -891,89 +1016,6 @@ func (api *APIBase) Unexpose(ctx context.Context, args params.ApplicationUnexpos
 		return apiservererrors.ServerError(err)
 	}
 	return nil
-}
-
-// AddUnits adds a given number of units to an application.
-func (api *APIBase) AddUnits(ctx context.Context, args params.AddApplicationUnits) (params.AddApplicationUnitsResults, error) {
-	if api.modelType == model.CAAS {
-		return params.AddApplicationUnitsResults{}, errors.NotSupportedf("adding units to a container-based model")
-	}
-
-	if err := api.checkCanWrite(ctx); err != nil {
-		return params.AddApplicationUnitsResults{}, errors.Trace(err)
-	}
-	if err := api.check.ChangeAllowed(ctx); err != nil {
-		return params.AddApplicationUnitsResults{}, errors.Trace(err)
-	}
-
-	locator, err := api.getCharmLocatorByApplicationName(ctx, args.ApplicationName)
-	if err != nil {
-		return params.AddApplicationUnitsResults{}, errors.Trace(err)
-	}
-	charm, err := api.getCharm(ctx, locator)
-	if err != nil {
-		return params.AddApplicationUnitsResults{}, errors.Trace(err)
-	}
-
-	units, err := api.addApplicationUnits(ctx, args, charm.Meta())
-	if err != nil {
-		return params.AddApplicationUnitsResults{}, errors.Trace(err)
-	}
-	return params.AddApplicationUnitsResults{
-		Units: transform.Slice(units, func(unit coreunit.Name) string { return unit.String() }),
-	}, nil
-}
-
-// addApplicationUnits adds a given number of units to an application.
-func (api *APIBase) addApplicationUnits(
-	ctx context.Context, args params.AddApplicationUnits, charmMeta *charm.Meta,
-) ([]coreunit.Name, error) {
-	if args.NumUnits < 1 {
-		return nil, errors.New("must add at least one unit")
-	}
-
-	assignUnits := true
-	if api.modelType != model.IAAS {
-		// In a CAAS model, there are no machines for
-		// units to be assigned to.
-		assignUnits = false
-		if len(args.AttachStorage) > 0 {
-			return nil, errors.Errorf(
-				"AttachStorage may not be specified for %s models",
-				api.modelType,
-			)
-		}
-		if len(args.Placement) > 1 {
-			return nil, errors.Errorf(
-				"only 1 placement directive is supported for %s models, got %d",
-				api.modelType,
-				len(args.Placement),
-			)
-		}
-	}
-
-	// Parse storage tags in AttachStorage.
-	if len(args.AttachStorage) > 0 && args.NumUnits != 1 {
-		return nil, errors.Errorf("AttachStorage is non-empty, but NumUnits is %d", args.NumUnits)
-	}
-	attachStorage := make([]names.StorageTag, len(args.AttachStorage))
-	for i, tagString := range args.AttachStorage {
-		tag, err := names.ParseStorageTag(tagString)
-		if err != nil {
-			return nil, errors.Trace(err)
-		}
-		attachStorage[i] = tag
-	}
-
-	return api.addUnits(
-		ctx,
-		args.ApplicationName,
-		args.NumUnits,
-		args.Placement,
-		attachStorage,
-		assignUnits,
-		charmMeta,
-	)
 }
 
 // DestroyUnit removes a given set of application units.
@@ -1391,7 +1433,11 @@ func (api *APIBase) DestroyRelation(ctx context.Context, args params.DestroyRela
 		RelationID: args.RelationId,
 	}
 	relUUID, err := api.relationService.GetRelationUUIDForRemoval(ctx, getUUIDArgs)
-	if err != nil {
+	if errors.Is(err, relationerrors.RelationNotFound) {
+		return errors.NotFoundf("relation with endpoints %v or id %d", args.Endpoints, args.RelationId)
+	} else if errors.Is(err, relationerrors.AmbiguousRelation) {
+		return errors.BadRequestf("endpoints %q are ambiguous, specify relation endpoints or id", args.Endpoints)
+	} else if err != nil {
 		return internalerrors.Capture(err)
 	}
 
@@ -1418,7 +1464,7 @@ func (api *APIBase) DestroyRelation(ctx context.Context, args params.DestroyRela
 		return internalerrors.Capture(err)
 	}
 
-	removalUUID, err = api.removalService.RemoveRemoteRelation(ctx, relUUID, force, maxWait)
+	removalUUID, err = api.removalService.RemoveRelationWithRemoteOfferer(ctx, relUUID, force, maxWait)
 	if errors.Is(err, relationerrors.RelationNotFound) {
 		return nil
 	} else if err != nil {
@@ -1527,7 +1573,13 @@ func (api *APIBase) consumeOne(ctx context.Context, arg params.ConsumeApplicatio
 
 	applicationName := arg.ApplicationAlias
 	if applicationName == "" {
-		applicationName = arg.OfferName
+		// In this case we can default to the offer name, so we have to get it
+		// from the offer URL.
+		offerURL, err := crossmodel.ParseOfferURL(arg.OfferURL)
+		if err != nil {
+			return internalerrors.Errorf("parsing offer URL: %w", err).Add(coreerrors.BadRequest)
+		}
+		applicationName = offerURL.Name
 	}
 
 	return api.saveRemoteApplicationOfferer(
@@ -1563,7 +1615,7 @@ func (api *APIBase) saveExternalController(ctx context.Context, info params.Exte
 		return nil, internalerrors.Errorf("updating external controller %q: %w", controllerTag.Id(), err)
 	}
 
-	return ptr(controllerTag.Id()), nil
+	return new(controllerTag.Id()), nil
 }
 
 func (api *APIBase) saveRemoteApplicationOfferer(
@@ -1703,7 +1755,7 @@ func (api *APIBase) setConfig(ctx context.Context, arg params.ConfigSet) params.
 		return params.ErrorResult{Error: apiservererrors.ServerError(errors.NotImplementedf("config yaml not supported"))}
 	}
 
-	appID, err := api.applicationService.GetApplicationUUIDByName(ctx, arg.ApplicationName)
+	appDetails, err := api.applicationService.GetApplicationDetailsByName(ctx, arg.ApplicationName)
 	if errors.Is(err, applicationerrors.ApplicationNotFound) {
 		return params.ErrorResult{Error: apiservererrors.ServerError(errors.NotFoundf("application %q", arg.ApplicationName))}
 	} else if errors.Is(err, applicationerrors.ApplicationNameNotValid) {
@@ -1712,7 +1764,12 @@ func (api *APIBase) setConfig(ctx context.Context, arg params.ConfigSet) params.
 		return params.ErrorResult{Error: apiservererrors.ServerError(err)}
 	}
 
-	err = api.applicationService.UpdateApplicationConfig(ctx, appID, arg.Config)
+	// Reject synthetic applications - they don't support config operations.
+	if appDetails.IsApplicationSynthetic {
+		return params.ErrorResult{Error: apiservererrors.ServerError(errors.NotFoundf("application %s", arg.ApplicationName))}
+	}
+
+	err = api.applicationService.UpdateApplicationConfig(ctx, appDetails.UUID, arg.Config)
 	if errors.Is(err, applicationerrors.ApplicationNotFound) {
 		return params.ErrorResult{Error: apiservererrors.ServerError(errors.NotFoundf("application %q", arg.ApplicationName))}
 	} else if errors.Is(err, applicationerrors.InvalidApplicationConfig) {
@@ -1741,13 +1798,19 @@ func (api *APIBase) UnsetApplicationsConfig(ctx context.Context, args params.App
 }
 
 func (api *APIBase) unsetApplicationConfig(ctx context.Context, arg params.ApplicationUnset) error {
-	appID, err := api.applicationService.GetApplicationUUIDByName(ctx, arg.ApplicationName)
+	appDetails, err := api.applicationService.GetApplicationDetailsByName(ctx, arg.ApplicationName)
 	if errors.Is(err, applicationerrors.ApplicationNotFound) {
 		return errors.NotFoundf("application %s", arg.ApplicationName)
 	} else if err != nil {
 		return errors.Trace(err)
 	}
-	err = api.applicationService.UnsetApplicationConfigKeys(ctx, appID, arg.Options)
+
+	// Reject synthetic applications - they don't support config operations.
+	if appDetails.IsApplicationSynthetic {
+		return errors.NotFoundf("application %s", arg.ApplicationName)
+	}
+
+	err = api.applicationService.UnsetApplicationConfigKeys(ctx, appDetails.UUID, arg.Options)
 	if errors.Is(err, applicationerrors.ApplicationNotFound) {
 		return errors.NotFoundf("application %s", arg.ApplicationName)
 	} else if err != nil {
@@ -2233,7 +2296,7 @@ func (api *APIBase) relationData(ctx context.Context, appName string) ([]params.
 		for k, v := range endpointData.UnitRelationData {
 			unitRelationData[k] = params.RelationData{
 				InScope: v.InScope,
-				UnitData: transform.Map(v.UnitData, func(k, v string) (string, interface{}) {
+				UnitData: transform.Map(v.UnitData, func(k, v string) (string, any) {
 					return k, v
 				}),
 			}
@@ -2243,7 +2306,7 @@ func (api *APIBase) relationData(ctx context.Context, appName string) ([]params.
 			Endpoint:        endpointData.Endpoint,
 			CrossModel:      false,
 			RelatedEndpoint: endpointData.RelatedEndpoint,
-			ApplicationData: transform.Map(endpointData.ApplicationData, func(k, v string) (string, interface{}) {
+			ApplicationData: transform.Map(endpointData.ApplicationData, func(k, v string) (string, any) {
 				return k, v
 			}),
 			UnitRelationData: unitRelationData,
@@ -2303,9 +2366,36 @@ func (api *APIBase) DeployFromRepository(ctx context.Context, args params.Deploy
 	}, nil
 }
 
-func (api *APIBase) getOneApplicationStorage(entity params.Entity) (map[string]params.StorageDirectives, error) {
-	// TODO(storage): implement and add test.
-	return nil, errors.NotImplementedf("GetApplicationStorage")
+func (api *APIBase) getOneApplicationStorage(ctx context.Context, entity params.Entity) (map[string]params.StorageDirectives, error) {
+	appTag, err := names.ParseApplicationTag(entity.Tag)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	appUUID, err := api.applicationService.GetApplicationUUIDByName(ctx, appTag.Id())
+	if errors.Is(err, applicationerrors.ApplicationNotFound) {
+		return nil, internalerrors.Errorf("application %q not found", appTag.Id()).Add(coreerrors.NotFound)
+	} else if err != nil {
+		return nil, internalerrors.Capture(err)
+	}
+
+	storage, err := api.applicationService.GetApplicationStorageDirectivesInfo(ctx, appUUID)
+	if errors.Is(err, applicationerrors.ApplicationNotFound) {
+		return nil, internalerrors.Errorf("application %q not found", appTag.Id()).Add(coreerrors.NotFound)
+	} else if err != nil {
+		return nil, internalerrors.Capture(err)
+	}
+
+	sc := make(map[string]params.StorageDirectives, len(storage))
+	for name, storageInfo := range storage {
+		sc[name] = params.StorageDirectives{
+			Pool:    storageInfo.StoragePoolName,
+			SizeMiB: &storageInfo.SizeMiB,
+			Count:   &storageInfo.Count,
+		}
+	}
+
+	return sc, nil
 }
 
 // GetApplicationStorage returns the current storage constraints for the specified applications in bulk.
@@ -2317,7 +2407,7 @@ func (api *APIBase) GetApplicationStorage(ctx context.Context, args params.Entit
 		return resp, errors.Trace(err)
 	}
 	for i, entity := range args.Entities {
-		sc, err := api.getOneApplicationStorage(entity)
+		sc, err := api.getOneApplicationStorage(ctx, entity)
 		if err != nil {
 			resp.Results[i].Error = apiservererrors.ServerError(err)
 			continue

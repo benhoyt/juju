@@ -8,8 +8,8 @@ check_dependencies sha256sum
 
 sha() {
 	case ${BUILD_ARCH} in
-		amd64) echo "73c9a1f318013b746ce530489586cc94c8bc0c0323bf1ad59aa68c4ba301e71b" ;;
-		arm64) echo "a73841c17c3b312ad62f4b55c7493549728bcff5e803fdbac060961ae1ac487c" ;;
+		amd64) echo "d9811654898507a661147ac0d26eb896b97177603335e04ef427a230db776c91" ;;
+		arm64) echo "2a04593d397451ab30c056e0d2ad828270ed54da7158477ee014bc449bbf3fe2" ;;
 
 		# s390x and ppc64le are failing to build, so are stuck on v1.18.0
 		s390x) echo "8561238d7cdc2036fee321b7f8f1b563500325b4b1ed172002a56aca79ddb936" ;;

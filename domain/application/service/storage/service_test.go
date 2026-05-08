@@ -10,12 +10,12 @@ import (
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
-	"github.com/juju/juju/domain/application"
+	coreunit "github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/application/charm"
 	"github.com/juju/juju/domain/application/internal"
 	domainnetwork "github.com/juju/juju/domain/network"
 	domainstorage "github.com/juju/juju/domain/storage"
-	domainstorageprov "github.com/juju/juju/domain/storageprovisioning"
+	loggertesting "github.com/juju/juju/internal/logger/testing"
 	internalstorage "github.com/juju/juju/internal/storage"
 )
 
@@ -56,7 +56,7 @@ func (s *serviceSuite) TestMakeUnitStorageArgs(c *tc.C) {
 
 	attachNetNodeUUID := tc.Must(c, domainnetwork.NewNetNodeUUID)
 	poolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
-	storageDirectives := []application.StorageDirective{
+	storageDirectives := []internal.StorageDirective{
 		{
 			CharmMetadataName: "big-beautiful-charm",
 			CharmStorageType:  charm.StorageFilesystem,
@@ -80,8 +80,8 @@ func (s *serviceSuite) TestMakeUnitStorageArgs(c *tc.C) {
 	existingSt1Storage := []internal.StorageInstanceComposition{
 		{
 			Filesystem: &internal.StorageInstanceCompositionFilesystem{
-				ProvisionScope: domainstorageprov.ProvisionScopeMachine,
-				UUID:           tc.Must(c, domainstorageprov.NewFilesystemUUID),
+				ProvisionScope: domainstorage.ProvisionScopeMachine,
+				UUID:           tc.Must(c, domainstorage.NewFilesystemUUID),
 			},
 			StorageName: "st1",
 			UUID:        tc.Must(c, domainstorage.NewStorageInstanceUUID),
@@ -92,16 +92,16 @@ func (s *serviceSuite) TestMakeUnitStorageArgs(c *tc.C) {
 		{
 			StorageName: "st2",
 			Volume: &internal.StorageInstanceCompositionVolume{
-				ProvisionScope: domainstorageprov.ProvisionScopeMachine,
-				UUID:           tc.Must(c, domainstorageprov.NewVolumeUUID),
+				ProvisionScope: domainstorage.ProvisionScopeMachine,
+				UUID:           tc.Must(c, domainstorage.NewVolumeUUID),
 			},
 			UUID: tc.Must(c, domainstorage.NewStorageInstanceUUID),
 		},
 		{
 			StorageName: "st2",
 			Volume: &internal.StorageInstanceCompositionVolume{
-				ProvisionScope: domainstorageprov.ProvisionScopeMachine,
-				UUID:           tc.Must(c, domainstorageprov.NewVolumeUUID),
+				ProvisionScope: domainstorage.ProvisionScopeMachine,
+				UUID:           tc.Must(c, domainstorage.NewVolumeUUID),
 			},
 			UUID: tc.Must(c, domainstorage.NewStorageInstanceUUID),
 		},
@@ -115,17 +115,18 @@ func (s *serviceSuite) TestMakeUnitStorageArgs(c *tc.C) {
 		provider, nil,
 	).AnyTimes()
 
-	svc := NewService(s.state, s.poolProvider)
+	svc := NewService(s.state, s.poolProvider, loggertesting.WrapCheckLog(c))
 
 	arg, err := svc.MakeUnitStorageArgs(
 		c.Context(),
 		attachNetNodeUUID,
 		storageDirectives,
 		append(existingSt1Storage, existingSt2Storage...),
+		nil,
 	)
 	c.Check(err, tc.IsNil)
 
-	expectStorageDirectives := []internal.CreateUnitStorageDirectiveArg{
+	expectStorageDirectives := []domainstorage.DirectiveArg{
 		{
 			Count:    3,
 			Name:     "st1",
@@ -140,11 +141,11 @@ func (s *serviceSuite) TestMakeUnitStorageArgs(c *tc.C) {
 		},
 	}
 
-	expectedStorageInstances := []internal.CreateUnitStorageInstanceArg{
+	expectedStorageInstances := []domainstorage.CreateUnitStorageInstanceArg{
 		{
 			CharmName: "big-beautiful-charm",
-			Filesystem: &internal.CreateUnitStorageFilesystemArg{
-				ProvisionScope: domainstorageprov.ProvisionScopeMachine,
+			Filesystem: &domainstorage.CreateUnitStorageFilesystemArg{
+				ProvisionScope: domainstorage.ProvisionScopeMachine,
 			},
 			Kind:            domainstorage.StorageKindFilesystem,
 			Name:            "st1",
@@ -153,8 +154,8 @@ func (s *serviceSuite) TestMakeUnitStorageArgs(c *tc.C) {
 		},
 		{
 			CharmName: "big-beautiful-charm",
-			Filesystem: &internal.CreateUnitStorageFilesystemArg{
-				ProvisionScope: domainstorageprov.ProvisionScopeMachine,
+			Filesystem: &domainstorage.CreateUnitStorageFilesystemArg{
+				ProvisionScope: domainstorage.ProvisionScopeMachine,
 			},
 			Kind:            domainstorage.StorageKindFilesystem,
 			Name:            "st1",
@@ -163,10 +164,10 @@ func (s *serviceSuite) TestMakeUnitStorageArgs(c *tc.C) {
 		},
 	}
 
-	expectedStorageToAttach := []internal.CreateUnitStorageAttachmentArg{
+	expectedStorageToAttach := []domainstorage.CreateUnitStorageAttachmentArg{
 		// Existing st1 storage
 		{
-			FilesystemAttachment: &internal.CreateUnitStorageFilesystemAttachmentArg{
+			FilesystemAttachment: &domainstorage.CreateUnitStorageFilesystemAttachmentArg{
 				FilesystemUUID: existingSt1Storage[0].Filesystem.UUID,
 				NetNodeUUID:    attachNetNodeUUID,
 				ProvisionScope: existingSt1Storage[0].Filesystem.ProvisionScope,
@@ -177,7 +178,7 @@ func (s *serviceSuite) TestMakeUnitStorageArgs(c *tc.C) {
 		// Existing st2 storage
 		{
 			StorageInstanceUUID: existingSt2Storage[0].UUID,
-			VolumeAttachment: &internal.CreateUnitStorageVolumeAttachmentArg{
+			VolumeAttachment: &domainstorage.CreateUnitStorageVolumeAttachmentArg{
 				NetNodeUUID:    attachNetNodeUUID,
 				ProvisionScope: existingSt2Storage[0].Volume.ProvisionScope,
 				VolumeUUID:     existingSt2Storage[0].Volume.UUID,
@@ -185,7 +186,7 @@ func (s *serviceSuite) TestMakeUnitStorageArgs(c *tc.C) {
 		},
 		{
 			StorageInstanceUUID: existingSt2Storage[1].UUID,
-			VolumeAttachment: &internal.CreateUnitStorageVolumeAttachmentArg{
+			VolumeAttachment: &domainstorage.CreateUnitStorageVolumeAttachmentArg{
 				NetNodeUUID:    attachNetNodeUUID,
 				ProvisionScope: existingSt2Storage[1].Volume.ProvisionScope,
 				VolumeUUID:     existingSt2Storage[1].Volume.UUID,
@@ -196,13 +197,13 @@ func (s *serviceSuite) TestMakeUnitStorageArgs(c *tc.C) {
 	// attachment expectations.
 	expectedStorageToAttach = slices.Grow(expectedStorageToAttach, len(arg.StorageInstances))
 	for _, si := range arg.StorageInstances {
-		attachArg := internal.CreateUnitStorageAttachmentArg{
+		attachArg := domainstorage.CreateUnitStorageAttachmentArg{
 			StorageInstanceUUID: si.UUID,
 		}
 
 		if si.Filesystem != nil {
 			attachArg.FilesystemAttachment =
-				&internal.CreateUnitStorageFilesystemAttachmentArg{
+				&domainstorage.CreateUnitStorageFilesystemAttachmentArg{
 					FilesystemUUID: si.Filesystem.UUID,
 					NetNodeUUID:    attachNetNodeUUID,
 					ProvisionScope: si.Filesystem.ProvisionScope,
@@ -210,7 +211,7 @@ func (s *serviceSuite) TestMakeUnitStorageArgs(c *tc.C) {
 		}
 		if si.Volume != nil {
 			attachArg.VolumeAttachment =
-				&internal.CreateUnitStorageVolumeAttachmentArg{
+				&domainstorage.CreateUnitStorageVolumeAttachmentArg{
 					VolumeUUID:     si.Volume.UUID,
 					NetNodeUUID:    attachNetNodeUUID,
 					ProvisionScope: si.Volume.ProvisionScope,
@@ -224,7 +225,7 @@ func (s *serviceSuite) TestMakeUnitStorageArgs(c *tc.C) {
 		expectedStorageToOwn = append(expectedStorageToOwn, si.UUID)
 	}
 
-	c.Check(arg, createUnitStorageArgChecker(), internal.CreateUnitStorageArg{
+	c.Check(arg, createUnitStorageArgChecker(), domainstorage.CreateUnitStorageArg{
 		StorageDirectives: expectStorageDirectives,
 		StorageInstances:  expectedStorageInstances,
 		StorageToAttach:   expectedStorageToAttach,
@@ -235,74 +236,181 @@ func (s *serviceSuite) TestMakeUnitStorageArgs(c *tc.C) {
 func (s *serviceSuite) TestMakeIAASUnitStorageArgs(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	fsUUID1 := tc.Must(c, domainstorageprov.NewFilesystemUUID)
-	fsUUID2 := tc.Must(c, domainstorageprov.NewFilesystemUUID)
-	volUUID1 := tc.Must(c, domainstorageprov.NewVolumeUUID)
-	volUUID2 := tc.Must(c, domainstorageprov.NewVolumeUUID)
+	fsUUID1 := tc.Must(c, domainstorage.NewFilesystemUUID)
+	fsUUID2 := tc.Must(c, domainstorage.NewFilesystemUUID)
+	volUUID1 := tc.Must(c, domainstorage.NewVolumeUUID)
+	volUUID2 := tc.Must(c, domainstorage.NewVolumeUUID)
 
-	expectedStorageInstances := []internal.CreateUnitStorageInstanceArg{
+	expectedStorageInstances := []domainstorage.CreateUnitStorageInstanceArg{
 		{
-			Filesystem: &internal.CreateUnitStorageFilesystemArg{
-				UUID:           tc.Must(c, domainstorageprov.NewFilesystemUUID),
-				ProvisionScope: domainstorageprov.ProvisionScopeMachine,
+			Filesystem: &domainstorage.CreateUnitStorageFilesystemArg{
+				UUID:           tc.Must(c, domainstorage.NewFilesystemUUID),
+				ProvisionScope: domainstorage.ProvisionScopeMachine,
 			},
-			Volume: &internal.CreateUnitStorageVolumeArg{
-				UUID:           tc.Must(c, domainstorageprov.NewVolumeUUID),
-				ProvisionScope: domainstorageprov.ProvisionScopeModel,
-			},
-		},
-		{
-			Filesystem: &internal.CreateUnitStorageFilesystemArg{
-				UUID:           tc.Must(c, domainstorageprov.NewFilesystemUUID),
-				ProvisionScope: domainstorageprov.ProvisionScopeModel,
+			Volume: &domainstorage.CreateUnitStorageVolumeArg{
+				UUID:           tc.Must(c, domainstorage.NewVolumeUUID),
+				ProvisionScope: domainstorage.ProvisionScopeModel,
 			},
 		},
 		{
-			Volume: &internal.CreateUnitStorageVolumeArg{
-				UUID:           tc.Must(c, domainstorageprov.NewVolumeUUID),
-				ProvisionScope: domainstorageprov.ProvisionScopeModel,
+			Filesystem: &domainstorage.CreateUnitStorageFilesystemArg{
+				UUID:           tc.Must(c, domainstorage.NewFilesystemUUID),
+				ProvisionScope: domainstorage.ProvisionScopeModel,
 			},
 		},
 		{
-			Filesystem: &internal.CreateUnitStorageFilesystemArg{
+			Volume: &domainstorage.CreateUnitStorageVolumeArg{
+				UUID:           tc.Must(c, domainstorage.NewVolumeUUID),
+				ProvisionScope: domainstorage.ProvisionScopeModel,
+			},
+		},
+		{
+			Filesystem: &domainstorage.CreateUnitStorageFilesystemArg{
 				UUID:           fsUUID1,
-				ProvisionScope: domainstorageprov.ProvisionScopeMachine,
+				ProvisionScope: domainstorage.ProvisionScopeMachine,
 			},
 		},
 		{
-			Volume: &internal.CreateUnitStorageVolumeArg{
+			Volume: &domainstorage.CreateUnitStorageVolumeArg{
 				UUID:           volUUID1,
-				ProvisionScope: domainstorageprov.ProvisionScopeMachine,
+				ProvisionScope: domainstorage.ProvisionScopeMachine,
 			},
 		},
 		{
-			Filesystem: &internal.CreateUnitStorageFilesystemArg{
+			Filesystem: &domainstorage.CreateUnitStorageFilesystemArg{
 				UUID:           fsUUID2,
-				ProvisionScope: domainstorageprov.ProvisionScopeMachine,
+				ProvisionScope: domainstorage.ProvisionScopeMachine,
 			},
-			Volume: &internal.CreateUnitStorageVolumeArg{
+			Volume: &domainstorage.CreateUnitStorageVolumeArg{
 				UUID:           volUUID2,
-				ProvisionScope: domainstorageprov.ProvisionScopeMachine,
+				ProvisionScope: domainstorage.ProvisionScopeMachine,
 			},
 		},
-	}
-	input := internal.CreateUnitStorageArg{
-		StorageInstances: expectedStorageInstances,
 	}
 
-	svc := NewService(s.state, s.poolProvider)
-	arg, err := svc.MakeIAASUnitStorageArgs(c.Context(), input)
+	svc := NewService(s.state, s.poolProvider, loggertesting.WrapCheckLog(c))
+	arg, err := svc.MakeIAASUnitStorageArgs(c.Context(), expectedStorageInstances)
 	c.Assert(err, tc.IsNil)
 	c.Check(arg.FilesystemsToOwn, tc.SameContents,
-		[]domainstorageprov.FilesystemUUID{
+		[]domainstorage.FilesystemUUID{
 			fsUUID1,
 			fsUUID2,
 		},
 	)
 	c.Check(arg.VolumesToOwn, tc.SameContents,
-		[]domainstorageprov.VolumeUUID{
+		[]domainstorage.VolumeUUID{
 			volUUID1,
 			volUUID2,
 		},
 	)
+}
+
+func (s *serviceSuite) TestMakeUnitAddStorageArgs(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	attachNetNodeUUID := tc.Must(c, domainnetwork.NewNetNodeUUID)
+	poolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	storageDirective := internal.StorageDirective{
+		CharmMetadataName: "big-beautiful-charm",
+		CharmStorageType:  charm.StorageFilesystem,
+		MaxCount:          3,
+		Name:              "st1",
+		PoolUUID:          poolUUID,
+		Size:              1024,
+	}
+
+	provider := NewMockStorageProvider(ctrl)
+	provider.EXPECT().Scope().Return(internalstorage.ScopeMachine).AnyTimes()
+	provider.EXPECT().Supports(internalstorage.StorageKindFilesystem).Return(true).AnyTimes()
+	provider.EXPECT().Supports(internalstorage.StorageKindBlock).Return(true).AnyTimes()
+	s.poolProvider.EXPECT().GetProviderForPool(gomock.Any(), poolUUID).Return(
+		provider, nil,
+	).AnyTimes()
+
+	s.state.EXPECT().GetUnitNetNodeUUID(gomock.Any(), unitUUID).Return(attachNetNodeUUID.String(), nil)
+
+	svc := NewService(s.state, s.poolProvider, loggertesting.WrapCheckLog(c))
+
+	arg, err := svc.MakeUnitAddStorageArgs(
+		c.Context(),
+		unitUUID,
+		2,
+		storageDirective,
+	)
+	c.Check(err, tc.ErrorIsNil)
+
+	expectedStorageInstances := []domainstorage.CreateUnitStorageInstanceArg{
+		{
+			CharmName: "big-beautiful-charm",
+			Filesystem: &domainstorage.CreateUnitStorageFilesystemArg{
+				ProvisionScope: domainstorage.ProvisionScopeMachine,
+			},
+			Kind:            domainstorage.StorageKindFilesystem,
+			Name:            "st1",
+			RequestSizeMiB:  1024,
+			StoragePoolUUID: poolUUID,
+		},
+		{
+			CharmName: "big-beautiful-charm",
+			Filesystem: &domainstorage.CreateUnitStorageFilesystemArg{
+				ProvisionScope: domainstorage.ProvisionScopeMachine,
+			},
+			Kind:            domainstorage.StorageKindFilesystem,
+			Name:            "st1",
+			RequestSizeMiB:  1024,
+			StoragePoolUUID: poolUUID,
+		},
+	}
+
+	expectedStorageToAttach := make(
+		[]domainstorage.CreateUnitStorageAttachmentArg,
+		0,
+		len(arg.StorageInstances),
+	)
+	// Loop through the new storage instances being created and set their
+	// attachment expectations.
+	for _, si := range arg.StorageInstances {
+		attachArg := domainstorage.CreateUnitStorageAttachmentArg{
+			StorageInstanceUUID: si.UUID,
+		}
+
+		if si.Filesystem != nil {
+			attachArg.FilesystemAttachment =
+				&domainstorage.CreateUnitStorageFilesystemAttachmentArg{
+					FilesystemUUID: si.Filesystem.UUID,
+					NetNodeUUID:    attachNetNodeUUID,
+					ProvisionScope: si.Filesystem.ProvisionScope,
+				}
+		}
+		if si.Volume != nil {
+			attachArg.VolumeAttachment =
+				&domainstorage.CreateUnitStorageVolumeAttachmentArg{
+					VolumeUUID:     si.Volume.UUID,
+					NetNodeUUID:    attachNetNodeUUID,
+					ProvisionScope: si.Volume.ProvisionScope,
+				}
+		}
+		expectedStorageToAttach = append(expectedStorageToAttach, attachArg)
+	}
+
+	expectedStorageToOwn := make(
+		[]domainstorage.StorageInstanceUUID, 0, len(arg.StorageInstances))
+	for _, si := range arg.StorageInstances {
+		expectedStorageToOwn = append(expectedStorageToOwn, si.UUID)
+	}
+
+	mc := tc.NewMultiChecker()
+	mc.AddExpr("_.StorageToAttach[_].UUID", tc.IsNonZeroUUID)
+	mc.AddExpr("_.StorageToAttach[_].FilesystemAttachment.UUID", tc.IsNonZeroUUID)
+	mc.AddExpr("_.StorageToAttach[_].VolumeAttachment.UUID", tc.IsNonZeroUUID)
+	mc.AddExpr("_.StorageInstances[_].UUID", tc.IsNonZeroUUID)
+	mc.AddExpr("_.StorageInstances[_].Volume.UUID", tc.IsNonZeroUUID)
+	mc.AddExpr("_.StorageInstances[_].Filesystem.UUID", tc.IsNonZeroUUID)
+	c.Check(arg, mc, domainstorage.UnitAddStorageArg{
+		StorageInstances: expectedStorageInstances,
+		StorageToAttach:  expectedStorageToAttach,
+		StorageToOwn:     expectedStorageToOwn,
+	})
 }

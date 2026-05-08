@@ -7,9 +7,9 @@ import (
 	"context"
 
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
-	dt "github.com/juju/worker/v4/dependency/testing"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
+	dt "github.com/juju/worker/v5/dependency/testing"
 	gomock "go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/core/errors"
@@ -40,7 +40,7 @@ func (s *ManifoldSuite) getConfig(c *tc.C) ManifoldConfig {
 				machine: s.mockMachineService,
 			}, nil
 		},
-		NewWorker: func(VersionCheckerParams) worker.Worker { return nil },
+		NewWorker: func(WorkerConfig) worker.Worker { return nil },
 		Logger:    loggertesting.WrapCheckLog(c),
 	}
 }

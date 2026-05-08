@@ -15,11 +15,12 @@ import (
 
 	"github.com/juju/juju/api/jujuclient"
 	"github.com/juju/juju/api/jujuclient/jujuclienttesting"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/modelcmd"
+	"github.com/juju/juju/controller"
 	"github.com/juju/juju/core/version"
 	"github.com/juju/juju/environs/config"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/testing"
 )
 
@@ -78,10 +79,10 @@ func (s *ImageMetadataSuite) assertCommandOutput(c *tc.C, expected expectedMetad
 	data, err := os.ReadFile(indexpath)
 	c.Assert(err, tc.ErrorIsNil)
 	content := string(data)
-	var indices interface{}
+	var indices any
 	err = json.Unmarshal(data, &indices)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(indices.(map[string]interface{})["format"], tc.Equals, "index:1.0")
+	c.Assert(indices.(map[string]any)["format"], tc.Equals, "index:1.0")
 	prodId := fmt.Sprintf("com.ubuntu.cloud:server:%s:%s", expected.version, expected.arch)
 	c.Assert(content, tc.Contains, prodId)
 	c.Assert(content, tc.Contains, fmt.Sprintf(`"region": %q`, expected.region))
@@ -92,10 +93,10 @@ func (s *ImageMetadataSuite) assertCommandOutput(c *tc.C, expected expectedMetad
 	data, err = os.ReadFile(imagepath)
 	c.Assert(err, tc.ErrorIsNil)
 	content = string(data)
-	var images interface{}
+	var images any
 	err = json.Unmarshal(data, &images)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(images.(map[string]interface{})["format"], tc.Equals, "products:1.0")
+	c.Assert(images.(map[string]any)["format"], tc.Equals, "products:1.0")
 	c.Assert(content, tc.Contains, prodId)
 	c.Assert(content, tc.Contains, `"id": "1234"`)
 	if expected.virtType != "" {
@@ -141,7 +142,7 @@ func (s *ImageMetadataSuite) TestImageMetadataFilesDefaultArch(c *tc.C) {
 }
 
 func (s *ImageMetadataSuite) TestImageMetadataFilesLatestLTS(c *tc.C) {
-	ec2Config, err := config.New(config.UseDefaults, map[string]interface{}{
+	ec2Config, err := config.New(config.UseDefaults, map[string]any{
 		"name":            "ec2-latest-lts",
 		"type":            "ec2",
 		"uuid":            testing.ModelTag.Id(),
@@ -149,8 +150,13 @@ func (s *ImageMetadataSuite) TestImageMetadataFilesLatestLTS(c *tc.C) {
 		"region":          "us-east-1",
 	})
 	c.Assert(err, tc.ErrorIsNil)
+	// The controller config used for bootstrap config
+	// does not have the controller uuid or ca cart.
+	controllerCfg := testing.FakeControllerConfig()
+	delete(controllerCfg, controller.ControllerUUIDKey)
+	delete(controllerCfg, controller.CACertKey)
 	s.store.BootstrapConfig["ec2-controller"] = jujuclient.BootstrapConfig{
-		ControllerConfig: testing.FakeControllerConfig(),
+		ControllerConfig: controllerCfg,
 		Cloud:            "ec2",
 		CloudRegion:      "us-east-1",
 		Config:           ec2Config.AllAttrs(),

@@ -1,7 +1,7 @@
 (hook-command-secret-ids)=
 # `secret-ids`
 ## Summary
-Print secret IDs.
+Prints secret IDs.
 
 ### Options
 | Flag | Default | Usage |

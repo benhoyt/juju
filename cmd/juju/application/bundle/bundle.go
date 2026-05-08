@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"reflect"
 	"sort"
 	"strings"
@@ -16,13 +17,13 @@ import (
 	"github.com/juju/names/v6"
 	"gopkg.in/yaml.v3"
 
+	"github.com/juju/juju/cmd/cmd"
 	corebase "github.com/juju/juju/core/base"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/devices"
+	"github.com/juju/juju/core/storage"
+	"github.com/juju/juju/domain/deployment/charm"
 	bundlechanges "github.com/juju/juju/internal/bundle/changes"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -75,9 +76,7 @@ func BuildModelRepresentation(
 	}
 
 	// Now iterate over the bundleMachines that the user specified.
-	for bundleMachine, modelMachine := range bundleMachines {
-		machineMap[bundleMachine] = modelMachine
-	}
+	maps.Copy(machineMap, bundleMachines)
 	applications := make(map[string]*bundlechanges.Application)
 	for name, appStatus := range status.Applications {
 		curl, err := charm.ParseURL(appStatus.Charm)
@@ -187,7 +186,7 @@ func BuildModelRepresentation(
 		return nil, errors.Annotate(err, "getting application options")
 	}
 	for i, cfg := range configValues {
-		options := make(map[string]interface{})
+		options := make(map[string]any)
 		// The config map has values that looks like this:
 		//  map[string]interface {}{
 		//        "value":       "",
@@ -231,8 +230,8 @@ func BuildModelRepresentation(
 // applicationConfigValue returns the value if it is not a default value.
 // If the value is a default value, nil is returned.
 // If there was issue determining the type or value, an error is returned.
-func applicationConfigValue(key string, valueMap interface{}) (interface{}, error) {
-	vm, ok := valueMap.(map[string]interface{})
+func applicationConfigValue(key string, valueMap any) (any, error) {
+	vm, ok := valueMap.(map[string]any)
 	if !ok {
 		return nil, errors.Errorf("unexpected application config value type %T for key %q", valueMap, key)
 	}
@@ -243,10 +242,26 @@ func applicationConfigValue(key string, valueMap interface{}) (interface{}, erro
 	if source == "unset" {
 		return nil, nil
 	}
-	value, found := vm["value"]
+
+	return coerceConfigType(vm)
+}
+
+// coerceConfigType ensures that the application config value is of the
+// type specified in the option definitions.
+func coerceConfigType(valueMap map[string]any) (any, error) {
+	value, found := valueMap["value"]
+
 	if !found {
 		return nil, errors.Errorf("missing application config value 'value'")
 	}
+
+	switch v := value.(type) {
+	case float64:
+		if configType, found := valueMap["type"]; found && configType == "int" {
+			return int(v), nil
+		}
+	}
+
 	return value, nil
 }
 
@@ -404,7 +419,7 @@ func verifyBundleNoSeriesWithoutBase(bundleBytes []byte) []string {
 		var data *bundleSeriesData
 
 		err := dec.Decode(&data)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
 			// The bundle should already have been parsed if we're

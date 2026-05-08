@@ -12,6 +12,7 @@ import (
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/domain"
 	"github.com/juju/juju/domain/agentbinary"
+	"github.com/juju/juju/domain/controllerupgrader/internal"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -31,12 +32,72 @@ func NewControllerState(
 	}
 }
 
-// GetControllerNodeVersions returns the current version that is running for
-// each controller in the cluster. This is the version that each controller
-// reports when it starts up.
-func (s *ControllerState) GetControllerNodeVersions(
-	ctx context.Context,
-) (map[string]semversion.Number, error) {
+// GetAllAgentStoreBinariesForStream returns all agent binaries that are
+// available in the controller store for a given stream. If no agent binaries
+// exist for the stream, an empty slice is returned.
+func (s *ControllerState) GetAllAgentStoreBinariesForStream(
+	ctx context.Context, stream agentbinary.Stream,
+) ([]agentbinary.AgentBinary, error) {
+	db, err := s.DB(ctx)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	streamInput := agentStream{StreamID: int(stream)}
+
+	q := `
+SELECT &agentStoreBinary.*
+FROM (
+    SELECT abs.version,
+           abs.architecture_id,
+           $agentStream.stream_id AS stream_id
+    FROM   agent_binary_store abs
+)
+`
+
+	stmt, err := s.Prepare(q, streamInput, agentStoreBinary{})
+	if err != nil {
+		return nil, errors.Errorf(
+			"preparing get all agent binaries for stream query: %w", err,
+		)
+	}
+
+	dbVals := []agentStoreBinary{}
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err := tx.Query(ctx, stmt, streamInput).GetAll(&dbVals)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	retVal := make([]agentbinary.AgentBinary, 0, len(dbVals))
+	for _, dbVal := range dbVals {
+		version, err := semversion.Parse(dbVal.Version)
+		if err != nil {
+			return nil, errors.Errorf(
+				"parsing agent binary version %q: %w",
+				dbVal.Version, err,
+			)
+		}
+
+		retVal = append(retVal, agentbinary.AgentBinary{
+			Version:      version,
+			Architecture: agentbinary.Architecture(dbVal.ArchitectureID),
+			Stream:       agentbinary.Stream(dbVal.StreamID),
+		})
+	}
+
+	return retVal, nil
+}
+
+// GetControllerNodes returns the current version and architecture of nodes
+// running for each controller in the cluster.
+// The version is the one that each controller reports when it starts up.
+func (s *ControllerState) GetControllerNodes(ctx context.Context) ([]internal.ControllerNode, error) {
 	db, err := s.DB(ctx)
 	if err != nil {
 		return nil, errors.Capture(err)
@@ -65,7 +126,7 @@ FROM   controller_node_agent_version
 		return nil, errors.Capture(err)
 	}
 
-	rval := make(map[string]semversion.Number, len(dbValues))
+	result := make([]internal.ControllerNode, 0, len(dbValues))
 	for _, v := range dbValues {
 		version, err := semversion.Parse(v.Version)
 		if err != nil {
@@ -75,10 +136,14 @@ FROM   controller_node_agent_version
 			)
 		}
 
-		rval[v.ControllerID] = version
+		result = append(result, internal.ControllerNode{
+			ID:           v.ControllerID,
+			Version:      version,
+			Architecture: agentbinary.Architecture(v.ArchitectureID),
+		})
 	}
 
-	return rval, nil
+	return result, nil
 }
 
 // GetControllerTargetVersion returns the target controller version in use by the
@@ -168,66 +233,4 @@ SET    target_version = $setControllerTargetVersion.target_version
 	}
 
 	return nil
-}
-
-// HasAgentBinariesForVersionArchitecturesAndStream is responsible for determining whether there exists agents
-// for a given version and slice of architectures.
-// There may be some architectures that doesn't exist in which the caller has to consult other source of truths
-// to grab the agent.
-// TODO(adisazhar123): at the moment, `stream` isn't modeled in the controller DB so it's a noop. This is for a
-// future effort to match the given `stream` when grabbing the agents.
-func (s *ControllerState) HasAgentBinariesForVersionArchitecturesAndStream(
-	ctx context.Context,
-	version semversion.Number,
-	architectures []agentbinary.Architecture,
-	stream agentbinary.Stream,
-) (map[agentbinary.Architecture]bool, error) {
-	if len(architectures) == 0 {
-		return map[agentbinary.Architecture]bool{}, nil
-	}
-	db, err := s.DB(ctx)
-	if err != nil {
-		return nil, errors.Capture(err)
-	}
-
-	binVersion := binaryVersion{Version: version.String()}
-
-	architectureIds := make(ids, len(architectures))
-	for i, arch := range architectures {
-		architectureIds[i] = int(arch)
-	}
-
-	stmt, err := s.Prepare(`
-SELECT &binaryForVersionAndArchitectures.*
-FROM   agent_binary_store
-WHERE  version = $binaryVersion.version
-AND    architecture_id IN ($ids[:])
-`, binaryForVersionAndArchitectures{}, binVersion, architectureIds)
-	if err != nil {
-		return nil, errors.Capture(err)
-	}
-
-	var binaries []binaryForVersionAndArchitectures
-	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		err = tx.Query(ctx, stmt, binVersion, architectureIds).GetAll(&binaries)
-		if errors.Is(err, sqlair.ErrNoRows) {
-			return nil
-		} else if err != nil {
-			return errors.Capture(err)
-		}
-		return nil
-	})
-
-	// Initialize each architecture to false.
-	result := make(map[agentbinary.Architecture]bool, len(architectures))
-	for _, architecture := range architectures {
-		result[architecture] = false
-	}
-	// Set the map entry for an architecture to true if they exist
-	// in DB.
-	for _, binary := range binaries {
-		result[agentbinary.Architecture(binary.ArchitectureID)] = true
-	}
-
-	return result, errors.Capture(err)
 }

@@ -18,12 +18,12 @@ import (
 	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/api/jujuclient"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/common"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/output"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -357,7 +357,7 @@ type ModelSet struct {
 }
 
 // formatTabular takes an interface{} to adhere to the cmd.Formatter interface
-func (c *modelsCommand) formatTabular(writer io.Writer, value interface{}) error {
+func (c *modelsCommand) formatTabular(writer io.Writer, value any) error {
 	summariesSet, ok := value.(ModelSummarySet)
 	if !ok {
 		return errors.Errorf("expected value of type ModelSummarySet, got %T", value)

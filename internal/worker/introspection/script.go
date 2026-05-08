@@ -38,6 +38,7 @@ func (osFileReaderWriter) WriteFile(filename string, data []byte, perm os.FileMo
 // WriteProfileFunctions writes the shellFuncs below to a file in the
 // /etc/profile.d directory so all bash terminals can easily access the
 // introspection worker.
+//
 // Deprecated: use UpdateProfileFunction with a FileReaderWriter.
 func WriteProfileFunctions(profileDir string) error {
 	return UpdateProfileFunctions(osFileReaderWriter{}, profileDir)
@@ -92,7 +93,10 @@ juju_machine_agent_name () {
 }
 
 juju_controller_agent_name () {
-  local controller=$(find /var/lib/juju/agents -maxdepth 1 -type d -name 'controller-*' -printf %f)
+  local controller=$(juju_machine_agent_name)
+  if [ -z "$controller" ]; then
+    controller=$(find /var/lib/juju/agents -maxdepth 1 -type d -name 'controller-*' -printf %f)
+  fi
   echo $controller
 }
 
@@ -142,10 +146,6 @@ juju_engine_report () {
   juju_agent depengine
 }
 
-juju_statepool_report () {
-  juju_agent statepool
-}
-
 juju_metrics () {
   juju_agent metrics
 }
@@ -161,27 +161,20 @@ juju_unit_status () {
 }
 
 juju_db_repl () {
-  local type=$1
-  local flag
-  if [ -z "$type" ]; then
-    flag="--machine-id"
-  elif [ "$type" = "caas" ]; then
-    flag="--controller-id"
-  elif [ "$type" = "iaas" ]; then
-    flag="--machine-id"
-  fi
-  local id=$2
-  if [ -z "$id" ]; then
-    id="0"
+  local agent=$(juju_controller_agent_name)
+  if [ -z "${agent}" ]; then
+    echo "cannot identify agent"
+    return 1
   fi
 
-  flag="$flag=$id"
+  local type=$(printf ${agent} | cut -d- -f1)
+  local id=$(printf ${agent} | cut -d- -f2)
+  local flag="--${type}-id=${id}"
 
-  local agent=$(juju_machine_agent_name)
   if [ -x "$(which sudo)" ]; then
-    sudo /var/lib/juju/tools/$agent/jujud db-repl $flag
+    sudo /var/lib/juju/tools/$agent/jujud db-repl ${flag}
   else
-    /var/lib/juju/tools/$agent/jujud db-repl $flag
+    /var/lib/juju/tools/$agent/jujud db-repl ${flag}
   fi
 }
 
@@ -257,7 +250,6 @@ if [ "$shell" = "bash" ]; then
   export -f juju_heap_profile
   export -f juju_engine_report
   export -f juju_metrics
-  export -f juju_statepool_report
   export -f juju_machine_lock
   export -f juju_unit_status
   export -f juju_db_repl

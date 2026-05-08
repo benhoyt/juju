@@ -4,18 +4,20 @@
 package state
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sort"
 	"testing"
 	"time"
 
+	"github.com/canonical/sqlair"
+	"github.com/juju/clock"
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/cloud"
 	corecredential "github.com/juju/juju/core/credential"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/secrets"
 	"github.com/juju/juju/core/user"
@@ -32,6 +34,7 @@ import (
 	"github.com/juju/juju/domain/secretbackend"
 	backenderrors "github.com/juju/juju/domain/secretbackend/errors"
 	"github.com/juju/juju/internal/database"
+	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/secrets/provider"
 	"github.com/juju/juju/internal/secrets/provider/juju"
@@ -137,7 +140,7 @@ func (s *stateSuite) createModelWithName(c *tc.C, modelType coremodel.ModelType,
 			Name: "my-backend",
 		},
 		BackendType: "vault",
-		Config: map[string]string{
+		Config: map[string]any{
 			"key1": "value1",
 			"key2": "value2",
 		},
@@ -160,7 +163,7 @@ func (s *stateSuite) createModelWithName(c *tc.C, modelType coremodel.ModelType,
 	userUUID, err := user.NewUUID()
 	c.Assert(err, tc.ErrorIsNil)
 	userName := usertesting.GenNewName(c, "test-user")
-	userState := userstate.NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+	userState := userstate.NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
 	err = userState.AddUserWithPermission(
 		c.Context(),
 		userUUID,
@@ -213,35 +216,41 @@ func (s *stateSuite) createModelWithName(c *tc.C, modelType coremodel.ModelType,
 	)
 	c.Assert(err, tc.ErrorIsNil)
 
-	modelUUID := modeltesting.GenModelUUID(c)
-	modelSt := statecontroller.NewState(s.TxnRunnerFactory())
-	err = modelSt.Create(
-		c.Context(),
-		modelUUID,
-		modelType,
-		model.GlobalModelCreationArgs{
-			Cloud:       "my-cloud",
-			CloudRegion: "my-region",
-			Credential: corecredential.Key{
-				Cloud: "my-cloud",
-				Owner: usertesting.GenNewName(c, "test-user"),
-				Name:  "foobar",
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
+	err = s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		err = statecontroller.Create(
+			c.Context(),
+			preparer{},
+			tx,
+			modelUUID,
+			modelType,
+			model.GlobalModelCreationArgs{
+				Cloud:       "my-cloud",
+				CloudRegion: "my-region",
+				Credential: corecredential.Key{
+					Cloud: "my-cloud",
+					Owner: usertesting.GenNewName(c, "test-user"),
+					Name:  "foobar",
+				},
+				Name:          name,
+				Qualifier:     "prod",
+				AdminUsers:    []user.UUID{userUUID},
+				SecretBackend: "my-backend",
 			},
-			Name:          name,
-			Qualifier:     "prod",
-			AdminUsers:    []user.UUID{userUUID},
-			SecretBackend: "my-backend",
-		},
-	)
+		)
+		if err != nil {
+			return err
+		}
+
+		activator := statecontroller.GetActivator()
+		return activator(ctx, preparer{}, tx, modelUUID)
+	})
 	c.Assert(err, tc.ErrorIsNil)
 
 	ccState := controllerconfigstate.NewState(s.TxnRunnerFactory())
 	err = ccState.UpdateControllerConfig(c.Context(), map[string]string{
 		"controller-name": "test",
-	}, nil, func(map[string]string) error { return nil })
-	c.Assert(err, tc.ErrorIsNil)
-
-	err = modelSt.Activate(c.Context(), modelUUID)
+	}, nil)
 	c.Assert(err, tc.ErrorIsNil)
 	return modelUUID
 }
@@ -302,7 +311,7 @@ WHERE backend_uuid = ?`[1:], expectedSecretBackend.ID)
 			var k, v string
 			err = rows.Scan(&k, &v)
 			c.Check(err, tc.IsNil)
-			actual.Config[k] = v
+			actual.Config[k] = tc.Must1(c, decodeConfigValue, v)
 		}
 	} else {
 		var count int
@@ -329,7 +338,7 @@ func (s *stateSuite) TestCreateSecretBackendFailed(c *tc.C) {
 		BackendType:         "vault",
 		TokenRotateInterval: &rotateInternal,
 		NextRotateTime:      &nextRotateTime,
-		Config: map[string]string{
+		Config: map[string]any{
 			"key1": "",
 		},
 	})
@@ -344,7 +353,7 @@ func (s *stateSuite) TestCreateSecretBackendFailed(c *tc.C) {
 		BackendType:         "vault",
 		TokenRotateInterval: &rotateInternal,
 		NextRotateTime:      &nextRotateTime,
-		Config: map[string]string{
+		Config: map[string]any{
 			"": "value1",
 		},
 	})
@@ -364,7 +373,7 @@ func (s *stateSuite) TestCreateSecretBackend(c *tc.C) {
 		BackendType:         "vault",
 		TokenRotateInterval: &rotateInternal,
 		NextRotateTime:      &nextRotateTime,
-		Config: map[string]string{
+		Config: map[string]any{
 			"key1": "value1",
 			"key2": "value2",
 		},
@@ -423,7 +432,7 @@ func (s *stateSuite) TestUpsertSecretBackendInvalidArg(c *tc.C) {
 		ID:          backendID,
 		Name:        "my-backend",
 		BackendType: "vault",
-		Config: map[string]string{
+		Config: map[string]any{
 			"key1": "",
 		},
 	})
@@ -434,7 +443,7 @@ func (s *stateSuite) TestUpsertSecretBackendInvalidArg(c *tc.C) {
 		ID:          backendID,
 		Name:        "my-backend",
 		BackendType: "vault",
-		Config: map[string]string{
+		Config: map[string]any{
 			"": "value1",
 		},
 	})
@@ -454,7 +463,7 @@ func (s *stateSuite) TestUpdateSecretBackend(c *tc.C) {
 		BackendType:         "vault",
 		TokenRotateInterval: &rotateInternal,
 		NextRotateTime:      &nextRotateTime,
-		Config: map[string]string{
+		Config: map[string]any{
 			"key1": "value1",
 			"key2": "value2",
 		},
@@ -501,7 +510,7 @@ func (s *stateSuite) TestUpdateSecretBackend(c *tc.C) {
 		},
 		TokenRotateInterval: &newRotateInternal,
 		NextRotateTime:      &newNextRotateTime,
-		Config: map[string]string{
+		Config: map[string]any{
 			"key1": "value1-updated",
 			"key3": "value3",
 		},
@@ -532,7 +541,7 @@ func (s *stateSuite) TestUpdateSecretBackendWithNoRotateNoConfig(c *tc.C) {
 		BackendType:         "vault",
 		TokenRotateInterval: &rotateInternal,
 		NextRotateTime:      &nextRotateTime,
-		Config: map[string]string{
+		Config: map[string]any{
 			"key1": "value1",
 			"key2": "value2",
 		},
@@ -610,7 +619,7 @@ func (s *stateSuite) TestUpdateSecretBackendFailed(c *tc.C) {
 		BackendIdentifier: secretbackend.BackendIdentifier{
 			ID: backendID2,
 		},
-		Config: map[string]string{
+		Config: map[string]any{
 			"key1": "",
 		},
 	})
@@ -621,7 +630,7 @@ func (s *stateSuite) TestUpdateSecretBackendFailed(c *tc.C) {
 		BackendIdentifier: secretbackend.BackendIdentifier{
 			ID: backendID2,
 		},
-		Config: map[string]string{
+		Config: map[string]any{
 			"": "value1",
 		},
 	})
@@ -629,48 +638,19 @@ func (s *stateSuite) TestUpdateSecretBackendFailed(c *tc.C) {
 	c.Check(err, tc.ErrorMatches, fmt.Sprintf(`secret backend not valid: empty config key for %q`, backendID2))
 }
 
-func (s *stateSuite) TestUpdateSecretBackendFailedForInternalBackend(c *tc.C) {
-	backendID := uuid.MustNewUUID().String()
-	_, err := s.state.CreateSecretBackend(c.Context(), secretbackend.CreateSecretBackendParams{
-		BackendIdentifier: secretbackend.BackendIdentifier{
-			ID:   backendID,
-			Name: "my-backend",
-		},
-		BackendType: "controller",
-	})
-	c.Assert(err, tc.IsNil)
+func (s *stateSuite) TestUpdateSecretBackendFailedForBuiltInBackend(c *tc.C) {
+
+	backendUUID := s.addBuiltInBackend(c, "old-name")
 
 	newName := "my-backend-new"
-	_, err = s.state.UpdateSecretBackend(c.Context(), secretbackend.UpdateSecretBackendParams{
+	_, err := s.state.UpdateSecretBackend(c.Context(), secretbackend.UpdateSecretBackendParams{
 		BackendIdentifier: secretbackend.BackendIdentifier{
-			ID: backendID,
+			ID: backendUUID,
 		},
 		NewName: &newName,
 	})
 	c.Assert(err, tc.ErrorIs, backenderrors.Forbidden)
-	c.Assert(err, tc.ErrorMatches, fmt.Sprintf(`secret backend operation forbidden: %q is immutable`, backendID))
-}
-
-func (s *stateSuite) TestUpdateSecretBackendFailedForKubernetesBackend(c *tc.C) {
-	backendID := uuid.MustNewUUID().String()
-	_, err := s.state.CreateSecretBackend(c.Context(), secretbackend.CreateSecretBackendParams{
-		BackendIdentifier: secretbackend.BackendIdentifier{
-			ID:   backendID,
-			Name: "my-backend",
-		},
-		BackendType: "kubernetes",
-	})
-	c.Assert(err, tc.IsNil)
-
-	newName := "my-backend-new"
-	_, err = s.state.UpdateSecretBackend(c.Context(), secretbackend.UpdateSecretBackendParams{
-		BackendIdentifier: secretbackend.BackendIdentifier{
-			ID: backendID,
-		},
-		NewName: &newName,
-	})
-	c.Assert(err, tc.ErrorIs, backenderrors.Forbidden)
-	c.Assert(err, tc.ErrorMatches, fmt.Sprintf(`secret backend operation forbidden: %q is immutable`, backendID))
+	c.Assert(err, tc.ErrorMatches, fmt.Sprintf(`secret backend %q is immutable`, backendUUID))
 }
 
 func (s *stateSuite) TestDeleteSecretBackend(c *tc.C) {
@@ -774,36 +754,12 @@ WHERE backend_uuid = ?`[1:], backendID)
 	c.Assert(count, tc.Equals, 0)
 }
 
-func (s *stateSuite) TestDeleteSecretBackendFailedForInternalBackend(c *tc.C) {
-	backendID := uuid.MustNewUUID().String()
-	_, err := s.state.CreateSecretBackend(c.Context(), secretbackend.CreateSecretBackendParams{
-		BackendIdentifier: secretbackend.BackendIdentifier{
-			ID:   backendID,
-			Name: "my-backend",
-		},
-		BackendType: "controller",
-	})
-	c.Assert(err, tc.IsNil)
+func (s *stateSuite) TestDeleteSecretBackendFailedForBuiltInBackend(c *tc.C) {
+	backendUUID := s.addBuiltInBackend(c, "built-in-backend")
 
-	err = s.state.DeleteSecretBackend(c.Context(), secretbackend.BackendIdentifier{ID: backendID}, false)
+	err := s.state.DeleteSecretBackend(c.Context(), secretbackend.BackendIdentifier{ID: backendUUID}, false)
 	c.Assert(err, tc.ErrorIs, backenderrors.Forbidden)
-	c.Assert(err, tc.ErrorMatches, fmt.Sprintf(`secret backend operation forbidden: %q is immutable`, backendID))
-}
-
-func (s *stateSuite) TestDeleteSecretBackendFailedForKubernetesBackend(c *tc.C) {
-	backendID := uuid.MustNewUUID().String()
-	_, err := s.state.CreateSecretBackend(c.Context(), secretbackend.CreateSecretBackendParams{
-		BackendIdentifier: secretbackend.BackendIdentifier{
-			ID:   backendID,
-			Name: "my-backend",
-		},
-		BackendType: "kubernetes",
-	})
-	c.Assert(err, tc.IsNil)
-
-	err = s.state.DeleteSecretBackend(c.Context(), secretbackend.BackendIdentifier{ID: backendID}, false)
-	c.Assert(err, tc.ErrorIs, backenderrors.Forbidden)
-	c.Assert(err, tc.ErrorMatches, fmt.Sprintf(`secret backend operation forbidden: %q is immutable`, backendID))
+	c.Assert(err, tc.ErrorMatches, fmt.Sprintf(`secret backend %q is immutable`, backendUUID))
 }
 
 func (s *stateSuite) TestDeleteSecretBackendInUseFail(c *tc.C) {
@@ -820,7 +776,7 @@ WHERE model_uuid = ?`[1:], modelUUID)
 	c.Assert(configuredBackendUUID, tc.Equals, s.vaultBackendID)
 
 	secretRevisionID := uuid.MustNewUUID().String()
-	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID)
+	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID, "secret-id")
 	c.Assert(err, tc.ErrorIsNil)
 
 	err = s.state.DeleteSecretBackend(c.Context(), secretbackend.BackendIdentifier{ID: s.vaultBackendID}, false)
@@ -842,7 +798,7 @@ WHERE model_uuid = ?`[1:], modelUUID)
 	c.Assert(configuredBackendUUID, tc.Equals, s.vaultBackendID)
 
 	secretRevisionID := uuid.MustNewUUID().String()
-	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID)
+	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID, "secret-id")
 	c.Assert(err, tc.ErrorIsNil)
 
 	err = s.state.DeleteSecretBackend(c.Context(), secretbackend.BackendIdentifier{ID: s.vaultBackendID}, true)
@@ -900,7 +856,7 @@ func (s *stateSuite) TestListSecretBackendsIAAS(c *tc.C) {
 		BackendType:         "vault",
 		TokenRotateInterval: &rotateInternal1,
 		NextRotateTime:      &nextRotateTime1,
-		Config: map[string]string{
+		Config: map[string]any{
 			"key3": "value3",
 			"key4": "value4",
 		},
@@ -920,11 +876,19 @@ func (s *stateSuite) TestListSecretBackendsIAAS(c *tc.C) {
 	modelUUID := s.createModel(c, coremodel.IAAS)
 	err = s.state.SetModelSecretBackend(c.Context(), modelUUID, "my-backend1")
 	c.Assert(err, tc.IsNil)
-	secrectRevisionID1 := uuid.MustNewUUID().String()
-	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: backendID1}, modelUUID, secrectRevisionID1)
+	// Two revisions of the same secret: both share "secret1" as the secret_id.
+	// Another revision for a different secret: "secret2"
+	secretRevisionID1 := uuid.MustNewUUID().String()
+	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: backendID1}, modelUUID,
+		secretRevisionID1, "secret1")
 	c.Assert(err, tc.IsNil)
-	secrectRevisionID2 := uuid.MustNewUUID().String()
-	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: backendID1}, modelUUID, secrectRevisionID2)
+	secretRevisionID2 := uuid.MustNewUUID().String()
+	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: backendID1}, modelUUID,
+		secretRevisionID2, "secret1")
+	c.Assert(err, tc.IsNil)
+	secretRevisionID3 := uuid.MustNewUUID().String()
+	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: backendID1}, modelUUID,
+		secretRevisionID3, "secret2")
 	c.Assert(err, tc.IsNil)
 
 	backends, err := s.state.ListSecretBackends(c.Context())
@@ -961,11 +925,19 @@ func (s *stateSuite) TestListSecretBackendsIAAS(c *tc.C) {
 
 func (s *stateSuite) TestListSecretBackendsCAAS(c *tc.C) {
 	modelUUID := s.createModel(c, coremodel.CAAS)
-	secrectRevisionID1 := uuid.MustNewUUID().String()
-	_, err := s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.kubernetesBackendID}, modelUUID, secrectRevisionID1)
+	// Two revisions of the same secret: both share "secret1" as the secret_id.
+	// The fix is verified by asserting NumSecrets == 1, not 2.
+	secretRevisionID1 := uuid.MustNewUUID().String()
+	_, err := s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.kubernetesBackendID}, modelUUID,
+		secretRevisionID1, "secret1")
 	c.Assert(err, tc.IsNil)
-	secrectRevisionID2 := uuid.MustNewUUID().String()
-	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.kubernetesBackendID}, modelUUID, secrectRevisionID2)
+	secretRevisionID2 := uuid.MustNewUUID().String()
+	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.kubernetesBackendID}, modelUUID,
+		secretRevisionID2, "secret1")
+	c.Assert(err, tc.IsNil)
+	secretRevisionID3 := uuid.MustNewUUID().String()
+	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.kubernetesBackendID},
+		modelUUID, secretRevisionID3, "secret2")
 	c.Assert(err, tc.IsNil)
 
 	backendID2 := uuid.MustNewUUID().String()
@@ -979,7 +951,7 @@ func (s *stateSuite) TestListSecretBackendsCAAS(c *tc.C) {
 		BackendType:         "kubernetes",
 		TokenRotateInterval: &rotateInternal2,
 		NextRotateTime:      &nextRotateTime2,
-		Config: map[string]string{
+		Config: map[string]any{
 			"key5": "value5",
 			"key6": "value6",
 		},
@@ -1047,7 +1019,7 @@ func (s *stateSuite) TestListSecretBackendIDs(c *tc.C) {
 			Name: "my-backend1",
 		},
 		BackendType: "vault",
-		Config: map[string]string{
+		Config: map[string]any{
 			"key1": "value1",
 			"key2": "value2",
 		},
@@ -1065,7 +1037,7 @@ func (s *stateSuite) TestListSecretBackendIDs(c *tc.C) {
 		BackendType:         "kubernetes",
 		TokenRotateInterval: &rotateInternal2,
 		NextRotateTime:      &nextRotateTime2,
-		Config: map[string]string{
+		Config: map[string]any{
 			"key3": "value3",
 			"key4": "value4",
 		},
@@ -1083,7 +1055,7 @@ func (s *stateSuite) assertListSecretBackendsForModelIAAS(c *tc.C, includeEmpty 
 	err := s.state.SetModelSecretBackend(c.Context(), modelUUID, "my-backend")
 	c.Assert(err, tc.IsNil)
 	secrectRevisionID := uuid.MustNewUUID().String()
-	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secrectRevisionID)
+	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secrectRevisionID, "secret-id")
 	c.Assert(err, tc.IsNil)
 
 	backendID1 := uuid.MustNewUUID().String()
@@ -1097,7 +1069,7 @@ func (s *stateSuite) assertListSecretBackendsForModelIAAS(c *tc.C, includeEmpty 
 		BackendType:         "vault",
 		TokenRotateInterval: &rotateInternal1,
 		NextRotateTime:      &nextRotateTime1,
-		Config: map[string]string{
+		Config: map[string]any{
 			"key1": "value1",
 			"key2": "value2",
 		},
@@ -1125,7 +1097,7 @@ func (s *stateSuite) assertListSecretBackendsForModelIAAS(c *tc.C, includeEmpty 
 		BackendType:         "kubernetes",
 		TokenRotateInterval: &rotateInternal2,
 		NextRotateTime:      &nextRotateTime2,
-		Config: map[string]string{
+		Config: map[string]any{
 			"key3": "value3",
 			"key4": "value4",
 		},
@@ -1200,7 +1172,7 @@ func (s *stateSuite) assertListSecretBackendsForModelCAAS(c *tc.C, includeEmpty 
 	err := s.state.SetModelSecretBackend(c.Context(), modelUUID, "my-backend")
 	c.Assert(err, tc.IsNil)
 	secrectRevisionID := uuid.MustNewUUID().String()
-	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secrectRevisionID)
+	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secrectRevisionID, "secret-id")
 	c.Assert(err, tc.IsNil)
 
 	backendID1 := uuid.MustNewUUID().String()
@@ -1214,7 +1186,7 @@ func (s *stateSuite) assertListSecretBackendsForModelCAAS(c *tc.C, includeEmpty 
 		BackendType:         "vault",
 		TokenRotateInterval: &rotateInternal1,
 		NextRotateTime:      &nextRotateTime1,
-		Config: map[string]string{
+		Config: map[string]any{
 			"key1": "value1",
 			"key2": "value2",
 		},
@@ -1242,7 +1214,7 @@ func (s *stateSuite) assertListSecretBackendsForModelCAAS(c *tc.C, includeEmpty 
 		BackendType:         "kubernetes",
 		TokenRotateInterval: &rotateInternal2,
 		NextRotateTime:      &nextRotateTime2,
-		Config: map[string]string{
+		Config: map[string]any{
 			"key3": "value3",
 			"key4": "value4",
 		},
@@ -1389,7 +1361,7 @@ func (s *stateSuite) TestGetActiveModelSecretBackendCAASDefaultBackend(c *tc.C) 
 }
 
 func (s *stateSuite) TestGetActiveModelSecretBackendFailedWithModelNotFound(c *tc.C) {
-	_, _, err := s.state.GetActiveModelSecretBackend(c.Context(), modeltesting.GenModelUUID(c))
+	_, _, err := s.state.GetActiveModelSecretBackend(c.Context(), tc.Must0(c, coremodel.NewUUID))
 	c.Assert(err, tc.ErrorIs, modelerrors.NotFound)
 }
 
@@ -1438,7 +1410,7 @@ func (s *stateSuite) TestGetSecretBackendByName(c *tc.C) {
 		BackendIdentifier: secretbackend.BackendIdentifier{
 			ID: backendID,
 		},
-		Config: map[string]string{
+		Config: map[string]any{
 			"key1": "value1",
 			"key2": "value2",
 		},
@@ -1511,7 +1483,7 @@ func (s *stateSuite) TestGetSecretBackend(c *tc.C) {
 		BackendIdentifier: secretbackend.BackendIdentifier{
 			ID: backendID,
 		},
-		Config: map[string]string{
+		Config: map[string]any{
 			"key1": "value1",
 			"key2": "value2",
 		},
@@ -1659,7 +1631,7 @@ func (s *stateSuite) TestSetModelSecretBackendModelNotFound(c *tc.C) {
 		BackendType: "vault",
 	}, nil)
 
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	err = s.state.SetModelSecretBackend(c.Context(), modelUUID, "my-backend")
 	c.Assert(err, tc.ErrorIs, modelerrors.NotFound)
 	c.Assert(err, tc.ErrorMatches, `cannot set secret backend "my-backend" for model "`+modelUUID.String()+`": model not found`)
@@ -1668,7 +1640,7 @@ func (s *stateSuite) TestSetModelSecretBackendModelNotFound(c *tc.C) {
 func (s *stateSuite) TestGetSecretBackendReference(c *tc.C) {
 	modelUUID := s.createModel(c, coremodel.IAAS)
 	secretRevisionID := uuid.MustNewUUID().String()
-	_, err := s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID)
+	_, err := s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID, "secret-id")
 	c.Assert(err, tc.ErrorIsNil)
 
 	refCount, err := s.state.GetSecretBackendReferenceCount(c.Context(), s.vaultBackendID)
@@ -1700,7 +1672,7 @@ func (s *stateSuite) TestAddSecretBackendReference(c *tc.C) {
 	secretRevisionID := uuid.MustNewUUID().String()
 
 	assertSecretBackendReference(c, s.DB(), s.vaultBackendID, 0)
-	rollback, err := s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID)
+	rollback, err := s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID, "secret-id")
 	c.Assert(err, tc.ErrorIsNil)
 	assertSecretBackendReference(c, s.DB(), s.vaultBackendID, 1)
 	c.Assert(rollback(), tc.ErrorIsNil)
@@ -1712,9 +1684,9 @@ func (s *stateSuite) TestAddSecretBackendReferenceFailedAlreadyExists(c *tc.C) {
 	secretRevisionID := uuid.MustNewUUID().String()
 
 	assertSecretBackendReference(c, s.DB(), s.vaultBackendID, 0)
-	_, err := s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID)
+	_, err := s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID, "secret-id")
 	c.Assert(err, tc.ErrorIsNil)
-	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID)
+	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID, "secret-id")
 	c.Assert(err, tc.ErrorIs, backenderrors.RefCountAlreadyExists)
 }
 
@@ -1722,15 +1694,15 @@ func (s *stateSuite) TestAddSecretBackendReferenceFailedSecretBackendNotFound(c 
 	modelUUID := s.createModel(c, coremodel.IAAS)
 	backendID := uuid.MustNewUUID().String()
 	secretRevisionID := uuid.MustNewUUID().String()
-	_, err := s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: backendID}, modelUUID, secretRevisionID)
+	_, err := s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: backendID}, modelUUID, secretRevisionID, "secret-id")
 	c.Assert(err, tc.ErrorIs, backenderrors.NotFound)
 }
 
 func (s *stateSuite) TestAddSecretBackendReferenceFailedModelNotFound(c *tc.C) {
 	_ = s.createModel(c, coremodel.IAAS)
-	nonExistsModelUUID := modeltesting.GenModelUUID(c)
+	nonExistsModelUUID := tc.Must0(c, coremodel.NewUUID)
 	secretRevisionID := uuid.MustNewUUID().String()
-	_, err := s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, nonExistsModelUUID, secretRevisionID)
+	_, err := s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, nonExistsModelUUID, secretRevisionID, "secret-id")
 	c.Assert(err, tc.ErrorIs, modelerrors.NotFound)
 }
 
@@ -1741,12 +1713,12 @@ func (s *stateSuite) TestUpdateSecretBackendReference(c *tc.C) {
 	assertSecretBackendReference(c, s.DB(), s.vaultBackendID, 0)
 	assertSecretBackendReference(c, s.DB(), s.internalBackendID, 0)
 
-	_, err := s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID)
+	_, err := s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID, "secret-id")
 	c.Assert(err, tc.ErrorIsNil)
 	assertSecretBackendReference(c, s.DB(), s.vaultBackendID, 1)
 	assertSecretBackendReference(c, s.DB(), s.internalBackendID, 0)
 
-	rollback, err := s.state.UpdateSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.internalBackendID}, modelUUID, secretRevisionID)
+	rollback, err := s.state.UpdateSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.internalBackendID}, modelUUID, secretRevisionID, "secret-id")
 	c.Assert(err, tc.ErrorIsNil)
 	assertSecretBackendReference(c, s.DB(), s.vaultBackendID, 0)
 	assertSecretBackendReference(c, s.DB(), s.internalBackendID, 1)
@@ -1759,28 +1731,8 @@ func (s *stateSuite) TestUpdateSecretBackendReferenceFailedNoExistingRefCountFou
 	modelUUID := s.createModel(c, coremodel.IAAS)
 	secretRevisionID := uuid.MustNewUUID().String()
 
-	_, err := s.state.UpdateSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.internalBackendID}, modelUUID, secretRevisionID)
+	_, err := s.state.UpdateSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.internalBackendID}, modelUUID, secretRevisionID, "secret-id")
 	c.Assert(err, tc.ErrorIs, backenderrors.RefCountNotFound)
-}
-
-func (s *stateSuite) TestRemoveSecretBackendReference(c *tc.C) {
-	modelUUID := s.createModel(c, coremodel.IAAS)
-	secretRevisionID1 := uuid.MustNewUUID().String()
-	secretRevisionID2 := uuid.MustNewUUID().String()
-
-	_, err := s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID1)
-	c.Assert(err, tc.ErrorIsNil)
-	_, err = s.state.AddSecretBackendReference(c.Context(), &secrets.ValueRef{BackendID: s.vaultBackendID}, modelUUID, secretRevisionID2)
-	c.Assert(err, tc.ErrorIsNil)
-
-	assertSecretBackendReference(c, s.DB(), s.vaultBackendID, 2)
-	err = s.state.RemoveSecretBackendReference(c.Context(), secretRevisionID1)
-	c.Assert(err, tc.ErrorIsNil)
-	assertSecretBackendReference(c, s.DB(), s.vaultBackendID, 1)
-
-	err = s.state.RemoveSecretBackendReference(c.Context(), secretRevisionID2)
-	c.Assert(err, tc.ErrorIsNil)
-	assertSecretBackendReference(c, s.DB(), s.vaultBackendID, 0)
 }
 
 func (s *stateSuite) TestInitialWatchStatement(c *tc.C) {
@@ -1842,4 +1794,51 @@ func (s *stateSuite) TestGetSecretBackendRotateChanges(c *tc.C) {
 	c.Assert(changes[1].ID, tc.Equals, backendID2)
 	c.Assert(changes[1].Name, tc.Equals, "my-backend2")
 	c.Assert(changes[1].NextTriggerTime.Equal(nextRotateTime2), tc.IsTrue)
+}
+
+func (s *stateSuite) addBuiltInBackend(c *tc.C, name string) string {
+	backendUUID := uuid.MustNewUUID().String()
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, txn *sql.Tx) error {
+		_, err := txn.ExecContext(ctx, `
+INSERT INTO secret_backend (uuid, name, backend_type_id, origin_id) 
+VALUES (?,?,0,0)`,
+			backendUUID, name)
+		return errors.Capture(err)
+	})
+	c.Assert(err, tc.IsNil)
+	return backendUUID
+}
+
+type preparer struct{}
+
+func (p preparer) Prepare(query string, args ...any) (*sqlair.Statement, error) {
+	return sqlair.Prepare(query, args...)
+}
+
+func (s *stateSuite) TestGetSecretBackendNamesByUUID(c *tc.C) {
+	backends := map[string]string{
+		uuid.MustNewUUID().String(): "backend-one",
+		uuid.MustNewUUID().String(): "backend-two",
+		uuid.MustNewUUID().String(): "backend-three",
+	}
+	for id, name := range backends {
+		_, err := s.state.CreateSecretBackend(c.Context(), secretbackend.CreateSecretBackendParams{
+			BackendIdentifier: secretbackend.BackendIdentifier{
+				ID:   id,
+				Name: name,
+			},
+			BackendType: "vault",
+		})
+		c.Assert(err, tc.IsNil)
+	}
+
+	res, err := s.state.GetSecretBackendNamesByUUID(c.Context())
+	c.Assert(err, tc.IsNil)
+	c.Assert(res, tc.DeepEquals, backends)
+}
+
+func (s *stateSuite) TestGetSecretBackendNamesByUUIDEmpty(c *tc.C) {
+	names, err := s.state.GetSecretBackendNamesByUUID(c.Context())
+	c.Assert(err, tc.IsNil)
+	c.Assert(names, tc.HasLen, 0)
 }

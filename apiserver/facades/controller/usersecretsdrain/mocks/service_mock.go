@@ -14,8 +14,8 @@ import (
 	reflect "reflect"
 
 	secrets "github.com/juju/juju/core/secrets"
-	service "github.com/juju/juju/domain/secret/service"
-	service0 "github.com/juju/juju/domain/secretbackend/service"
+	secret "github.com/juju/juju/domain/secret"
+	service "github.com/juju/juju/domain/secretbackend/service"
 	provider "github.com/juju/juju/internal/secrets/provider"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -83,7 +83,7 @@ func (c *MockSecretServiceGetSecretCall) DoAndReturn(f func(context.Context, *se
 }
 
 // GetSecretValue mocks base method.
-func (m *MockSecretService) GetSecretValue(arg0 context.Context, arg1 *secrets.URI, arg2 int, arg3 service.SecretAccessor) (secrets.SecretValue, *secrets.ValueRef, error) {
+func (m *MockSecretService) GetSecretValue(arg0 context.Context, arg1 *secrets.URI, arg2 int, arg3 secret.SecretAccessor) (secrets.SecretValue, *secrets.ValueRef, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetSecretValue", arg0, arg1, arg2, arg3)
 	ret0, _ := ret[0].(secrets.SecretValue)
@@ -111,19 +111,19 @@ func (c *MockSecretServiceGetSecretValueCall) Return(arg0 secrets.SecretValue, a
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretServiceGetSecretValueCall) Do(f func(context.Context, *secrets.URI, int, service.SecretAccessor) (secrets.SecretValue, *secrets.ValueRef, error)) *MockSecretServiceGetSecretValueCall {
+func (c *MockSecretServiceGetSecretValueCall) Do(f func(context.Context, *secrets.URI, int, secret.SecretAccessor) (secrets.SecretValue, *secrets.ValueRef, error)) *MockSecretServiceGetSecretValueCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretServiceGetSecretValueCall) DoAndReturn(f func(context.Context, *secrets.URI, int, service.SecretAccessor) (secrets.SecretValue, *secrets.ValueRef, error)) *MockSecretServiceGetSecretValueCall {
+func (c *MockSecretServiceGetSecretValueCall) DoAndReturn(f func(context.Context, *secrets.URI, int, secret.SecretAccessor) (secrets.SecretValue, *secrets.ValueRef, error)) *MockSecretServiceGetSecretValueCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
 
 // ListGrantedSecretsForBackend mocks base method.
-func (m *MockSecretService) ListGrantedSecretsForBackend(arg0 context.Context, arg1 string, arg2 secrets.SecretRole, arg3 ...service.SecretAccessor) ([]*secrets.SecretRevisionRef, error) {
+func (m *MockSecretService) ListGrantedSecretsForBackend(arg0 context.Context, arg1 string, arg2 secrets.SecretRole, arg3 ...secret.SecretAccessor) ([]*secrets.SecretRevisionRef, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {
@@ -155,13 +155,13 @@ func (c *MockSecretServiceListGrantedSecretsForBackendCall) Return(arg0 []*secre
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretServiceListGrantedSecretsForBackendCall) Do(f func(context.Context, string, secrets.SecretRole, ...service.SecretAccessor) ([]*secrets.SecretRevisionRef, error)) *MockSecretServiceListGrantedSecretsForBackendCall {
+func (c *MockSecretServiceListGrantedSecretsForBackendCall) Do(f func(context.Context, string, secrets.SecretRole, ...secret.SecretAccessor) ([]*secrets.SecretRevisionRef, error)) *MockSecretServiceListGrantedSecretsForBackendCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretServiceListGrantedSecretsForBackendCall) DoAndReturn(f func(context.Context, string, secrets.SecretRole, ...service.SecretAccessor) ([]*secrets.SecretRevisionRef, error)) *MockSecretServiceListGrantedSecretsForBackendCall {
+func (c *MockSecretServiceListGrantedSecretsForBackendCall) DoAndReturn(f func(context.Context, string, secrets.SecretRole, ...secret.SecretAccessor) ([]*secrets.SecretRevisionRef, error)) *MockSecretServiceListGrantedSecretsForBackendCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -190,7 +190,7 @@ func (m *MockSecretBackendService) EXPECT() *MockSecretBackendServiceMockRecorde
 }
 
 // BackendConfigInfo mocks base method.
-func (m *MockSecretBackendService) BackendConfigInfo(arg0 context.Context, arg1 service0.BackendConfigParams) (*provider.ModelBackendConfigInfo, error) {
+func (m *MockSecretBackendService) BackendConfigInfo(arg0 context.Context, arg1 service.BackendConfigParams) (*provider.ModelBackendConfigInfo, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "BackendConfigInfo", arg0, arg1)
 	ret0, _ := ret[0].(*provider.ModelBackendConfigInfo)
@@ -217,19 +217,19 @@ func (c *MockSecretBackendServiceBackendConfigInfoCall) Return(arg0 *provider.Mo
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretBackendServiceBackendConfigInfoCall) Do(f func(context.Context, service0.BackendConfigParams) (*provider.ModelBackendConfigInfo, error)) *MockSecretBackendServiceBackendConfigInfoCall {
+func (c *MockSecretBackendServiceBackendConfigInfoCall) Do(f func(context.Context, service.BackendConfigParams) (*provider.ModelBackendConfigInfo, error)) *MockSecretBackendServiceBackendConfigInfoCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretBackendServiceBackendConfigInfoCall) DoAndReturn(f func(context.Context, service0.BackendConfigParams) (*provider.ModelBackendConfigInfo, error)) *MockSecretBackendServiceBackendConfigInfoCall {
+func (c *MockSecretBackendServiceBackendConfigInfoCall) DoAndReturn(f func(context.Context, service.BackendConfigParams) (*provider.ModelBackendConfigInfo, error)) *MockSecretBackendServiceBackendConfigInfoCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
 
 // DrainBackendConfigInfo mocks base method.
-func (m *MockSecretBackendService) DrainBackendConfigInfo(arg0 context.Context, arg1 service0.DrainBackendConfigParams) (*provider.ModelBackendConfigInfo, error) {
+func (m *MockSecretBackendService) DrainBackendConfigInfo(arg0 context.Context, arg1 service.DrainBackendConfigParams) (*provider.ModelBackendConfigInfo, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "DrainBackendConfigInfo", arg0, arg1)
 	ret0, _ := ret[0].(*provider.ModelBackendConfigInfo)
@@ -256,13 +256,13 @@ func (c *MockSecretBackendServiceDrainBackendConfigInfoCall) Return(arg0 *provid
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretBackendServiceDrainBackendConfigInfoCall) Do(f func(context.Context, service0.DrainBackendConfigParams) (*provider.ModelBackendConfigInfo, error)) *MockSecretBackendServiceDrainBackendConfigInfoCall {
+func (c *MockSecretBackendServiceDrainBackendConfigInfoCall) Do(f func(context.Context, service.DrainBackendConfigParams) (*provider.ModelBackendConfigInfo, error)) *MockSecretBackendServiceDrainBackendConfigInfoCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretBackendServiceDrainBackendConfigInfoCall) DoAndReturn(f func(context.Context, service0.DrainBackendConfigParams) (*provider.ModelBackendConfigInfo, error)) *MockSecretBackendServiceDrainBackendConfigInfoCall {
+func (c *MockSecretBackendServiceDrainBackendConfigInfoCall) DoAndReturn(f func(context.Context, service.DrainBackendConfigParams) (*provider.ModelBackendConfigInfo, error)) *MockSecretBackendServiceDrainBackendConfigInfoCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

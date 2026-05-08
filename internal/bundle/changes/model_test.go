@@ -7,10 +7,10 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/tc"
 
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/naturalsort"
 	"github.com/juju/juju/internal/testhelpers"
@@ -506,7 +506,7 @@ func (s *inferMachineMapSuite) TestBundleMachinesDeterminism(c *tc.C) {
 	}
 
 	// Loop through enough times to trigger a potential map ordering bug.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		model.initializeSequence()
 		model.InferMachineMap(data)
 		c.Assert(model.MachineMap, tc.DeepEquals, map[string]string{
@@ -564,18 +564,18 @@ func (*applicationSuite) TestChangedAnnotationsSomeChanges(c *tc.C) {
 
 func (*applicationSuite) TestChangedOptionsSomeChanges(c *tc.C) {
 	app := &Application{
-		Options: map[string]interface{}{
+		Options: map[string]any{
 			"string": "hello",
 			"int":    float64(42), // comes over the API as a float
 			"float":  float64(2.5),
 			"bool":   true,
 		},
 	}
-	options := map[string]interface{}{"string": "hello", "int": 42}
+	options := map[string]any{"string": "hello", "int": 42}
 	toChange := app.changedOptions(options)
 	c.Assert(toChange, tc.HasLen, 0)
 
-	options = map[string]interface{}{"string": "world", "int": 24, "float": 3.14, "bool": false}
+	options = map[string]any{"string": "world", "int": 24, "float": 3.14, "bool": false}
 	toChange = app.changedOptions(options)
 	c.Assert(toChange, tc.DeepEquals, options)
 }

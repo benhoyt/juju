@@ -15,11 +15,11 @@ import (
 
 	apisecrets "github.com/juju/juju/api/client/secrets"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/common"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/output"
 	"github.com/juju/juju/core/secrets"
-	"github.com/juju/juju/internal/cmd"
 )
 
 type listSecretsCommand struct {
@@ -29,6 +29,7 @@ type listSecretsCommand struct {
 	listSecretsAPIFunc func(ctx context.Context) (ListSecretsAPI, error)
 	revealSecrets      bool
 	owner              string
+	revisions          bool
 }
 
 var listSecretsDoc = `
@@ -38,6 +39,7 @@ Displays the secrets available for charms to use if granted access.
 const listSecretsExamples = `
     juju secrets
     juju secrets --format yaml
+    juju secrets --revisions --format yaml
 `
 
 // ListSecretsAPI is the secrets client API.
@@ -83,10 +85,11 @@ func (c *listSecretsCommand) Info() *cmd.Info {
 // SetFlags implements cmd.SetFlags.
 func (c *listSecretsCommand) SetFlags(f *gnuflag.FlagSet) {
 	f.StringVar(&c.owner, "owner", "", "Include secrets for the specified owner")
+	f.BoolVar(&c.revisions, "revisions", false, "Show the secret revisions metadata")
 	c.out.AddFlags(f, "tabular", map[string]cmd.Formatter{
 		"yaml": cmd.FormatYaml,
 		"json": cmd.FormatJson,
-		"tabular": func(writer io.Writer, value interface{}) error {
+		"tabular": func(writer io.Writer, value any) error {
 			return formatSecretsTabular(writer, value)
 		},
 	})
@@ -177,7 +180,7 @@ func (c *listSecretsCommand) Run(ctxt *cmd.Context) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	details := gatherSecretInfo(result, c.revealSecrets, false, false)
+	details := gatherSecretInfo(result, c.revealSecrets, c.revisions, false)
 	return c.out.Write(ctxt, details)
 }
 
@@ -259,7 +262,7 @@ func gatherSecretInfo(
 }
 
 // formatSecretsTabular writes a tabular summary of secret information.
-func formatSecretsTabular(writer io.Writer, value interface{}) error {
+func formatSecretsTabular(writer io.Writer, value any) error {
 	result, ok := value.(map[string]secretDisplayDetails)
 	if !ok {
 		return errors.Errorf("expected value of type %T, got %T", result, value)

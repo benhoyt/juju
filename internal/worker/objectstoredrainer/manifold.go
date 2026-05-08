@@ -9,8 +9,8 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
 
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/controller"
@@ -214,7 +214,7 @@ func (config ManifoldConfig) start(ctx context.Context, getter dependency.Getter
 	)
 	err = a.ChangeConfig(func(cfg agent.ConfigSetter) error {
 		agentsObjectStoreType = cfg.ObjectStoreType()
-		configObjectStoreType = controllerConfig.ObjectStoreType()
+		configObjectStoreType = coreobjectstore.FileBackend
 		objectStoreTypeChanged = agentsObjectStoreType != configObjectStoreType
 
 		// We've bounced whilst draining, so we need to ensure that we don't

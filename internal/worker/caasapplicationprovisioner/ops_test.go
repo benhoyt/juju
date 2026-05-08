@@ -32,9 +32,9 @@ import (
 	"github.com/juju/juju/core/unit"
 	applicationcharm "github.com/juju/juju/domain/application/charm"
 	applicationservice "github.com/juju/juju/domain/application/service"
+	"github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/domain/storageprovisioning"
-	"github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/storage"
 	coretesting "github.com/juju/juju/internal/testing"
@@ -93,7 +93,7 @@ func (s *OpsSuite) TestUpdateState(c *tc.C) {
 		Status: status.StatusInfo{
 			Status:  status.Active,
 			Message: "nice message",
-			Data: map[string]interface{}{
+			Data: map[string]any{
 				"nice": "data",
 			},
 		},
@@ -108,14 +108,14 @@ func (s *OpsSuite) TestUpdateState(c *tc.C) {
 		Ports:    []string{"80", "443"},
 		Stateful: true,
 		Status: status.StatusInfo{
-			Status:  status.Active,
+			Status:  status.Running,
 			Message: "different",
 		},
 		FilesystemInfo: []caas.FilesystemInfo{{
-			StorageName:  "s",
-			FilesystemId: "fsid",
+			StorageName:               "s",
+			PersistentVolumeClaimName: "fsid",
 			Volume: caas.VolumeInfo{
-				VolumeId: "vid",
+				PersistentVolumeName: "vid",
 			},
 		}},
 	}, {
@@ -142,22 +142,39 @@ func (s *OpsSuite) TestUpdateState(c *tc.C) {
 	}
 
 	unit0Update := applicationservice.UpdateCAASUnitParams{
-		ProviderID: ptr("a"),
-		Address:    ptr("1.2.3.5"),
-		Ports:      ptr([]string{"80", "443"}),
+		ProviderID: new("a"),
+		Address:    new("1.2.3.5"),
+		Ports:      new([]string{"80", "443"}),
+		AgentStatus: &status.StatusInfo{
+			Status: status.Idle,
+			Since:  &now,
+		},
+		CloudContainerStatus: &status.StatusInfo{
+			Status:  status.Running,
+			Message: "different",
+			Since:   &now,
+		},
 	}
 
 	gomock.InOrder(
 		app.EXPECT().Service().Return(service, nil),
-		applicationService.EXPECT().UpdateCloudService(gomock.Any(), "test", "provider-id", network.ProviderAddresses{{
+		applicationService.EXPECT().UpdateK8sService(gomock.Any(), "test", "provider-id", network.ProviderAddresses{{
 			MachineAddress: network.NewMachineAddress("1.2.3.4"),
 			SpaceName:      "space-name",
 		}}).Return(nil),
-		statusService.EXPECT().SetApplicationStatus(gomock.Any(), "test", appStatus).Return(nil),
+		statusService.EXPECT().SetOperatorStatus(gomock.Any(), "test", appStatus).Return(nil),
 		applicationService.EXPECT().GetAllUnitCloudContainerIDsForApplication(gomock.Any(), appId).Return(cloudContainerIDs, nil),
 		app.EXPECT().Units().Return(units, nil),
 		applicationService.EXPECT().UpdateCAASUnit(gomock.Any(), unit.Name("test/0"), gomock.Any()).DoAndReturn(func(_ context.Context, _ unit.Name, args applicationservice.UpdateCAASUnitParams) error {
-			c.Check(args, tc.DeepEquals, unit0Update)
+			c.Check(args.ProviderID, tc.DeepEquals, unit0Update.ProviderID)
+			c.Check(args.Address, tc.DeepEquals, unit0Update.Address)
+			c.Check(args.Ports, tc.DeepEquals, unit0Update.Ports)
+			c.Assert(args.AgentStatus, tc.NotNil, tc.Commentf("AgentStatus should not be nil"))
+			c.Assert(args.AgentStatus.Since, tc.NotNil, tc.Commentf("AgentStatus.Since should not be nil"))
+			c.Check(*args.AgentStatus.Since, tc.Equals, now, tc.Commentf("AgentStatus.Since should be set to current time"))
+			c.Assert(args.CloudContainerStatus, tc.NotNil, tc.Commentf("CloudContainerStatus should not be nil"))
+			c.Assert(args.CloudContainerStatus.Since, tc.NotNil, tc.Commentf("CloudContainerStatus.Since should not be nil"))
+			c.Check(*args.CloudContainerStatus.Since, tc.Equals, now, tc.Commentf("CloudContainerStatus.Since should be set to current time"))
 			return nil
 		}),
 		broker.EXPECT().AnnotateUnit(gomock.Any(), "test", "a", names.NewUnitTag("test/0")).Return(nil),
@@ -165,16 +182,18 @@ func (s *OpsSuite) TestUpdateState(c *tc.C) {
 
 	lastReportedStatus := caasapplicationprovisioner.UpdateStatusState{
 		"test/1": {
-			ProviderID: ptr("b"),
-			Address:    ptr("1.2.3.6"),
-			Ports:      ptr([]string{"80", "443"}),
+			ProviderID: new("b"),
+			Address:    new("1.2.3.6"),
+			Ports:      new([]string{"80", "443"}),
 			AgentStatus: &status.StatusInfo{
 				Status:  status.Allocating,
 				Message: "same",
+				Since:   &now,
 			},
 			CloudContainerStatus: &status.StatusInfo{
 				Status:  status.Waiting,
 				Message: "same",
+				Since:   &now,
 			},
 		},
 	}
@@ -182,21 +201,32 @@ func (s *OpsSuite) TestUpdateState(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(currentReportedStatus, tc.DeepEquals, caasapplicationprovisioner.UpdateStatusState{
 		"test/0": {
-			ProviderID: ptr("a"),
-			Address:    ptr("1.2.3.5"),
-			Ports:      ptr([]string{"80", "443"}),
+			ProviderID: new("a"),
+			Address:    new("1.2.3.5"),
+			Ports:      new([]string{"80", "443"}),
+			AgentStatus: &status.StatusInfo{
+				Status: status.Idle,
+				Since:  &now,
+			},
+			CloudContainerStatus: &status.StatusInfo{
+				Status:  status.Running,
+				Message: "different",
+				Since:   &now,
+			},
 		},
 		"test/1": {
-			ProviderID: ptr("b"),
-			Address:    ptr("1.2.3.6"),
-			Ports:      ptr([]string{"80", "443"}),
+			ProviderID: new("b"),
+			Address:    new("1.2.3.6"),
+			Ports:      new([]string{"80", "443"}),
 			AgentStatus: &status.StatusInfo{
 				Status:  status.Allocating,
 				Message: "same",
+				Since:   &now,
 			},
 			CloudContainerStatus: &status.StatusInfo{
 				Status:  status.Waiting,
 				Message: "same",
+				Since:   &now,
 			},
 		},
 	})
@@ -226,7 +256,7 @@ func (s *OpsSuite) TestRefreshApplicationStatus(c *tc.C) {
 	gomock.InOrder(
 		app.EXPECT().State().Return(appState, nil),
 		statusService.EXPECT().GetUnitAgentStatusesForApplication(gomock.Any(), appId).Return(units, nil),
-		statusService.EXPECT().SetApplicationStatus(gomock.Any(), "test", gomock.Any()).DoAndReturn(func(ctx context.Context, name string, si status.StatusInfo) error {
+		statusService.EXPECT().SetOperatorStatus(gomock.Any(), "test", gomock.Any()).DoAndReturn(func(ctx context.Context, name string, si status.StatusInfo) error {
 			mc := tc.NewMultiChecker()
 			mc.AddExpr("_.Since", tc.NotNil)
 			c.Check(si, mc, status.StatusInfo{
@@ -276,7 +306,6 @@ func (s *OpsSuite) TestReconcileDeadUnitScale(c *tc.C) {
 	app := caasmocks.NewMockApplication(ctrl)
 	facade := mocks.NewMockCAASProvisionerFacade(ctrl)
 	applicationService := mocks.NewMockApplicationService(ctrl)
-	statusService := mocks.NewMockStatusService(ctrl)
 
 	units := map[unit.Name]life.Value{
 		"test/0": life.Alive,
@@ -302,7 +331,8 @@ func (s *OpsSuite) TestReconcileDeadUnitScale(c *tc.C) {
 		applicationService.EXPECT().SetApplicationScalingState(gomock.Any(), "test", 0, false).Return(nil),
 	)
 
-	err := caasapplicationprovisioner.AppOps.ReconcileDeadUnitScale(c.Context(), "test", appUUID, app, facade, applicationService, statusService, s.logger)
+	err := caasapplicationprovisioner.AppOps.ReconcileDeadUnitScale(c.Context(), "test",
+		appUUID, app, facade, applicationService, s.logger)
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -315,7 +345,6 @@ func (s *OpsSuite) TestReconcileDeadUnitScaleScaleUp(c *tc.C) {
 	app := caasmocks.NewMockApplication(ctrl)
 	facade := mocks.NewMockCAASProvisionerFacade(ctrl)
 	applicationService := mocks.NewMockApplicationService(ctrl)
-	statusService := mocks.NewMockStatusService(ctrl)
 
 	// Scale DOWN: 4 current units -> 2 target units, all excess units are dead
 	units := map[unit.Name]life.Value{
@@ -331,7 +360,8 @@ func (s *OpsSuite) TestReconcileDeadUnitScaleScaleUp(c *tc.C) {
 		applicationService.EXPECT().GetAllUnitLifeForApplication(gomock.Any(), appId).Return(units, nil),
 		applicationService.EXPECT().GetApplicationScalingState(gomock.Any(), "test").Return(ps, nil),
 	)
-	err := caasapplicationprovisioner.AppOps.ReconcileDeadUnitScale(c.Context(), "test", appId, app, facade, applicationService, statusService, s.logger)
+	err := caasapplicationprovisioner.AppOps.ReconcileDeadUnitScale(c.Context(), "test",
+		appId, app, facade, applicationService, s.logger)
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -344,7 +374,6 @@ func (s *OpsSuite) TestReconcileDeadUnitScaleScaleDownNotAllDead(c *tc.C) {
 	app := caasmocks.NewMockApplication(ctrl)
 	facade := mocks.NewMockCAASProvisionerFacade(ctrl)
 	applicationService := mocks.NewMockApplicationService(ctrl)
-	statusService := mocks.NewMockStatusService(ctrl)
 
 	// Scale DOWN: 4 current units -> 2 target units, all excess units are dead
 	units := map[unit.Name]life.Value{
@@ -363,7 +392,8 @@ func (s *OpsSuite) TestReconcileDeadUnitScaleScaleDownNotAllDead(c *tc.C) {
 		applicationService.EXPECT().GetApplicationScalingState(gomock.Any(), "test").Return(ps, nil),
 	)
 
-	err := caasapplicationprovisioner.AppOps.ReconcileDeadUnitScale(c.Context(), "test", appId, app, facade, applicationService, statusService, s.logger)
+	err := caasapplicationprovisioner.AppOps.ReconcileDeadUnitScale(c.Context(), "test",
+		appId, app, facade, applicationService, s.logger)
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -375,7 +405,6 @@ func (s *OpsSuite) TestEnsureScaleAlive(c *tc.C) {
 	app := caasmocks.NewMockApplication(ctrl)
 	facade := mocks.NewMockCAASProvisionerFacade(ctrl)
 	applicationService := mocks.NewMockApplicationService(ctrl)
-	statusService := mocks.NewMockStatusService(ctrl)
 
 	units := map[unit.Name]life.Value{
 		"test/0": life.Alive,
@@ -392,7 +421,8 @@ func (s *OpsSuite) TestEnsureScaleAlive(c *tc.C) {
 		facade.EXPECT().DestroyUnits(gomock.Any(), unitsToDestroy).Return(nil),
 	)
 
-	err := caasapplicationprovisioner.AppOps.EnsureScale(c.Context(), "test", appId, app, life.Alive, facade, applicationService, statusService, s.logger)
+	err := caasapplicationprovisioner.AppOps.EnsureScale(c.Context(), "test", appId, app,
+		life.Alive, facade, applicationService, s.logger)
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -404,7 +434,6 @@ func (s *OpsSuite) TestEnsureScaleAliveRetry(c *tc.C) {
 	app := caasmocks.NewMockApplication(ctrl)
 	facade := mocks.NewMockCAASProvisionerFacade(ctrl)
 	applicationService := mocks.NewMockApplicationService(ctrl)
-	statusService := mocks.NewMockStatusService(ctrl)
 
 	ps := applicationservice.ScalingState{
 		Scaling:     true,
@@ -424,7 +453,8 @@ func (s *OpsSuite) TestEnsureScaleAliveRetry(c *tc.C) {
 		facade.EXPECT().DestroyUnits(gomock.Any(), unitsToDestroy).Return(nil),
 	)
 
-	err := caasapplicationprovisioner.AppOps.EnsureScale(c.Context(), "test", appId, app, life.Alive, facade, applicationService, statusService, s.logger)
+	err := caasapplicationprovisioner.AppOps.EnsureScale(c.Context(), "test", appId, app,
+		life.Alive, facade, applicationService, s.logger)
 	c.Assert(err, tc.ErrorMatches, `try again`)
 }
 
@@ -436,7 +466,6 @@ func (s *OpsSuite) TestEnsureScaleDyingDead(c *tc.C) {
 	app := caasmocks.NewMockApplication(ctrl)
 	facade := mocks.NewMockCAASProvisionerFacade(ctrl)
 	applicationService := mocks.NewMockApplicationService(ctrl)
-	statusService := mocks.NewMockStatusService(ctrl)
 
 	units := map[unit.Name]life.Value{
 		"test/0": life.Dying,
@@ -448,7 +477,8 @@ func (s *OpsSuite) TestEnsureScaleDyingDead(c *tc.C) {
 		applicationService.EXPECT().GetAllUnitLifeForApplication(gomock.Any(), appId).Return(units, nil),
 	)
 
-	err := caasapplicationprovisioner.AppOps.EnsureScale(c.Context(), "test", appId, app, life.Dead, facade, applicationService, statusService, s.logger)
+	err := caasapplicationprovisioner.AppOps.EnsureScale(c.Context(), "test", appId, app,
+		life.Dead, facade, applicationService, s.logger)
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -461,7 +491,6 @@ func (s *OpsSuite) TestEnsureScaleWithAttachStorage(c *tc.C) {
 	app := caasmocks.NewMockApplication(ctrl)
 	facade := mocks.NewMockCAASProvisionerFacade(ctrl)
 	applicationService := mocks.NewMockApplicationService(ctrl)
-	statusService := mocks.NewMockStatusService(ctrl)
 
 	// Current units (less than scale target)
 	units := map[unit.Name]life.Value{
@@ -496,7 +525,8 @@ func (s *OpsSuite) TestEnsureScaleWithAttachStorage(c *tc.C) {
 		applicationService.EXPECT().SetApplicationScalingState(gomock.Any(), "test", 0, false).Return(nil),
 	)
 
-	err := caasapplicationprovisioner.AppOps.EnsureScale(c.Context(), "test", appUUID, app, life.Alive, facade, applicationService, statusService, s.logger)
+	err := caasapplicationprovisioner.AppOps.EnsureScale(c.Context(), "test", appUUID, app,
+		life.Alive, facade, applicationService, s.logger)
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -509,7 +539,6 @@ func (s *OpsSuite) TestEnsureScaleWithAttachStorageEnsurePVCsFails(c *tc.C) {
 	app := caasmocks.NewMockApplication(ctrl)
 	facade := mocks.NewMockCAASProvisionerFacade(ctrl)
 	applicationService := mocks.NewMockApplicationService(ctrl)
-	statusService := mocks.NewMockStatusService(ctrl)
 
 	// Current units (less than scale target)
 	units := map[unit.Name]life.Value{
@@ -539,7 +568,8 @@ func (s *OpsSuite) TestEnsureScaleWithAttachStorageEnsurePVCsFails(c *tc.C) {
 			Return(errors.New("PVC creation failed")),
 	)
 
-	err := caasapplicationprovisioner.AppOps.EnsureScale(c.Context(), "test", appUUID, app, life.Alive, facade, applicationService, statusService, s.logger)
+	err := caasapplicationprovisioner.AppOps.EnsureScale(c.Context(), "test", appUUID, app,
+		life.Alive, facade, applicationService, s.logger)
 	c.Assert(err, tc.ErrorMatches, "PVC creation failed")
 }
 
@@ -593,8 +623,8 @@ func (s *OpsSuite) TestAppAlive(c *tc.C) {
 				},
 				"rootless": {
 					Resource: "rootless-image",
-					Uid:      ptr(5000),
-					Gid:      ptr(5001),
+					Uid:      new(5000),
+					Gid:      new(5001),
 				},
 			},
 		},
@@ -607,13 +637,18 @@ func (s *OpsSuite) TestAppAlive(c *tc.C) {
 			},
 		},
 		FilesystemTemplates: []storageprovisioning.FilesystemTemplate{{
+			Attachments: []storageprovisioning.FilesystemAttachmentTemplateWithProvisioned{
+				{
+					FilesystemAttachmentTemplate: storageprovisioning.FilesystemAttachmentTemplate{
+						MountPoint: "/charm-defined-location/data/0",
+						ReadOnly:   false,
+					},
+				},
+			},
 			StorageName:  "data",
 			Count:        1,
-			MaxCount:     1,
 			SizeMiB:      100,
 			ProviderType: "kubernetes",
-			ReadOnly:     false,
-			Location:     "/charm-defined-location",
 			Attributes: map[string]string{
 				"attr-foo": "attr-bar",
 			},
@@ -648,8 +683,8 @@ func (s *OpsSuite) TestAppAlive(c *tc.C) {
 				Image: coreresource.DockerImageDetails{
 					RegistryPath: "rootless:foo-bar",
 				},
-				Uid: ptr(5000),
-				Gid: ptr(5001),
+				Uid: new(5000),
+				Gid: new(5001),
 			},
 		},
 		IntroductionSecret:   "123456789",
@@ -669,9 +704,11 @@ func (s *OpsSuite) TestAppAlive(c *tc.C) {
 			ResourceTags: map[string]string{
 				"rsc-foo": "rsc-bar",
 			},
-			Attachment: &storage.KubernetesFilesystemAttachmentParams{
-				ReadOnly: false,
-				Path:     "/charm-defined-location",
+			Attachments: []storage.KubernetesFilesystemAttachmentParams{
+				{
+					ReadOnly: false,
+					Path:     "/charm-defined-location/data/0",
+				},
 			},
 		}},
 		Devices:         []devices.KubernetesDeviceParams{},
@@ -717,7 +754,8 @@ func (s *OpsSuite) TestAppDying(c *tc.C) {
 		applicationService.EXPECT().GetApplicationScalingState(gomock.Any(), "test").Return(applicationservice.ScalingState{}, nil),
 	)
 
-	err := caasapplicationprovisioner.AppOps.AppDying(c.Context(), "test", appUUID, app, life.Dying, facade, applicationService, statusService, s.logger)
+	err := caasapplicationprovisioner.AppOps.AppDying(c.Context(), "test", appUUID, app,
+		life.Dying, facade, applicationService, statusService, s.logger)
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -725,23 +763,19 @@ func (s *OpsSuite) TestAppDead(c *tc.C) {
 	ctrl := gomock.NewController(c)
 	defer ctrl.Finish()
 
-	appId, _ := application.NewUUID()
 	app := caasmocks.NewMockApplication(ctrl)
-	broker := mocks.NewMockCAASBroker(ctrl)
 	applicationService := mocks.NewMockApplicationService(ctrl)
-	statusService := mocks.NewMockStatusService(ctrl)
+	appUUID := tc.Must(c, application.NewUUID)
 
 	clk := testclock.NewDilatedWallClock(coretesting.ShortWait)
 
 	gomock.InOrder(
 		app.EXPECT().Delete().Return(nil),
 		app.EXPECT().Exists().Return(caas.DeploymentState{}, nil),
-		app.EXPECT().Service().Return(nil, errors.NotFound),
-		applicationService.EXPECT().GetAllUnitCloudContainerIDsForApplication(gomock.Any(), appId).Return(nil, nil),
-		app.EXPECT().Units().Return(nil, nil),
+		applicationService.EXPECT().ClearApplicationHasK8sResources(gomock.Any(), appUUID).Return(nil),
 	)
 
-	err := caasapplicationprovisioner.AppOps.AppDead(c.Context(), "test", appId, app, broker, applicationService, statusService, clk, s.logger)
+	err := caasapplicationprovisioner.AppOps.AppDead(c.Context(), "test", appUUID, app, applicationService, clk, s.logger)
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -789,11 +823,8 @@ func (s *OpsSuite) TestProvisioningInfo(c *tc.C) {
 	fsTemplates := []storageprovisioning.FilesystemTemplate{{
 		StorageName:  "data",
 		Count:        1,
-		MaxCount:     1,
 		SizeMiB:      100,
 		ProviderType: "kubernetes",
-		ReadOnly:     false,
-		Location:     "/charm-defined-location",
 		Attributes: map[string]string{
 			"attr-foo": "attr-bar",
 		},
@@ -816,8 +847,8 @@ func (s *OpsSuite) TestProvisioningInfo(c *tc.C) {
 			},
 			"rootless": {
 				Resource: "rootless-image",
-				Uid:      ptr(5000),
-				Gid:      ptr(5001),
+				Uid:      new(5000),
+				Gid:      new(5001),
 			},
 		},
 		Resources: map[string]charmresource.Meta{
@@ -845,7 +876,9 @@ func (s *OpsSuite) TestProvisioningInfo(c *tc.C) {
 	ro.EXPECT().OpenResource(gomock.Any(), "rootless-image").Return(rootlessImageResource, nil)
 	ro.EXPECT().SetResourceUsed(gomock.Any(), gomock.Any()).Return(nil)
 
-	pi, err := caasapplicationprovisioner.AppOps.ProvisioningInfo(c.Context(), "test", appId, facade, storageProvisioningService, applicationService, resourceOpenerGetter, nil, s.logger)
+	pi, err := caasapplicationprovisioner.AppOps.ProvisioningInfo(c.Context(), "test", appId,
+		facade, applicationService, storageProvisioningService, resourceOpenerGetter,
+		nil, s.logger)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(pi, tc.DeepEquals, &caasapplicationprovisioner.ProvisioningInfo{
 		ImageDetails: coreresource.DockerImageDetails{
@@ -885,8 +918,4 @@ func (s *OpsSuite) TestProvisioningInfo(c *tc.C) {
 		FilesystemTemplates: fsTemplates,
 		StorageResourceTags: storageResourceTags,
 	})
-}
-
-func ptr[T any](i T) *T {
-	return &i
 }

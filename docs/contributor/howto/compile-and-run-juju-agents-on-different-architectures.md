@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Build and deploy Juju agents across multiple architectures using local simplestreams repositories for cross-platform testing."
+---
+
 (compile-and-run-juju-agents-on-different-architectures)=
 # Compile and run Juju agents on different architectures
 
@@ -9,7 +15,7 @@ Examples of this would be:
 - ubuntu/amd64 -> ubuntu/s390x
 - ubuntu/amd64 -> centos/amd64
 - macos/amd64 -> ubuntu/amd64
-- macos/arm64 -> ubutnu/amd64
+- macos/arm64 -> ubuntu/amd64
 
 Doing this has been difficult in the past but with changes to the juju `Makefile`
 we can now build simple streams for multiple platforms and versions.
@@ -62,7 +68,7 @@ You may need to specify additional `bootstrap-constrains` to help juju
 choose the correct architecture.
 ```
 
-##  Recompile, upload, update, and run the binary in the the controller
+##  Recompile, upload, update, and run the binary in the controller
 
 Often once we have a bootstrapped controller we want to upgrade the controller
 for testing or time reasons.

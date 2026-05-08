@@ -5,12 +5,13 @@ package base
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/juju/collections/set"
 
 	coreerrors "github.com/juju/juju/core/errors"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -30,6 +31,9 @@ const (
 )
 
 // ParseBase constructs a Base from the os and channel string.
+// This method may return the following errors:
+// - [coreerrors.NotValid] if either os or channel is empty.
+// However, a zero value Base and a nil error will be returned if both are empty.
 func ParseBase(os string, channel string) (Base, error) {
 	if os == "" && channel == "" {
 		return Base{}, nil
@@ -133,12 +137,7 @@ var ubuntuLTSes = []Base{
 // IsUbuntuLTS returns true if this base is a recognised
 // Ubuntu LTS.
 func (b Base) IsUbuntuLTS() bool {
-	for _, ubuntuLTS := range ubuntuLTSes {
-		if b.IsCompatible(ubuntuLTS) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(ubuntuLTSes, b.IsCompatible)
 }
 
 // DisplayString returns the base string ignoring risk.

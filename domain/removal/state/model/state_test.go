@@ -21,6 +21,7 @@ import (
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/crossmodel"
 	"github.com/juju/juju/core/database"
+	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/machine"
 	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
@@ -40,6 +41,8 @@ import (
 	applicationstate "github.com/juju/juju/domain/application/state"
 	"github.com/juju/juju/domain/crossmodelrelation"
 	crossmodelrelationstate "github.com/juju/juju/domain/crossmodelrelation/state/model"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/domain/life"
 	machineservice "github.com/juju/juju/domain/machine/service"
 	machinestate "github.com/juju/juju/domain/machine/state"
@@ -51,8 +54,6 @@ import (
 	schematesting "github.com/juju/juju/domain/schema/testing"
 	domaintesting "github.com/juju/juju/domain/testing"
 	"github.com/juju/juju/environs"
-	internalcharm "github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	internalstorage "github.com/juju/juju/internal/storage"
@@ -193,7 +194,6 @@ func (s *baseSuite) setupMachineService(c *tc.C) *machineservice.ProviderService
 		machinestate.NewState(modelDB, clock.WallClock, loggertesting.WrapCheckLog(c)),
 		domain.NewStatusHistory(loggertesting.WrapCheckLog(c), clock.WallClock),
 		func(context.Context) (machineservice.Provider, error) { return machineservice.NewNoopProvider(), nil },
-		nil,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -210,27 +210,34 @@ func (s *baseSuite) setupApplicationService(c *tc.C) *applicationservice.Provide
 	caasProviderGetter := func(ctx context.Context) (applicationservice.CAASProvider, error) {
 		return appProvider{}, nil
 	}
+	cloudInfoGetter := func(ctx context.Context) (applicationservice.CloudInfoProvider, error) {
+		return nil, coreerrors.NotSupported
+	}
 	storageProviderRegistryGetter := corestorage.ConstModelStorageRegistry(
 		func() internalstorage.ProviderRegistry {
 			return internalstorage.NotImplementedProviderRegistry{}
 		},
 	)
-	state := applicationstate.NewState(modelDB, clock.WallClock, loggertesting.WrapCheckLog(c))
+	state := applicationstate.NewState(modelDB, coremodel.UUID(s.ModelUUID()), clock.WallClock, loggertesting.WrapCheckLog(c))
 	storageSvc := applicationstorageservice.NewService(
-		state, applicationstorageservice.NewStoragePoolProvider(
+		state,
+		applicationstorageservice.NewStoragePoolProvider(
 			storageProviderRegistryGetter, state,
 		),
+		loggertesting.WrapCheckLog(c),
 	)
 
 	return applicationservice.NewProviderService(
-		applicationstate.NewState(modelDB, clock.WallClock, loggertesting.WrapCheckLog(c)),
+		applicationstate.NewState(modelDB, coremodel.UUID(s.ModelUUID()), clock.WallClock, loggertesting.WrapCheckLog(c)),
 		storageSvc,
 		domaintesting.NoopLeaderEnsurer(),
 		nil,
 		providerGetter,
 		caasProviderGetter,
+		cloudInfoGetter,
 		nil,
 		domain.NewStatusHistory(loggertesting.WrapCheckLog(c), clock.WallClock),
+		coremodel.UUID(s.ModelUUID()),
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -242,13 +249,29 @@ func (s *baseSuite) setupRelationService(c *tc.C) *relationservice.Service {
 	}
 
 	return relationservice.NewService(
-		relationstate.NewState(modelDB, clock.WallClock, loggertesting.WrapCheckLog(c)),
+		relationstate.NewState(modelDB, clock.WallClock, loggertesting.WrapCheckLog(c), nil),
+		nil,
 		loggertesting.WrapCheckLog(c),
 	)
 }
 
 func (s *baseSuite) createIAASApplication(c *tc.C, svc *applicationservice.ProviderService, name string, units ...applicationservice.AddIAASUnitArg) coreapplication.UUID {
-	ch := &stubCharm{name: "test-charm"}
+	return s.createIAASApplicationWithCharm(
+		c,
+		svc,
+		name,
+		&stubCharm{name: "test-charm"},
+		units...,
+	)
+}
+
+func (s *baseSuite) createIAASApplicationWithCharm(
+	c *tc.C,
+	svc *applicationservice.ProviderService,
+	name string,
+	ch internalcharm.Charm,
+	units ...applicationservice.AddIAASUnitArg,
+) coreapplication.UUID {
 	appID, err := svc.CreateIAASApplication(c.Context(), name, ch, corecharm.Origin{
 		Source: corecharm.CharmHub,
 		Platform: corecharm.Platform{
@@ -264,7 +287,7 @@ func (s *baseSuite) createIAASApplication(c *tc.C, svc *applicationservice.Provi
 		},
 		ResolvedResources: applicationservice.ResolvedResources{{
 			Name:     "buzz",
-			Revision: ptr(42),
+			Revision: new(42),
 			Origin:   charmresource.OriginStore,
 		}},
 	}, units...)
@@ -292,7 +315,7 @@ func (s *baseSuite) createIAASSubordinateApplication(c *tc.C, svc *applicationse
 		},
 		ResolvedResources: applicationservice.ResolvedResources{{
 			Name:     "buzz",
-			Revision: ptr(42),
+			Revision: new(42),
 			Origin:   charmresource.OriginStore,
 		}},
 	}, units...)
@@ -321,7 +344,7 @@ func (s *baseSuite) createCAASApplication(c *tc.C, svc *applicationservice.Provi
 		},
 		ResolvedResources: applicationservice.ResolvedResources{{
 			Name:     "buzz",
-			Revision: ptr(42),
+			Revision: new(42),
 			Origin:   charmresource.OriginStore,
 		}},
 	}, units...)
@@ -347,12 +370,12 @@ func (s *baseSuite) createOffer(c *tc.C, offerName string) offer.UUID {
 	cmrState := crossmodelrelationstate.NewState(
 		s.TxnRunnerFactory(), coremodel.UUID(s.ModelUUID()), testclock.NewClock(s.now), loggertesting.WrapCheckLog(c),
 	)
-	s.createIAASApplication(c, s.setupApplicationService(c), offerName)
+	applicationUUID := s.createIAASApplication(c, s.setupApplicationService(c), offerName)
 	offerUUID := tc.Must(c, offer.NewUUID)
 
 	err := cmrState.CreateOffer(c.Context(), crossmodelrelation.CreateOfferArgs{
 		UUID:            offerUUID,
-		ApplicationName: offerName,
+		ApplicationUUID: applicationUUID.String(),
 		Endpoints:       []string{"foo", "bar"},
 		OfferName:       offerName,
 	})
@@ -361,7 +384,7 @@ func (s *baseSuite) createOffer(c *tc.C, offerName string) offer.UUID {
 	return offerUUID
 }
 
-func (s *baseSuite) createOfferForApplication(c *tc.C, appName string, offerName string) offer.UUID {
+func (s *baseSuite) createOfferForApplication(c *tc.C, appUUID coreapplication.UUID, offerName string) offer.UUID {
 	cmrState := crossmodelrelationstate.NewState(
 		s.TxnRunnerFactory(), coremodel.UUID(s.ModelUUID()), testclock.NewClock(s.now), loggertesting.WrapCheckLog(c),
 	)
@@ -369,7 +392,7 @@ func (s *baseSuite) createOfferForApplication(c *tc.C, appName string, offerName
 
 	err := cmrState.CreateOffer(c.Context(), crossmodelrelation.CreateOfferArgs{
 		UUID:            offerUUID,
-		ApplicationName: appName,
+		ApplicationUUID: appUUID.String(),
 		Endpoints:       []string{"foo", "bar"},
 		OfferName:       offerName,
 	})
@@ -378,6 +401,9 @@ func (s *baseSuite) createOfferForApplication(c *tc.C, appName string, offerName
 	return offerUUID
 }
 
+// createRemoteApplicationOfferer creates a synthetic application intended to
+// correspond to an offering app in another model. Since SAAS are standalone
+// entities, we do not create a relation alongside it.
 func (s *baseSuite) createRemoteApplicationOfferer(
 	c *tc.C,
 	name string,
@@ -429,6 +455,9 @@ func (s *baseSuite) createRemoteApplicationOfferer(
 	return appUUID, remoteAppUUID
 }
 
+// createRemoteApplicationConsumer creates a synthetic application intended to
+// correspond to a consuming app in another model. Since these apps are NOT
+// standalone entities, we need to create a relation to an offer alongside.
 func (s *baseSuite) createRemoteApplicationConsumer(
 	c *tc.C,
 	name string,
@@ -462,8 +491,8 @@ func (s *baseSuite) createRemoteApplicationConsumer(
 	appUUID := tc.Must(c, coreapplication.NewUUID)
 	relationUUID := tc.Must(c, relation.NewUUID)
 	err := cmrState.AddConsumedRelation(c.Context(), name, crossmodelrelation.AddRemoteApplicationConsumerArgs{
-		SynthApplicationUUID:        remoteAppUUID.String(),
-		ConsumerApplicationUUID:     appUUID.String(),
+		SynthApplicationUUID:        appUUID.String(),
+		ConsumerApplicationUUID:     remoteAppUUID.String(),
 		ConsumerApplicationEndpoint: "foo",
 		CharmUUID:                   tc.Must(c, uuid.NewUUID).String(),
 		Charm:                       ch,
@@ -507,11 +536,11 @@ func (s *baseSuite) createRelation(c *tc.C) relation.UUID {
 	return relUUID
 }
 
-// createRemoteRelation creates a remote relation. This is done by creating
+// createRelationWithRemoteOfferer creates a remote relation. This is done by creating
 // a synthetic app & a regular app, and then establishing a relation between
 // them. We also add some units to the each app for good measure. Returns the
 // relation UUID and the synthetic app UUID.
-func (s *baseSuite) createRemoteRelation(c *tc.C) (relation.UUID, coreapplication.UUID) {
+func (s *baseSuite) createRelationWithRemoteOfferer(c *tc.C) (relation.UUID, coreapplication.UUID) {
 	synthAppUUID, _ := s.createRemoteApplicationOfferer(c, "foo")
 	s.createIAASApplication(c, s.setupApplicationService(c), "bar",
 		applicationservice.AddIAASUnitArg{},
@@ -530,11 +559,52 @@ func (s *baseSuite) createRemoteRelation(c *tc.C) (relation.UUID, coreapplicatio
 	cmrState := crossmodelrelationstate.NewState(
 		s.TxnRunnerFactory(), coremodel.UUID(s.ModelUUID()), testclock.NewClock(s.now), loggertesting.WrapCheckLog(c),
 	)
-	// Call twice to ensure some units share a net node, but not all.
-	cmrState.EnsureUnitsExist(c.Context(), synthAppUUID.String(), []string{"foo/0", "foo/1"})
-	cmrState.EnsureUnitsExist(c.Context(), synthAppUUID.String(), []string{"foo/2"})
+	err = cmrState.EnsureUnitsExist(c.Context(), synthAppUUID.String(), []string{"foo/0", "foo/1", "foo/2"})
+	c.Assert(err, tc.ErrorIsNil)
+
+	err = relSvc.SetRelationRemoteApplicationAndUnitSettings(c.Context(), synthAppUUID, relUUID,
+		map[string]string{"do": "da"},
+		map[unit.Name]map[string]string{
+			unit.Name("foo/0"): {"do": "da"},
+			unit.Name("foo/1"): {"do": "da"},
+			unit.Name("foo/2"): {"do": "da"},
+		},
+	)
+	c.Assert(err, tc.ErrorIsNil)
 
 	return relUUID, synthAppUUID
+}
+
+func (s *baseSuite) createRelationWithRemoteConsumer(c *tc.C) (relation.UUID, coreapplication.UUID, offer.UUID) {
+	svc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, svc, "bar")
+	offerUUID := s.createOfferForApplication(c, appUUID, "some-offer")
+	synthAppUUID, _ := s.createRemoteApplicationConsumer(c, "foo", offerUUID)
+
+	relSvc := s.setupRelationService(c)
+	relUUID, err := relSvc.GetRelationUUIDForRemoval(c.Context(), domainrelation.GetRelationUUIDForRemovalArgs{
+		Endpoints: []string{"foo:foo", "bar:bar"},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	cmrState := crossmodelrelationstate.NewState(
+		s.TxnRunnerFactory(), coremodel.UUID(s.ModelUUID()), testclock.NewClock(s.now), loggertesting.WrapCheckLog(c),
+	)
+
+	err = cmrState.EnsureUnitsExist(c.Context(), synthAppUUID.String(), []string{"foo/0", "foo/1", "foo/2"})
+	c.Assert(err, tc.ErrorIsNil)
+
+	err = relSvc.SetRelationRemoteApplicationAndUnitSettings(c.Context(), synthAppUUID, relUUID,
+		map[string]string{"do": "da"},
+		map[unit.Name]map[string]string{
+			unit.Name("foo/0"): {"do": "da"},
+			unit.Name("foo/1"): {"do": "da"},
+			unit.Name("foo/2"): {"do": "da"},
+		},
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	return relUUID, synthAppUUID, offerUUID
 }
 
 func (s *baseSuite) createRemoteRelationBetween(c *tc.C, synthAppName, appName string) relation.UUID {
@@ -563,9 +633,8 @@ func (s *baseSuite) createRemoteRelationBetween(c *tc.C, synthAppName, appName s
 	})
 	c.Assert(err, tc.ErrorIsNil)
 
-	// Call twice to ensure some units share a net node, but not all.
-	cmrState.EnsureUnitsExist(c.Context(), synthAppUUID, []string{unit0name, unit1name})
-	cmrState.EnsureUnitsExist(c.Context(), synthAppUUID, []string{unit2name})
+	err = cmrState.EnsureUnitsExist(c.Context(), synthAppUUID, []string{unit0name, unit1name, unit2name})
+	c.Assert(err, tc.ErrorIsNil)
 
 	return relUUID
 }
@@ -598,7 +667,8 @@ func (s *baseSuite) setCharmObjectStoreMetadata(c *tc.C, appID coreapplication.U
 		return s.ModelTxnRunner(), nil
 	}
 
-	objectStoreUUID, err := objectstorestate.NewState(modelDB).PutMetadata(c.Context(), coreobjectstore.Metadata{
+	uuid := tc.Must(c, uuid.NewUUID).String()
+	objectStoreUUID, err := objectstorestate.NewState(modelDB, clock.WallClock).PutMetadata(c.Context(), uuid, coreobjectstore.Metadata{
 		SHA256: fmt.Sprintf("%v-sha256", appID),
 		SHA384: fmt.Sprintf("%v-sha384", appID),
 		Path:   fmt.Sprintf("/path/to/%v", appID),
@@ -823,7 +893,7 @@ func (s *baseSuite) checkLife(c *tc.C, qry, uuid string, expectedLife life.Life)
 	var lifeID int
 	err := row.Scan(&lifeID)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(lifeID, tc.Equals, int(expectedLife))
+	c.Check(lifeID, tc.Equals, int(expectedLife), tc.Commentf("q: %s", qry))
 }
 
 func (s *baseSuite) advanceRemoteApplicationOffererLife(c *tc.C, remoteAppUUID string, newLife life.Life) {
@@ -833,6 +903,14 @@ func (s *baseSuite) advanceRemoteApplicationOffererLife(c *tc.C, remoteAppUUID s
 
 func (s *baseSuite) checkRemoteApplicationOffererLife(c *tc.C, remoteAppUUID string, expectedLife life.Life) {
 	row := s.DB().QueryRow("SELECT life_id FROM application_remote_offerer WHERE uuid = ?", remoteAppUUID)
+	var lifeID int
+	err := row.Scan(&lifeID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(lifeID, tc.Equals, int(expectedLife))
+}
+
+func (s *baseSuite) checkRelationLife(c *tc.C, relationUUID relation.UUID, expectedLife life.Life) {
+	row := s.DB().QueryRow("SELECT life_id FROM relation WHERE uuid = ?", relationUUID.String())
 	var lifeID int
 	err := row.Scan(&lifeID)
 	c.Assert(err, tc.ErrorIsNil)
@@ -1145,9 +1223,46 @@ func (s *baseSuite) selectDistinctValues(c *tc.C, field, table string) []string 
 	return obtained
 }
 
+func (s *baseSuite) addModelProvisionedFilesystem(c *tc.C) string {
+	ctx := c.Context()
+
+	fsUUID := "some-fs-uuid"
+	_, err := s.DB().ExecContext(ctx,
+		"INSERT INTO storage_filesystem (uuid, filesystem_id, life_id, provision_scope_id) VALUES (?, ?, ?, ?)",
+		fsUUID, "some-fs", 0, 0,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+	_, err = s.DB().ExecContext(ctx,
+		"INSERT INTO storage_filesystem_status (filesystem_uuid, status_id) VALUES (?, ?)",
+		fsUUID, 0,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	return fsUUID
+}
+
+func (s *baseSuite) addModelProvisionedVolume(c *tc.C) string {
+	ctx := c.Context()
+
+	volUUID := "some-vol-uuid"
+	_, err := s.DB().ExecContext(ctx,
+		"INSERT INTO storage_volume (uuid, volume_id, life_id, provision_scope_id) VALUES (?, ?, ?, ?)",
+		volUUID, "some-vol", 0, 0,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+	_, err = s.DB().ExecContext(ctx,
+		"INSERT INTO storage_volume_status (volume_uuid, status_id) VALUES (?, ?)",
+		volUUID, 0,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	return volUUID
+}
+
 type stubCharm struct {
 	name        string
 	subordinate bool
+	storage     map[string]internalcharm.Storage
 }
 
 func (s *stubCharm) Meta() *internalcharm.Meta {
@@ -1187,6 +1302,7 @@ func (s *stubCharm) Meta() *internalcharm.Meta {
 				Type: "nvidia.com/gpu",
 			},
 		},
+		Storage: s.storage,
 	}
 }
 
@@ -1252,8 +1368,4 @@ func (caasApplication) Units() ([]caas.Unit, error) {
 	}, {
 		Id: "some-otherapp-0",
 	}}, nil
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }

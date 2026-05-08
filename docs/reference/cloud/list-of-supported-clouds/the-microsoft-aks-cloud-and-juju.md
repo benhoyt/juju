@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Deploy applications on Microsoft Azure Kubernetes Service (AKS) with Juju, including Kubernetes cloud setup and storage configuration."
+---
+
 (cloud-kubernetes-aks)=
 # The Microsoft AKS cloud and Juju
 

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "jujud reference: executable binary implementing Juju agent functionality for machines and controllers in cloud deployments."
+---
+
 (jujud)=
 # `jujud`
 

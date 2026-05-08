@@ -6,7 +6,7 @@ package modelmigration
 import (
 	"context"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 
 	coremachine "github.com/juju/juju/core/machine"
 	"github.com/juju/juju/core/modelmigration"
@@ -16,6 +16,11 @@ import (
 	"github.com/juju/juju/domain/agentpassword/state"
 	"github.com/juju/juju/internal/errors"
 )
+
+// Coordinator is the interface that is used to add operations to a migration.
+type Coordinator interface {
+	Add(modelmigration.Operation)
+}
 
 // RegisterImport register's a new model migration importer into the supplied
 // coordinator.

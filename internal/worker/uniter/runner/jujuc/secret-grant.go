@@ -9,8 +9,8 @@ import (
 	"github.com/juju/names/v6"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/core/secrets"
-	"github.com/juju/juju/internal/cmd"
 )
 
 type secretGrantCommand struct {
@@ -54,7 +54,7 @@ Optionally specify a unit name to limit access to just that unit.
 	return jujucmd.Info(&cmd.Info{
 		Name:     "secret-grant",
 		Args:     "<ID>",
-		Purpose:  "Grant access to a secret.",
+		Purpose:  "Grants access to a secret.",
 		Doc:      doc,
 		Examples: examples,
 	})
@@ -62,9 +62,9 @@ Optionally specify a unit name to limit access to just that unit.
 
 // SetFlags implements cmd.Command.
 func (c *secretGrantCommand) SetFlags(f *gnuflag.FlagSet) {
-	f.StringVar(&c.unit, "unit", "", "the unit to grant access")
-	f.Var(c.relationIdProxy, "r", "the relation with which to associate the grant")
-	f.Var(c.relationIdProxy, "relation", "the relation with which to associate the grant")
+	f.StringVar(&c.unit, "unit", "", "Specifies the unit to grant access.")
+	f.Var(c.relationIdProxy, "r", "Specifies the relation with which to associate the grant.")
+	f.Var(c.relationIdProxy, "relation", "Specifies the relation with which to associate the grant.")
 }
 
 // Init implements cmd.Command.

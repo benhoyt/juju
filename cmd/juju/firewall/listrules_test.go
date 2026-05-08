@@ -11,10 +11,10 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/tc"
 
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/firewall"
 	"github.com/juju/juju/environs/config"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/testing"
 )
 
@@ -109,7 +109,7 @@ func (s *mockListAPI) Close() error {
 	return nil
 }
 
-func (s *mockListAPI) ModelGet(ctx context.Context) (map[string]interface{}, error) {
+func (s *mockListAPI) ModelGet(ctx context.Context) (map[string]any, error) {
 	if s.err != nil {
 		return nil, s.err
 	}

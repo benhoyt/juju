@@ -529,22 +529,6 @@ WHERE  metadata_uuid IN ($uuids[:])`, path{}, toDelete)
 	return transform.Slice(paths, func(r path) string { return r.Path }), nil
 }
 
-// getAllOperationUUIDs returns all operation UUIDs from the model database
-func (st *State) getAllOperationUUIDs(ctx context.Context, tx *sqlair.TX) ([]string, error) {
-	stmt, err := st.Prepare(`
-SELECT &uuid.uuid
-FROM   operation`, uuid{})
-	if err != nil {
-		return nil, errors.Capture(err)
-	}
-	var result []uuid
-	if err := tx.Query(ctx, stmt).GetAll(&result); err != nil && !errors.Is(err, sqlair.ErrNoRows) {
-		return nil, errors.Capture(err)
-	}
-
-	return transform.Slice(result, func(r uuid) string { return r.UUID }), nil
-}
-
 // encodeParameterValue encodes the input value to a string that can be stored
 // in the database.
 func encodeParameterValue(value any) string {

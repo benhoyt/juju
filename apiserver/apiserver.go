@@ -21,9 +21,10 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"github.com/juju/ratelimit"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5/catacomb"
 	"github.com/prometheus/client_golang/prometheus"
 
+	apimacaroon "github.com/juju/juju/api/macaroon"
 	"github.com/juju/juju/apiserver/apiserverhttp"
 	"github.com/juju/juju/apiserver/authentication"
 	"github.com/juju/juju/apiserver/authentication/jwt"
@@ -53,13 +54,15 @@ import (
 	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/core/permission"
+	"github.com/juju/juju/core/providertracker"
 	coreresource "github.com/juju/juju/core/resource"
 	"github.com/juju/juju/core/securitylog"
 	coretrace "github.com/juju/juju/core/trace"
 	coreunit "github.com/juju/juju/core/unit"
+	"github.com/juju/juju/domain/model"
+	modelerrors "github.com/juju/juju/domain/model/errors"
 	internalerrors "github.com/juju/juju/internal/errors"
 	internallogger "github.com/juju/juju/internal/logger"
-	internalmacaroon "github.com/juju/juju/internal/macaroon"
 	"github.com/juju/juju/internal/resource"
 	resourcecharmhub "github.com/juju/juju/internal/resource/charmhub"
 	"github.com/juju/juju/internal/services"
@@ -69,12 +72,18 @@ import (
 	"github.com/juju/juju/rpc/jsoncodec"
 )
 
-// ErrAPIServerDying is used to indicate to *third parties* that the
-// api-server worker is dying, instead of catacomb.ErrDying, which is
-// unsuitable for propagating inter-worker.
-// This error indicates to consuming workers that their dependency has
-// become unmet and a restart by the dependency engine is imminent.
-const ErrAPIServerDying = errors.ConstError("api-server worker is dying")
+const (
+	// ErrAPIServerDying is used to indicate to *third parties* that the
+	// api-server worker is dying, instead of catacomb.ErrDying, which is
+	// unsuitable for propagating inter-worker.
+	// This error indicates to consuming workers that their dependency has
+	// become unmet and a restart by the dependency engine is imminent.
+	ErrAPIServerDying = errors.ConstError("api-server worker is dying")
+
+	// ErrRPCConnectionClosed is used to indicate that the RPC connection
+	// has been closed.
+	ErrRPCConnectionClosed = errors.ConstError("rpc connection closed")
+)
 
 var logger = internallogger.GetLogger("juju.apiserver")
 
@@ -244,9 +253,6 @@ type ServerConfig struct {
 	// DBGetter returns WatchableDB implementations based on namespace.
 	DBGetter changestream.WatchableDBGetter
 
-	// DBDeleter is used to delete databases by namespace.
-	DBDeleter database.DBDeleter
-
 	// TracerGetter returns a tracer for the given namespace, this is used
 	// for opentelmetry tracing.
 	TracerGetter trace.TracerGetter
@@ -257,6 +263,10 @@ type ServerConfig struct {
 
 	// WatcherRegistryGetter is used to register and manage watchers.
 	WatcherRegistryGetter watcherregistry.WatcherRegistryGetter
+
+	// EphemeralProviderFactory is used to create providers for operations that
+	// require them, but where the provider does not need to be tracked.
+	EphemeralProviderFactory providertracker.EphemeralProviderFactory
 }
 
 // Validate validates the API server configuration.
@@ -299,9 +309,6 @@ func (c ServerConfig) Validate() error {
 	if c.DBGetter == nil {
 		return errors.NotValidf("missing DBGetter")
 	}
-	if c.DBDeleter == nil {
-		return errors.NotValidf("missing DBDeleter")
-	}
 	if c.DomainServicesGetter == nil {
 		return errors.NotValidf("missing DomainServicesGetter")
 	}
@@ -316,6 +323,9 @@ func (c ServerConfig) Validate() error {
 	}
 	if c.WatcherRegistryGetter == nil {
 		return errors.NotValidf("missing WatcherRegistryGetter")
+	}
+	if c.EphemeralProviderFactory == nil {
+		return errors.NotValidf("missing EphemeralProviderFactory")
 	}
 	return nil
 }
@@ -379,7 +389,6 @@ func newServer(ctx context.Context, cfg ServerConfig) (_ *Server, err error) {
 		charmhubHTTPClient:       cfg.CharmhubHTTPClient,
 		macaroonHTTPClient:       cfg.MacaroonHTTPClient,
 		dbGetter:                 cfg.DBGetter,
-		dbDeleter:                cfg.DBDeleter,
 		domainServicesGetter:     cfg.DomainServicesGetter,
 		controllerDomainServices: controllerDomainServices,
 		tracerGetter:             cfg.TracerGetter,
@@ -388,6 +397,7 @@ func newServer(ctx context.Context, cfg ServerConfig) (_ *Server, err error) {
 		dataDir:                  cfg.DataDir,
 		logDir:                   cfg.LogDir,
 		watcherRegistryGetter:    cfg.WatcherRegistryGetter,
+		ephemeralProviderFactory: cfg.EphemeralProviderFactory,
 	})
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -450,10 +460,10 @@ func newServer(ctx context.Context, cfg ServerConfig) (_ *Server, err error) {
 }
 
 // Report is shown in the juju_engine_report.
-func (srv *Server) Report() map[string]interface{} {
+func (srv *Server) Report(ctx context.Context) map[string]any {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	result := map[string]interface{}{
+	result := map[string]any{
 		"agent-ratelimit-max":  srv.agentRateLimitMax,
 		"agent-ratelimit-rate": srv.agentRateLimitRate,
 	}
@@ -639,7 +649,7 @@ func (srv *Server) loop(ready chan struct{}) error {
 	srv.mu.Lock()
 	srv.healthStatus = "running"
 	// Security Event Logging: This log statement is required to comply with Canonical's SSDLC Security Event Logging policy.
-	securitylog.LogSystem(securitylog.SystemLifecycleSecurityEvent{
+	securitylog.LogSystem(ctx, securitylog.SystemLifecycleSecurityEvent{
 		Event: securitylog.SystemLifecycleEventStartup,
 		Actor: securitylog.DefaultAdminName,
 	})
@@ -651,7 +661,7 @@ func (srv *Server) loop(ready chan struct{}) error {
 			srv.mu.Lock()
 			srv.healthStatus = "stopping"
 			// Security Event Logging: This log statement is required to comply with Canonical's SSDLC Security Event Logging policy.
-			securitylog.LogSystem(securitylog.SystemLifecycleSecurityEvent{
+			securitylog.LogSystem(ctx, securitylog.SystemLifecycleSecurityEvent{
 				Event: securitylog.SystemLifecycleEventShutdown,
 				Actor: securitylog.DefaultAdminName,
 			})
@@ -712,6 +722,12 @@ func (srv *Server) endpoints() ([]apihttp.Endpoint, error) {
 		if handler.tracked {
 			h = srv.trackRequests(h)
 		}
+
+		// This should be refactored once we have all the authorizers in place.
+		// The lack of an authorizer should indicate that the handler is
+		// unauthenticated. This two field approach is error prone and should be
+		// replaced with a single field that indicates the authentication and
+		// authorization requirements of the handler.
 		if !handler.unauthenticated {
 			h = &httpcontext.AuthHandler{
 				NextHandler:   h,
@@ -719,6 +735,14 @@ func (srv *Server) endpoints() ([]apihttp.Endpoint, error) {
 				Authorizer:    handler.authorizer,
 			}
 		}
+
+		// Register the [httpcontext.ControllerModelSignalHandler] for every
+		// handler.
+		h = httpcontext.ControllerModelSignalHandler{
+			ControllerModelUUID: controllerModelUUID,
+			Handler:             h,
+		}
+
 		if !handler.noModelUUID {
 			if strings.HasPrefix(handler.pattern, modelRoutePrefix) {
 				h = &httpcontext.QueryModelHandler{
@@ -726,8 +750,10 @@ func (srv *Server) endpoints() ([]apihttp.Endpoint, error) {
 					Query:   ":modeluuid",
 				}
 			} else if strings.HasPrefix(handler.pattern, charmsObjectsRoutePrefix) ||
+				// The charm upload path differs from [modelRoutePrefix] hence
+				// the existence of this special case.
 				strings.HasPrefix(handler.pattern, objectsRoutePrefix) {
-				h = &httpcontext.BucketModelHandler{
+				h = &httpcontext.QueryModelHandler{
 					Handler: h,
 					Query:   ":modeluuid",
 				}
@@ -800,26 +826,33 @@ func (srv *Server) endpoints() ([]apihttp.Endpoint, error) {
 	), "objects")
 
 	modelToolsUploadHandler := srv.monitoredHandler(newToolsUploadHandler(
-		BlockCheckerGetterForServices(httpCtxt.domainServicesForRequest),
+		BlockCheckerGetterForServices(httpCtxt.domainServicesForRequestContext),
 		modelAgentBinaryStoreForHTTPContext(httpCtxt),
 	), "tools")
-	controllerToolsUploadHandler := srv.monitoredHandler(newToolsUploadHandler(
-		BlockCheckerGetterForServices(httpCtxt.domainServicesForRequest),
-		controllerAgentBinaryStoreForHTTPContext(httpCtxt),
-	), "tools")
-	var modelToolsUploadAuthorizer httpcontext.CompositeAuthorizer = []authentication.Authorizer{
+
+	// toolsUploadAuthorizer defines the authorizer that MUST be used for tools
+	// uploading in the controller. If the user is a controller admin then we
+	// can allow the request through, this must also be the case the if the
+	// model being uploaded to is the controller model. All other models it is
+	// acceptable for the user to be a model admin.
+	var toolsUploadAuthorizer httpcontext.CompositeAuthorizer = []authentication.Authorizer{
 		controllerAdminAuthorizer,
-		modelPermissionAuthorizer{
-			perm: permission.AdminAccess,
+		controllerModelPermissionAuthorizer{
+			controllerAdminAuthorizer: controllerAdminAuthorizer,
+			fallThroughAuthorizer: modelPermissionAuthorizer{
+				perm: permission.AdminAccess,
+			},
+			ModelAuthorizationInfo: modelAuthorizationInfoForRequest(),
 		},
 	}
+
 	modelToolsDownloadHandler := srv.monitoredHandler(newToolsDownloadHandler(httpCtxt), "tools")
 
 	resourceAuthFunc := func(req *http.Request, tagKinds ...string) (names.Tag, error) {
 		return httpCtxt.authenticatedTagFromRequest(req, tagKinds...)
 	}
 	resourceChangeAllowedFunc := func(ctx context.Context) error {
-		serviceFactory, err := httpCtxt.domainServicesForRequest(ctx)
+		serviceFactory, err := httpCtxt.domainServicesForRequestContext(ctx)
 		if err != nil {
 			return errors.Trace(err)
 		}
@@ -833,7 +866,8 @@ func (srv *Server) endpoints() ([]apihttp.Endpoint, error) {
 	resourcesHandler := srv.monitoredHandler(handlersresources.NewResourceHandler(
 		resourceAuthFunc,
 		resourceChangeAllowedFunc,
-		&resourceServiceGetter{ctxt: httpCtxt},
+		&resourcesResourceServiceGetter{domainServiceForRequest: httpCtxt.domainServicesForRequest},
+		&resourcesApplicationServiceGetter{domainServiceForRequest: httpCtxt.domainServicesForRequest},
 		resourcesdownload.NewDownloader(logger.Child("resourcedownloader"), resourcesdownload.DefaultFileSystem()),
 		logger,
 	), "applications")
@@ -848,7 +882,7 @@ func (srv *Server) endpoints() ([]apihttp.Endpoint, error) {
 			return nil, errors.Trace(err)
 		}
 
-		domainServices, err := httpCtxt.domainServicesForRequest(req.Context())
+		domainServices, err := httpCtxt.domainServicesForRequest(req)
 		if err != nil {
 			return nil, errors.Trace(errors.Annotate(err, "cannot get domain services for unit resource request"))
 		}
@@ -881,11 +915,12 @@ func (srv *Server) endpoints() ([]apihttp.Endpoint, error) {
 		objects.CharmURLFromLocatorDuringMigration,
 	), "charms")
 	migrateToolsUploadHandler := srv.monitoredHandler(newToolsUploadHandler(
-		BlockCheckerGetterForServices(httpCtxt.domainServicesForRequest),
+		BlockCheckerGetterForServices(httpCtxt.domainServicesForRequestContext),
 		migratingAgentBinaryStoreForHTTPContext(httpCtxt),
 	), "tools")
 	resourcesMigrationUploadHandler := srv.monitoredHandler(handlersresources.NewResourceMigrationUploadHandler(
-		&migratingResourceServiceGetter{ctxt: httpCtxt},
+		&resourcesModelServiceGetter{domainServiceForRequest: httpCtxt.domainServicesDuringMigrationForRequest},
+		&resourcesResourceServiceGetter{domainServiceForRequest: httpCtxt.domainServicesDuringMigrationForRequest},
 		logger,
 	), "applications")
 	registerHandler := srv.monitoredHandler(&registerUserHandler{
@@ -893,7 +928,7 @@ func (srv *Server) endpoints() ([]apihttp.Endpoint, error) {
 	}, "register")
 
 	// HTTP handler for application offer macaroon authentication.
-	if err := handlerscrossmodel.AddOfferAuthHandlers(srv.shared, srv.shared.offersThirdPartyKeyPair, srv.mux); err != nil {
+	if err := handlerscrossmodel.AddOfferAuthHandlers(srv.shared, srv.shared.offersThirdPartyKeyPair, srv.mux, srv.shared.logger); err != nil {
 		return nil, errors.Trace(err)
 	}
 
@@ -922,17 +957,19 @@ func (srv *Server) endpoints() ([]apihttp.Endpoint, error) {
 	}, {
 		pattern:    modelRoutePrefix + "/tools",
 		handler:    modelToolsUploadHandler,
-		authorizer: modelToolsUploadAuthorizer,
+		authorizer: toolsUploadAuthorizer,
 	}, {
 		pattern:         modelRoutePrefix + "/tools/:version",
 		handler:         modelToolsDownloadHandler,
 		unauthenticated: true,
 	}, {
-		pattern: modelRoutePrefix + "/applications/:application/resources/:resource",
-		handler: resourcesHandler,
+		pattern:    modelRoutePrefix + "/applications/:application/resources/:resource",
+		handler:    resourcesHandler,
+		authorizer: httpcontext.TODOAuthorizer,
 	}, {
-		pattern: modelRoutePrefix + "/units/:unit/resources/:resource",
-		handler: unitResourcesHandler,
+		pattern:    modelRoutePrefix + "/units/:unit/resources/:resource",
+		handler:    unitResourcesHandler,
+		authorizer: httpcontext.TODOAuthorizer,
 	}, {
 		pattern:    "/migrate/charms/:object",
 		handler:    migrateObjectsCharmsHTTPHandler,
@@ -981,10 +1018,6 @@ func (srv *Server) endpoints() ([]apihttp.Endpoint, error) {
 		handler:         registerHandler,
 		unauthenticated: true,
 	}, {
-		pattern:    "/tools",
-		handler:    controllerToolsUploadHandler,
-		authorizer: controllerAdminAuthorizer,
-	}, {
 		pattern:         "/tools/:version",
 		handler:         modelToolsDownloadHandler,
 		unauthenticated: true,
@@ -996,24 +1029,27 @@ func (srv *Server) endpoints() ([]apihttp.Endpoint, error) {
 		// for discharge required errors to be handled correctly.
 		unauthenticated: true,
 	}, {
-		pattern: charmsObjectsRoutePrefix,
-		methods: []string{"GET"},
-		handler: modelObjectsCharmsHTTPHandler,
+		pattern:    charmsObjectsRoutePrefix,
+		methods:    []string{"GET"},
+		handler:    modelObjectsCharmsHTTPHandler,
+		authorizer: httpcontext.TODOAuthorizer,
 	}, {
 		pattern:    charmsObjectsRoutePrefix,
 		methods:    []string{"PUT"},
 		handler:    modelObjectsCharmsHTTPHandler,
 		authorizer: charmsObjectsAuthorizer,
 	}, {
-		pattern: objectsRoutePrefix,
-		methods: []string{"GET"},
-		handler: modelObjectsHTTPHandler,
+		pattern:    objectsRoutePrefix,
+		methods:    []string{"GET"},
+		handler:    modelObjectsHTTPHandler,
+		authorizer: httpcontext.ControllerAuthorizer,
 	}}
 	if srv.registerIntrospectionHandlers != nil {
 		add := func(subpath string, h http.Handler) {
 			handlers = append(handlers, handler{
-				pattern: path.Join("/introspection/", subpath),
-				handler: srv.monitoredHandler(introspectionHandler{httpCtxt, h}, "introspection"),
+				pattern:    path.Join("/introspection/", subpath),
+				handler:    srv.monitoredHandler(introspectionHandler{httpCtxt, h}, "introspection"),
+				authorizer: httpcontext.TODOAuthorizer,
 			})
 		}
 		srv.registerIntrospectionHandlers(add)
@@ -1074,21 +1110,35 @@ func (srv *Server) healthHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 func (srv *Server) apiHandler(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+
 	connectionID := atomic.AddUint64(&srv.connectionID, 1)
+	fd := -1
+	if v, ok := ctx.Value("raw-http-fd").(int); ok {
+		fd = v
+	}
 
 	apiObserver := srv.newObserver()
-	apiObserver.Join(req.Context(), req, connectionID)
-	defer apiObserver.Leave(req.Context())
+	apiObserver.Join(ctx, req, connectionID, fd)
+	defer func() {
+		// Don't use the request context as it will cause the Leave to be
+		// cancelled and not report the leave correctly. Giving it a timeout
+		// should ensure that the request doesn't hang indefinitely.
+		ctx, cancel := context.WithTimeout(srv.catacomb.Context(context.Background()), time.Second*5)
+		defer cancel()
+
+		apiObserver.Leave(ctx)
+	}()
 
 	// Create a new offer auth context. This will be used to bake new
 	// macaroons for offers, and to validate incoming macaroons.
-	crossModelAuthContext, err := srv.shared.NewCrossModelAuthContext(req.Context(), req.Host)
+	crossModelAuthContext, err := srv.shared.NewCrossModelAuthContext(req.Host)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to create offer auth context: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	websocket.Serve(w, req, func(conn *websocket.Conn) {
+	websocket.Serve(w, req, func(wsConn *websocket.Conn) {
 		modelUUID, modelOnlyLogin := httpcontext.RequestModelUUID(req.Context())
 
 		// If the modelUUID wasn't present in the request, then this is
@@ -1106,70 +1156,95 @@ func (srv *Server) apiHandler(w http.ResponseWriter, req *http.Request) {
 		// allow the peeling of the modelUUID from the request to be
 		// deferred to the facade methods.
 		ctx := coremodel.WithContextModelUUID(req.Context(), resolvedModelUUID)
+		ctx, cancel := context.WithCancelCause(ctx)
+		defer cancel(nil)
 
-		logger.Tracef(ctx, "got a request for model %q", modelUUID)
-		if err := srv.serveConn(
+		logger.Tracef(ctx, "got a request for model %q fd:%v", modelUUID, fd)
+
+		codec := jsoncodec.NewWebsocket(wsConn.Conn)
+		recorderFactory := observer.NewRecorderFactory(apiObserver, nil, observer.NoCaptureArgs)
+		rpcConn := rpc.NewConn(codec, recorderFactory)
+
+		if root, err := srv.serveConn(
 			srv.catacomb.Context(ctx),
-			conn,
+			rpcConn,
 			resolvedModelUUID,
 			controllerOnlyLogin,
 			connectionID,
 			apiObserver,
 			req.Host,
 			crossModelAuthContext,
-		); err != nil {
-			logger.Errorf(ctx, "error serving RPCs: %v", err)
+		); errors.Is(err, modelerrors.NotFound) {
+			// If the model is not found then we need to close the connection
+			// with the appropriate error so that the client can handle it.
+			err := fmt.Errorf("%w: %q", apiservererrors.UnknownModelError, modelUUID)
+			rpcConn.ServeRoot(&errRoot{err: errors.Trace(err)}, recorderFactory, serverError)
+		} else if err != nil {
+			err := fmt.Errorf("serving model %q: %w", modelUUID, err)
+			rpcConn.ServeRoot(&errRoot{err: errors.Trace(err)}, recorderFactory, serverError)
+		} else {
+			rpcConn.ServeRoot(root, recorderFactory, serverError)
+		}
+
+		rpcConn.Start(ctx)
+		select {
+		case <-rpcConn.Dead():
+			cancel(ErrRPCConnectionClosed)
+		case <-srv.catacomb.Dying():
+		}
+		if err := rpcConn.Close(); err != nil {
+			logger.Errorf(ctx, "error closing RPC connection: %v", err)
 		}
 	})
 }
 
 func (srv *Server) serveConn(
 	ctx context.Context,
-	wsConn *websocket.Conn,
+	conn *rpc.Conn,
 	modelUUID coremodel.UUID,
 	controllerOnlyLogin bool,
 	connectionID uint64,
 	apiObserver observer.Observer,
 	host string,
 	crossModelAuthContext facade.CrossModelAuthContext,
-) error {
+) (rpc.Root, error) {
+	domainServices, err := srv.shared.domainServicesGetter.ServicesForModel(ctx, modelUUID)
+	if err != nil {
+		return nil, errors.Annotatef(err, "getting domain services for model %q", modelUUID)
+	}
+
+	if err := srv.isModelAvailable(ctx, domainServices.Model(), modelUUID); err != nil {
+		return nil, errors.Annotatef(err, "checking model %q availability", modelUUID)
+	}
+
 	tracer, err := srv.shared.tracerGetter.GetTracer(
 		ctx,
 		coretrace.Namespace("apiserver", modelUUID.String()),
 	)
 	if err != nil {
-		logger.Infof(ctx, "failed to get tracer for model %q: %v", modelUUID, err)
+		logger.Tracef(ctx, "failed to get tracer for model %q: %v", modelUUID, err)
 		tracer = coretrace.NoopTracer{}
-	}
-
-	domainServices, err := srv.shared.domainServicesGetter.ServicesForModel(ctx, modelUUID)
-	if err != nil {
-		return errors.Annotatef(err, "getting domain services for model %q", modelUUID)
 	}
 
 	// Grab the object store for the model.
 	objectStore, err := srv.shared.objectStoreGetter.GetObjectStore(ctx, modelUUID.String())
 	if err != nil {
-		return errors.Annotatef(err, "getting object store for model %q", modelUUID)
+		return nil, errors.Annotatef(err, "getting object store for model %q", modelUUID)
 	}
 
 	// Grab the object store for the controller, this is primarily used for
 	// the agent tools.
 	controllerObjectStore, err := srv.shared.objectStoreGetter.GetObjectStore(ctx, database.ControllerNS)
 	if err != nil {
-		return errors.Annotatef(err, "getting controller object store")
+		return nil, errors.Annotatef(err, "getting controller object store")
 	}
 
 	watcherRegistry, err := srv.shared.watcherRegistryGetter.GetWatcherRegistry(ctx, connectionID)
 	if err != nil {
-		return errors.Annotatef(err, "getting watcher registry for connection %d", connectionID)
+		return nil, errors.Annotatef(err, "getting watcher registry for connection %d", connectionID)
 	}
 
-	codec := jsoncodec.NewWebsocket(wsConn.Conn)
-	recorderFactory := observer.NewRecorderFactory(apiObserver, nil, observer.NoCaptureArgs)
-	conn := rpc.NewConn(codec, recorderFactory)
-
-	handler, err := newAPIHandler(
+	handler := newAPIHandler(
 		ctx,
 		srv,
 		conn,
@@ -1179,6 +1254,7 @@ func (srv *Server) serveConn(
 		objectStore,
 		srv.shared.objectStoreGetter,
 		controllerObjectStore,
+		srv.shared.ephemeralProviderFactory,
 		watcherRegistry,
 		modelUUID,
 		controllerOnlyLogin,
@@ -1186,29 +1262,58 @@ func (srv *Server) serveConn(
 		host,
 		crossModelAuthContext,
 	)
-	if errors.Is(err, errors.NotFound) {
-		err = fmt.Errorf("%w: %q", apiservererrors.UnknownModelError, modelUUID)
+
+	// Set up the admin apis used to accept logins and direct
+	// requests to the relevant business facade.
+	// There may be more than one since we need a new API each
+	// time login changes in a non-backwards compatible way.
+	adminAPIs := make(map[int]any)
+	for apiVersion, factory := range adminAPIFactories {
+		adminAPIs[apiVersion] = factory(srv, handler, apiObserver)
 	}
 
+	return newAdminRoot(handler, adminAPIs), nil
+}
+
+// ModelService defines the subset of model.Service used to check
+// model existence and redirection.
+type ModelService interface {
+	// CheckModelExists returns whether the model with the given
+	// UUID exists on this controller.
+	CheckModelExists(ctx context.Context, modelUUID coremodel.UUID) (bool, error)
+	// ModelRedirection returns the model redirection information
+	// for the given model UUID.
+	ModelRedirection(ctx context.Context, modelUUID coremodel.UUID) (model.ModelRedirection, error)
+}
+
+func (srv *Server) isModelAvailable(
+	ctx context.Context,
+	modelService ModelService,
+	modelUUID coremodel.UUID,
+) error {
+	// Check that model exists before proceeding any further. There is no need
+	// in setting up any additional operations if the model is not present.
+	exists, err := modelService.CheckModelExists(ctx, modelUUID)
 	if err != nil {
-		conn.ServeRoot(&errRoot{err: errors.Trace(err)}, recorderFactory, serverError)
-	} else {
-		// Set up the admin apis used to accept logins and direct
-		// requests to the relevant business facade.
-		// There may be more than one since we need a new API each
-		// time login changes in a non-backwards compatible way.
-		adminAPIs := make(map[int]interface{})
-		for apiVersion, factory := range adminAPIFactories {
-			adminAPIs[apiVersion] = factory(srv, handler, apiObserver)
-		}
-		conn.ServeRoot(newAdminRoot(handler, adminAPIs), recorderFactory, serverError)
+		return errors.Trace(err)
+	} else if exists {
+		return nil
 	}
-	conn.Start(ctx)
-	select {
-	case <-conn.Dead():
-	case <-srv.catacomb.Dying():
+
+	// If this model used to be hosted on this controller but got
+	// migrated allow clients to connect and wait for a login
+	// request to decide whether the users should be redirected to
+	// the new controller for this model or not.
+	if _, migErr := modelService.ModelRedirection(ctx, modelUUID); migErr != nil {
+		// Return not found on any error.
+		// TODO (stickupkid): This is very brute force. What if there
+		// is an error with the database? The caller will assume that it
+		// is no longer on this controller. If we return a different error
+		// then it can at least retry the request.
+		return modelerrors.NotFound
 	}
-	return conn.Close()
+
+	return nil
 }
 
 // publicDNSName returns the current public hostname.
@@ -1238,7 +1343,6 @@ func (srv *Server) monitoredHandler(handler http.Handler, label string) http.Han
 }
 
 func newOfferAuthContext(
-	ctx context.Context,
 	accessService AccessService,
 	macaroonService MacaroonService,
 	keyPair *bakery.KeyPair,
@@ -1295,7 +1399,7 @@ func getMacaroonBakeryByURL(
 	logger corelogger.Logger,
 ) (crossmodel.OfferBakery, error) {
 	location := authContextLocation(controllerModelUUID)
-	checker := checkers.New(internalmacaroon.MacaroonNamespace)
+	checker := checkers.New(apimacaroon.MacaroonNamespace)
 	authorizer := crossmodel.NewCMRAuthorizer(logger)
 
 	// Create a local bakery for validating macaroons.
@@ -1343,7 +1447,7 @@ type applicationServiceGetter struct {
 }
 
 func (a *applicationServiceGetter) Application(r *http.Request) (objects.ApplicationService, error) {
-	domainServices, err := a.ctxt.domainServicesForRequest(r.Context())
+	domainServices, err := a.ctxt.domainServicesForRequest(r)
 	if err != nil {
 		return nil, internalerrors.Capture(err)
 	}
@@ -1376,25 +1480,39 @@ func (a *objectStoreServiceGetter) ObjectStore(r *http.Request) (objects.ObjectS
 	return objectStore, nil
 }
 
-type resourceServiceGetter struct {
-	ctxt httpContext
+type domainServiceGetter func(r *http.Request) (services.DomainServices, error)
+
+type resourcesModelServiceGetter struct {
+	domainServiceForRequest domainServiceGetter
 }
 
-func (a *resourceServiceGetter) Resource(r *http.Request) (handlersresources.ResourceService, error) {
-	domainServices, err := a.ctxt.domainServicesForRequest(r.Context())
+func (m *resourcesModelServiceGetter) Model(r *http.Request) (handlersresources.ModelService, error) {
+	domainServices, err := m.domainServiceForRequest(r)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return domainServices.ModelInfo(), nil
+}
+
+type resourcesApplicationServiceGetter struct {
+	domainServiceForRequest domainServiceGetter
+}
+
+func (a *resourcesApplicationServiceGetter) Application(r *http.Request) (handlersresources.ApplicationService, error) {
+	domainServices, err := a.domainServiceForRequest(r)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 
-	return domainServices.Resource(), nil
+	return domainServices.Application(), nil
 }
 
-type migratingResourceServiceGetter struct {
-	ctxt httpContext
+type resourcesResourceServiceGetter struct {
+	domainServiceForRequest domainServiceGetter
 }
 
-func (a *migratingResourceServiceGetter) Resource(r *http.Request) (handlersresources.ResourceService, error) {
-	domainServices, err := a.ctxt.domainServicesDuringMigrationForRequest(r)
+func (a *resourcesResourceServiceGetter) Resource(r *http.Request) (handlersresources.ResourceService, error) {
+	domainServices, err := a.domainServiceForRequest(r)
 	if err != nil {
 		return nil, internalerrors.Capture(err)
 	}

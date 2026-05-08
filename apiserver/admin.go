@@ -25,17 +25,18 @@ import (
 	"github.com/juju/juju/core/pinger"
 	"github.com/juju/juju/core/securitylog"
 	"github.com/juju/juju/core/trace"
+	coreuser "github.com/juju/juju/core/user"
 	jujuversion "github.com/juju/juju/core/version"
 	accesserrors "github.com/juju/juju/domain/access/errors"
 	modelerrors "github.com/juju/juju/domain/model/errors"
 	"github.com/juju/juju/domain/modelmigration"
-	"github.com/juju/juju/internal/rpcreflect"
 	"github.com/juju/juju/internal/worker/watcherregistry"
 	"github.com/juju/juju/rpc"
 	"github.com/juju/juju/rpc/params"
+	"github.com/juju/juju/rpc/rpcreflect"
 )
 
-type adminAPIFactory func(*Server, *apiHandler, observer.Observer) interface{}
+type adminAPIFactory func(*Server, *apiHandler, observer.Observer) any
 
 // admin is the only object that unlogged-in clients can access. It holds any
 // methods that are needed to log in.
@@ -48,7 +49,7 @@ type admin struct {
 	loggedIn bool
 }
 
-func newAdminAPIV3(srv *Server, root *apiHandler, apiObserver observer.Observer) interface{} {
+func newAdminAPIV3(srv *Server, root *apiHandler, apiObserver observer.Observer) any {
 	return &admin{
 		srv:         srv,
 		root:        root,
@@ -125,9 +126,7 @@ func (a *admin) login(ctx context.Context, req params.LoginRequest, loginVersion
 		return fail, errors.Trace(err)
 	}
 	pServers := make([]network.HostPorts, len(hostPorts))
-	for i, hps := range hostPorts {
-		pServers[i] = hps
-	}
+	copy(pServers, hostPorts)
 
 	// apiRoot is the API root exposed to the client after login.
 	var apiRoot rpc.Root
@@ -187,7 +186,7 @@ func (a *admin) login(ctx context.Context, req params.LoginRequest, loginVersion
 	a.root.rpcConn.ServeRoot(apiRoot, recorderFactory, serverError)
 
 	// Security Event Logging: This log statement is required to comply with Canonical's SSDLC Security Event Logging policy.
-	securitylog.LogLoginSuccess(securitylog.LoginSuccessSecurityEvent{
+	securitylog.LogLoginSuccess(ctx, securitylog.LoginSuccessSecurityEvent{
 		User: req.AuthTag,
 	})
 
@@ -333,6 +332,7 @@ func (a *admin) authenticate(ctx context.Context, modelExists bool, req params.L
 			startPinger = false
 			controllerConn = true
 		}
+
 	}
 	if !modelExists {
 		// Login to an unknown or migrated model.
@@ -340,11 +340,37 @@ func (a *admin) authenticate(ctx context.Context, modelExists bool, req params.L
 		// Hide the fact that the model does not exist.
 		return nil, errors.Unauthorizedf("invalid entity name or password")
 	}
-	// TODO(wallyworld) - we can't yet observe anonymous logins as entity must be non-nil
-	if !result.anonymousLogin {
-		tag := names.NewModelTag(a.root.modelUUID.String())
-		a.apiObserver.Login(ctx, a.root.authInfo.Tag, tag, a.root.modelUUID, controllerConn, req.UserData)
+	if result.userLogin {
+		var err error
+		result.userInfo, err = a.checkUserPermissions(ctx, authInfo, result.controllerOnlyLogin)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
 	}
+	// Ensure external users are persisted only after authorisation checks
+	// pass. At this point the user has been both authenticated and authorised
+	// (via checkUserPermissions above), so it is safe to create a DB record.
+	if authInfo.IsExternallyAuthenticated {
+		userTag, ok := authInfo.Tag.(names.UserTag)
+		if !ok {
+			return nil, errors.Errorf("externally authenticated entity %q is not a user", authInfo.Tag)
+		}
+		userName := coreuser.NameFromTag(userTag)
+		if err := a.root.domainServices.Access().EnsureExternalUser(ctx, userName); err != nil {
+			logger.Warningf(ctx, "ensuring external user %q in database: %v", userName, err)
+			return nil, errors.Annotatef(err, "ensuring external user %q", userName)
+		}
+	}
+
+	var tag names.Tag
+	if result.anonymousLogin {
+		tag = names.NewUserTag(api.AnonymousUsername)
+	} else {
+		tag = a.root.authInfo.Tag
+	}
+	logger.Debugf(ctx, "login for %s: http-fd: %v", tag, ctx.Value("raw-http-fd"))
+	modelTag := names.NewModelTag(a.root.modelUUID.String())
+	a.apiObserver.Login(ctx, tag, modelTag, a.root.modelUUID, controllerConn, req.UserData)
 	a.loggedIn = true
 
 	if startPinger {
@@ -354,7 +380,7 @@ func (a *admin) authenticate(ctx context.Context, modelExists bool, req params.L
 	}
 
 	var lastConnection *time.Time
-	if err := a.fillLoginDetails(ctx, authInfo, result, lastConnection); err != nil {
+	if err := a.fillLoginDetails(ctx, result, lastConnection); err != nil {
 		return nil, errors.Trace(err)
 	}
 	return result, nil
@@ -442,14 +468,8 @@ func (a *admin) handleAuthError(err error) error {
 	return err
 }
 
-func (a *admin) fillLoginDetails(ctx context.Context, authInfo authentication.AuthInfo, result *authResult, lastConnection *time.Time) error {
-	// Send back user info if user
-	if result.userLogin {
-		var err error
-		result.userInfo, err = a.checkUserPermissions(ctx, authInfo, result.controllerOnlyLogin)
-		if err != nil {
-			return errors.Trace(err)
-		}
+func (a *admin) fillLoginDetails(ctx context.Context, result *authResult, lastConnection *time.Time) error {
+	if result.userLogin && result.userInfo != nil {
 		result.userInfo.LastConnection = lastConnection
 	}
 	if result.controllerOnlyLogin {

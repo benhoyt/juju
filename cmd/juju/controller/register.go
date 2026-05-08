@@ -13,9 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"strings"
@@ -36,12 +34,12 @@ import (
 	"github.com/juju/juju/api/client/modelmanager"
 	"github.com/juju/juju/api/jujuclient"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/internal/loginprovider"
 	"github.com/juju/juju/cmd/modelcmd"
 	corelogger "github.com/juju/juju/core/logger"
 	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/permission"
-	"github.com/juju/juju/internal/cmd"
 	jujuhttp "github.com/juju/juju/internal/http"
 	internallogger "github.com/juju/juju/internal/logger"
 	"github.com/juju/juju/internal/proxy/factory"
@@ -249,17 +247,6 @@ func (c *registerCommand) controllerDetails(ctx *cmd.Context, p *registrationPar
 	return c.nonPublicControllerDetails(ctx, p, controllerName)
 }
 
-func cookieURL(host string) (*url.URL, error) {
-	if strings.Contains(host, ":") {
-		var err error
-		host, _, err = net.SplitHostPort(host)
-		if err != nil {
-			return nil, errors.Trace(err)
-		}
-	}
-	return url.Parse(host)
-}
-
 // publicControllerDetails returns controller and account details to be registered
 // for the given public controller host name.
 func (c *registerCommand) publicControllerDetails(ctx *cmd.Context, host, controllerName string) (jujuclient.ControllerDetails, jujuclient.AccountDetails, error) {
@@ -283,11 +270,6 @@ func (c *registerCommand) publicControllerDetails(ctx *cmd.Context, host, contro
 		return errRet(errors.Trace(err))
 	}
 
-	cookieURL, err := cookieURL(host)
-	if err != nil {
-		return errRet(err)
-	}
-
 	dialOpts := api.DefaultDialOpts()
 	dialOpts.BakeryClient = bclient
 
@@ -299,6 +281,9 @@ func (c *registerCommand) publicControllerDetails(ctx *cmd.Context, host, contro
 	// user-pass or macaroons.
 	dialOpts.LoginProvider = loginprovider.NewTryInOrderLoginProvider(
 		internallogger.GetLogger("juju.cmd.loginprovider"),
+		api.NewClientCredentialsLoginProviderFromEnvironment(
+			func() { supportsOIDCLogin = true },
+		),
 		api.NewSessionTokenLoginProvider(
 			"",
 			ctx.Stderr,
@@ -307,7 +292,7 @@ func (c *registerCommand) publicControllerDetails(ctx *cmd.Context, host, contro
 				sessionToken = t
 			},
 		),
-		api.NewLegacyLoginProvider(names.UserTag{}, "", "", nil, bclient, cookieURL),
+		api.NewLegacyLoginProvider(names.UserTag{}, "", "", nil, api.CookieURLFromHost(host)),
 	)
 
 	conn, err := c.apiOpen(ctx, &api.Info{

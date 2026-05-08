@@ -28,7 +28,7 @@ type Metadata struct {
 	Size int64
 }
 
-// Metadata represents the metadata for an object store.
+// ObjectStoreMetadata represents the metadata for an object store.
 type ObjectStoreMetadata interface {
 	// GetMetadata returns the persistence metadata for the specified path.
 	GetMetadata(ctx context.Context, path string) (Metadata, error)
@@ -53,4 +53,28 @@ type ObjectStoreMetadata interface {
 	// Watch returns a watcher that emits the path changes that either have been
 	// added or removed.
 	Watch(context.Context) (watcher.StringsWatcher, error)
+}
+
+// RemoteObjectStoreMetadata is the interface that is used to get the metadata
+// for a remote object store.
+type RemoteObjectStoreMetadata interface {
+	ObjectStoreMetadata
+
+	// GetControllerIDHints returns the controller ID hints for the specified
+	// SHA384. This is used to indicate which controllers might have the object
+	// with the specified SHA384, which can be used for optimization in certain
+	// scenarios.
+	GetControllerIDHints(ctx context.Context, sha384 string) ([]string, error)
+
+	// PutMetadataWithControllerIDHint adds a new specified path for the
+	// persistence metadata. The controller ID hint is used to indicate which
+	// controller might have put the object, which can be used for optimization
+	// in certain scenarios.
+	PutMetadataWithControllerIDHint(ctx context.Context, metadata Metadata, controllerID string) (UUID, error)
+
+	// AddControllerIDHint adds a controller ID hint for the specified SHA384.
+	// This is used to indicate that a controller might have the object with the
+	// specified SHA384, which can be used for optimization in certain
+	// scenarios.
+	AddControllerIDHint(ctx context.Context, sha384 string, controllerID string) error
 }

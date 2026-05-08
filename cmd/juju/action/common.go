@@ -25,11 +25,11 @@ import (
 	"gopkg.in/yaml.v2"
 
 	actionapi "github.com/juju/juju/api/client/action"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/core/operation"
 	"github.com/juju/juju/core/output"
 	"github.com/juju/juju/core/watcher"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/domain/deployment/charm"
 	internallogger "github.com/juju/juju/internal/logger"
 	"github.com/juju/juju/rpc/params"
 )
@@ -121,7 +121,6 @@ func (c *runCommandBase) ensureAPI(ctx context.Context) (err error) {
 }
 
 func (c *runCommandBase) operationResults(ctx *cmd.Context, results *actionapi.EnqueuedActions) error {
-
 	if _, ok := os.LookupEnv("NO_COLOR"); (ok || os.Getenv("TERM") == "dumb") && !c.color || c.noColor {
 		return c.processOperationResults(ctx, false, results)
 	}
@@ -171,7 +170,7 @@ func (c *runCommandBase) processOperationResults(ctx *cmd.Context, forceColor bo
 	}
 
 	var actionID string
-	info := make(map[string]interface{}, numTasks)
+	info := make(map[string]any, numTasks)
 	for _, result := range runningTasks {
 		actionID = result.task
 
@@ -205,7 +204,7 @@ func (c *runCommandBase) processOperationResults(ctx *cmd.Context, forceColor bo
 		}
 		ctx.Infof("")
 	}
-	printInfo := func(opID, actionId, nTasks interface{}) {
+	printInfo := func(opID, actionId, nTasks any) {
 		if numTasks == 1 {
 			ctx.Infof("Scheduled operation %s with task %s", opID, actionId)
 			ctx.Infof("Check operation status with 'juju show-operation %s'", opID)
@@ -258,7 +257,7 @@ use 'juju show-task' to inspect the failure%s
 	return nil
 }
 
-func (c *runCommandBase) waitForTasks(ctx *cmd.Context, runningTasks []enqueuedAction, info map[string]interface{}) (map[string]int, error) {
+func (c *runCommandBase) waitForTasks(ctx *cmd.Context, runningTasks []enqueuedAction, info map[string]any) (map[string]int, error) {
 	var wait clock.Timer
 	if c.wait < 0 {
 		// Indefinite wait. Discard the tick.
@@ -375,7 +374,7 @@ func (c *runCommandBase) handleTimeout(tasks []enqueuedAction, got set.Strings) 
 //
 // By setting the hideProgress field, commands can choose whether these
 // messages are logged or sent to console by default.
-func (c *runCommandBase) progressf(ctx *cmd.Context, format string, params ...interface{}) {
+func (c *runCommandBase) progressf(ctx *cmd.Context, format string, params ...any) {
 	if c.hideProgress {
 		ctx.Verbosef(format, params...)
 	} else {
@@ -383,19 +382,20 @@ func (c *runCommandBase) progressf(ctx *cmd.Context, format string, params ...in
 	}
 }
 
-func (c *runCommandBase) printRunOutput(writer io.Writer, value interface{}) error {
+func (c *runCommandBase) printRunOutput(writer io.Writer, value any) error {
 	if c.noColor {
 		if _, ok := os.LookupEnv("NO_COLOR"); !ok {
-			defer os.Unsetenv("NO_COLOR")
-			os.Setenv("NO_COLOR", "")
+			defer func() {
+				_ = os.Unsetenv("NO_COLOR")
+			}()
+			_ = os.Setenv("NO_COLOR", "")
 		}
 	}
 
 	return printPlainOutput(writer, c.color, value)
 }
 
-func (c *runCommandBase) formatYaml(writer io.Writer, value interface{}) error {
-
+func (c *runCommandBase) formatYaml(writer io.Writer, value any) error {
 	if _, ok := os.LookupEnv("NO_COLOR"); (ok || os.Getenv("TERM") == "dumb") && !c.color || c.noColor {
 		return cmd.FormatYaml(writer, value)
 	}
@@ -415,8 +415,7 @@ func (c *runCommandBase) formatYaml(writer io.Writer, value interface{}) error {
 	return cmd.FormatYaml(writer, value)
 }
 
-func (c *runCommandBase) formatJson(writer io.Writer, value interface{}) error {
-
+func (c *runCommandBase) formatJson(writer io.Writer, value any) error {
 	if _, ok := os.LookupEnv("NO_COLOR"); (ok || os.Getenv("TERM") == "dumb") && !c.color || c.noColor {
 		return cmd.FormatJson(writer, value)
 	}
@@ -479,10 +478,7 @@ func GetActionResult(ctx context.Context, api APIClient, requestedId string, clk
 			// TODO: (jam) 2024-08-29 We could try to reconcile this with either gopkg.in/retry.v1 or
 			//  github.com/juju/retry, but neither of them do a great job of handling an exponential
 			//  backoff (with max) and a concurrent global max timeout. Maybe gopkg.in/retry.v1.StartWithCancel
-			nextRetryTime := time.Duration(float64(retryTime) * resultPollBackoffFactor)
-			if nextRetryTime > resultPollMaxTime {
-				nextRetryTime = resultPollMaxTime
-			}
+			nextRetryTime := min(time.Duration(float64(retryTime)*resultPollBackoffFactor), resultPollMaxTime)
 			retryTime = nextRetryTime
 			tick.Reset(retryTime)
 		}
@@ -515,7 +511,7 @@ func fetchResult(ctx context.Context, api APIClient, requestedId string) (action
 }
 
 // colorVal appends ansi color codes to the given value
-func colorVal(ctx *ansiterm.Context, val interface{}) string {
+func colorVal(ctx *ansiterm.Context, val any) string {
 	buff := &bytes.Buffer{}
 	coloredWriter := ansiterm.NewWriter(buff)
 	coloredWriter.SetColorCapable(true)
@@ -557,17 +553,28 @@ func (a *enqueuedAction) GoString() string {
 	return tag.Kind() + " " + tag.Id()
 }
 
+const (
+	fieldStdout     = "stdout"
+	fieldStderr     = "stderr"
+	fieldOutput     = "output"
+	fieldResults    = "results"
+	fieldReturnCode = "return-code"
+	fieldMessage    = "message"
+	fieldStatus     = "status"
+	fieldID         = "id"
+)
+
 // filteredOutputKeys are those we don't want to display as part of the
 // results map for plain output.
-var filteredOutputKeys = set.NewStrings("return-code", "stdout", "stderr", "stdout-encoding", "stderr-encoding")
+var filteredOutputKeys = set.NewStrings(fieldReturnCode, fieldStdout, fieldStderr, "stdout-encoding", "stderr-encoding")
 
 // invoked by showtask.go
-func printOutput(writer io.Writer, value interface{}) error {
+func printOutput(writer io.Writer, value any) error {
 	return printPlainOutput(writer, false, value)
 }
 
-func printPlainOutput(writer io.Writer, forceColor bool, value interface{}) error {
-	info, ok := value.(map[string]interface{})
+func printPlainOutput(writer io.Writer, forceColor bool, value any) error {
+	info, ok := value.(map[string]any)
 	if !ok {
 		return errors.Errorf("expected value of type %T, got %T", info, value)
 	}
@@ -577,8 +584,55 @@ func printPlainOutput(writer io.Writer, forceColor bool, value interface{}) erro
 		w.SetColorCapable(forceColor)
 	}
 
-	// actionInfo contains relevant information for each action result.
-	var actionInfo = make(map[string]map[string]interface{})
+	// print yaml format if there are more than one tasks
+	if len(info) > 1 {
+		// actionInfo contains relevant information for each action result
+		// stdout and stderr are excluded in yaml
+		actionInfo := make(map[string]map[string]any)
+		for k := range info {
+			_, _, res, err := extractSingleTask(info[k])
+			if err != nil {
+				return errors.Trace(err)
+			}
+			actionInfo[k] = res
+		}
+
+		return cmd.FormatYaml(writer, actionInfo)
+	}
+
+	// print stdout and stderr along with output if there's only a single task
+	for _, v := range info {
+		stdout, stderr, task, err := extractSingleTask(v)
+		if err != nil {
+			return errors.Trace(err)
+		}
+
+		switch task[fieldStatus] {
+		case params.ActionFailed:
+			w.Printf(output.ErrorHighlight, "Action id %v failed: %v\n", task[fieldID], task[fieldMessage])
+			w.Println(output.ErrorHighlight, task[fieldOutput])
+		case params.ActionError:
+			w.Printf(output.ErrorHighlight, "Action id %v failed: %v\n", task[fieldID], task[fieldMessage])
+		default:
+			w.Println(output.GoodHighlight, task[fieldOutput])
+		}
+		if stdout != "" {
+			_, _ = fmt.Fprintln(writer, strings.Trim(stdout, "\n"))
+		}
+		if stderr != "" {
+			_, _ = fmt.Fprintln(writer, strings.Trim(stderr, "\n"))
+		}
+	}
+
+	return nil
+}
+
+func extractSingleTask(info any) (string, string, map[string]any, error) {
+	var stdout, stderr string
+	resultMetadata, ok := info.(map[string]any)
+	if !ok {
+		return "", "", nil, errors.Errorf("expected value of type %T, got %T", resultMetadata, info)
+	}
 
 	/*
 		Parse action YAML data that looks like this:
@@ -589,78 +643,63 @@ func printPlainOutput(writer io.Writer, forceColor bool, value interface{}) erro
 		    <action data here>
 		  status: completed
 	*/
-	var resultMetadata map[string]interface{}
-	var stdout, stderr string
-	for k := range info {
-		resultMetadata, ok = info[k].(map[string]interface{})
+
+	resultData, ok := resultMetadata[fieldResults].(map[string]any)
+	var out string
+	if ok {
+		stdout, stderr, out = extractTaskOutput(resultData)
+	} else {
+		status, ok := resultMetadata[fieldStatus].(string)
 		if !ok {
-			return errors.Errorf("expected value of type %T, got %T", resultMetadata, info[k])
+			status = "has unknown status"
 		}
-		resultData, ok := resultMetadata["results"].(map[string]interface{})
-		var output string
-		if ok {
-			resultDataCopy := make(map[string]interface{})
-			for k, v := range resultData {
-				k = strings.ToLower(k)
-				if k == "stdout" && v != "" {
-					stdout = fmt.Sprint(v)
-				}
-				if k == "stderr" && v != "" {
-					stderr = fmt.Sprint(v)
-				}
-				if !filteredOutputKeys.Contains(k) {
-					resultDataCopy[k] = v
-				}
-			}
-			if len(resultDataCopy) > 0 {
-				data, err := yaml.Marshal(resultDataCopy)
-				if err == nil {
-					output = string(data)
-				} else {
-					output = fmt.Sprintf("%v", resultDataCopy)
-				}
-			}
-		} else {
-			status, ok := resultMetadata["status"].(string)
-			if !ok {
-				status = "has unknown status"
-			}
-			output = fmt.Sprintf("Task %v %v\n", resultMetadata["id"], status)
+		out = fmt.Sprintf("Task %v %v", resultMetadata[fieldID], status)
+	}
+	res := map[string]any{
+		fieldID:     resultMetadata[fieldID],
+		fieldOutput: out,
+		fieldStatus: resultMetadata[fieldStatus],
+	}
+	if msg, ok := resultMetadata[fieldMessage]; ok {
+		res[fieldMessage] = msg
+	}
+	return stdout, stderr, res, nil
+}
+
+// extractTaskOutput splits stdout and stderr from the rest of the result data so that they can be printed separately in
+// plain format. The remaining data, except the filtered keys, is returned as a YAML string to be printed in the results
+// section of the output.
+func extractTaskOutput(resultData map[string]any) (string, string, string) {
+	var stdout, stderr string
+	resultDataCopy := make(map[string]any)
+	for k, v := range resultData {
+		k = strings.ToLower(k)
+
+		if k == fieldStdout && v != "" {
+			stdout = fmt.Sprint(v)
 		}
-		actionInfo[k] = map[string]interface{}{
-			"id":     resultMetadata["id"],
-			"output": output,
-			"status": resultMetadata["status"],
+		if k == fieldStderr && v != "" {
+			stderr = fmt.Sprint(v)
 		}
-		if msg, ok := resultMetadata["message"]; ok {
-			actionInfo[k]["message"] = msg
+		if !filteredOutputKeys.Contains(k) {
+			resultDataCopy[k] = v
 		}
 	}
-	if len(actionInfo) > 1 {
-		return cmd.FormatYaml(writer, actionInfo)
+	if len(resultDataCopy) == 0 {
+		return stdout, stderr, ""
 	}
-	for _, info := range actionInfo {
-		if info["status"] == params.ActionFailed {
-			w.Printf(output.ErrorHighlight, "Action id %v failed: %v\n", info["id"], info["message"])
-			w.Println(output.ErrorHighlight, info["output"])
-		} else {
-			w.Println(output.GoodHighlight, info["output"])
-		}
+	data, err := yaml.Marshal(resultDataCopy)
+	if err != nil {
+		return stdout, stderr, fmt.Sprintf("%v", resultDataCopy)
 	}
-	if stdout != "" {
-		fmt.Fprintln(writer, strings.Trim(stdout, "\n"))
-	}
-	if stderr != "" {
-		fmt.Fprintln(writer, strings.Trim(stderr, "\n"))
-	}
-	return nil
+	return stdout, stderr, string(data)
 }
 
 // formatActionResult removes empty values from the given ActionResult and
-// inserts the remaining ones in a map[string]interface{} for cmd.Output to
+// inserts the remaining ones in a map[string]any for cmd.Output to
 // write in an easy-to-read format.
-func formatActionResult(id string, result actionapi.ActionResult, utc bool) (map[string]interface{}, int) {
-	response := map[string]interface{}{"id": id, "status": result.Status}
+func formatActionResult(id string, result actionapi.ActionResult, utc bool) (map[string]any, int) {
+	response := map[string]any{fieldID: id, fieldStatus: result.Status}
 	if result.Error != nil {
 		response["error"] = result.Error.Error()
 	}
@@ -671,11 +710,11 @@ func formatActionResult(id string, result actionapi.ActionResult, utc bool) (map
 		}
 	}
 	if result.Message != "" {
-		response["message"] = result.Message
+		response[fieldMessage] = result.Message
 	}
-	output, exitCode := convertActionOutput(result.Output)
+	out, exitCode := convertActionOutput(result.Output)
 	if len(result.Output) != 0 {
-		response["results"] = output
+		response[fieldResults] = out
 	}
 	if len(result.Log) > 0 {
 		var logs []string
@@ -708,38 +747,38 @@ func formatActionResult(id string, result actionapi.ActionResult, utc bool) (map
 }
 
 // convertActionOutput returns result data with stdout, stderr etc correctly formatted.
-func convertActionOutput(output map[string]interface{}) (map[string]interface{}, int) {
+func convertActionOutput(output map[string]any) (map[string]any, int) {
 	if output == nil {
 		return nil, -1
 	}
 	values := output
 	// We always want to have a string for stdout, but only show stderr,
 	// code and error if they are there.
-	res, ok := output["stdout"].(string)
+	res, ok := output[fieldStdout].(string)
 	if ok && len(res) > 0 {
-		values["stdout"] = strings.Replace(res, "\r\n", "\n", -1)
+		values[fieldStdout] = strings.ReplaceAll(res, "\r\n", "\n")
 	} else {
-		delete(values, "stdout")
+		delete(values, fieldStdout)
 	}
-	res, ok = output["stderr"].(string)
+	res, ok = output[fieldStderr].(string)
 	if ok && len(res) > 0 {
-		values["stderr"] = strings.Replace(res, "\r\n", "\n", -1)
+		values[fieldStderr] = strings.ReplaceAll(res, "\r\n", "\n")
 	} else {
-		delete(values, "stderr")
+		delete(values, fieldStderr)
 	}
 	// return-code may come in as a float64 due to serialisation.
-	var v interface{}
-	if v, ok = output["return-code"]; ok && v != nil {
+	var v any
+	if v, ok = output[fieldReturnCode]; ok && v != nil {
 		res = fmt.Sprintf("%v", v)
 	}
 	code := -1
 	if ok && len(res) > 0 {
 		var err error
 		if code, err = strconv.Atoi(res); err == nil {
-			values["return-code"] = code
+			values[fieldReturnCode] = code
 		}
 	} else {
-		delete(values, "return-code")
+		delete(values, fieldReturnCode)
 	}
 	return values, code
 }
@@ -747,7 +786,7 @@ func convertActionOutput(output map[string]interface{}) (map[string]interface{},
 // addValueToMap adds the given value to the map on which the method is run.
 // This allows us to merge maps such as {foo: {bar: baz}} and {foo: {baz: faz}}
 // into {foo: {bar: baz, baz: faz}}.
-func addValueToMap(keys []string, value interface{}, target map[string]interface{}) {
+func addValueToMap(keys []string, value any, target map[string]any) {
 	next := target
 
 	for i := range keys {
@@ -759,14 +798,14 @@ func addValueToMap(keys []string, value interface{}, target map[string]interface
 
 		if iface, ok := next[keys[i]]; ok {
 			switch typed := iface.(type) {
-			case map[string]interface{}:
+			case map[string]any:
 				// If we already had a map inside, keep
 				// stepping through.
 				next = typed
 			default:
 				// If we didn't, then overwrite value
 				// with a map and iterate with that.
-				m := map[string]interface{}{}
+				m := map[string]any{}
 				next[keys[i]] = m
 				next = m
 			}
@@ -775,7 +814,7 @@ func addValueToMap(keys []string, value interface{}, target map[string]interface
 
 		// Otherwise, it wasn't present, so make it and step
 		// into.
-		m := map[string]interface{}{}
+		m := map[string]any{}
 		next[keys[i]] = m
 		next = m
 	}

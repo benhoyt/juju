@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/mock/gomock"
 
 	coreagentbinary "github.com/juju/juju/core/agentbinary"
@@ -592,6 +592,58 @@ func (s *serviceSuite) TestGetAllAPIAddressesForClientsError(c *tc.C) {
 	s.state.EXPECT().GetAPIAddressesForClients(gomock.Any()).Return(nil, internalerrors.Errorf("boom"))
 
 	_, err := svc.GetAllAPIAddressesForClients(c.Context())
+	c.Assert(err, tc.ErrorMatches, "boom")
+}
+
+func (s *serviceSuite) TestGetAPIAddressesByControllerIDForClients(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+	svc := NewService(s.state, loggertesting.WrapCheckLog(c))
+
+	// Arrange
+	args := map[string]controllernode.APIAddresses{
+		"1": {
+			{
+				Address: "10.0.0.1:17070",
+				IsAgent: true,
+				Scope:   network.ScopeCloudLocal,
+			}, {
+				Address: "10.0.0.2:17070",
+				IsAgent: false,
+				Scope:   network.ScopePublic,
+			},
+		},
+		"2": {
+			{
+				Address: "10.0.0.34:17070",
+				IsAgent: true,
+				Scope:   network.ScopePublic,
+			}, { // This address shouldn't appear.
+				Address: "10.0.0.9:17070",
+				IsAgent: false,
+				Scope:   network.ScopeMachineLocal,
+			},
+		},
+	}
+	s.state.EXPECT().GetAPIAddressesForClients(gomock.Any()).Return(args, nil)
+
+	// Act
+	apiAddrs, err := svc.GetAPIAddressesByControllerIDForClients(c.Context())
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(apiAddrs, tc.DeepEquals, map[string][]string{
+		"1": {"10.0.0.1:17070", "10.0.0.2:17070"},
+		"2": {"10.0.0.34:17070"},
+	})
+}
+
+func (s *serviceSuite) TestGetAPIAddressesByControllerIDForClientsError(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+	svc := NewService(s.state, loggertesting.WrapCheckLog(c))
+
+	s.state.EXPECT().GetAPIAddressesForClients(gomock.Any()).Return(nil, internalerrors.Errorf("boom"))
+
+	_, err := svc.GetAPIAddressesByControllerIDForClients(c.Context())
 	c.Assert(err, tc.ErrorMatches, "boom")
 }
 

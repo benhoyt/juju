@@ -49,9 +49,10 @@ WHERE  uuid = $entityUUID.uuid`, modelUUID)
 	return modelExists, errors.Capture(err)
 }
 
-// EnsureModelNotAliveCascade ensures that there is no model identified
-// by the input model UUID, that is still alive.
-func (st *State) EnsureModelNotAliveCascade(ctx context.Context, modelUUID string, force bool) error {
+// EnsureModelNotAlive ensures that there is no model identified
+// by the input model UUID, that is still alive. This does not cascade, as
+// it is only used to set the model life to dying.
+func (st *State) EnsureModelNotAlive(ctx context.Context, modelUUID string, force bool) error {
 	db, err := st.DB(ctx)
 	if err != nil {
 		return errors.Capture(err)
@@ -99,8 +100,70 @@ func (st *State) GetModelLife(ctx context.Context, mUUID string) (life.Life, err
 	return life, errors.Capture(err)
 }
 
+// IsMigratingModel returns whether the model with the input UUID is currently
+// migrating.
+func (st *State) IsMigratingModel(ctx context.Context, mUUID string) (bool, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return false, errors.Capture(err)
+	}
+
+	var isMigrating bool
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		var err error
+		isMigrating, err = st.isModelMigrating(ctx, tx, mUUID)
+		if err != nil {
+			return errors.Capture(err)
+		}
+		return nil
+	})
+	if err != nil {
+		return false, errors.Errorf("checking if model %q is migrating: %w", mUUID, err)
+	}
+
+	return isMigrating, nil
+}
+
+// MarkMigratingModelAsDead marks the migrating model with the input UUID as
+// dead. This doesn't check the current life state, as migrating models can be
+// either alive or dying. This will just force death.
+func (st *State) MarkMigratingModelAsDead(ctx context.Context, mUUID string) error {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	modelUUID := entityUUID{UUID: mUUID}
+	updateStmt, err := st.Prepare(`
+UPDATE model
+SET    life_id = 2
+WHERE  uuid = $entityUUID.uuid`, modelUUID)
+	if err != nil {
+		return errors.Errorf("preparing migrating model life update: %w", err)
+	}
+	return errors.Capture(db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		if l, err := st.getModelLife(ctx, tx, mUUID); err != nil {
+			return errors.Errorf("getting migrating model life: %w", err)
+		} else if l == life.Dead {
+			return nil
+		}
+
+		if migrating, err := st.isModelMigrating(ctx, tx, mUUID); err != nil {
+			return errors.Errorf("checking if model is migrating: %w", err)
+		} else if !migrating {
+			return errors.Errorf("model is not migrating")
+		}
+
+		err := tx.Query(ctx, updateStmt, modelUUID).Run()
+		if err != nil {
+			return errors.Errorf("marking migrating model as dead: %w", err)
+		}
+
+		return nil
+	}))
+}
+
 // MarkModelAsDead marks the model with the input UUID as dead.
-// If there are model dependents, then this will return an error.
 func (st *State) MarkModelAsDead(ctx context.Context, mUUID string) error {
 	db, err := st.DB(ctx)
 	if err != nil {
@@ -178,7 +241,11 @@ WHERE grant_on = $entityUUID.uuid;
 		} else if mLife == life.Alive {
 			return errors.Errorf("cannot delete model %q, model is still alive", modelUUIDParam.UUID).
 				Add(removalerrors.EntityStillAlive)
-		} else if mLife == life.Dying {
+		}
+
+		// We should not of got here, even with force. The model must be dead
+		// before it can be deleted.
+		if mLife == life.Dying {
 			return errors.Errorf("waiting for model to be dead before deletion").
 				Add(removalerrors.RemovalJobIncomplete)
 		}
@@ -228,7 +295,12 @@ FROM   model;
 
 	var modelUUIDs []entityUUID
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		return tx.Query(ctx, stmt).GetAll(&modelUUIDs)
+		if err := tx.Query(ctx, stmt).GetAll(&modelUUIDs); errors.Is(err, sqlair.ErrNoRows) {
+			return nil
+		} else if err != nil {
+			return errors.Errorf("running get model UUIDs query: %w", err)
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, errors.Errorf("getting model UUIDs: %w", err)
@@ -261,6 +333,27 @@ WHERE  uuid = $entityUUID.uuid;`, model, modelUUID)
 	return life.Life(model.Life), nil
 }
 
+func (st *State) isModelMigrating(ctx context.Context, tx *sqlair.TX, mUUID string) (bool, error) {
+	modelUUID := entityUUID{UUID: mUUID}
+	checkStmt, err := st.Prepare(`
+SELECT COUNT(uuid) AS &count.count
+FROM   model_migration_import
+WHERE  model_uuid = $entityUUID.uuid;`, modelUUID, count{})
+	if err != nil {
+		return false, errors.Errorf("preparing is migrating model query: %w", err)
+	}
+
+	var result count
+	err = tx.Query(ctx, checkStmt, modelUUID).Get(&result)
+	if errors.Is(err, sqlair.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, errors.Errorf("running is migrating model query: %w", err)
+	}
+
+	return result.Count > 0, nil
+}
+
 func (st *State) removeBasicModelData(ctx context.Context, tx *sqlair.TX, mUUID string) error {
 	modelUUIDRec := entityUUID{UUID: mUUID}
 
@@ -270,6 +363,7 @@ func (st *State) removeBasicModelData(ctx context.Context, tx *sqlair.TX, mUUID 
 		"DELETE FROM secret_backend_reference WHERE model_uuid = $entityUUID.uuid",
 		"DELETE FROM model_authorized_keys WHERE model_uuid = $entityUUID.uuid",
 		"DELETE FROM model_last_login WHERE model_uuid = $entityUUID.uuid",
+		"DELETE FROM model_migration_import WHERE model_uuid = $entityUUID.uuid",
 	}
 
 	for _, table := range tables {

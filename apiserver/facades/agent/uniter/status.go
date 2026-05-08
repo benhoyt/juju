@@ -12,7 +12,6 @@ import (
 
 	"github.com/juju/juju/apiserver/common"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
-	"github.com/juju/juju/core/leadership"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/core/unit"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
@@ -33,7 +32,7 @@ type StatusAPI struct {
 }
 
 // NewStatusAPI creates a new server-side Status setter API facade.
-func NewStatusAPI(statusService StatusService, getCanModify common.GetAuthFunc, leadershipChecker leadership.Checker, clock clock.Clock) *StatusAPI {
+func NewStatusAPI(statusService StatusService, getCanModify common.GetAuthFunc, clock clock.Clock) *StatusAPI {
 	// TODO(fwereade): so *all* of these have exactly the same auth
 	// characteristics? I think not.
 	unitSetter := common.NewUnitStatusSetter(statusService, clock, getCanModify)
@@ -81,8 +80,8 @@ func (s *StatusAPI) SetAgentStatus(ctx context.Context, args params.SetStatus) (
 			Status:  status.Status(arg.Status),
 			Message: arg.Info,
 			Data:    arg.Data,
-			Since:   ptr(s.clock.Now()),
-		}); errors.Is(err, statuserrors.UnitNotFound) {
+			Since:   new(s.clock.Now()),
+		}); errors.Is(err, applicationerrors.UnitNotFound) {
 			results.Results[i].Error = apiservererrors.ServerError(errors.NotFoundf("unit %q", tag.Id()))
 		} else if err != nil {
 			results.Results[i].Error = apiservererrors.ServerError(err)
@@ -134,8 +133,8 @@ func (s *StatusAPI) SetApplicationStatus(ctx context.Context, args params.SetSta
 			Status:  status.Status(arg.Status),
 			Message: arg.Info,
 			Data:    arg.Data,
-			Since:   ptr(s.clock.Now()),
-		}); errors.Is(err, statuserrors.UnitNotFound) {
+			Since:   new(s.clock.Now()),
+		}); errors.Is(err, applicationerrors.UnitNotFound) {
 			result.Results[i].Error = apiservererrors.ServerError(errors.NotFoundf("unit %q", unitName))
 			continue
 		} else if errors.Is(err, statuserrors.UnitNotLeader) {

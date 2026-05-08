@@ -83,17 +83,20 @@ func CreateGlobalModelRecord(
 				return errors.Errorf("determining cloud type for model %q: %w", args.Name, err)
 			}
 
-			if args.SecretBackend == "" && modelType == coremodel.CAAS {
-				args.SecretBackend = kubernetessecrets.BackendName
-			} else if args.SecretBackend == "" && modelType == coremodel.IAAS {
-				args.SecretBackend = jujusecrets.BackendName
-			} else if args.SecretBackend == "" {
-				return errors.Errorf(
-					"%w for model type %q when creating model with name %q",
-					secretbackenderrors.NotFound,
-					modelType,
-					args.Name,
-				)
+			if args.SecretBackend == "" {
+				switch modelType {
+				case coremodel.CAAS:
+					args.SecretBackend = kubernetessecrets.BackendName
+				case coremodel.IAAS:
+					args.SecretBackend = jujusecrets.BackendName
+				default:
+					return errors.Errorf(
+						"%w for model type %q when creating model with name %q",
+						secretbackenderrors.NotFound,
+						modelType,
+						args.Name,
+					)
+				}
 			}
 
 			if args.Credential.IsZero() {

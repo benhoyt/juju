@@ -26,6 +26,8 @@ import (
 	"github.com/juju/juju/api/jujuclient"
 	"github.com/juju/juju/api/jujuclient/jujuclienttesting"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/application/deployer"
 	"github.com/juju/juju/cmd/juju/application/store"
 	apputils "github.com/juju/juju/cmd/juju/application/utils"
@@ -37,13 +39,11 @@ import (
 	"github.com/juju/juju/core/network"
 	coreresouces "github.com/juju/juju/core/resource"
 	"github.com/juju/juju/core/semversion"
-	"github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
-	charmtesting "github.com/juju/juju/internal/charm/testing"
+	"github.com/juju/juju/core/storage"
+	"github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
+	charmtesting "github.com/juju/juju/domain/deployment/charm/testing"
 	"github.com/juju/juju/internal/charmhub"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
-	"github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/internal/testhelpers"
 	coretesting "github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc/params"
@@ -688,7 +688,7 @@ func (s *RefreshSuite) TestRespectsLocalRevisionWhenPossible(c *tc.C) {
 			Origin: commoncharm.Origin{
 				Base:     s.charmAPIClient.charmOrigin.Base,
 				Source:   "local",
-				Revision: ptr(42),
+				Revision: new(42),
 			},
 		},
 		ConfigSettings:   map[string]string{},
@@ -1295,10 +1295,10 @@ type mockModelConfigGetter struct {
 	deployer.ModelConfigGetter
 	testhelpers.Stub
 
-	cfg map[string]interface{}
+	cfg map[string]any
 }
 
-func (m *mockModelConfigGetter) ModelGet(ctx context.Context) (map[string]interface{}, error) {
+func (m *mockModelConfigGetter) ModelGet(ctx context.Context) (map[string]any, error) {
 	m.MethodCall(m, "ModelGet")
 	return m.cfg, m.NextErr()
 }

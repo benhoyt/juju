@@ -14,12 +14,12 @@ import (
 	"github.com/juju/tc"
 
 	apiservererrors "github.com/juju/juju/apiserver/errors"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/machine"
 	"github.com/juju/juju/core/model"
+	"github.com/juju/juju/core/storage"
 	"github.com/juju/juju/environs/manual"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
-	"github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc/params"
 )
@@ -291,7 +291,7 @@ func (f *fakeAddMachineAPI) ProvisioningScript(ctx context.Context, p params.Pro
 	return "", errors.NotImplementedf("ProvisioningScript")
 }
 
-func (f *fakeAddMachineAPI) ModelGet(ctx context.Context) (map[string]interface{}, error) {
+func (f *fakeAddMachineAPI) ModelGet(ctx context.Context) (map[string]any, error) {
 	if f.addModelGetError != nil {
 		return nil, f.addModelGetError
 	}
@@ -299,7 +299,7 @@ func (f *fakeAddMachineAPI) ModelGet(ctx context.Context) (map[string]interface{
 	if f.providerType != "" {
 		providerType = f.providerType
 	}
-	return testing.FakeConfig().Merge(map[string]interface{}{
+	return testing.FakeConfig().Merge(map[string]any{
 		"type": providerType,
 	}), nil
 }

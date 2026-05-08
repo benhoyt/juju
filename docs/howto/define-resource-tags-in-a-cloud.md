@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn how to define custom resource tags in Juju for the clouds where such tags are supported -- EC2 and OpenStack."
+---
+
 (define-cloud-resource-tags-in-a-cloud)=
 # How to define resource tags in a cloud
 

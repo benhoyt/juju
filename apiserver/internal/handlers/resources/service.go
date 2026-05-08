@@ -10,6 +10,7 @@ import (
 
 	coreresource "github.com/juju/juju/core/resource"
 	coreunit "github.com/juju/juju/core/unit"
+	"github.com/juju/juju/domain/application"
 	"github.com/juju/juju/domain/resource"
 )
 
@@ -23,13 +24,26 @@ type ResourceService interface {
 	//     exist.
 	//   - [resourceerrors.ApplicationNotFound] if the specified application
 	//     does not exist.
-	GetResourceUUIDByApplicationAndResourceName(ctx context.Context, appName string, resName string) (coreresource.UUID, error)
+	GetResourceUUIDByApplicationAndResourceName(
+		ctx context.Context,
+		appName, resName string,
+	) (coreresource.UUID, error)
 
 	// GetResource returns the identified application resource.
 	// The following error types can be expected to be returned:
 	//   - [resourceerrors.ResourceNotFound] if the specified resource does not
 	//     exist.
 	GetResource(ctx context.Context, resourceUUID coreresource.UUID) (coreresource.Resource, error)
+
+	// GetResourceWithoutApplication returns the identified resource,
+	// without validation of its application.
+	//
+	// The following error types can be expected to be returned:
+	//   - [resourceerrors.ResourceNotFound] if resource does
+	//     exist.
+	GetResourceWithoutApplication(
+		ctx context.Context, resourceUUID coreresource.UUID,
+	) (coreresource.Resource, error)
 
 	// OpenResource returns the details of and a reader for the resource.
 	// The following error types can be expected to be returned:
@@ -40,17 +54,24 @@ type ResourceService interface {
 	OpenResource(ctx context.Context, resourceUUID coreresource.UUID) (coreresource.Resource, io.ReadCloser, error)
 
 	// StoreResource adds the application resource to blob storage and updates
-	// the metadata. It also sets the retrival information for the resource.
-	StoreResource(ctx context.Context, args resource.StoreResourceArgs) error
+	// the metadata. It also sets the retrieval information for the resource.
+	// Returns the updated resource.
+	StoreResource(ctx context.Context, args resource.StoreResourceArgs) (coreresource.Resource, error)
 
 	// StoreResourceAndIncrementCharmModifiedVersion adds the application
 	// resource to blob storage and updates the metadata. It also sets the
-	// retrieval information for the resource.
-	StoreResourceAndIncrementCharmModifiedVersion(ctx context.Context, args resource.StoreResourceArgs) error
+	// retrieval information for the resource. Returns the updated resource.
+	StoreResourceAndIncrementCharmModifiedVersion(
+		ctx context.Context,
+		args resource.StoreResourceArgs,
+	) (coreresource.Resource, error)
 
 	// GetApplicationResourceID returns the ID of the application resource
 	// specified by the application and resource name.
-	GetApplicationResourceID(ctx context.Context, args resource.GetApplicationResourceIDArgs) (coreresource.UUID, error)
+	GetApplicationResourceID(
+		ctx context.Context,
+		args resource.GetApplicationResourceIDArgs,
+	) (coreresource.UUID, error)
 
 	// SetUnitResource records that the unit is using the resource.
 	SetUnitResource(ctx context.Context, resourceUUID coreresource.UUID, unitUUID coreunit.UUID) error
@@ -67,4 +88,39 @@ type ResourceServiceGetter interface {
 	// Resource retrieves a ResourceService for handling resource-related
 	// operations.
 	Resource(*http.Request) (ResourceService, error)
+}
+
+// CrossModelRelationService provides access to the cross model relation service.
+type CrossModelRelationService interface {
+	// IsApplicationSynthetic checks if the given application exists in the model
+	// and is a synthetic application.
+	IsApplicationSynthetic(ctx context.Context, appName string) (bool, error)
+}
+
+// ApplicationService defines operations related to applications.
+type ApplicationService interface {
+	// GetApplicationDetailsByName returns the application details for the given
+	// application name. This includes the UUID, life status, name, and whether
+	// the application is synthetic.
+	GetApplicationDetailsByName(ctx context.Context, name string) (application.ApplicationDetails, error)
+}
+
+// ApplicationServiceGetter is an interface for retrieving an ApplicationService
+// instance.
+type ApplicationServiceGetter interface {
+	// Application retrieves an ApplicationService for handling application-related
+	// operations.
+	Application(*http.Request) (ApplicationService, error)
+}
+
+// ModelService defines operations related to models.
+type ModelService interface {
+	// IsImportingModel returns true if this model is being imported.
+	IsImportingModel(ctx context.Context) (bool, error)
+}
+
+// ModelServiceGetter is an interface for retrieving a ModelService instance.
+type ModelServiceGetter interface {
+	// Model retrieves a ModelService for handling model-related operations.
+	Model(*http.Request) (ModelService, error)
 }

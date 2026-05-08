@@ -7,6 +7,7 @@ import (
 	"context"
 
 	"github.com/juju/juju/cloud"
+	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/trace"
 	"github.com/juju/juju/core/user"
 	"github.com/juju/juju/core/watcher"
@@ -57,10 +58,19 @@ func (s *Service) CreateCloud(ctx context.Context, owner user.Name, cloud cloud.
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
+	if len(cloud.AuthTypes) == 0 {
+		return errors.Errorf("empty auth-types %w", coreerrors.NotValid)
+	}
+
+	if cloud.Name == "" {
+		return errors.Errorf("%w cloud name cannot be empty", coreerrors.NotValid)
+	}
+
 	credUUID, err := uuid.NewUUID()
 	if err != nil {
 		return errors.Errorf("creating uuid for cloud %q: %w", cloud.Name, err)
 	}
+
 	err = s.st.CreateCloud(ctx, owner, credUUID.String(), cloud)
 	if err != nil {
 		return errors.Errorf("creating cloud %q: %w", cloud.Name, err)
@@ -72,6 +82,10 @@ func (s *Service) CreateCloud(ctx context.Context, owner user.Name, cloud cloud.
 func (s *Service) UpdateCloud(ctx context.Context, cloud cloud.Cloud) error {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
+
+	if cloud.Name == "" {
+		return errors.Errorf("%w cloud name cannot be empty", coreerrors.NotValid)
+	}
 
 	if err := s.st.UpdateCloud(ctx, cloud); err != nil {
 		return errors.Errorf("updating cloud %q: %w", cloud.Name, err)

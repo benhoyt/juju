@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,12 +18,15 @@ import (
 	"github.com/juju/gnuflag"
 	"github.com/juju/names/v6"
 
+	"github.com/juju/juju/api"
+	"github.com/juju/juju/api/client/client"
+	"github.com/juju/juju/api/client/highavailability"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/common"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/output"
 	"github.com/juju/juju/core/status"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/juju/osenv"
 )
 
@@ -36,13 +40,17 @@ func NewStatusHistoryCommand() cmd.Command {
 
 // HistoryAPI is the API surface for the show-status-log command.
 type HistoryAPI interface {
+	// StatusHistory returns the status history for the given entity tag
+	// and kind, filtered according to the provided filter.
 	StatusHistory(ctx context.Context, kind status.HistoryKind, tag names.Tag, filter status.StatusHistoryFilter) (status.History, error)
+
+	// Close closes the API client.
 	Close() error
 }
 
 type statusHistoryCommand struct {
 	modelcmd.ModelCommandBase
-	api             HistoryAPI
+	clients         []HistoryAPI
 	out             cmd.Output
 	outputContent   string
 	backlogSize     int
@@ -58,7 +66,7 @@ This command will report the history of status changes for
 a given entity.
 
 The statuses are available for the following types.
--type supports:
+--type supports:
 %v
  and sorted by time of occurrence.
 
@@ -84,7 +92,7 @@ Show the status history for the specified unit with the logs for any date after 
 
 Show the status history for the specified application:
 
-    juju show-status-log -type application wordpress
+    juju show-status-log --type application wordpress
 
 Show the status history for the specified machine:
 
@@ -92,7 +100,7 @@ Show the status history for the specified machine:
 
 Show the status history for the model:
 
-    juju show-status-log -type model
+    juju show-status-log --type model
 `
 
 func (c *statusHistoryCommand) Info() *cmd.Info {
@@ -122,11 +130,11 @@ func supportedHistoryKindDescs() string {
 	for k := range types {
 		supported.Add(string(k))
 	}
-	all := ""
+	var all strings.Builder
 	for _, k := range supported.SortedValues() {
-		all += fmt.Sprintf("    %v:  %v\n", k, types[status.HistoryKind(k)])
+		all.WriteString(fmt.Sprintf("    %v:  %v\n", k, types[status.HistoryKind(k)]))
 	}
-	return all
+	return all.String()
 }
 
 func (c *statusHistoryCommand) SetFlags(f *gnuflag.FlagSet) {
@@ -192,29 +200,17 @@ func (c *statusHistoryCommand) Init(args []string) error {
 
 // DetailedStatus holds status info about a machine or unit agent.
 type DetailedStatus struct {
-	Status  status.Status          `yaml:"status,omitempty" json:"status,omitempty"`
-	Message string                 `yaml:"message,omitempty" json:"message,omitempty"`
-	Data    map[string]interface{} `yaml:"data,omitempty" json:"data,omitempty"`
-	Since   *time.Time             `yaml:"since,omitempty" json:"since,omitempty"`
-	Kind    status.HistoryKind     `yaml:"type,omitempty" json:"type,omitempty"`
+	Status  status.Status      `yaml:"status,omitempty" json:"status,omitempty"`
+	Message string             `yaml:"message,omitempty" json:"message,omitempty"`
+	Data    map[string]any     `yaml:"data,omitempty" json:"data,omitempty"`
+	Since   *time.Time         `yaml:"since,omitempty" json:"since,omitempty"`
+	Kind    status.HistoryKind `yaml:"type,omitempty" json:"type,omitempty"`
 }
 
 // History holds the status results.
 type History []DetailedStatus
 
-func (c *statusHistoryCommand) getAPI(ctx context.Context) (HistoryAPI, error) {
-	if c.api != nil {
-		return c.api, nil
-	}
-	return c.NewAPIClient(ctx)
-}
-
 func (c *statusHistoryCommand) Run(ctx *cmd.Context) error {
-	apiclient, err := c.getAPI(ctx)
-	if err != nil {
-		return errors.Trace(err)
-	}
-	defer apiclient.Close()
 	kind := status.HistoryKind(c.outputContent)
 	var delta *time.Duration
 
@@ -254,17 +250,40 @@ func (c *statusHistoryCommand) Run(ctx *cmd.Context) error {
 		}
 		tag = names.NewMachineTag(c.entityName)
 	}
-	statuses, err := apiclient.StatusHistory(ctx, kind, tag, filterArgs)
-	historyLen := len(statuses)
+
+	clients, compat, err := c.getStatusHistoryClients(ctx, ctx)
 	if err != nil {
-		if historyLen == 0 {
-			return errors.Trace(err)
+		return err
+	} else if len(clients) == 0 {
+		return errors.New("no controller status-history clients available; is bootstrap still in progress?")
+	}
+	defer func() {
+		for _, client := range clients {
+			_ = client.Close()
 		}
-		// Display any error, but continue to print status if some was returned
-		fmt.Fprintf(ctx.Stderr, "%v\n", err)
+	}()
+
+	var statuses []status.DetailedStatus
+	for _, client := range clients {
+		s, err := client.StatusHistory(ctx, kind, tag, filterArgs)
+		// For compatibility with older controllers, if there is an error, but
+		// there are statuses returned, we ignore the error, otherwise we
+		// collect it.
+		if err != nil {
+			if len(s) == 0 && compat {
+				return errors.Trace(err)
+			}
+
+			// Display any error, but continue to print status if some was
+			// returned.
+			fmt.Fprintf(ctx.Stderr, "%v\n", err)
+		}
+
+		statuses = append(statuses, s...)
 	}
 
-	if historyLen == 0 {
+	// If there are no statuses at all, return an error.
+	if len(statuses) == 0 {
 		return errors.Errorf("no status history available")
 	}
 
@@ -278,10 +297,21 @@ func (c *statusHistoryCommand) Run(ctx *cmd.Context) error {
 			Kind:    h.Kind,
 		}
 	}
+	sort.Slice(history, func(i, j int) bool {
+		a, b := history[i], history[j]
+		if a.Since == nil && b.Since == nil {
+			return a.Status.String() < b.Status.String()
+		} else if a.Since == nil {
+			return false
+		} else if b.Since == nil {
+			return true
+		}
+		return a.Since.Before(*b.Since)
+	})
 	return c.out.Write(ctx, history)
 }
 
-func (c *statusHistoryCommand) formatTabular(writer io.Writer, value interface{}) error {
+func (c *statusHistoryCommand) formatTabular(writer io.Writer, value any) error {
 	h, ok := value.(History)
 	if !ok {
 		return errors.Errorf("expected value of type %T, got %T", History{}, value)
@@ -301,4 +331,99 @@ func (c *statusHistoryCommand) writeTabular(writer io.Writer, statuses History) 
 		w.Println(v.Message)
 	}
 	tw.Flush()
+}
+
+type warningLogger interface {
+	Warningf(format string, args ...any)
+}
+
+func (c *statusHistoryCommand) getStatusHistoryClients(ctx context.Context, warningLogger warningLogger) ([]HistoryAPI, bool, error) {
+	if c.clients != nil {
+		return c.clients, true, nil
+	}
+
+	controllerClient, err := getControllerDetailsClient(ctx, c)
+	if err != nil {
+		return nil, false, errors.Annotatef(err, "getting controller addresses")
+	}
+	defer controllerClient.Close()
+
+	// If we're connected to a HA facade that is less that 3, that indicates
+	// that the controller details API is not supported, so we fall back to
+	// using the address of the connected controller only.
+	if controllerClient.BestAPIVersion() < 3 {
+		clients, err := c.getStatusHistoryClient(ctx)
+		return clients, true, err
+	}
+
+	// We're connected to a HA controller that supports the controller details
+	// API, so we can get the addresses of all controllers.
+	controllers, err := controllerClient.ControllerDetails(ctx)
+	if errors.Is(err, errors.NotSupported) {
+		clients, err := c.getStatusHistoryClient(ctx)
+		return clients, true, err
+	} else if err != nil {
+		return nil, false, errors.Annotatef(err, "getting controller details")
+	}
+
+	var clients []HistoryAPI
+	for _, details := range controllers {
+		client, err := getStatusHistoryClientForAddresses(ctx, c, details.APIEndpoints)
+		if len(controllers) > 1 && errors.Is(err, api.ConnectionFailure) {
+			warningLogger.Warningf("cannot connect to status history client for controller %q at addresses %v: %v", details.ControllerID, details.APIEndpoints, err)
+			continue
+		} else if err != nil {
+			return nil, false, errors.Annotatef(err, "getting status history client for controller %q", details.ControllerID)
+		}
+		clients = append(clients, client)
+	}
+	return clients, false, nil
+}
+
+func (c *statusHistoryCommand) getStatusHistoryClient(ctx context.Context) ([]HistoryAPI, error) {
+	client, err := getStatusHistoryClient(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	return []HistoryAPI{client}, nil
+}
+
+// ControllerDetailsAPI provides access to the high availability facade.
+type ControllerDetailsAPI interface {
+	// ControllerDetails returns details about all controllers known to the
+	// client.
+	ControllerDetails(ctx context.Context) (map[string]highavailability.ControllerDetails, error)
+
+	// BestAPIVersion returns the best API version supported by the server.
+	BestAPIVersion() int
+
+	// Close closes the API client.
+	Close() error
+}
+
+var getControllerDetailsClient = func(ctx context.Context, c *statusHistoryCommand) (ControllerDetailsAPI, error) {
+	root, err := c.NewAPIRoot(ctx)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return highavailability.NewClient(root), nil
+}
+
+var getStatusHistoryClient = func(ctx context.Context, c *statusHistoryCommand) (HistoryAPI, error) {
+	root, err := c.NewAPIRoot(ctx)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return client.NewClient(root, logger), nil
+}
+
+var getStatusHistoryClientForAddresses = func(ctx context.Context, c *statusHistoryCommand, addresses []string) (HistoryAPI, error) {
+	root, err := c.NewAPIRootWithDialOpts(ctx, &api.DialOpts{
+		DialTimeout: 5 * time.Second,
+		Timeout:     30 * time.Second,
+	}, addresses...)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return client.NewClient(root, logger), nil
 }

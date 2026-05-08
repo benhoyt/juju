@@ -4,7 +4,7 @@
 package status_test
 
 import (
-	context "context"
+	"context"
 	"database/sql"
 	stdtesting "testing"
 
@@ -15,6 +15,7 @@ import (
 	"github.com/juju/juju/core/changestream"
 	"github.com/juju/juju/core/database"
 	coremachine "github.com/juju/juju/core/machine"
+	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/offer"
 	"github.com/juju/juju/core/status"
 	coreunit "github.com/juju/juju/core/unit"
@@ -30,7 +31,7 @@ import (
 	domainnetwork "github.com/juju/juju/domain/network"
 	domainstatus "github.com/juju/juju/domain/status"
 	"github.com/juju/juju/domain/status/service"
-	"github.com/juju/juju/domain/status/state"
+	statemodel "github.com/juju/juju/domain/status/state/model"
 	changestreamtesting "github.com/juju/juju/internal/changestream/testing"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/testing"
@@ -116,9 +117,11 @@ func (s *watcherSuite) TestWatchOfferStatus(c *tc.C) {
 func (s *watcherSuite) TestWatchOfferStatusApplicationWithUnits(c *tc.C) {
 	units := make([]application.AddIAASUnitArg, 3)
 	for i := range units {
+		unitUUID := tc.Must(c, coreunit.NewUUID)
 		netNodeUUID := tc.Must(c, domainnetwork.NewNetNodeUUID)
 		units[i].MachineUUID = tc.Must(c, coremachine.NewUUID)
 		units[i].MachineNetNodeUUID = netNodeUUID
+		units[i].UnitUUID = unitUUID
 		units[i].NetNodeUUID = netNodeUUID
 		units[i].WorkloadStatus = &domainstatus.StatusInfo[domainstatus.WorkloadStatusType]{
 			Status: domainstatus.WorkloadStatusActive,
@@ -132,6 +135,8 @@ func (s *watcherSuite) TestWatchOfferStatusApplicationWithUnits(c *tc.C) {
 
 	factory := changestream.NewWatchableDBFactoryForNamespace(s.GetWatchableDB, "status")
 	svc := s.setupService(c, factory)
+
+	s.AssertChangeStreamIdle(c)
 
 	watcher, err := svc.WatchOfferStatus(c.Context(), offerUUID)
 	c.Assert(err, tc.ErrorIsNil)
@@ -230,9 +235,10 @@ func (s *watcherSuite) setupService(c *tc.C, factory domain.WatchableDBFactory) 
 	}
 
 	return service.NewWatchableService(
-		state.NewModelState(modelDB, clock.WallClock, loggertesting.WrapCheckLog(c)),
+		statemodel.NewModelState(modelDB, clock.WallClock, loggertesting.WrapCheckLog(c)),
 		nil,
 		domain.NewWatcherFactory(factory, loggertesting.WrapCheckLog(c)),
+		nil,
 		domain.NewStatusHistory(loggertesting.WrapCheckLog(c), clock.WallClock),
 		nil,
 		clock.WallClock,
@@ -250,7 +256,7 @@ func (s *watcherSuite) createIAASApplication(
 		return s.ModelTxnRunner(), nil
 	}
 	appState := applicationstate.NewState(
-		modelDB, clock.WallClock, loggertesting.WrapCheckLog(c),
+		modelDB, model.UUID(s.ModelUUID()), clock.WallClock, loggertesting.WrapCheckLog(c),
 	)
 
 	platform := deployment.Platform{

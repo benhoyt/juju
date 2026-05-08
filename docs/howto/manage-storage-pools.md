@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Create, configure, list, and manage storage pools in Juju. Customize storage attributes for AWS EBS, LXD, and other providers."
+---
+
 (manage-storage-pools)=
 # How to manage storage pools
 

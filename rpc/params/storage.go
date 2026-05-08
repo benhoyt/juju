@@ -7,7 +7,15 @@ import (
 	"time"
 
 	"github.com/juju/juju/core/life"
-	"github.com/juju/juju/internal/storage"
+)
+
+// BlockDeviceProvenance is the origin of the block device information.
+type BlockDeviceProvenance string
+
+const (
+	BlockDeviceProvenanceUnknown  BlockDeviceProvenance = ""
+	BlockDeviceProvenanceProvider BlockDeviceProvenance = "provider"
+	BlockDeviceProvenanceMachine  BlockDeviceProvenance = "machine"
 )
 
 // BlockDevice is a block device present on a machine.
@@ -27,6 +35,9 @@ type BlockDevice struct {
 	InUse          bool     `json:"InUse"`
 	MountPoint     string   `json:"MountPoint"`
 	SerialId       string   `json:"SerialId"`
+
+	// Provenance is the origin of the block device information.
+	Provenance BlockDeviceProvenance `json:"provenance,omitempty"`
 }
 
 // MachineBlockDevices holds a machine tag and the block devices present
@@ -252,8 +263,8 @@ type VolumeAttachmentPlans struct {
 // VolumeAttachmentPlanInfo describes info needed by machine agents
 // to initialize attached volumes
 type VolumeAttachmentPlanInfo struct {
-	DeviceType       storage.DeviceType `json:"device-type,omitempty"`
-	DeviceAttributes map[string]string  `json:"device-attributes,omitempty"`
+	DeviceType       string            `json:"device-type,omitempty"`
+	DeviceAttributes map[string]string `json:"device-attributes,omitempty"`
 }
 
 // VolumeAttachmentInfo describes a volume attachment.
@@ -275,7 +286,7 @@ type VolumeParams struct {
 	VolumeTag  string                  `json:"volume-tag"`
 	SizeMiB    uint64                  `json:"size"`
 	Provider   string                  `json:"provider"`
-	Attributes map[string]interface{}  `json:"attributes,omitempty"`
+	Attributes map[string]any          `json:"attributes,omitempty"`
 	Tags       map[string]string       `json:"tags,omitempty"`
 	Attachment *VolumeAttachmentParams `json:"attachment,omitempty"`
 }
@@ -440,9 +451,22 @@ type FilesystemParams struct {
 	VolumeTag     string                      `json:"volume-tag,omitempty"`
 	SizeMiB       uint64                      `json:"size"`
 	Provider      string                      `json:"provider"`
-	Attributes    map[string]interface{}      `json:"attributes,omitempty"`
+	Attributes    map[string]any              `json:"attributes,omitempty"`
 	Tags          map[string]string           `json:"tags,omitempty"`
 	Attachment    *FilesystemAttachmentParams `json:"attachment,omitempty"`
+}
+
+// FilesystemParamsV5 holds the parameters for creating a storage filesystem for
+// the V5 storage provisioner facade.
+type FilesystemParamsV5 struct {
+	FilesystemTag string                        `json:"filesystem-tag"`
+	VolumeTag     string                        `json:"volume-tag,omitempty"`
+	SizeMiB       uint64                        `json:"size"`
+	Provider      string                        `json:"provider"`
+	ProviderId    *string                       `json:"provider-id,omitempty"`
+	Attributes    map[string]any                `json:"attributes,omitempty"`
+	Tags          map[string]string             `json:"tags,omitempty"`
+	Attachment    *FilesystemAttachmentParamsV5 `json:"attachment,omitempty"`
 }
 
 // RemoveFilesystemParams holds the parameters for destroying or releasing
@@ -472,6 +496,32 @@ type FilesystemAttachmentParams struct {
 	Provider   string `json:"provider"`
 	MountPoint string `json:"mount-point,omitempty"`
 	ReadOnly   bool   `json:"read-only,omitempty"`
+}
+
+// FilesystemAttachmentParamsV5 holds the parameters for creating a filesystem
+// attachment for the V5 storage provisioner facade.
+type FilesystemAttachmentParamsV5 struct {
+	FilesystemTag        string  `json:"filesystem-tag"`
+	MachineTag           string  `json:"machine-tag"`
+	FilesystemProviderId string  `json:"filesystem-provider-id,omitempty"`
+	InstanceId           string  `json:"instance-id,omitempty"`
+	Provider             string  `json:"provider"`
+	AttachmentProviderId *string `json:"attachment-provider-id,omitempty"`
+	MountPoint           string  `json:"mount-point,omitempty"`
+	ReadOnly             bool    `json:"read-only,omitempty"`
+}
+
+// FilesystemAttachmentParamsV6 holds the parameters for creating a filesystem
+// attachment for the V6 storage provisioner facade.
+type FilesystemAttachmentParamsV6 struct {
+	FilesystemTag        string  `json:"filesystem-tag"`
+	MachineTag           string  `json:"machine-tag"`
+	FilesystemProviderId string  `json:"filesystem-provider-id,omitempty"`
+	InstanceId           string  `json:"instance-id,omitempty"`
+	Provider             string  `json:"provider"`
+	AttachmentProviderId *string `json:"attachment-provider-id,omitempty"`
+	MountPoint           string  `json:"mount-point,omitempty"`
+	ReadOnly             bool    `json:"read-only,omitempty"`
 }
 
 // FilesystemAttachmentResult holds the details of a single filesystem attachment,
@@ -508,6 +558,17 @@ type FilesystemParamsResults struct {
 	Results []FilesystemParamsResult `json:"results,omitempty"`
 }
 
+// FilesystemParamsResultV5 holds provisioning parameters for a filesystem.
+type FilesystemParamsResultV5 struct {
+	Result FilesystemParamsV5 `json:"result"`
+	Error  *Error             `json:"error,omitempty"`
+}
+
+// FilesystemParamsResultsV5 holds provisioning parameters for multiple filesystems.
+type FilesystemParamsResultsV5 struct {
+	Results []FilesystemParamsResultV5 `json:"results,omitempty"`
+}
+
 // RemoveFilesystemParamsResult holds parameters for destroying or releasing
 // a filesystem.
 type RemoveFilesystemParamsResult struct {
@@ -532,6 +593,32 @@ type FilesystemAttachmentParamsResult struct {
 // filesystem attachments.
 type FilesystemAttachmentParamsResults struct {
 	Results []FilesystemAttachmentParamsResult `json:"results,omitempty"`
+}
+
+// FilesystemAttachmentParamsResultV5 holds provisioning parameters for a filesystem
+// attachment.
+type FilesystemAttachmentParamsResultV5 struct {
+	Result FilesystemAttachmentParamsV5 `json:"result"`
+	Error  *Error                       `json:"error,omitempty"`
+}
+
+// FilesystemAttachmentParamsResultsV5 holds provisioning parameters for multiple
+// filesystem attachments.
+type FilesystemAttachmentParamsResultsV5 struct {
+	Results []FilesystemAttachmentParamsResultV5 `json:"results,omitempty"`
+}
+
+// FilesystemAttachmentParamsResultV6 holds provisioning parameters for a filesystem
+// attachment.
+type FilesystemAttachmentParamsResultV6 struct {
+	Result FilesystemAttachmentParamsV6 `json:"result"`
+	Error  *Error                       `json:"error,omitempty"`
+}
+
+// FilesystemAttachmentParamsResultsV6 holds provisioning parameters for multiple
+// filesystem attachments.
+type FilesystemAttachmentParamsResultsV6 struct {
+	Results []FilesystemAttachmentParamsResultV6 `json:"results,omitempty"`
 }
 
 // StorageDetails holds information about storage.
@@ -627,7 +714,7 @@ type StoragePool struct {
 	Provider string `json:"provider"`
 
 	// Attrs are the pool's configuration attributes.
-	Attrs map[string]interface{} `json:"attrs"`
+	Attrs map[string]any `json:"attrs"`
 }
 
 // StoragePoolArgs contains a set of StoragePool.

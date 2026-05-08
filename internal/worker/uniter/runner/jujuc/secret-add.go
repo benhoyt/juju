@@ -5,6 +5,7 @@ package jujuc
 
 import (
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/juju/errors"
@@ -12,8 +13,8 @@ import (
 	"github.com/juju/names/v6"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/core/secrets"
-	"github.com/juju/juju/internal/cmd"
 )
 
 type secretUpsertCommand struct {
@@ -48,14 +49,14 @@ func (c *secretAddCommand) Info() *cmd.Info {
 	doc := `
 Add a secret with a list of key values.
 
-If a key has the '#base64' suffix, the value is already in base64 format and no
+If a key has the ` + "`#base64`" + ` suffix, the value is already in base64 format and no
 encoding will be performed, otherwise the value will be base64 encoded
 prior to being stored.
 
-If a key has the '#file' suffix, the value is read from the corresponding file.
+If a key has the ` + "`#file`" + ` suffix, the value is read from the corresponding file.
 
 By default, a secret is owned by the application, meaning only the unit
-leader can manage it. Use "--owner unit" to create a secret owned by the
+leader can manage it. Use ` + "`--owner unit`" + ` to create a secret owned by the
 specific unit which created it.
 `
 	examples := `
@@ -75,8 +76,8 @@ specific unit which created it.
 `
 	return jujucmd.Info(&cmd.Info{
 		Name:     "secret-add",
-		Args:     "[key[#base64|#file]=value...]",
-		Purpose:  "Add a new secret.",
+		Args:     "<key>[#base64]=<value> ...",
+		Purpose:  "Adds a new secret.",
 		Doc:      doc,
 		Examples: examples,
 	})
@@ -84,12 +85,12 @@ specific unit which created it.
 
 // SetFlags implements cmd.Command.
 func (c *secretUpsertCommand) SetFlags(f *gnuflag.FlagSet) {
-	f.StringVar(&c.expireSpec, "expire", "", "either a duration or time when the secret should expire")
-	f.StringVar(&c.rotatePolicy, "rotate", "", "the secret rotation policy")
-	f.StringVar(&c.description, "description", "", "the secret description")
-	f.StringVar(&c.label, "label", "", "a label used to identify the secret in hooks")
-	f.StringVar(&c.fileName, "file", "", "a YAML file containing secret key values")
-	f.StringVar(&c.owner, "owner", "application", "the owner of the secret, either the application or unit")
+	f.StringVar(&c.expireSpec, "expire", "", "Specifies either a duration or time when the secret should expire.")
+	f.StringVar(&c.rotatePolicy, "rotate", "", "Specifies the secret rotation policy.")
+	f.StringVar(&c.description, "description", "", "Specifies the secret description.")
+	f.StringVar(&c.label, "label", "", "Specifies a label used to identify the secret in hooks.")
+	f.StringVar(&c.fileName, "file", "", "Specifies a YAML file containing secret key values.")
+	f.StringVar(&c.owner, "owner", "application", "Specifies the owner of the secret, either the application or unit.")
 }
 
 const rcf3339NoTZ = "2006-01-02T15:04:05"
@@ -132,9 +133,7 @@ func (c *secretUpsertCommand) Init(args []string) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	for k, v := range dataFromFile {
-		c.data[k] = v
-	}
+	maps.Copy(c.data, dataFromFile)
 	return nil
 }
 

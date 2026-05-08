@@ -27,6 +27,7 @@ import (
 	"github.com/juju/juju/domain/model"
 	"github.com/juju/juju/domain/modelmigration"
 	"github.com/juju/juju/domain/relation"
+	"github.com/juju/juju/domain/removal"
 	domainstatus "github.com/juju/juju/domain/status"
 	"github.com/juju/juju/environs/cloudspec"
 	"github.com/juju/juju/environs/config"
@@ -77,11 +78,15 @@ type ModelService interface {
 	// GetModelUsers will retrieve basic information about users with permissions on
 	// the given model UUID.
 	GetModelUsers(ctx context.Context, modelUUID coremodel.UUID) ([]coremodel.ModelUserInfo, error)
-	// ListAllModels returns a slice of all models in the controller. If no models
+	// GetAllModels returns a slice of all models in the controller. If no models
 	// exist an empty slice is returned.
-	ListAllModels(ctx context.Context) ([]coremodel.Model, error)
-	// ListModelUUIDs returns a list of all model UUIDs in the controller.
-	ListModelUUIDs(context.Context) ([]coremodel.UUID, error)
+	GetAllModels(ctx context.Context) ([]coremodel.Model, error)
+	// GetModelUUIDs returns a list of all hosted model UUIDs in the
+	// controller. This includes the controller model UUID.
+	GetModelUUIDs(context.Context) ([]coremodel.UUID, error)
+	// GetHostedModelUUIDs returns a list of all hosted model UUIDs in the
+	// controller. This excludes the controller model UUID.
+	GetHostedModelUUIDs(context.Context) ([]coremodel.UUID, error)
 	// CheckModelExists checks if a model exists within the controller. True or
 	// false is returned indiciating of the model exists.
 	CheckModelExists(ctx context.Context, modelUUID coremodel.UUID) (bool, error)
@@ -104,9 +109,10 @@ type ModelInfoService interface {
 
 // ApplicationService provides access to the application service.
 type ApplicationService interface {
-	// CheckAllApplicationsAndUnitsAreAlive checks that all applications and units
-	// in the model are alive, returning an error if any are not.
-	CheckAllApplicationsAndUnitsAreAlive(ctx context.Context) error
+	// CheckApplicationsForMigration checks that all applications are ready
+	// for migration. All applications and units in the model are alive and no
+	// units are in the process of upgrading.
+	CheckApplicationsForMigration(ctx context.Context) error
 
 	// GetUnitNamesForApplication returns a slice of the unit names for the given application
 	GetUnitNamesForApplication(ctx context.Context, appName string) ([]unit.Name, error)
@@ -259,6 +265,10 @@ type ModelAgentService interface {
 
 // RemovalService provides access to the removal service.
 type RemovalService interface {
-	// RemoveController removes the controller and all models.
-	RemoveController(ctx context.Context, force bool, wait time.Duration) error
+	// RemoveController removes the controller model, and returns the hosted
+	// model UUIDs that will also need to be scheduled for removal.
+	RemoveController(ctx context.Context, force bool, wait time.Duration) ([]coremodel.UUID, error)
+
+	// RemoveModel removes the specified model.
+	RemoveModel(ctx context.Context, modelUUID coremodel.UUID, force bool, wait time.Duration) (removal.UUID, error)
 }

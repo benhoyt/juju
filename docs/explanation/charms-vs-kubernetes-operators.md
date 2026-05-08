@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn how Juju charms expand on Kubernetes operators, supporting multiple infrastructure types: Kubernetes, VMs, and bare metal."
+---
+
 (charms-vs-kubernetes-operators)=
 # Charms vs. Kubernetes operators
 

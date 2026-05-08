@@ -15,6 +15,7 @@ import (
 	"github.com/juju/juju/api/jujuclient"
 	"github.com/juju/juju/caas"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/arch"
 	corebase "github.com/juju/juju/core/base"
@@ -25,7 +26,6 @@ import (
 	"github.com/juju/juju/environs/imagemetadata"
 	"github.com/juju/juju/environs/simplestreams"
 	"github.com/juju/juju/environs/storage"
-	"github.com/juju/juju/internal/cmd"
 )
 
 func prepare(ctx *cmd.Context, controllerName string, store jujuclient.ClientStore) (environs.Environ, error) {
@@ -51,8 +51,12 @@ func prepare(ctx *cmd.Context, controllerName string, store jujuclient.ClientSto
 	// identify region and endpoint info that we need. Not sure what
 	// we'll do about simplestreams.MetadataValidator yet. Probably
 	// move it to the EnvironProvider interface.
+	ctrl, err := store.ControllerByName(controllerName)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 	return environs.New(ctx, environs.OpenParams{
-		ControllerUUID: bootstrapConfig.ControllerConfig.ControllerUUID(),
+		ControllerUUID: ctrl.ControllerUUID,
 		Cloud:          *spec,
 		Config:         cfg,
 	}, environs.NoopCredentialInvalidator())

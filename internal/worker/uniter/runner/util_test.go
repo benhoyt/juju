@@ -21,7 +21,7 @@ import (
 	"github.com/juju/juju/api/types"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/network"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 	internallogger "github.com/juju/juju/internal/logger"
 	"github.com/juju/juju/internal/testhelpers"
 	coretesting "github.com/juju/juju/internal/testing"
@@ -111,11 +111,11 @@ func (s *ContextSuite) setupFactory(c *tc.C, ctrl *gomock.Controller) {
 		UUID:      coretesting.ModelTag.Id(),
 		ModelType: types.IAAS,
 	}, nil).AnyTimes()
-	s.uniter.EXPECT().APIAddresses(gomock.Any()).Return([]string{"10.6.6.6"}, nil).AnyTimes()
-	s.uniter.EXPECT().CloudAPIVersion(gomock.Any()).Return("6.6.6", nil).AnyTimes()
 
-	cfg := coretesting.ModelConfig(c)
-	s.uniter.EXPECT().ModelConfig(gomock.Any()).Return(cfg, nil).AnyTimes()
+	s.uniter.EXPECT().GetUnitContext(gomock.Any(), gomock.Any()).Return(apiuniter.UnitContext{
+		APIAddresses:    []string{"10.6.6.6"},
+		CloudAPIVersion: "6.6.6",
+	}, nil).AnyTimes()
 
 	contextFactory, err := context.NewContextFactory(c.Context(), context.FactoryConfig{
 		Uniter:           s.uniter,
@@ -220,7 +220,7 @@ func makeCharm(c *tc.C, spec hookSpec, charmDir string) {
 		c.Assert(hook.Close(), tc.IsNil)
 	}()
 
-	printf := func(f string, a ...interface{}) {
+	printf := func(f string, a ...any) {
 		_, err := fmt.Fprintf(hook, f+"\n", a...)
 		c.Assert(err, tc.ErrorIsNil)
 	}

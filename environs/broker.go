@@ -8,7 +8,6 @@ import (
 
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/instance"
-	"github.com/juju/juju/core/lxdprofile"
 	corenetwork "github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/environs/config"
@@ -20,7 +19,7 @@ import (
 )
 
 // StatusCallbackFunc represents a function that can be called to report a status.
-type StatusCallbackFunc func(ctx context.Context, settableStatus status.Status, info string, data map[string]interface{}) error
+type StatusCallbackFunc func(ctx context.Context, settableStatus status.Status, info string, data map[string]any) error
 
 // StartInstanceParams holds parameters for the
 // InstanceBroker.StartInstance method.
@@ -104,11 +103,6 @@ type StartInstanceParams struct {
 	// Abort is a channel that will be closed to indicate that the command
 	// should be aborted.
 	Abort <-chan struct{}
-
-	// CharmLXDProfiles is a slice of names of lxd profiles to be used creating
-	// the LXD container, if specified and an LXD container.  The profiles
-	// come from charms deployed on the machine.
-	CharmLXDProfiles []string
 }
 
 // StartInstanceResult holds the result of an
@@ -172,19 +166,4 @@ type InstanceBroker interface {
 
 	// AllRunningInstances returns all running, available instances currently known to the broker.
 	AllRunningInstances(ctx context.Context) ([]instances.Instance, error)
-}
-
-// LXDProfiler defines an interface for dealing with lxd profiles used to
-// deploy juju machines and containers.
-type LXDProfiler interface {
-	// AssignLXDProfiles assigns the given profile names to the lxd instance
-	// provided.  The slice of ProfilePosts provides details for adding to
-	// and removing profiles from the lxd server.
-	AssignLXDProfiles(instID string, profilesNames []string, profilePosts []lxdprofile.ProfilePost) ([]string, error)
-
-	// MaybeWriteLXDProfile writes the given LXDProfile to if not already there.
-	MaybeWriteLXDProfile(pName string, put lxdprofile.Profile) error
-
-	// LXDProfileNames returns all the profiles associated to a container name
-	LXDProfileNames(containerName string) ([]string, error)
 }

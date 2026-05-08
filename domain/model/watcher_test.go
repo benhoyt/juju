@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	stdtesting "testing"
 
+	"github.com/canonical/sqlair"
 	"github.com/juju/clock"
 	"github.com/juju/tc"
 
@@ -17,7 +18,6 @@ import (
 	"github.com/juju/juju/core/database"
 	"github.com/juju/juju/core/logger"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
 	"github.com/juju/juju/core/watcher/watchertest"
@@ -49,8 +49,8 @@ func TestWatcherSuite(t *stdtesting.T) {
 }
 
 func insertModelDependencies(c *tc.C, dbTxnRunnerFactory database.TxnRunnerFactory,
-	dbTxnRunner database.TxnRunner, userUUID user.UUID, userName user.Name) {
-	accessState := accessstate.NewState(dbTxnRunnerFactory, loggertesting.WrapCheckLog(c))
+	dbTxnRunner database.TxnRunner, userUUID user.UUID, userName user.Name) coremodel.UUID {
+	accessState := accessstate.NewState(dbTxnRunnerFactory, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	// Add a user so we can set model owner.
 	err := accessState.AddUser(
@@ -101,13 +101,40 @@ func insertModelDependencies(c *tc.C, dbTxnRunnerFactory database.TxnRunnerFacto
 
 	err = bootstrap.CreateDefaultBackends(coremodel.IAAS)(c.Context(), dbTxnRunner, dbTxnRunner)
 	c.Assert(err, tc.ErrorIsNil)
+
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
+	err = dbTxnRunner.Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		err := statecontroller.Create(
+			ctx,
+			preparer{},
+			tx,
+			modelUUID,
+			coremodel.IAAS,
+			domainmodel.GlobalModelCreationArgs{
+				Cloud:         "my-cloud",
+				Name:          coremodel.ControllerModelName,
+				Qualifier:     "admin",
+				AdminUsers:    []user.UUID{userUUID},
+				SecretBackend: juju.BackendName,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	return modelUUID
 }
 
 func (s *watcherSuite) SetUpTest(c *tc.C) {
 	s.ControllerSuite.SetUpTest(c)
 	s.userUUID = usertesting.GenUserUUID(c)
 	s.userName = usertesting.GenNewName(c, "test-user")
-	insertModelDependencies(c, s.TxnRunnerFactory(), s.TxnRunner(), s.userUUID, s.userName)
+	controllerModelUUID := insertModelDependencies(c, s.TxnRunnerFactory(), s.TxnRunner(), s.userUUID, s.userName)
+
+	s.SeedControllerTable(c, controllerModelUUID)
 }
 
 func (s *watcherSuite) TestWatchControllerDBModels(c *tc.C) {
@@ -267,7 +294,7 @@ func (s *watcherSuite) TestWatchModelCloudCredential(c *tc.C) {
 		Owner: s.userName,
 		Name:  "my-cloud-credential",
 	}
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 	err = st.Create(
 		c.Context(),
 		modelUUID,
@@ -284,6 +311,8 @@ func (s *watcherSuite) TestWatchModelCloudCredential(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	err = st.Activate(c.Context(), modelUUID)
 	c.Assert(err, tc.ErrorIsNil)
+
+	s.AssertChangeStreamIdle(c)
 
 	modelService := service.NewWatchableService(
 		st,
@@ -415,4 +444,10 @@ func (l statusHistoryGetter) GetStatusHistoryForModel(ctx context.Context, model
 
 	logger := loggerContext.GetLogger("juju.services")
 	return domain.NewStatusHistory(logger, l.clock), nil
+}
+
+type preparer struct{}
+
+func (p preparer) Prepare(query string, args ...any) (*sqlair.Statement, error) {
+	return sqlair.Prepare(query, args...)
 }

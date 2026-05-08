@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/juju/collections/set"
-	"github.com/juju/description/v10"
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"gopkg.in/macaroon.v2"
@@ -44,17 +43,13 @@ import (
 	"github.com/juju/juju/rpc/params"
 )
 
-// ModelExporter exports a model to a description.Model.
-type ModelExporter interface {
-	// ExportModel exports a model to a description.Model.
-	// It requires a known set of leaders to be passed in, so that applications
-	// can have their leader set correctly once imported.
-	// The objectstore is used to retrieve charms and resources for export.
-	ExportModel(context.Context, objectstore.ObjectStore) (description.Model, error)
-}
-
 // ControllerAPIV12 implements the controller APIV12.
 type ControllerAPIV12 struct {
+	*ControllerAPIV13
+}
+
+// ControllerAPIV13 implements the controller APIV13.
+type ControllerAPIV13 struct {
 	*ControllerAPI
 }
 
@@ -83,7 +78,6 @@ type ControllerAPI struct {
 	machineServiceGetter        func(context.Context, coremodel.UUID) (MachineService, error)
 	removalServiceGetter        func(context.Context, coremodel.UUID) (RemovalService, error)
 	proxyService                ProxyService
-	modelExporter               func(context.Context, coremodel.UUID) (ModelExporter, error)
 	store                       objectstore.ObjectStore
 	logger                      corelogger.Logger
 	controllerModelUUID         coremodel.UUID
@@ -120,7 +114,6 @@ func NewControllerAPI(
 	machineServiceGetter func(context.Context, coremodel.UUID) (MachineService, error),
 	removalServiceGetter func(context.Context, coremodel.UUID) (RemovalService, error),
 	proxyService ProxyService,
-	modelExporter func(context.Context, coremodel.UUID) (ModelExporter, error),
 	store objectstore.ObjectStore,
 	controllerModelUUID coremodel.UUID,
 	controllerUUID string,
@@ -174,7 +167,6 @@ func NewControllerAPI(
 		removalServiceGetter:        removalServiceGetter,
 		modelMigrationServiceGetter: modelMigrationServiceGetter,
 		proxyService:                proxyService,
-		modelExporter:               modelExporter,
 		store:                       store,
 		controllerModelUUID:         controllerModelUUID,
 		controllerUUID:              controllerUUID,
@@ -244,7 +236,7 @@ func (c *ControllerAPI) AllModels(ctx context.Context) (params.UserModelList, er
 		return result, errors.Trace(err)
 	}
 
-	models, err := c.modelService.ListAllModels(ctx)
+	models, err := c.modelService.GetAllModels(ctx)
 	if err != nil {
 		return result, errors.Trace(err)
 	}
@@ -281,6 +273,76 @@ func (c *ControllerAPI) AllModels(ctx context.Context) (params.UserModelList, er
 	return result, nil
 }
 
+// CloudSpec is not implemented in version 13.
+func (c *ControllerAPIV13) CloudSpec(ctx context.Context, _, _ struct{}) {}
+
+// CloudSpec returns cloud specifications for the specified models.
+func (c *ControllerAPI) CloudSpec(ctx context.Context, args params.Entities) (params.CloudSpecResults, error) {
+	// We could just compare to the controller model UUID directly, but keeping
+	// this abstraction from 3.6 allows aligns with the fact that we accept
+	// multiple model tags as args to this method.
+	authFunc, err := common.AuthFuncForTag(names.NewModelTag(c.controllerModelUUID.String()))(ctx)
+	if err != nil {
+		return params.CloudSpecResults{}, errors.Trace(err)
+	}
+	// Connected clients which are the controller agent
+	// or model agent can fetch credentials with the cloud spec.
+	// Users must be superusers or model admins.
+	credAllowed := c.authorizer.AuthController() || c.authorizer.AuthModelAgent()
+	if !credAllowed && c.authorizer.AuthClient() {
+		var err error
+		err = c.authorizer.HasPermission(ctx, permission.SuperuserAccess, names.NewControllerTag(c.controllerUUID))
+		if err != nil && !errors.Is(err, authentication.ErrorEntityMissingPermission) {
+			return params.CloudSpecResults{}, errors.Trace(err)
+		}
+		credAllowed = err == nil
+	}
+	results := params.CloudSpecResults{
+		Results: make([]params.CloudSpecResult, len(args.Entities)),
+	}
+	for i, arg := range args.Entities {
+		results.Results[i] = c.getOneCloudSpec(ctx, arg.Tag, credAllowed, authFunc)
+	}
+	return results, nil
+}
+
+func (c *ControllerAPI) getOneCloudSpec(ctx context.Context, tagStr string, credAllowed bool, authFunc common.AuthFunc) params.CloudSpecResult {
+	tag, err := names.ParseModelTag(tagStr)
+	if err != nil {
+		return params.CloudSpecResult{
+			Error: apiservererrors.ServerError(errors.Trace(err)),
+		}
+	}
+	if !authFunc(tag) {
+		return params.CloudSpecResult{
+			Error: apiservererrors.ServerError(apiservererrors.ErrPerm),
+		}
+	}
+	spec, err := c.getCloudSpec(ctx, coremodel.UUID(tag.Id()))
+	if err != nil {
+		return params.CloudSpecResult{
+			Error: apiservererrors.ServerError(errors.Trace(err)),
+		}
+	}
+	// If not already allowed, only model admins
+	// can see the credentials.
+	if !credAllowed && c.authorizer.AuthClient() {
+		err = c.authorizer.HasPermission(ctx, permission.AdminAccess, tag)
+		if err != nil && !errors.Is(err, authentication.ErrorEntityMissingPermission) {
+			return params.CloudSpecResult{
+				Error: apiservererrors.ServerError(errors.Trace(err)),
+			}
+		}
+		credAllowed = err == nil
+	}
+	if !credAllowed {
+		spec.Credential = nil
+	}
+	return params.CloudSpecResult{
+		Result: spec,
+	}
+}
+
 // ListBlockedModels returns a list of all models on the controller
 // which have a block in place.  The resulting slice is sorted by model
 // name, then owner. Callers must be controller administrators to retrieve the
@@ -291,7 +353,7 @@ func (c *ControllerAPI) ListBlockedModels(ctx context.Context) (params.ModelBloc
 		return results, errors.Trace(err)
 	}
 
-	models, err := c.modelService.ListAllModels(ctx)
+	models, err := c.modelService.GetAllModels(ctx)
 	if err != nil {
 		return results, errors.Trace(err)
 	}
@@ -332,7 +394,7 @@ func (c *ControllerAPI) HostedModelConfigs(ctx context.Context) (params.HostedMo
 		return result, errors.Trace(err)
 	}
 
-	models, err := c.modelService.ListAllModels(ctx)
+	models, err := c.modelService.GetAllModels(ctx)
 	if err != nil {
 		return result, errors.Trace(err)
 	}
@@ -401,7 +463,7 @@ func (c *ControllerAPI) RemoveBlocks(ctx context.Context, args params.RemoveBloc
 	}
 
 	// If there are blocks let the user know.
-	uuids, err := c.modelService.ListModelUUIDs(ctx)
+	uuids, err := c.modelService.GetModelUUIDs(ctx)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -438,10 +500,10 @@ func (c *ControllerAPI) WatchAllModelSummaries(ctx context.Context) (params.Summ
 		return params.SummaryWatcherID{}, errors.Trace(err)
 	}
 	// TODO(dqlite) - implement me
-	//w := c.controller.WatchAllModels()
-	//return params.SummaryWatcherID{
+	// w := c.controller.WatchAllModels()
+	// return params.SummaryWatcherID{
 	//	WatcherID: c.resources.Register(w),
-	//}, nil
+	// }, nil
 	return params.SummaryWatcherID{}, errors.NotSupportedf("WatchAllModelSummaries")
 }
 
@@ -450,11 +512,11 @@ func (c *ControllerAPI) WatchAllModelSummaries(ctx context.Context) (params.Summ
 func (c *ControllerAPI) WatchModelSummaries(ctx context.Context) (params.SummaryWatcherID, error) {
 	// TODO(dqlite) - implement me
 	return params.SummaryWatcherID{}, errors.NotSupportedf("WatchModelSummaries")
-	//user := c.apiUser.Id()
-	//w := c.controller.WatchModelsAsUser(user)
-	//return params.SummaryWatcherID{
+	// user := c.apiUser.Id()
+	// w := c.controller.WatchModelsAsUser(user)
+	// return params.SummaryWatcherID{
 	//	WatcherID: c.resources.Register(w),
-	//}, nil
+	// }, nil
 }
 
 // GetControllerAccess returns the level of access the specified users
@@ -511,7 +573,7 @@ func (c *ControllerAPI) InitiateMigration(ctx context.Context, reqArgs params.In
 	for i, spec := range reqArgs.Specs {
 		result := &out.Results[i]
 		result.ModelTag = spec.ModelTag
-		id, err := c.initiateOneMigration(ctx, spec)
+		id, err := c.initiateOneMigration(ctx, spec, reqArgs.DryRun)
 		if err != nil {
 			result.Error = apiservererrors.ServerError(err)
 		} else {
@@ -521,7 +583,7 @@ func (c *ControllerAPI) InitiateMigration(ctx context.Context, reqArgs params.In
 	return out, nil
 }
 
-func (c *ControllerAPI) initiateOneMigration(ctx context.Context, spec params.MigrationSpec) (string, error) {
+func (c *ControllerAPI) initiateOneMigration(ctx context.Context, spec params.MigrationSpec, dryRun bool) (string, error) {
 	modelTag, err := names.ParseModelTag(spec.ModelTag)
 	if err != nil {
 		return "", errors.Annotate(err, "model tag")
@@ -575,6 +637,8 @@ func (c *ControllerAPI) initiateOneMigration(ctx context.Context, spec params.Mi
 	if err != nil {
 		return "", errors.Trace(err)
 	}
+
+	// TODO - wire up the dryRun parameter
 	migrationID, err := modelMigrationService.InitiateMigration(ctx, targetInfo, c.apiUser.Id())
 	if err != nil {
 		return "", errors.Trace(err)
@@ -603,6 +667,7 @@ func (c *ControllerAPI) ModifyControllerAccess(ctx context.Context, args params.
 			result.Results[i].Error = apiservererrors.ServerError(apiservererrors.ErrPerm)
 			// Security Event Logging: This log statement is required to comply with Canonical's SSDLC Security Event Logging policy.
 			securitylog.LogAuthz(
+				ctx,
 				securitylog.AuthzSecurityEvent{
 					Actor:  c.apiUser.Name(),
 					Target: arg.UserTag,
@@ -617,6 +682,7 @@ func (c *ControllerAPI) ModifyControllerAccess(ctx context.Context, args params.
 			result.Results[i].Error = apiservererrors.ServerError(errors.Annotate(err, "could not modify controller access"))
 			// Security Event Logging: This log statement is required to comply with Canonical's SSDLC Security Event Logging policy.
 			securitylog.LogAuthz(
+				ctx,
 				securitylog.AuthzSecurityEvent{
 					Actor:  c.apiUser.Name(),
 					Target: arg.UserTag,
@@ -641,6 +707,7 @@ func (c *ControllerAPI) ModifyControllerAccess(ctx context.Context, args params.
 		result.Results[i].Error = apiservererrors.ServerError(err)
 		// Security Event Logging: This log statement is required to comply with Canonical's SSDLC Security Event Logging policy.
 		securitylog.LogAuthz(
+			ctx,
 			securitylog.AuthzSecurityEvent{
 				Actor:    c.apiUser.Name(),
 				Target:   targetUserTag.Name(),
@@ -765,7 +832,7 @@ func (c *ControllerAPI) runMigrationPrechecks(
 	}
 	// Check target controller.
 	modelInfo, srcUserList, err := makeModelInfo(ctx,
-		c.controllerConfigService, c.modelService, modelAgentService, c.modelExporter, c.store, model)
+		c.controllerConfigService, c.modelService, modelAgentService, c.store, model)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -878,21 +945,11 @@ func makeModelInfo(ctx context.Context,
 	controllerConfigService ControllerConfigService,
 	modelService ModelService,
 	modelAgentService ModelAgentService,
-	modelExporterFn func(context.Context, coremodel.UUID) (ModelExporter, error),
 	store objectstore.ObjectStore,
 	model coremodel.Model,
 ) (coremigration.ModelInfo, userList, error) {
 	var empty coremigration.ModelInfo
 	var ul userList
-
-	modelExporter, err := modelExporterFn(ctx, model.UUID)
-	if err != nil {
-		return empty, ul, errors.Trace(err)
-	}
-	description, err := modelExporter.ExportModel(ctx, store)
-	if err != nil {
-		return empty, ul, errors.Trace(err)
-	}
 
 	users, err := modelService.GetModelUsers(ctx, model.UUID)
 	if err != nil {
@@ -927,7 +984,6 @@ func makeModelInfo(ctx context.Context,
 		Qualifier:              model.Qualifier,
 		AgentVersion:           agentVersion,
 		ControllerAgentVersion: controllerModel.AgentVersion,
-		ModelDescription:       description,
 	}, ul, nil
 }
 

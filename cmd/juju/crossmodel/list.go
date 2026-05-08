@@ -15,12 +15,12 @@ import (
 	"github.com/juju/juju/api/client/applicationoffers"
 	"github.com/juju/juju/api/jujuclient"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/common"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/crossmodel"
 	coremodel "github.com/juju/juju/core/model"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/domain/deployment/charm"
 )
 
 const listCommandDoc = `
@@ -160,12 +160,13 @@ func (c *listCommand) Run(ctx *cmd.Context) (err error) {
 		}
 	}
 
-	unqualifiedModelName, qualifier, err := jujuclient.SplitFullyQualifiedModelName(modelName)
+	unqualifiedModelName, modelOwner, err := jujuclient.SplitFullyQualifiedModelName(modelName)
 	if err != nil {
 		return errors.Trace(err)
 	}
+
 	c.filters = []crossmodel.ApplicationOfferFilter{{
-		ModelQualifier:  coremodel.Qualifier(qualifier),
+		ModelQualifier:  coremodel.Qualifier(modelOwner),
 		ModelName:       unqualifiedModelName,
 		ApplicationName: c.applicationName,
 	}}

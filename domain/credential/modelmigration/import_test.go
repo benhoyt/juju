@@ -7,14 +7,14 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/core/credential"
-	coreerrors "github.com/juju/juju/core/errors"
 	usertesting "github.com/juju/juju/core/user/testing"
+	credentialerrors "github.com/juju/juju/domain/credential/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 )
 
@@ -60,7 +60,7 @@ func (s *importSuite) TestEmptyCredential(c *tc.C) {
 	err := op.Execute(c.Context(), model)
 	c.Assert(err, tc.ErrorIsNil)
 	// No import executed.
-	s.service.EXPECT().UpdateCloudCredential(gomock.All(), gomock.Any(), gomock.Any()).Times(0)
+	s.service.EXPECT().InsertCloudCredential(gomock.All(), gomock.Any(), gomock.Any()).Times(0)
 }
 
 func (s *importSuite) TestImport(c *tc.C) {
@@ -79,8 +79,8 @@ func (s *importSuite) TestImport(c *tc.C) {
 	)
 	cred := cloud.NewCredential(cloud.UserPassAuthType, map[string]string{"hello": "world"})
 	key := credential.Key{Cloud: "cirrus", Owner: usertesting.GenNewName(c, "fred"), Name: "foo"}
-	s.service.EXPECT().CloudCredential(gomock.All(), key).Times(1).Return(cloud.Credential{}, coreerrors.NotFound)
-	s.service.EXPECT().UpdateCloudCredential(gomock.Any(), key, cred).Times(1)
+	s.service.EXPECT().CloudCredential(gomock.All(), key).Times(1).Return(cloud.Credential{}, credentialerrors.NotFound)
+	s.service.EXPECT().InsertCloudCredential(gomock.Any(), key, cred).Times(1)
 
 	op := s.newImportOperation()
 	err := op.Execute(c.Context(), model)

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Configure VMware vSphere cloud with Juju, including ESXi requirements, vSAN support, and authentication for vSphere deployments."
+---
+
 (cloud-vsphere)=
 # The VMware vSphere cloud and Juju
 

@@ -5,12 +5,20 @@ package storage
 
 import "github.com/juju/names/v6"
 
+// DeviceType represents the type of device used for the volume.
 type DeviceType string
 
 var (
+	// DeviceTypeLocal represents a local attached device.
 	DeviceTypeLocal DeviceType = "local"
+
+	// DeviceTypeISCSI represents an iSCSI attached device.
 	DeviceTypeISCSI DeviceType = "iscsi"
 )
+
+func (dt DeviceType) String() string {
+	return string(dt)
+}
 
 // Volume identifies and describes a volume (disk, logical volume, etc.)
 type Volume struct {

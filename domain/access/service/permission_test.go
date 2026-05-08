@@ -6,14 +6,17 @@ package service
 import (
 	"testing"
 
+	"github.com/juju/clock"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/core/credential"
 	coreerrors "github.com/juju/juju/core/errors"
 	corepermission "github.com/juju/juju/core/permission"
+	coreuser "github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
 	"github.com/juju/juju/domain/access"
+	accesserrors "github.com/juju/juju/domain/access/errors"
 	"github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/internal/testhelpers"
 	"github.com/juju/juju/internal/uuid"
@@ -49,7 +52,7 @@ func (s *serviceSuite) TestCreatePermission(c *tc.C) {
 			Access: corepermission.AddModelAccess,
 		},
 	}
-	_, err := NewService(s.state).CreatePermission(c.Context(), spec)
+	_, err := NewService(s.state, clock.WallClock).CreatePermission(c.Context(), spec)
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -66,27 +69,29 @@ func (s *serviceSuite) TestCreatePermissionError(c *tc.C) {
 			Access: corepermission.ReadAccess,
 		},
 	}
-	_, err := NewService(s.state).CreatePermission(c.Context(), spec)
+	_, err := NewService(s.state, clock.WallClock).CreatePermission(c.Context(), spec)
 	c.Assert(err, tc.ErrorIs, coreerrors.NotValid)
 }
 
 func (s *serviceSuite) TestDeletePermission(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	s.state.EXPECT().DeletePermission(gomock.Any(), usertesting.GenNewName(c, "testme"), gomock.AssignableToTypeOf(corepermission.ID{})).Return(nil)
-	err := NewService(s.state).DeletePermission(c.Context(), usertesting.GenNewName(c, "testme"), corepermission.ID{
-		ObjectType: corepermission.Cloud,
-		Key:        "aws",
-	})
+	err := NewService(s.state, clock.WallClock).DeletePermission(c.Context(), usertesting.GenNewName(c, "testme"),
+		corepermission.ID{
+			ObjectType: corepermission.Cloud,
+			Key:        "aws",
+		})
 	c.Assert(err, tc.ErrorIsNil)
 }
 
 func (s *serviceSuite) TestDeletePermissionError(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	err := NewService(s.state).DeletePermission(c.Context(), usertesting.GenNewName(c, "testme"), corepermission.ID{
-		ObjectType: "faileme",
-		Key:        "aws",
-	})
+	err := NewService(s.state, clock.WallClock).DeletePermission(c.Context(), usertesting.GenNewName(c, "testme"),
+		corepermission.ID{
+			ObjectType: "faileme",
+			Key:        "aws",
+		})
 	c.Assert(err, tc.ErrorIs, coreerrors.NotValid, tc.Commentf("%+v", err))
 }
 
@@ -94,7 +99,7 @@ func (s *serviceSuite) TestUpsertPermission(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	s.state.EXPECT().UpdatePermission(gomock.Any(), gomock.AssignableToTypeOf(access.UpdatePermissionArgs{})).Return(nil)
 
-	err := NewService(s.state).UpdatePermission(
+	err := NewService(s.state, clock.WallClock).UpdatePermission(
 		c.Context(),
 		access.UpdatePermissionArgs{
 			AccessSpec: corepermission.AccessSpec{
@@ -115,7 +120,7 @@ func (s *serviceSuite) TestReadUserAccessForTarget(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	s.state.EXPECT().ReadUserAccessForTarget(gomock.Any(), usertesting.GenNewName(c, "testme"), gomock.AssignableToTypeOf(corepermission.ID{})).Return(corepermission.UserAccess{}, nil)
 
-	_, err := NewService(s.state).ReadUserAccessForTarget(
+	_, err := NewService(s.state, clock.WallClock).ReadUserAccessForTarget(
 		c.Context(),
 		usertesting.GenNewName(c, "testme"),
 		corepermission.ID{
@@ -128,7 +133,7 @@ func (s *serviceSuite) TestReadUserAccessForTarget(c *tc.C) {
 func (s *serviceSuite) TestReadUserAccessForTargetError(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	_, err := NewService(s.state).ReadUserAccessForTarget(
+	_, err := NewService(s.state, clock.WallClock).ReadUserAccessForTarget(
 		c.Context(),
 		usertesting.GenNewName(c, "testme"),
 		corepermission.ID{
@@ -142,7 +147,7 @@ func (s *serviceSuite) TestReadUserAccessLevelForTarget(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	s.state.EXPECT().ReadUserAccessLevelForTarget(gomock.Any(), usertesting.GenNewName(c, "testme"), gomock.AssignableToTypeOf(corepermission.ID{})).Return(corepermission.NoAccess, nil)
 
-	_, err := NewService(s.state).ReadUserAccessLevelForTarget(
+	_, err := NewService(s.state, clock.WallClock).ReadUserAccessLevelForTarget(
 		c.Context(),
 		usertesting.GenNewName(c, "testme"),
 		corepermission.ID{
@@ -152,10 +157,47 @@ func (s *serviceSuite) TestReadUserAccessLevelForTarget(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 }
 
+func (s *serviceSuite) TestReadUserAccessLevelForTargetExternalPassthrough(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	subject := tc.Must1(c, coreuser.NewName, "testme@external")
+	target := corepermission.ID{
+		ObjectType: corepermission.Controller,
+		Key:        "controller-uuid",
+	}
+	// The state layer handles external user inheritance transparently.
+	s.state.EXPECT().ReadUserAccessLevelForTarget(gomock.Any(), subject, target).
+		Return(corepermission.LoginAccess, nil)
+
+	access, err := NewService(s.state, clock.WallClock).ReadUserAccessLevelForTarget(
+		c.Context(), subject, target,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(access, tc.Equals, corepermission.LoginAccess)
+}
+
+func (s *serviceSuite) TestReadUserAccessLevelForTargetAccessNotFound(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	subject := usertesting.GenNewName(c, "testme")
+	target := corepermission.ID{
+		ObjectType: corepermission.Cloud,
+		Key:        "aws",
+	}
+	s.state.EXPECT().ReadUserAccessLevelForTarget(gomock.Any(), subject, target).
+		Return(corepermission.NoAccess, accesserrors.AccessNotFound)
+
+	access, err := NewService(s.state, clock.WallClock).ReadUserAccessLevelForTarget(
+		c.Context(), subject, target,
+	)
+	c.Assert(err, tc.ErrorIs, accesserrors.AccessNotFound)
+	c.Assert(access, tc.Equals, corepermission.NoAccess)
+}
+
 func (s *serviceSuite) TestReadUserAccessLevelForTargetError(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	_, err := NewService(s.state).ReadUserAccessForTarget(
+	_, err := NewService(s.state, clock.WallClock).ReadUserAccessForTarget(
 		c.Context(),
 		usertesting.GenNewName(c, "testme"),
 		corepermission.ID{
@@ -169,7 +211,7 @@ func (s *serviceSuite) TestReadAllUserAccessForTarget(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	s.state.EXPECT().ReadAllUserAccessForTarget(gomock.Any(), gomock.AssignableToTypeOf(corepermission.ID{})).Return(nil, nil)
 
-	_, err := NewService(s.state).ReadAllUserAccessForTarget(
+	_, err := NewService(s.state, clock.WallClock).ReadAllUserAccessForTarget(
 		c.Context(),
 		corepermission.ID{
 			ObjectType: corepermission.Cloud,
@@ -181,7 +223,7 @@ func (s *serviceSuite) TestReadAllUserAccessForTarget(c *tc.C) {
 func (s *serviceSuite) TestReadAllUserAccessForTargetError(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	_, err := NewService(s.state).ReadAllUserAccessForTarget(
+	_, err := NewService(s.state, clock.WallClock).ReadAllUserAccessForTarget(
 		c.Context(),
 		corepermission.ID{
 			ObjectType: "faileme",
@@ -194,7 +236,7 @@ func (s *serviceSuite) TestReadAllUserAccessForUser(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	s.state.EXPECT().ReadAllUserAccessForUser(gomock.Any(), usertesting.GenNewName(c, "testme")).Return(nil, nil)
 
-	_, err := NewService(s.state).ReadAllUserAccessForUser(
+	_, err := NewService(s.state, clock.WallClock).ReadAllUserAccessForUser(
 		c.Context(),
 		usertesting.GenNewName(c, "testme"))
 	c.Assert(err, tc.ErrorIsNil)
@@ -204,7 +246,7 @@ func (s *serviceSuite) TestReadAllAccessForUserAndObjectType(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	s.state.EXPECT().ReadAllAccessForUserAndObjectType(gomock.Any(), usertesting.GenNewName(c, "testme"), corepermission.Cloud).Return(nil, nil)
 
-	_, err := NewService(s.state).ReadAllAccessForUserAndObjectType(
+	_, err := NewService(s.state, clock.WallClock).ReadAllAccessForUserAndObjectType(
 		c.Context(),
 		usertesting.GenNewName(c, "testme"),
 		corepermission.Cloud)
@@ -214,7 +256,7 @@ func (s *serviceSuite) TestReadAllAccessForUserAndObjectType(c *tc.C) {
 func (s *serviceSuite) TestReadAllAccessForUserAndObjectTypeError(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	_, err := NewService(s.state).ReadAllAccessForUserAndObjectType(
+	_, err := NewService(s.state, clock.WallClock).ReadAllAccessForUserAndObjectType(
 		c.Context(),
 		usertesting.GenNewName(c, "testme"),
 		"failme")
@@ -225,7 +267,7 @@ func (s *serviceSuite) TestAllModelAccessForCloudCredential(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 	s.state.EXPECT().AllModelAccessForCloudCredential(gomock.Any(), gomock.AssignableToTypeOf(credential.Key{})).Return(nil, nil)
 
-	_, err := NewService(s.state).AllModelAccessForCloudCredential(
+	_, err := NewService(s.state, clock.WallClock).AllModelAccessForCloudCredential(
 		c.Context(),
 		credential.Key{})
 	c.Assert(err, tc.ErrorIsNil)
@@ -244,7 +286,7 @@ func (s *serviceSuite) TestImportOfferAccess(c *tc.C) {
 	}
 	s.state.EXPECT().ImportOfferAccess(gomock.Any(), importAccess).Return(nil)
 
-	err := NewService(s.state).ImportOfferAccess(c.Context(), importAccess)
+	err := NewService(s.state, clock.WallClock).ImportOfferAccess(c.Context(), importAccess)
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -261,6 +303,47 @@ func (s *serviceSuite) TestImportOfferAccessFail(c *tc.C) {
 	}
 	s.state.EXPECT().ImportOfferAccess(gomock.Any(), importAccess).Return(errors.Errorf("boom"))
 
-	err := NewService(s.state).ImportOfferAccess(c.Context(), importAccess)
+	err := NewService(s.state, clock.WallClock).ImportOfferAccess(c.Context(), importAccess)
 	c.Assert(err, tc.ErrorMatches, "boom")
+}
+
+func (s *serviceSuite) TestDeletePermissionsByGrantOnUUID(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// Arrange
+	offerUUIDs := []string{"one", "two", "three"}
+	s.state.EXPECT().DeletePermissionsByGrantOnUUID(gomock.Any(), offerUUIDs).Return(nil)
+
+	// Act
+	err := NewService(s.state, clock.WallClock).DeletePermissionsByGrantOnUUID(c.Context(), offerUUIDs)
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *serviceSuite) TestDeletePermissionsByGrantOnUUIDFail(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// Arrange
+	offerUUIDs := []string{"one", "two", "three"}
+	s.state.EXPECT().DeletePermissionsByGrantOnUUID(gomock.Any(), offerUUIDs).Return(errors.Errorf("boom"))
+
+	// Act
+	err := NewService(s.state, clock.WallClock).DeletePermissionsByGrantOnUUID(c.Context(), offerUUIDs)
+
+	// Assert
+	c.Assert(err, tc.ErrorMatches, "boom")
+}
+
+func (s *serviceSuite) TestDeletePermissionsByGrantOnUUIDZeroInput(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// Arrange
+	offerUUIDs := []string{}
+
+	// Act
+	err := NewService(s.state, clock.WallClock).DeletePermissionsByGrantOnUUID(c.Context(), offerUUIDs)
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
 }

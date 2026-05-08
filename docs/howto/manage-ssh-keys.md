@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Manage SSH keys in Juju: add, list, import, and remove public keys for secure access to machines and controllers."
+---
+
 (manage-ssh-keys)=
 # How to manage SSH keys
 

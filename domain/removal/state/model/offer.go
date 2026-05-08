@@ -7,7 +7,6 @@ import (
 	"context"
 
 	"github.com/canonical/sqlair"
-	"github.com/juju/collections/transform"
 
 	removalerrors "github.com/juju/juju/domain/removal/errors"
 	"github.com/juju/juju/internal/errors"
@@ -79,48 +78,6 @@ WHERE  offer_uuid = $entityUUID.uuid
 		return errors.Errorf("preparing synthetic relations query: %w", err)
 	}
 
-	deleteRelationEndpointsStmt, err := st.Prepare(`
-DELETE FROM relation_endpoint
-WHERE relation_uuid IN ($uuids[:])
-`, uuids{})
-	if err != nil {
-		return errors.Errorf("preparing delete relation endpoint query: %w", err)
-	}
-
-	deleteRelationStatusStmt, err := st.Prepare(`
-DELETE FROM relation_status
-WHERE relation_uuid IN ($uuids[:])
-`, uuids{})
-	if err != nil {
-		return errors.Errorf("preparing delete relation status query: %w", err)
-	}
-
-	deleteRelationsStmt, err := st.Prepare(`
-DELETE FROM relation
-WHERE uuid IN ($uuids[:])
-`, uuids{})
-	if err != nil {
-		return errors.Errorf("preparing delete relations query: %w", err)
-	}
-
-	getSynthAppsStmt, err := st.Prepare(`
-SELECT (arc.consumer_application_uuid, oc.uuid) AS (&consumerApplicationUUID.*)
-FROM   application_remote_consumer AS arc
-JOIN   offer_connection AS oc ON arc.offer_connection_uuid = oc.uuid
-WHERE  oc.offer_uuid = $entityUUID.uuid
-`, entityUUID{}, consumerApplicationUUID{})
-	if err != nil {
-		return errors.Errorf("preparing synthetic application query: %w", err)
-	}
-
-	deleteOfferConnectionStmt, err := st.Prepare(`
-DELETE FROM offer_connection
-WHERE offer_uuid = $entityUUID.uuid
-`, offerUUID)
-	if err != nil {
-		return errors.Errorf("preparing delete offer connection query: %w", err)
-	}
-
 	deleteOfferEndpointsStmt, err := st.Prepare(`
 DELETE FROM offer_endpoint
 WHERE offer_uuid = $entityUUID.uuid
@@ -137,6 +94,7 @@ WHERE uuid = $entityUUID.uuid
 		return errors.Errorf("preparing delete offer query: %w", err)
 	}
 
+	// If we aren't forcing, check for existing connections.
 	if !force {
 		var count count
 		if err := tx.Query(ctx, checkConnsStmt, offerUUID).Get(&count); err != nil {
@@ -157,34 +115,17 @@ WHERE uuid = $entityUUID.uuid
 		if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
 			return errors.Errorf("getting synthetic relation UUIDs: %w", err)
 		}
-		relUUIDs := uuids(transform.Slice(synthRelationUUIDs, func(e entityUUID) string { return e.UUID }))
 
-		var synthAppUUIDs []consumerApplicationUUID
-		err = tx.Query(ctx, getSynthAppsStmt, offerUUID).GetAll(&synthAppUUIDs)
-		if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
-			return errors.Errorf("getting synthetic application UUIDs: %w", err)
-		}
-
-		if err := tx.Query(ctx, deleteRelationEndpointsStmt, relUUIDs).Run(); err != nil {
-			return errors.Errorf("deleting relation endpoints: %w", err)
-		}
-
-		for _, uuids := range synthAppUUIDs {
-			if err := st.deleteRemoteApplicationConsumer(ctx, tx, uuids); err != nil {
-				return errors.Errorf("deleting remote application %q consumer: %w", uuids.ConsumerApplicationUUID, err)
+		for _, synthRelationUUID := range synthRelationUUIDs {
+			err = st.deleteRelationUnitsForRelation(ctx, tx, synthRelationUUID)
+			if err != nil {
+				return errors.Errorf("deleting relation units for relation %q: %w", synthRelationUUID, err)
 			}
-		}
 
-		if err := tx.Query(ctx, deleteOfferConnectionStmt, offerUUID).Run(); err != nil {
-			return errors.Errorf("deleting offer connections: %w", err)
-		}
-
-		if err := tx.Query(ctx, deleteRelationStatusStmt, relUUIDs).Run(); err != nil {
-			return errors.Errorf("deleting relation status: %w", err)
-		}
-
-		if err := tx.Query(ctx, deleteRelationsStmt, relUUIDs).Run(); err != nil {
-			return errors.Errorf("deleting synthetic relations: %w", err)
+			err = st.deleteRelationWithRemoteConsumer(ctx, tx, synthRelationUUID)
+			if err != nil {
+				return errors.Errorf("deleting synthetic relations with remote consumers: %w", err)
+			}
 		}
 	}
 
@@ -194,26 +135,6 @@ WHERE uuid = $entityUUID.uuid
 
 	if err := tx.Query(ctx, deleteOfferStmt, offerUUID).Run(); err != nil {
 		return errors.Errorf("deleting offer: %w", err)
-	}
-
-	return nil
-}
-
-func (st *State) deleteRemoteApplicationConsumer(ctx context.Context, tx *sqlair.TX, uuids consumerApplicationUUID) error {
-	deleteRemoteApplicationConsumerStmt, err := st.Prepare(`
-DELETE FROM application_remote_consumer
-WHERE consumer_application_uuid = $entityUUID.uuid
-`, entityUUID{})
-	if err != nil {
-		return errors.Errorf("preparing delete remote application consumer query: %w", err)
-	}
-
-	if err := tx.Query(ctx, deleteRemoteApplicationConsumerStmt, entityUUID{UUID: uuids.ConsumerApplicationUUID}).Run(); err != nil {
-		return errors.Errorf("deleting synthetic application remote consumer: %w", err)
-	}
-
-	if err := st.deleteSynthApplication(ctx, tx, entityUUID{UUID: uuids.SynthApplicationUUID}); err != nil {
-		return errors.Errorf("deleting synthetic application: %w", err)
 	}
 
 	return nil

@@ -5,6 +5,7 @@ package charms
 
 import (
 	"context"
+	"maps"
 
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
@@ -16,8 +17,8 @@ import (
 	"github.com/juju/juju/domain/application/architecture"
 	applicationcharm "github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/charm/resource"
+	"github.com/juju/juju/domain/deployment/charm"
+	"github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -165,7 +166,7 @@ func convertApplication(a architecture.Architecture) (string, error) {
 	case architecture.Unknown:
 		return "", nil
 	default:
-		return "", errors.Errorf("unsupported architecture %q", a)
+		return "", errors.Errorf("unsupported architecture %d", a)
 	}
 }
 
@@ -353,9 +354,7 @@ func convertCharmLXDProfile(profile *charm.LXDProfile) *params.CharmLXDProfile {
 
 func convertCharmLXDProfileConfig(config map[string]string) map[string]string {
 	result := map[string]string{}
-	for k, v := range config {
-		result[k] = v
-	}
+	maps.Copy(result, config)
 	return result
 }
 
@@ -363,9 +362,7 @@ func convertCharmLXDProfileDevices(devices map[string]map[string]string) map[str
 	result := map[string]map[string]string{}
 	for k, v := range devices {
 		nested := map[string]string{}
-		for nk, nv := range v {
-			nested[nk] = nv
-		}
+		maps.Copy(nested, v)
 		result[k] = nested
 	}
 	return result
@@ -425,8 +422,4 @@ func convertCharmMounts(input []charm.Mount) []params.CharmMount {
 		})
 	}
 	return mounts
-}
-
-func ptr[T any](t T) *T {
-	return &t
 }

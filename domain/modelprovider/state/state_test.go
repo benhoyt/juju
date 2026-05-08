@@ -4,15 +4,17 @@
 package state
 
 import (
+	"context"
 	stdtesting "testing"
 
+	"github.com/canonical/sqlair"
+	"github.com/juju/clock"
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/cloud"
 	cloudtesting "github.com/juju/juju/core/cloud/testing"
 	corecredential "github.com/juju/juju/core/credential"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
 	userstate "github.com/juju/juju/domain/access/state"
@@ -67,7 +69,7 @@ func (s *stateSuite) setupModel(c *tc.C) coremodel.UUID {
 	userName, err := user.NewName("test-usertest")
 	c.Assert(err, tc.ErrorIsNil)
 	userUUID := usertesting.GenUserUUID(c)
-	err = userstate.NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c)).AddUser(ctx, userUUID, userName, userName.String(), false, userUUID)
+	err = userstate.NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c)).AddUser(ctx, userUUID, userName, userName.String(), false, userUUID)
 	c.Assert(err, tc.ErrorIsNil)
 
 	cloudUUID := cloudtesting.GenCloudUUID(c)
@@ -93,19 +95,29 @@ func (s *stateSuite) setupModel(c *tc.C) coremodel.UUID {
 	err = credentialstate.NewState(s.TxnRunnerFactory()).UpsertCloudCredential(ctx, key, credInfo)
 	c.Assert(err, tc.ErrorIsNil)
 
-	modelUUID := modeltesting.GenModelUUID(c)
-	modelSt := statecontroller.NewState(s.TxnRunnerFactory())
-	err = modelSt.Create(ctx, modelUUID, coremodel.IAAS, model.GlobalModelCreationArgs{
-		Cloud:         "test",
-		CloudRegion:   "test-region",
-		Credential:    key,
-		Name:          "test",
-		Qualifier:     "prod",
-		AdminUsers:    []user.UUID{userUUID},
-		SecretBackend: juju.BackendName,
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
+	err = s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		err = statecontroller.Create(ctx,
+			preparer{},
+			tx,
+			modelUUID,
+			coremodel.IAAS,
+			model.GlobalModelCreationArgs{
+				Cloud:         "test",
+				CloudRegion:   "test-region",
+				Credential:    key,
+				Name:          "test",
+				Qualifier:     "prod",
+				AdminUsers:    []user.UUID{userUUID},
+				SecretBackend: juju.BackendName,
+			})
+		if err != nil {
+			return err
+		}
+
+		activator := statecontroller.GetActivator()
+		return activator(ctx, preparer{}, tx, modelUUID)
 	})
-	c.Assert(err, tc.ErrorIsNil)
-	err = modelSt.Activate(ctx, modelUUID)
 	c.Assert(err, tc.ErrorIsNil)
 	return modelUUID
 }
@@ -125,8 +137,14 @@ func (s *stateSuite) TestGetModelCloudAndCredential(c *tc.C) {
 }
 
 func (s *stateSuite) TestGetModelCloudAndCredentialNotFound(c *tc.C) {
-	uuid := modeltesting.GenModelUUID(c)
+	uuid := tc.Must0(c, coremodel.NewUUID)
 	st := NewState(s.TxnRunnerFactory())
 	_, _, _, err := st.GetModelCloudAndCredential(c.Context(), uuid)
 	c.Assert(err, tc.ErrorIs, modelerrors.NotFound)
+}
+
+type preparer struct{}
+
+func (p preparer) Prepare(query string, args ...any) (*sqlair.Statement, error) {
+	return sqlair.Prepare(query, args...)
 }

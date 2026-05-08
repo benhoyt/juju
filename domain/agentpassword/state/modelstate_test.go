@@ -14,7 +14,7 @@ import (
 	coreapplication "github.com/juju/juju/core/application"
 	"github.com/juju/juju/core/machine"
 	machinetesting "github.com/juju/juju/core/machine/testing"
-	modeltesting "github.com/juju/juju/core/model/testing"
+	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/agentpassword"
 	"github.com/juju/juju/domain/application"
@@ -239,8 +239,8 @@ func (s *modelStateSuite) TestMatchesModelPasswordHashInvalidPassword(c *tc.C) {
 // made in the DDL or [State.MatchesModelPasswordHash] needs to be updated to
 // handle this case safely.
 func (s *modelStateSuite) TestCannotHaveTwoModels(c *tc.C) {
-	modelUUID1 := modeltesting.GenModelUUID(c)
-	modelUUID2 := modeltesting.GenModelUUID(c)
+	modelUUID1 := tc.Must0(c, model.NewUUID)
+	modelUUID2 := tc.Must0(c, model.NewUUID)
 	controllerUUID, err := uuid.NewUUID()
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -584,7 +584,7 @@ func (s *modelStateSuite) genPasswordHash(c *tc.C) agentpassword.PasswordHash {
 }
 
 func (s *modelStateSuite) createApplication(c *tc.C, controller bool) coreapplication.UUID {
-	applicationSt := applicationstate.NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	applicationSt := applicationstate.NewState(s.TxnRunnerFactory(), model.UUID(s.ModelUUID()), clock.WallClock, loggertesting.WrapCheckLog(c))
 	appID, _, err := applicationSt.CreateIAASApplication(c.Context(), "foo", application.AddIAASApplicationArg{
 		BaseAddApplicationArg: application.BaseAddApplicationArg{
 			Charm: charm.Charm{
@@ -614,7 +614,7 @@ func (s *modelStateSuite) createApplication(c *tc.C, controller bool) coreapplic
 // information in the database along with a record for the model in the
 // model_agent table.
 func (s *modelStateSuite) createModel(c *tc.C) {
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, model.NewUUID)
 	controllerUUID, err := uuid.NewUUID()
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -640,7 +640,7 @@ INSERT INTO model_agent (model_uuid) VALUES (?)
 
 func (s *modelStateSuite) createUnit(c *tc.C) unit.Name {
 	ctx := c.Context()
-	applicationSt := applicationstate.NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	applicationSt := applicationstate.NewState(s.TxnRunnerFactory(), model.UUID(s.ModelUUID()), clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	appID, err := applicationSt.GetApplicationUUIDByName(ctx, "foo")
 	c.Assert(err, tc.ErrorIsNil)
@@ -648,9 +648,10 @@ func (s *modelStateSuite) createUnit(c *tc.C) unit.Name {
 	netNodeUUID := tc.Must(c, network.NewNetNodeUUID)
 	unitNames, _, err := applicationSt.AddIAASUnits(ctx, appID, application.AddIAASUnitArg{
 		AddUnitArg: application.AddUnitArg{
+			UnitUUID:    tc.Must(c, unit.NewUUID),
 			NetNodeUUID: netNodeUUID,
 		},
-		Nonce:              ptr("foo"),
+		Nonce:              new("foo"),
 		MachineNetNodeUUID: netNodeUUID,
 		MachineUUID:        machinetesting.GenUUID(c),
 	})
@@ -682,8 +683,4 @@ WHERE u.name = ?
 	c.Assert(err, tc.ErrorIsNil)
 
 	return machineName, "foo"
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }

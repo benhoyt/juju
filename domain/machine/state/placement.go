@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"strconv"
+	"strings"
 
 	"github.com/canonical/sqlair"
 	"github.com/juju/clock"
@@ -48,6 +49,7 @@ func PlaceMachine(
 			Platform:                args.Platform,
 			Nonce:                   args.Nonce,
 			Constraints:             args.Constraints,
+			InstanceID:              args.InstanceID,
 			HardwareCharacteristics: args.HardwareCharacteristics,
 		})
 		return []coremachine.Name{machineName}, errors.Capture(err)
@@ -59,6 +61,7 @@ func PlaceMachine(
 			return nil, errors.Errorf("validating machine placement: %w", err)
 		}
 		return []coremachine.Name{machineName}, nil
+
 	case deployment.PlacementTypeContainer:
 		// The placement is container scoped (example: lxd or lxd:0). If there
 		// is no directive, we need to create a parent machine (the next in the
@@ -163,6 +166,7 @@ func CreateMachineWithName(
 		UUID:        args.MachineUUID,
 		NetNodeUUID: args.NetNodeUUID,
 		Name:        machineName,
+		Hostname:    args.Hostname,
 		LifeID:      lifeID,
 	}
 	if args.Nonce != nil && *args.Nonce != "" {
@@ -170,7 +174,7 @@ func CreateMachineWithName(
 	}
 
 	insertMachineQuery := `
-INSERT INTO machine (uuid, net_node_uuid, name, life_id, nonce)
+INSERT INTO machine (uuid, net_node_uuid, name, hostname, life_id, nonce)
 VALUES ($insertMachine.*);
 `
 	insertMachineStmt, err := preparer.Prepare(insertMachineQuery, m)
@@ -195,7 +199,7 @@ VALUES ($insertMachine.*);
 		return errors.Errorf("inserting machine constraints: %w", err)
 	}
 
-	if err := insertMachineInstance(ctx, tx, preparer, args.MachineUUID, args.HardwareCharacteristics); err != nil {
+	if err := insertMachineInstance(ctx, tx, preparer, args.MachineUUID, args.InstanceID, args.HardwareCharacteristics); err != nil {
 		return errors.Errorf("inserting machine instance: %w", err)
 	}
 
@@ -203,7 +207,7 @@ VALUES ($insertMachine.*);
 		return errors.Errorf("inserting machine container type: %w", err)
 	}
 
-	now := clock.Now()
+	now := clock.Now().UTC()
 
 	machineStatusID, err := domainstatus.EncodeMachineStatus(domainstatus.MachineStatusPending)
 	if err != nil {
@@ -216,13 +220,13 @@ VALUES ($insertMachine.*);
 
 	if err := insertMachineStatus(ctx, tx, preparer, args.MachineUUID, setStatusInfo{
 		StatusID: machineStatusID,
-		Updated:  ptr(now),
+		Updated:  new(now),
 	}); err != nil {
 		return errors.Errorf("inserting machine status: %w", err)
 	}
 	if err := insertMachineInstanceStatus(ctx, tx, preparer, args.MachineUUID, setStatusInfo{
 		StatusID: machineInstanceStatusID,
-		Updated:  ptr(now),
+		Updated:  new(now),
 	}); err != nil {
 		return errors.Errorf("inserting machine instance status: %w", err)
 	}
@@ -280,7 +284,7 @@ VALUES ($machinePlatformUUID.*);
 
 	arch, err := encodeArchitecture(platform.Architecture)
 	if err != nil {
-		return errors.Errorf("encoding architecture %q: %w", platform.Architecture, err)
+		return errors.Errorf("encoding architecture %v: %w", platform.Architecture, err)
 	}
 
 	var channel sql.Null[string]
@@ -306,10 +310,17 @@ func insertMachineInstance(
 	tx *sqlair.TX,
 	preparer domain.Preparer,
 	mUUID string,
+	instanceID *instance.Id,
 	hc instance.HardwareCharacteristics,
 ) error {
+	var instanceIDNull sql.Null[string]
+	if instanceID != nil {
+		instanceIDNull = sql.Null[string]{V: string(*instanceID), Valid: true}
+	}
+
 	instData := instanceData{
 		MachineUUID:    mUUID,
+		InstanceID:     instanceIDNull,
 		LifeID:         0,
 		Arch:           hc.Arch,
 		Mem:            hc.Mem,
@@ -365,7 +376,33 @@ VALUES ($instanceData.*);
 		return errors.Capture(err)
 	}
 
-	return tx.Query(ctx, setInstanceDataStmt, instData).Run()
+	if err := tx.Query(ctx, setInstanceDataStmt, instData).Run(); err != nil {
+		return errors.Capture(err)
+	}
+
+	if instanceID != nil && strings.HasPrefix(string(*instanceID), domainmachine.ManualInstancePrefix) {
+		if err := insertUnmanagedMachine(ctx, tx, preparer, mUUID); err != nil {
+			return errors.Capture(err)
+		}
+	}
+
+	return nil
+}
+
+func insertUnmanagedMachine(ctx context.Context, tx *sqlair.TX, preparer domain.Preparer, mUUID string) error {
+	setManualStmt, err := preparer.Prepare(`
+INSERT INTO machine_manual (machine_uuid)
+VALUES ($entityUUID.uuid)
+ON CONFLICT (machine_uuid) DO NOTHING
+`, entityUUID{})
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	if err := tx.Query(ctx, setManualStmt, entityUUID{UUID: mUUID}).Run(); err != nil {
+		return errors.Errorf("setting machine as unmanaged: %w", err)
+	}
+	return nil
 }
 
 func insertMachineStatus(
@@ -508,6 +545,18 @@ VALUES ($machinePlacement.*);
 	return nil
 }
 
+// We prepare these statements globally to avoid having them prepared inside
+// a transaction.
+var (
+	insertConstraintStmt         = sqlair.MustPrepare(`INSERT INTO "constraint"(*) VALUES ($setConstraint.*)`, setConstraint{})
+	insertConstraintTagsStmt     = sqlair.MustPrepare(`INSERT INTO constraint_tag(*) VALUES ($setConstraintTag.*)`, setConstraintTag{})
+	insertConstraintSpacesStmt   = sqlair.MustPrepare(`INSERT INTO constraint_space(*) VALUES ($setConstraintSpace.*)`, setConstraintSpace{})
+	insertConstraintZonesStmt    = sqlair.MustPrepare(`INSERT INTO constraint_zone(*) VALUES ($setConstraintZone.*)`, setConstraintZone{})
+	selectContainerTypeIDStmt    = sqlair.MustPrepare(`SELECT &containerTypeID.id FROM container_type WHERE value = $containerTypeVal.value`, containerTypeID{}, containerTypeVal{})
+	insertMachineConstraintsStmt = sqlair.MustPrepare(`INSERT INTO machine_constraint(*) VALUES ($setMachineConstraint.*)`, setMachineConstraint{})
+	selectSpaceStmt              = sqlair.MustPrepare(`SELECT &entityUUID.uuid FROM space WHERE name = $entityName.name`, entityUUID{}, entityName{})
+)
+
 func insertContainerType(
 	ctx context.Context,
 	tx *sqlair.TX,
@@ -547,60 +596,6 @@ func insertMachineConstraints(
 		return errors.Capture(err)
 	}
 	cUUIDStr := cUUID.String()
-
-	insertMachineConstraintsQuery := `
-INSERT INTO machine_constraint(*)
-VALUES ($setMachineConstraint.*)
-`
-	insertMachineConstraintsStmt, err := preparer.Prepare(insertMachineConstraintsQuery, setMachineConstraint{})
-	if err != nil {
-		return errors.Errorf("preparing insert machine constraints query: %w", err)
-	}
-
-	insertConstraintsQuery := `
-INSERT INTO "constraint"(*)
-VALUES ($setConstraint.*)
-`
-	insertConstraintStmt, err := preparer.Prepare(insertConstraintsQuery, setConstraint{})
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	// note(gfouillet): this Prepare statement use directly sqlair to avoid
-	// a clash with the same query in the application state.
-	// Both prepare uses a setConstraintTag struct from different packages,
-	// which causes a clash in sqlair.Query below.
-	// See https://github.com/juju/juju/pull/20882 for more details.
-	insertConstraintTagsQuery := `INSERT INTO constraint_tag(*) VALUES ($setConstraintTag.*)`
-	insertConstraintTagsStmt, err := sqlair.Prepare(insertConstraintTagsQuery, setConstraintTag{})
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	// Check that spaces provided as constraints do exist in the space table.
-	selectSpaceQuery := `SELECT &entityUUID.uuid FROM space WHERE name = $entityName.name`
-	selectSpaceStmt, err := preparer.Prepare(selectSpaceQuery, entityUUID{}, entityName{})
-	if err != nil {
-		return errors.Errorf("preparing select space query: %w", err)
-	}
-
-	insertConstraintSpacesQuery := `INSERT INTO constraint_space(*) VALUES ($setConstraintSpace.*)`
-	insertConstraintSpacesStmt, err := preparer.Prepare(insertConstraintSpacesQuery, setConstraintSpace{})
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	insertConstraintZonesQuery := `INSERT INTO constraint_zone(*) VALUES ($setConstraintZone.*)`
-	insertConstraintZonesStmt, err := preparer.Prepare(insertConstraintZonesQuery, setConstraintZone{})
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	selectContainerTypeIDQuery := `SELECT &containerTypeID.id FROM container_type WHERE value = $containerTypeVal.value`
-	selectContainerTypeIDStmt, err := preparer.Prepare(selectContainerTypeIDQuery, containerTypeID{}, containerTypeVal{})
-	if err != nil {
-		return errors.Errorf("preparing select container type id query: %w", err)
-	}
 
 	var containerTypeID containerTypeID
 	if cons.Container != nil {

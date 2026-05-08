@@ -1,12 +1,17 @@
 check_secrets() {
-	juju --show-log deploy juju-qa-dummy-source --config token=foo
+	# Optional expected backend name (defaults to "internal")
+	expected_backend=${1:-internal}
+
+	juju --show-log deploy juju-qa-dummy-source
 	juju --show-log deploy juju-qa-dummy-sink
 	juju --show-log integrate dummy-sink dummy-source
+	juju config dummy-source token=foo
 
 	wait_for "active" '.applications["dummy-source"] | ."application-status".current'
 	wait_for "active" '.applications["dummy-sink"] | ."application-status".current' 900
 	wait_for "dummy-source" "$(idle_condition "dummy-source" 0)"
 	wait_for "dummy-sink" "$(idle_condition "dummy-sink" 0)"
+	wait_for "active" "$(workload_status "dummy-source" 0).current"
 	wait_for "active" "$(workload_status "dummy-sink" 0).current"
 
 	echo "Apps deployed, creating secrets"
@@ -14,6 +19,18 @@ check_secrets() {
 	secret_owned_by_dummy_source_0_id=${secret_owned_by_dummy_source_0##*/}
 	secret_owned_by_dummy_source=$(juju exec --unit dummy-source/0 -- secret-add owned-by=dummy-source-app)
 	secret_owned_by_dummy_source_id=${secret_owned_by_dummy_source##*/}
+
+	echo "Checking secrets' backend name with juju secrets --revisions"
+	check_contains "$(juju secrets --revisions --format yaml | yq -r ".${secret_owned_by_dummy_source_id}.revisions[0].backend")" "${expected_backend}"
+	check_contains "$(juju secrets --revisions --format yaml | yq -r ".${secret_owned_by_dummy_source_0_id}.revisions[0].backend")" "${expected_backend}"
+
+	echo "Checking secrets' backend name with juju secrets --owner --revisions"
+	check_contains "$(juju secrets --owner application-dummy-source --revisions --format yaml | yq -r ".${secret_owned_by_dummy_source_id}.revisions[0].backend")" "${expected_backend}"
+	check_contains "$(juju secrets --owner unit-dummy-source-0 --revisions --format yaml | yq -r ".${secret_owned_by_dummy_source_0_id}.revisions[0].backend")" "${expected_backend}"
+
+	echo "Checking secrets' backend name with juju show-secret --revisions"
+	check_contains "$(juju --show-log show-secret "$secret_owned_by_dummy_source_id" --revisions --format yaml | yq -r ".${secret_owned_by_dummy_source_id}.revisions[0].backend")" "${expected_backend}"
+	check_contains "$(juju --show-log show-secret "$secret_owned_by_dummy_source_0_id" --revisions --format yaml | yq -r ".${secret_owned_by_dummy_source_0_id}.revisions[0].backend")" "${expected_backend}"
 
 	echo "Set same content again for $secret_owned_by_dummy_source."
 	juju exec --unit dummy-source/0 -- secret-set "$secret_owned_by_dummy_source_id" owned-by=dummy-source-app
@@ -47,6 +64,16 @@ check_secrets() {
 	juju exec --unit dummy-source/0 -- secret-grant "$secret_owned_by_dummy_source_0" -r "$relation_id"
 	juju exec --unit dummy-source/0 -- secret-grant "$secret_owned_by_dummy_source" -r "$relation_id"
 
+	echo "Checking: secret-get by label - refresh with pending updates"
+	another_secret_owned_by_dummy_source=$(juju exec --unit dummy-source/0 -- secret-add value=1 --label=mysecret)
+	check_contains "$(juju exec --unit dummy-source/0 -- "secret-set ${another_secret_owned_by_dummy_source} value=2; secret-get ${another_secret_owned_by_dummy_source} --refresh")" "2"
+	check_contains "$(juju exec --unit dummy-source/0 -- "secret-set ${another_secret_owned_by_dummy_source} value=3; secret-get --label=mysecret --refresh")" "3"
+	check_contains "$(juju exec --unit dummy-source/0 -- "secret-get --label=mysecret")" "3"
+	check_contains "$(
+		juju exec --unit dummy-source/0 -- "secret-set ${another_secret_owned_by_dummy_source} value=4"
+		juju exec --unit dummy-source/0 -- secret-get --label=mysecret --refresh
+	)" "4"
+
 	echo "Checking: secret-get by URI - consume content by ID"
 	check_contains "$(juju exec --unit dummy-sink/0 -- secret-get "$secret_owned_by_dummy_source_0" --label=consumer_label_secret_owned_by_dummy_source_0)" 'owned-by: dummy-source/0'
 	check_contains "$(juju exec --unit dummy-sink/0 -- secret-get "$secret_owned_by_dummy_source" --label=consumer_label_secret_owned_by_dummy_source)" 'owned-by: dummy-source-app'
@@ -68,11 +95,36 @@ check_secrets() {
 	juju exec --unit dummy-source/0 -- secret-revoke "$secret_owned_by_dummy_source_0" --app dummy-sink
 	check_contains "$(juju exec --unit dummy-sink/0 -- secret-get "$secret_owned_by_dummy_source_0" 2>&1)" 'is not allowed to read this secret'
 
+	echo "Checking secret rotate"
+	juju exec --unit dummy-source/0 -- secret-set "$secret_owned_by_dummy_source_0" --rotate daily
+	check_contains "$(juju show-secret "$secret_owned_by_dummy_source_0" --format json | jq ".[].rotation")" "daily"
+	original_rotate_time="$(juju show-secret "$secret_owned_by_dummy_source_0" --format json | jq ".[].rotates")"
+	# We set a new rotate time into the future and we need to retain
+	# the current next rotate time.
+	juju exec --unit dummy-source/0 -- secret-set "$secret_owned_by_dummy_source_0" --rotate monthly
+	check_contains "$(juju show-secret "$secret_owned_by_dummy_source_0" --format json | jq ".[].rotation")" "monthly"
+	next_rotate_time="$(juju show-secret "$secret_owned_by_dummy_source_0" --format json | jq ".[].rotates")"
+	if [[ $original_rotate_time != "$next_rotate_time" ]]; then
+		echo "secret next rotate time was updated in error"
+		exit 1
+	fi
+	# We set a new rotate time sooner than the current rotate time so we need to
+	# update the next rotate time.
+	juju exec --unit dummy-source/0 -- secret-set "$secret_owned_by_dummy_source_0" --rotate hourly
+	check_contains "$(juju show-secret "$secret_owned_by_dummy_source_0" --format json | jq ".[].rotation")" "hourly"
+	next_rotate_time="$(juju show-secret "$secret_owned_by_dummy_source_0" --format json | jq ".[].rotates")"
+	if [[ $original_rotate_time == "$next_rotate_time" ]]; then
+		echo "secret next rotate time was not updated"
+		exit 1
+	fi
+
 	echo "Checking: secret-remove"
 	juju exec --unit dummy-source/0 -- secret-remove "$secret_owned_by_dummy_source_0"
 	check_contains "$(juju exec --unit dummy-source/0 -- secret-get "$secret_owned_by_dummy_source_0" 2>&1)" 'not found'
 	juju exec --unit dummy-source/0 -- secret-remove "$secret_owned_by_dummy_source"
 	check_contains "$(juju exec --unit dummy-source/0 -- secret-get "$secret_owned_by_dummy_source" 2>&1)" 'not found'
+	juju exec --unit dummy-source/0 -- secret-remove "$another_secret_owned_by_dummy_source"
+	check_contains "$(juju exec --unit dummy-source/0 -- secret-get "$another_secret_owned_by_dummy_source" 2>&1)" 'not found'
 }
 
 run_user_secrets() {
@@ -80,10 +132,10 @@ run_user_secrets() {
 
 	model_name=${1}
 
-	app_name='dummy-source-user-secrets'
-	juju --show-log deploy juju-qa-dummy-source "$app_name" --config token=foo
-	
-	wait_for "active" '.applications["dummy-source-user-secrets"] | ."application-status".current'
+	app_name='dummy-user-secrets'
+	juju --show-log deploy juju-qa-test "$app_name"
+
+	wait_for "active" '.applications["dummy-user-secrets"] | ."application-status".current'
 
 	# first test the creation of a large secret which encodes to approx 1MB in size.
 	echo "data: $(cat /dev/zero | tr '\0' A | head -c 749500)" >"${TEST_DIR}/secret.txt"
@@ -155,7 +207,7 @@ run_secrets_juju() {
 
 	model_name='model-secrets-juju'
 	add_model "$model_name"
-	check_secrets
+	check_secrets "internal"
 	run_user_secrets "$model_name"
 	destroy_model "$model_name"
 }
@@ -176,16 +228,17 @@ test_secrets_juju() {
 }
 
 obsolete_secret_revisions() {
-	local secret_short_uri
-	secret_short_uri=${1}
+	local secret_id
+	secret_id=${1}
 
-	out=$(
-		juju ssh ubuntu-lite/0 sh <<EOF
+	yaml_out=$(
+juju ssh juju-qa-test/0 sh <<EOF
 . /etc/profile.d/juju-introspection.sh
-juju_engine_report | sed 1d | yq '..style="flow" | .manifolds.deployer.report.units.workers.ubuntu-lite/0.report.manifolds.uniter.report.secrets.obsolete-revisions."'"${secret_short_uri}"'"'
+juju_engine_report
 EOF
 	)
-	echo "${out}"
+	 out=$(echo "${yaml_out}" | sed 1d | yq "..style=\"flow\" | .manifolds.deployer.report.handler.units.workers.juju-qa-test/0.report.manifolds.uniter.report.secrets.obsolete-revisions.\"${secret_id}\"")
+	 echo "${out}"
 }
 
 run_obsolete_revisions() {
@@ -193,20 +246,21 @@ run_obsolete_revisions() {
 
 	model_name=${1}
 
-	juju --show-log deploy jameinel-ubuntu-lite
-	wait_for "ubuntu-lite" "$(idle_condition "ubuntu-lite")"
-	juju ssh ubuntu-lite/0 "sudo snap install yq"
+	juju --show-log deploy juju-qa-test
+	wait_for "juju-qa-test" "$(idle_condition "juju-qa-test")"
 
-	secret_uri=$(juju --show-log exec -u ubuntu-lite/0 -- secret-add foo=bar)
-	secret_short_uri="secret:${secret_uri##*/}"
+	secret_uri=$(juju --show-log exec -u juju-qa-test/0 -- secret-add foo=bar)
+	# Extract bare secret id (without "secret:" prefix) for matching logs and keep prefixed form for engine report keys.
+	secret_id=${secret_uri##*/}
+	secret_short_uri="secret:${secret_id}"
 
 	# Create 10 new revisions, so we'll have 11 in total. 1-10 will be obsolete.
-	for i in $(seq 10); do juju --show-log exec --unit ubuntu-lite/0 -- secret-set "$secret_uri" foo="$i"; done
+	for i in $(seq 10); do juju --show-log exec --unit juju-qa-test/0 -- secret-set "$secret_uri" foo="$i"; done
 
 	# Check that the secret-remove hook is run for the 10 obsolete revisions.
 	attempt=0
 	while true; do
-		num_hooks=$(juju show-status-log ubuntu-lite/0 --format yaml -n 100 | yq -o json | jq -r '[.[] | select(.message != null) | select(.message | contains("running secret-remove hook for '"${secret_short_uri}"'"))] | length')
+		num_hooks=$(juju show-status-log juju-qa-test/0 --format json -n 100 | jq -r "[.[] | select(.message != null) | select(.message | contains(\"running secret-remove hook\") and contains(\"${secret_id}\"))] | length")
 		if [ "$num_hooks" -eq 10 ]; then
 			break
 		fi
@@ -223,7 +277,7 @@ run_obsolete_revisions() {
 	echo "Checking initial obsolete revisions 1..10"
 	attempt=0
 	while true; do
-		obsolete=$(obsolete_secret_revisions "${secret_short_uri}")
+		obsolete=$(obsolete_secret_revisions "${secret_id}")
 		if [ "$obsolete" == "[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]" ]; then
 			break
 		fi
@@ -237,13 +291,13 @@ run_obsolete_revisions() {
 	done
 
 	# Remove a single revision.
-	juju --show-log exec --unit ubuntu-lite/0 -- secret-remove "$secret_uri" --revision 6
+	juju --show-log exec --unit juju-qa-test/0 -- secret-remove "$secret_uri" --revision 6
 
 	# Check that the unit state has the deleted revision removed.
 	echo "Checking revision 6 has been removed from the obsolete revisions"
 	attempt=0
 	while true; do
-		obsolete=$(obsolete_secret_revisions "${secret_short_uri}")
+		obsolete=$(obsolete_secret_revisions "${secret_id}")
 		if [ "$obsolete" == "[1, 2, 3, 4, 5, 7, 8, 9, 10]" ]; then
 			break
 		fi
@@ -257,14 +311,14 @@ run_obsolete_revisions() {
 	done
 
 	# Delete the entire secret.
-	juju --show-log exec --unit ubuntu-lite/0 -- secret-remove "$secret_uri"
+	juju --show-log exec --unit juju-qa-test/0 -- secret-remove "$secret_uri"
 
 	# Check that all the obsolete revisions are removed from unit state.
 	echo "Checking all obsolete revision are removed when the secret is deleted"
 	attempt=0
 	while true; do
-		obsolete=$(obsolete_secret_revisions "${secret_short_uri}")
-		if [ $obsolete == null ]; then
+		obsolete=$(obsolete_secret_revisions "${secret_id}")
+		if [ "$obsolete" == null ]; then
 			break
 		fi
 		attempt=$((attempt + 1))

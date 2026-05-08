@@ -12,7 +12,7 @@ import (
 
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 	"gopkg.in/tomb.v2"
@@ -513,6 +513,111 @@ func (s *WorkerSuite) TestWorkerAPIServerChangesWithSameAddress(c *tc.C) {
 	workertest.CleanKill(c, w)
 }
 
+func (s *WorkerSuite) TestSubscribe(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	s.expectClock()
+
+	watcher := watchertest.NewMockNotifyWatcher(make(chan struct{}))
+	s.controllerNodeService.EXPECT().WatchControllerAPIAddresses(gomock.Any()).Return(watcher, nil)
+
+	w := s.newWorker(c)
+	defer workertest.DirtyKill(c, w)
+
+	s.ensureStartup(c)
+
+	sub, err := w.Subscribe()
+	c.Assert(err, tc.ErrorIsNil)
+	defer sub.Close()
+
+	workertest.CleanKill(c, w)
+}
+
+func (s *WorkerSuite) TestSubscribeUnsubscribeTwice(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	s.expectClock()
+
+	watcher := watchertest.NewMockNotifyWatcher(make(chan struct{}))
+	s.controllerNodeService.EXPECT().WatchControllerAPIAddresses(gomock.Any()).Return(watcher, nil)
+
+	w := s.newWorker(c)
+	defer workertest.DirtyKill(c, w)
+
+	s.ensureStartup(c)
+
+	sub, err := w.Subscribe()
+	c.Assert(err, tc.ErrorIsNil)
+
+	sub.Close()
+	sub.Close()
+
+	workertest.CleanKill(c, w)
+}
+
+func (s *WorkerSuite) TestSubscribeWithNotify(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	s.expectClock()
+
+	ch := make(chan struct{})
+	watcher := watchertest.NewMockNotifyWatcher(ch)
+	s.controllerNodeService.EXPECT().WatchControllerAPIAddresses(gomock.Any()).Return(watcher, nil)
+
+	s.controllerNodeService.EXPECT().GetAPIAddressesByControllerIDForAgents(gomock.Any()).Return(map[string][]string{
+		"0": {
+			"10.0.0.0:17070",
+		},
+		"1": {
+			"10.0.0.1:17070",
+		},
+	}, nil)
+
+	done := make(chan struct{})
+	addr := &url.URL{Scheme: "wss", Host: "10.0.0.1:17070"}
+	s.remote.EXPECT().UpdateAddresses([]string{addr.Host}).DoAndReturn(func(s []string) {
+		close(done)
+	})
+
+	w := s.newWorker(c)
+	defer workertest.DirtyKill(c, w)
+
+	s.ensureStartup(c)
+
+	sub, err := w.Subscribe()
+	c.Assert(err, tc.ErrorIsNil)
+	defer sub.Close()
+
+	select {
+	case ch <- struct{}{}:
+	case <-c.Context().Done():
+		c.Fatalf("timed out waiting for worker to finish")
+	}
+
+	select {
+	case <-done:
+	case <-c.Context().Done():
+		c.Fatalf("timed out waiting for worker to update")
+	}
+
+	s.ensureChanged(c)
+
+	// Force the subscription to notify by creating a new connection.
+	_, err = w.newConnection(c.Context(), nil, api.DialOpts{})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Ensure that the subscription notifies.
+	select {
+	case <-sub.Changes():
+	case <-c.Context().Done():
+		c.Fatalf("timed out waiting for subscription change")
+	}
+
+	c.Check(w.runner.WorkerNames(), tc.DeepEquals, []string{"1"})
+
+	workertest.CleanKill(c, w)
+}
+
 func (s *WorkerSuite) setupMocks(c *tc.C) *gomock.Controller {
 	ctrl := s.baseSuite.setupMocks(c)
 
@@ -536,9 +641,11 @@ func (s *WorkerSuite) newWorker(c *tc.C) *remoteWorker {
 
 func (s *WorkerSuite) newConfig(c *tc.C) WorkerConfig {
 	return WorkerConfig{
-		Origin:                names.NewMachineTag("0"),
-		APIInfo:               &api.Info{},
-		APIOpener:             api.Open,
+		Origin:  names.NewMachineTag("0"),
+		APIInfo: &api.Info{},
+		APIOpener: func(ctx context.Context, i *api.Info, do api.DialOpts) (api.Connection, error) {
+			return s.connection, nil
+		},
 		ControllerNodeService: s.controllerNodeService,
 		NewRemote: func(rsc RemoteServerConfig) RemoteServer {
 			target := rsc.ControllerID

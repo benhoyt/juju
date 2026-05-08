@@ -11,7 +11,7 @@ import (
 	"github.com/canonical/sqlair"
 	"github.com/juju/errors"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 	"gopkg.in/tomb.v2"
@@ -56,6 +56,7 @@ func (s *namespaceSuite) TestEnsureNamespaceForModelNotFound(c *tc.C) {
 	mgrExp.IsLoopbackBound(gomock.Any()).Return(true, nil).Times(2)
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 
 	s.client.EXPECT().Cluster(gomock.Any()).Return(nil, nil)
 
@@ -93,6 +94,7 @@ func (s *namespaceSuite) TestEnsureNamespaceForModel(c *tc.C) {
 	mgrExp.IsLoopbackBound(gomock.Any()).Return(true, nil).Times(2)
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 
 	s.client.EXPECT().Cluster(gomock.Any()).Return(nil, nil)
 
@@ -128,6 +130,7 @@ func (s *namespaceSuite) TestEnsureNamespaceForModelLoopbackPreferred(c *tc.C) {
 	mgrExp.IsLoopbackBound(gomock.Any()).Return(true, nil).Times(1)
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 
 	s.client.EXPECT().Cluster(gomock.Any()).Return(nil, nil)
 
@@ -163,6 +166,7 @@ func (s *namespaceSuite) TestEnsureNamespaceForModelWithCache(c *tc.C) {
 	mgrExp.IsLoopbackBound(gomock.Any()).Return(true, nil).Times(2)
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 
 	s.client.EXPECT().Cluster(gomock.Any()).Return(nil, nil)
 
@@ -232,6 +236,7 @@ func (s *namespaceSuite) TestCloseDatabaseForController(c *tc.C) {
 	mgrExp.IsLoopbackBound(gomock.Any()).Return(true, nil).Times(2)
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 
 	s.client.EXPECT().Cluster(gomock.Any()).Return(nil, nil)
 
@@ -267,6 +272,7 @@ func (s *namespaceSuite) TestCloseDatabaseForModel(c *tc.C) {
 	mgrExp.IsLoopbackBound(gomock.Any()).Return(true, nil).Times(2)
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 
 	s.client.EXPECT().Cluster(gomock.Any()).Return(nil, nil)
 
@@ -309,6 +315,7 @@ func (s *namespaceSuite) TestCloseDatabaseForModelLoopbackPreferred(c *tc.C) {
 	mgrExp.IsLoopbackBound(gomock.Any()).Return(true, nil).Times(1)
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 
 	s.client.EXPECT().Cluster(gomock.Any()).Return(nil, nil)
 
@@ -351,6 +358,7 @@ func (s *namespaceSuite) TestCloseDatabaseForUnknownModel(c *tc.C) {
 	mgrExp.IsLoopbackBound(gomock.Any()).Return(true, nil).Times(2)
 	mgrExp.WithLogFuncOption().Return(nil)
 	mgrExp.WithTracingOption().Return(nil)
+	mgrExp.WithBusyTimeoutOption().Return(nil)
 
 	s.client.EXPECT().Cluster(gomock.Any()).Return(nil, nil)
 

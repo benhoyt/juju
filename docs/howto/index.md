@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Step-by-step guides for managing Juju deployments, clouds, controllers, models, applications, and more. Key operations and common tasks."
+---
+
 (how-to-guides)=
 # How-to guides
 
@@ -9,11 +15,11 @@
 
 Manage your deployment <manage-your-deployment>
 Manage juju <manage-juju>
-Manage plugins <manage-plugins>
 Manage clouds <manage-clouds>
 Manage credentials <manage-credentials>
 Manage metadata <manage-metadata>
 Manage controllers <manage-controllers>
+Manage the databases <manage-the-databases>
 Manage the Juju dashboard <manage-the-juju-dashboard>
 Manage models <manage-models>
 Manage secret backends <manage-secret-backends>
@@ -45,17 +51,25 @@ Define resource tags in a cloud <define-resource-tags-in-a-cloud>
 Get a quick sense of how to do things in Juju, from preparing your deployment environment and setting up a basic deployment through hardening and upgrading your deployment all the way to troubleshooting procedures and steps to take your deployment offline.
 
 - {ref}`Manage your deployment <manage-your-deployment>`
+- {ref}`Set up your deployment <set-up-your-deployment>`
+- {ref}`Set up your deployment -- local testing and development <set-things-up>`
+- {ref}`Set up your deployment -- offline <take-your-deployment-offline>`
+- {ref}`Harden your deployment <harden-your-deployment>`
+- {ref}`Troubleshoot your deployment <troubleshoot-your-deployment>`
+- {ref}`Upgrade your deployment <upgrade-your-deployment>`
+- {ref}`Upgrade your deployment from 3.6 to 4.0 <upgrade-your-deployment-from-36-to-40>`
+- {ref}`Tear down your deployment -- local testing and development <tear-things-down>`
 
 ## Set up Juju
 
-Install the `juju` client and any plugins, add a cloud to the client, bootstrap a Juju controller, connect further clouds to the client or an existing controller, set up the Juju dashboard, add models, configure secret backends, configure logs.
+Install the `juju` client, add a cloud to the client, bootstrap a Juju controller, connect further clouds to the client or an existing controller, set up the Juju dashboard, add models, configure secret backends, configure logs.
 
 - {ref}`Manage the juju CLI <manage-juju>`
-- {ref}`Manage plugins <manage-plugins>`
 - {ref}`Manage clouds <manage-clouds>`
 - {ref}`Manage credentials <manage-credentials>`
 - {ref}`Manage metadata <manage-metadata>`
 - {ref}`Manage controllers <manage-controllers>`
+- {ref}`Manage the databases <manage-the-databases>`
 - {ref}`Manage the Juju dashboard <manage-the-juju-dashboard>`
 - {ref}`Manage models <manage-models>`
 - {ref}`Manage secret backends <manage-secret-backends>`

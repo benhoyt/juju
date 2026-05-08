@@ -15,13 +15,13 @@ import (
 	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/api/jujuclient"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/controller"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/core/status"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/testhelpers"
 	"github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc/params"
@@ -101,7 +101,7 @@ func (f *fakeModelMgrAPIClient) ListModelSummaries(ctx context.Context, user str
 			Status: base.Status{
 				Status: info.Result.Status.Status,
 				Info:   info.Result.Status.Info,
-				Data:   make(map[string]interface{}),
+				Data:   make(map[string]any),
 				Since:  info.Result.Status.Since,
 			},
 			AgentVersion: info.Result.AgentVersion,
@@ -612,9 +612,9 @@ func (s *ModelsSuite) TestModelsWithOneModelInError(c *tc.C) {
 func (s *ModelsSuite) TestAllModels(c *tc.C) {
 	assertAPICallsArgs := func(all bool) {
 		s.api.CheckCalls(c, []testhelpers.StubCall{{
-			"ListModelSummaries", []interface{}{"admin", all},
+			"ListModelSummaries", []any{"admin", all},
 		}, {
-			"Close", []interface{}{},
+			"Close", []any{},
 		},
 		})
 	}

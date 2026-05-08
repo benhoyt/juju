@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn to add, attach, detach, and remove storage in Juju. Manage persistent storage for applications across cloud providers."
+---
+
 (manage-storage)=
 # How to manage storage
 

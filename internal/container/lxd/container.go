@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -258,6 +259,7 @@ func (s *Server) ContainerAddresses(name string) ([]corenetwork.ProviderAddress,
 func (s *Server) CreateContainerFromSpec(spec ContainerSpec) (*Container, error) {
 	logger.Infof(context.TODO(), "starting new container %q (image %q)", spec.Name, spec.Image.Image.Filename)
 	logger.Debugf(context.TODO(), "new container has profiles %v", spec.Profiles)
+	logger.Debugf(context.TODO(), "new container has devices: %v", spec.Devices)
 
 	ephemeral := false
 	req := api.InstancesPost{
@@ -273,11 +275,10 @@ func (s *Server) CreateContainerFromSpec(spec ContainerSpec) (*Container, error)
 		},
 	}
 	op, err := s.CreateInstanceFromImage(spec.Image.LXDServer, *spec.Image.Image, req)
-	if err != nil {
-		return s.handleAlreadyExistsError(err, spec, ephemeral)
+	if err == nil {
+		err = op.Wait()
 	}
-
-	if err := op.Wait(); err != nil {
+	if err != nil {
 		return s.handleAlreadyExistsError(err, spec, ephemeral)
 	}
 	opInfo, err := op.GetTarget()
@@ -382,7 +383,7 @@ func (s *Server) StartContainer(name string) error {
 	return errors.Trace(op.Wait())
 }
 
-// Remove containers stops and deletes containers matching the input list of
+// RemoveContainers stops and deletes containers matching the input list of
 // names. Any failed removals are indicated in the returned error.
 func (s *Server) RemoveContainers(names []string) error {
 	if len(names) == 0 {
@@ -402,7 +403,7 @@ func (s *Server) RemoveContainers(names []string) error {
 	return nil
 }
 
-// Remove container first ensures that the container is stopped,
+// RemoveContainer first ensures that the container is stopped,
 // then deletes it.
 func (s *Server) RemoveContainer(name string) error {
 	state, eTag, err := s.GetInstanceState(name)
@@ -418,10 +419,10 @@ func (s *Server) RemoveContainer(name string) error {
 			Stateful: false,
 		}
 		op, err := s.UpdateInstanceState(name, req, eTag)
-		if err != nil {
-			return errors.Trace(err)
+		if err == nil {
+			err = op.Wait()
 		}
-		if err := op.Wait(); err != nil {
+		if err != nil {
 			return errors.Trace(err)
 		}
 	}
@@ -486,10 +487,5 @@ func (s *Server) Clock() clock.Clock {
 // containerHasStatus returns true if the input container has a status
 // matching one from the input list.
 func containerHasStatus(container api.Instance, statuses []string) bool {
-	for _, status := range statuses {
-		if container.StatusCode.String() == status {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(statuses, container.StatusCode.String())
 }

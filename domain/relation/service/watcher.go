@@ -21,10 +21,10 @@ import (
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/core/watcher/eventsource"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/domain/relation"
 	relationerrors "github.com/juju/juju/domain/relation/errors"
 	"github.com/juju/juju/domain/relation/internal"
-	"github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -136,10 +136,11 @@ func NewWatchableService(
 	st State,
 	watcherFactory WatcherFactory,
 	leaderEnsurer leadership.Ensurer,
+	statusHistory StatusHistory,
 	logger logger.Logger,
 ) *WatchableService {
 	return &WatchableService{
-		LeadershipService: NewLeadershipService(st, leaderEnsurer, logger),
+		LeadershipService: NewLeadershipService(st, leaderEnsurer, statusHistory, logger),
 		watcherFactory:    watcherFactory,
 	}
 }
@@ -194,7 +195,7 @@ func (s *WatchableService) WatchRelationUnitApplicationLifeSuspendedStatus(
 	if subordinateID.IsEmpty() {
 		w = newPrincipalLifeSuspendedStatusWatcher(s, principalID)
 	} else {
-		w = newSubordinateLifeSuspendedStatusWatcher(s, principalID, subordinateID)
+		w = newSubordinateLifeSuspendedStatusWatcher(s, subordinateID, principalID)
 	}
 	return s.watcherFactory.NewNamespaceMapperWatcher(
 		ctx,
@@ -297,29 +298,65 @@ func (s *WatchableService) WatchRelationUnits(
 		return nil, errors.Capture(err)
 	}
 
+	getRelationUnitUUIDs := func(ctx context.Context) (set.Strings, error) {
+		relUnitUUIDs, err := s.st.GetRelationUnitUUIDsByEndpointUUID(ctx, watcherRelationUnitsData.RelationEndpointUUID)
+		if err != nil {
+			return nil, errors.Capture(err)
+		}
+		return set.NewStrings(relUnitUUIDs...), nil
+	}
+
 	relationUnitUUIDs := set.NewStrings()
+
+	// relationSync is used to determine if the watcher has seen all the
+	// possible relation units. This is needed because there is a small window
+	// between when the initial relation units are queried and when the change
+	// stream watcher is setup. It might be possible that the relation units
+	// are created in that window. If that happens, we need to get the relation
+	// units again until we're 100% sure that we haven't missed any changes.
+	//
+	// This is a warning about caches serving stale data.
+	var relationSync bool
 	mapper := func(ctx context.Context, events []changestream.ChangeEvent) ([]string, error) {
 		var out []string
 		for _, e := range events {
 			var wantEvent bool
 			switch e.Namespace() {
 			case watcherRelationUnitsData.UnitSettingsHashNS:
+				// We're not officially in sync, because we've not witnessed the
+				// relation unit namespace yet, but we don't want to miss any
+				// relation unit setting changes.
+				//
+				// Either, we've seen it via the relation unit namespace, or we
+				// need to check it manually before making the decision about
+				// whether to emit the event.
+				if !relationSync {
+					relationUnitUUIDs, err = getRelationUnitUUIDs(ctx)
+					if err != nil {
+						return nil, errors.Capture(err)
+					}
+					relationSync = true
+				}
+
 				if relationUnitUUIDs.Contains(e.Changed()) {
 					wantEvent = true
 				}
+
 			case watcherRelationUnitsData.ApplicationSettingsHashNS:
 				wantEvent = true
+
 			case watcherRelationUnitsData.RelationUnitNS:
-				relUnitUUIDs, err := s.st.GetRelationUnitUUIDsByEndpointUUID(ctx, watcherRelationUnitsData.RelationEndpointUUID)
+				relationUnitUUIDs, err = getRelationUnitUUIDs(ctx)
 				if err != nil {
 					return nil, errors.Capture(err)
 				}
-				relationUnitUUIDs = set.NewStrings(relUnitUUIDs...)
-
+				relationSync = true
 				wantEvent = true
 			}
+
 			if wantEvent {
 				out = append(out, e.Changed())
+				s.logger.Tracef(ctx, "relation unit changed: ", relationUUID, applicationUUID, relationUnitUUIDs)
 			}
 		}
 		return out, nil
@@ -470,6 +507,22 @@ func (w *lifeSuspendedStatusWatcher[T]) GetMapper() eventsource.Mapper {
 // loop rather than error or assume the happy case.
 const continueError = errors.ConstError("continue")
 
+// removedRelationKey builds a final change event for a relation that has been
+// removed. Key-based consumers rely on this to clean up state they hold under
+// the endpoint-derived relation key (e.g. the uniter's remote-state watcher).
+// If the relation was never seen, there is nothing to notify.
+func removedRelationKey(
+	current map[corerelation.UUID]relation.RelationLifeSuspendedData,
+	relUUID corerelation.UUID,
+) (corerelation.Key, error) {
+	previous, seen := current[relUUID]
+	delete(current, relUUID)
+	if !seen {
+		return nil, continueError
+	}
+	return corerelation.Key(previous.EndpointIdentifiers), nil
+}
+
 func (w *lifeSuspendedStatusWatcher[T]) filterChangeEvents(
 	ctx context.Context,
 	changes []changestream.ChangeEvent,
@@ -539,7 +592,7 @@ func (w *principalLifeSuspendedStatusWatcher) processInitialChange(
 	relUUID corerelation.UUID,
 	data relation.RelationLifeSuspendedData,
 ) (corerelation.Key, error) {
-	return corerelation.NewKey(data.EndpointIdentifiers)
+	return corerelation.Key(data.EndpointIdentifiers), nil
 }
 
 // processChange returns a relation key when the relation change should
@@ -554,11 +607,15 @@ func (w *principalLifeSuspendedStatusWatcher) processChange(
 ) (corerelation.Key, error) {
 	changedRelationData, err := w.s.st.GetMapperDataForWatchLifeSuspendedStatus(ctx, relUUID, w.appUUID)
 	if errors.Is(err, relationerrors.ApplicationNotFoundForRelation) {
+		// If the relation was previously tracked, emit the old key so
+		// the consumer can clean up. Only ignore truly unknown relations.
+		if _, seen := w.currentRelations[relUUID]; seen {
+			return removedRelationKey(w.currentRelations, relUUID)
+		}
 		relationsIgnored.Add(relUUID.String())
 		return nil, continueError
 	} else if errors.Is(err, relationerrors.RelationNotFound) {
-		delete(w.currentRelations, relUUID)
-		return nil, continueError
+		return removedRelationKey(w.currentRelations, relUUID)
 	} else if err != nil {
 		return nil, errors.Capture(err)
 	}
@@ -572,11 +629,7 @@ func (w *principalLifeSuspendedStatusWatcher) processChange(
 	}
 
 	w.currentRelations[relUUID] = changedRelationData
-	key, err := corerelation.NewKey(changedRelationData.EndpointIdentifiers)
-	if err != nil {
-		return nil, errors.Capture(err)
-	}
-	return key, nil
+	return corerelation.Key(changedRelationData.EndpointIdentifiers), nil
 }
 
 // subordinateLifeSuspendedStatusWatcher implements the processChange method
@@ -613,7 +666,7 @@ func (w *subordinateLifeSuspendedStatusWatcher) processInitialChange(
 	relUUID corerelation.UUID,
 	data relation.RelationLifeSuspendedData,
 ) (corerelation.Key, error) {
-	return corerelation.NewKey(data.EndpointIdentifiers)
+	return corerelation.Key(data.EndpointIdentifiers), nil
 }
 
 // processChange returns a relation key when the relation change should
@@ -629,19 +682,20 @@ func (w *subordinateLifeSuspendedStatusWatcher) processChange(
 ) (corerelation.Key, error) {
 	changedRelationData, err := w.s.st.GetMapperDataForWatchLifeSuspendedStatus(ctx, relUUID, w.appUUID)
 	if errors.Is(err, relationerrors.ApplicationNotFoundForRelation) {
+		// If the relation was previously tracked, emit the old key so
+		// the consumer can clean up. Only ignore truly unknown relations.
+		if _, seen := w.currentRelations[relUUID]; seen {
+			return removedRelationKey(w.currentRelations, relUUID)
+		}
 		relationsIgnored.Add(relUUID.String())
 		return nil, continueError
 	} else if errors.Is(err, relationerrors.RelationNotFound) {
-		delete(w.currentRelations, relUUID)
-		return nil, continueError
+		return removedRelationKey(w.currentRelations, relUUID)
 	} else if err != nil {
 		return nil, errors.Capture(err)
 	}
 
-	key, err := corerelation.NewKey(changedRelationData.EndpointIdentifiers)
-	if err != nil {
-		return nil, errors.Capture(err)
-	}
+	key := corerelation.Key(changedRelationData.EndpointIdentifiers)
 
 	// If this is a known relation where neither the Life nor
 	// Suspended value have changed, do not notify.

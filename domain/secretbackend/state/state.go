@@ -22,6 +22,7 @@ import (
 	modelerrors "github.com/juju/juju/domain/model/errors"
 	"github.com/juju/juju/domain/secretbackend"
 	secretbackenderrors "github.com/juju/juju/domain/secretbackend/errors"
+	"github.com/juju/juju/domain/secretbackend/internal"
 	"github.com/juju/juju/environs/cloudspec"
 	"github.com/juju/juju/internal/database"
 	"github.com/juju/juju/internal/errors"
@@ -240,6 +241,12 @@ func (s *State) upsertSecretBackend(ctx context.Context, tx *sqlair.TX, params u
 		return "", errors.Capture(err)
 	}
 
+	if isImmutable, err := s.isImmutable(ctx, tx, params.ID); err != nil {
+		return "", errors.Errorf("checking if secret backend %q is immutable: %w", params.ID, err)
+	} else if isImmutable {
+		return "", errors.Errorf("secret backend %q is immutable", params.ID).Add(secretbackenderrors.Forbidden)
+	}
+
 	backendTypeID, err := secretbackend.MarshallBackendType(params.BackendType)
 	if err != nil {
 		return "", errors.Capture(err)
@@ -248,6 +255,8 @@ func (s *State) upsertSecretBackend(ctx context.Context, tx *sqlair.TX, params u
 		ID:            params.ID,
 		Name:          params.Name,
 		BackendTypeID: backendTypeID,
+		// Backend inserted outside the bootstrap process are user backends.
+		OriginID: int(internal.User),
 	}
 	if params.TokenRotateInterval != nil {
 		sb.TokenRotateInterval = database.NewNullDuration(*params.TokenRotateInterval)
@@ -332,6 +341,12 @@ DELETE FROM secret_backend WHERE uuid = $SecretBackend.uuid`, input)
 			input.ID = sb.ID
 		}
 
+		if isImmutable, err := s.isImmutable(ctx, tx, input.ID); err != nil {
+			return errors.Capture(err)
+		} else if isImmutable {
+			return errors.Errorf("secret backend %q is immutable", input.ID).Add(secretbackenderrors.Forbidden)
+		}
+
 		if !deleteInUse {
 			var count Count
 			err := tx.Query(ctx, checkInUseStmt, input).Get(&count)
@@ -356,15 +371,35 @@ DELETE FROM secret_backend WHERE uuid = $SecretBackend.uuid`, input)
 			return errors.Errorf("removing secret backend reference for %q: %w", input.ID, err)
 		}
 		err = tx.Query(ctx, backendStmt, input).Run()
-		if database.IsErrConstraintTrigger(err) {
-			return errors.Errorf("%w: %q is immutable", secretbackenderrors.Forbidden, input.ID)
-		}
 		if err != nil {
 			return errors.Errorf("deleting secret backend for %q: %w", input.ID, err)
 		}
 		return nil
 	})
 	return err
+}
+
+// isImmutable determines if a secret backend is immutable by checking
+// if it's linked to a 'built-in' origin.
+// Returns a boolean and error.
+func (s *State) isImmutable(ctx context.Context, tx *sqlair.TX, backendUUID string) (bool, error) {
+	type secretBackend entityUUID
+	entity := secretBackend{UUID: backendUUID}
+	stmt, err := s.Prepare(`
+SELECT 1 AS &Count.num
+FROM   secret_backend
+WHERE  uuid = $secretBackend.uuid
+AND    origin_id = 0 -- built-in
+LIMIT 1`, entity, Count{})
+	if err != nil {
+		return false, errors.Capture(err)
+	}
+	var count Count
+	err = tx.Query(ctx, stmt, entity).Get(&count)
+	if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
+		return false, errors.Errorf("querying secret backend origin %q: %w", backendUUID, err)
+	}
+	return !errors.Is(err, sql.ErrNoRows), nil
 }
 
 // ListSecretBackendIDs returns a list of all secret backend ids.
@@ -415,7 +450,7 @@ SELECT
     b.name                                   AS &SecretBackendRow.name,
     bt.type                                  AS &SecretBackendRow.backend_type,
     b.token_rotate_interval                  AS &SecretBackendRow.token_rotate_interval,
-    COUNT(DISTINCT sbr.secret_revision_uuid) AS &SecretBackendRow.num_secrets,
+    COUNT(DISTINCT sbr.secret_id) AS &SecretBackendRow.num_secrets,
     c.name                                   AS &SecretBackendRow.config_name,
     c.content                                AS &SecretBackendRow.config_content
 FROM secret_backend b
@@ -451,20 +486,32 @@ GROUP BY b.name, c.name`, kubernetes.BackendName)
 	if err != nil {
 		return nil, errors.Errorf("cannot list secret backends: %w", err)
 	}
-	return append(result, nonK8sRows.toSecretBackends()...), nil
+	return append(result, nonK8sRows.toSecretBackends(ctx, s.logger)...), nil
 }
 
 // listInUseKubernetesSecretBackends returns a list of all kubernetes secret backends which contain secrets.
+//
+// This function identifies all CAAS models that have secrets stored in the
+// built-in 'kubernetes' backend. Since each model uses its own Kubernetes
+// namespace (derived from the model name) and its own cloud/credential
+// information, we must join against the `v_model`, `v_cloud_auth`, and
+// `v_cloud_credential_attribute` views to build the model-specific
+// configurations for each model.
+//
+// Even though the `secret_backend` table has only one 'kubernetes' entry, this
+// function returns a separate `SecretBackend` object for each model using it,
+// each with its own dynamically generated configuration.
 func (s *State) listInUseKubernetesSecretBackends(ctx context.Context, tx *sqlair.TX) ([]*secretbackend.SecretBackend, error) {
 	backendQuery := fmt.Sprintf(`
 SELECT
     sbr.secret_backend_uuid                  AS &secretBackendForK8sModelRow.uuid,
     b.name                                   AS &secretBackendForK8sModelRow.name,
+    vm.uuid                                  AS &secretBackendForK8sModelRow.model_uuid,
     vm.name                                  AS &secretBackendForK8sModelRow.model_name,
     bt.type                                  AS &secretBackendForK8sModelRow.backend_type,
     vc.uuid                                  AS &secretBackendForK8sModelRow.cloud_uuid,
     vcca.uuid                                AS &secretBackendForK8sModelRow.cloud_credential_uuid,
-    COUNT(DISTINCT sbr.secret_revision_uuid) AS &secretBackendForK8sModelRow.num_secrets,
+    COUNT(DISTINCT sbr.secret_id) AS &secretBackendForK8sModelRow.num_secrets,
     (vc.uuid,
     vc.name,
     vc.endpoint,
@@ -485,7 +532,7 @@ FROM secret_backend_reference sbr
     JOIN cloud_ca_cert ccc ON vc.uuid = ccc.cloud_uuid
     JOIN v_cloud_credential_attribute vcca ON vm.cloud_credential_uuid = vcca.uuid
 WHERE b.name = '%s'
-GROUP BY vm.name, vcca.attribute_key`, kubernetes.BackendName)
+GROUP BY vm.uuid, vcca.attribute_key`, kubernetes.BackendName)
 	backendStmt, err := s.Prepare(backendQuery, secretBackendForK8sModelRow{}, cloudRow{}, cloudCredentialRow{})
 	if err != nil {
 		return nil, errors.Capture(err)
@@ -624,7 +671,7 @@ WHERE  m.uuid = $M.uuid
 	}
 
 	var result []*secretbackend.SecretBackend
-	for _, b := range rows.toSecretBackends() {
+	for _, b := range rows.toSecretBackends(ctx, s.logger) {
 		if modelType == coremodel.CAAS && b.Name == juju.BackendName {
 			continue
 		}
@@ -636,6 +683,16 @@ WHERE  m.uuid = $M.uuid
 	return result, errors.Capture(err)
 }
 
+// getK8sSecretBackendForModel returns the built-in 'kubernetes' secret backend
+// configured for a specific model.
+//
+// It retrieves the cloud and credential details for the model to build the
+// required Kubernetes backend configuration. The Kubernetes namespace is
+// determined by the model name.
+//
+// While there is only one 'kubernetes' entry in the `secret_backend` database
+// table, the returned `SecretBackend` object contains a `Config` that is
+// specific to the requested model.
 func (s *State) getK8sSecretBackendForModel(ctx context.Context, tx *sqlair.TX, modelUUID coremodel.UUID) (*secretbackend.SecretBackend, error) {
 	stmt, err := s.Prepare(`
 SELECT
@@ -754,7 +811,7 @@ WHERE b.%s = $M.identifier`, columName)
 	if err != nil {
 		return nil, errors.Errorf("querying secret backends: %w", err)
 	}
-	return rows.toSecretBackends()[0], nil
+	return rows.toSecretBackends(ctx, s.logger)[0], nil
 }
 
 // GetActiveModelSecretBackend returns the active secret backend ID and config for the given model.
@@ -957,7 +1014,7 @@ WHERE  secret_backend_uuid = $SecretBackendReference.secret_backend_uuid`, input
 // If the ValueRef is nil, the internal controller backend is used.
 // It returns a rollback function which can be used to revert the changes.
 func (s *State) AddSecretBackendReference(
-	ctx context.Context, valueRef *secrets.ValueRef, modelID coremodel.UUID, revisionID string,
+	ctx context.Context, valueRef *secrets.ValueRef, modelID coremodel.UUID, revisionID string, secretID string,
 ) (func() error, error) {
 	db, err := s.DB(ctx)
 	if err != nil {
@@ -970,7 +1027,7 @@ func (s *State) AddSecretBackendReference(
 		if err != nil {
 			return errors.Capture(err)
 		}
-		err := s.addSecretBackendReference(ctx, tx, backendID, modelID, revisionID)
+		err := s.addSecretBackendReference(ctx, tx, backendID, modelID, revisionID, secretID)
 		return errors.Capture(err)
 	})
 	if err != nil {
@@ -1019,12 +1076,13 @@ func (s *State) getSecretBackendID(ctx context.Context, tx *sqlair.TX, valueRef 
 }
 
 func (s *State) addSecretBackendReference(
-	ctx context.Context, tx *sqlair.TX, backendID string, modelID coremodel.UUID, revisionID string,
+	ctx context.Context, tx *sqlair.TX, backendID string, modelID coremodel.UUID, revisionID string, secretID string,
 ) error {
 	ref := SecretBackendReference{
 		BackendID:        backendID,
 		ModelID:          modelID,
 		SecretRevisionID: revisionID,
+		SecretID:         secretID,
 	}
 
 	stmt, err := s.Prepare(`
@@ -1087,7 +1145,7 @@ WHERE  model_uuid = $SecretBackendReference.model_uuid
 // satisfying [secretbackenderrors.RefCountNotFound] if no existing refcount was found.
 // It returns a rollback function which can be used to revert the changes.
 func (s *State) UpdateSecretBackendReference(
-	ctx context.Context, valueRef *secrets.ValueRef, modelID coremodel.UUID, revisionID string,
+	ctx context.Context, valueRef *secrets.ValueRef, modelID coremodel.UUID, revisionID string, secretID string,
 ) (func() error, error) {
 	db, err := s.DB(ctx)
 	if err != nil {
@@ -1108,7 +1166,7 @@ func (s *State) UpdateSecretBackendReference(
 		if err := s.removeSecretBackendReferenceForRevisions(ctx, tx, revisionID); err != nil {
 			return errors.Capture(err)
 		}
-		if err := s.addSecretBackendReference(ctx, tx, backendID, modelID, revisionID); err != nil {
+		if err := s.addSecretBackendReference(ctx, tx, backendID, modelID, revisionID, secretID); err != nil {
 			return errors.Capture(err)
 		}
 		return nil
@@ -1121,7 +1179,7 @@ func (s *State) UpdateSecretBackendReference(
 			if err := s.removeSecretBackendReferenceForRevisions(ctx, tx, revisionID); err != nil {
 				return errors.Capture(err)
 			}
-			err := s.addSecretBackendReference(ctx, tx, existing.BackendID, modelID, revisionID)
+			err := s.addSecretBackendReference(ctx, tx, existing.BackendID, modelID, revisionID, secretID)
 			return errors.Capture(err)
 		})
 		return errors.Capture(err)
@@ -1129,24 +1187,6 @@ func (s *State) UpdateSecretBackendReference(
 }
 
 type secretRevisionIDs []string
-
-// RemoveSecretBackendReference removes the reference to the secret backend for the given secret revisions.
-func (s *State) RemoveSecretBackendReference(ctx context.Context, revisionIDs ...string) error {
-	if len(revisionIDs) == 0 {
-		return nil
-	}
-
-	db, err := s.DB(ctx)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		err := s.removeSecretBackendReferenceForRevisions(ctx, tx, revisionIDs...)
-		return errors.Capture(err)
-	})
-	return errors.Capture(err)
-}
 
 func (s *State) removeSecretBackendReferenceForRevisions(ctx context.Context, tx *sqlair.TX, revisionIDs ...string) error {
 	if len(revisionIDs) == 0 {
@@ -1237,4 +1277,39 @@ WHERE b.uuid IN ($S[:])`,
 // secret backend watcher.
 func (s *State) NamespaceForWatchModelSecretBackend() string {
 	return "model_secret_backend"
+}
+
+// GetSecretBackendNamesByUUID returns a map of backend UUID to backend name for all backends.
+// An empty map will be returned if there are no backends.
+func (s *State) GetSecretBackendNamesByUUID(ctx context.Context) (map[string]string, error) {
+	db, err := s.DB(ctx)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	stmt, err := s.Prepare(`
+SELECT uuid AS &SecretBackend.uuid,
+       name AS &SecretBackend.name
+FROM   secret_backend`, SecretBackend{})
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	var rows []SecretBackend
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err := tx.Query(ctx, stmt).GetAll(&rows)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return errors.Capture(err)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]string, len(rows))
+	for _, backend := range rows {
+		result[backend.ID] = backend.Name
+	}
+	return result, nil
 }

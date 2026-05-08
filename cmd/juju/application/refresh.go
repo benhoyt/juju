@@ -27,6 +27,7 @@ import (
 	commoncharm "github.com/juju/juju/api/common/charm"
 	apicommoncharms "github.com/juju/juju/api/common/charms"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/application/deployer"
 	"github.com/juju/juju/cmd/juju/application/refresher"
 	"github.com/juju/juju/cmd/juju/application/store"
@@ -36,11 +37,10 @@ import (
 	"github.com/juju/juju/cmd/modelcmd"
 	corebase "github.com/juju/juju/core/base"
 	corecharm "github.com/juju/juju/core/charm"
+	"github.com/juju/juju/core/storage"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/environs/config"
-	"github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/charmhub"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -175,9 +175,8 @@ type refreshCommand struct {
 }
 
 const refreshDoc = `
-When no options are set, the application's charm will be refreshed to the latest
-revision available in the repository from which it was originally deployed. An
-explicit revision can be chosen with the ` + "`--revision`" + ` option.
+When no options are set, the application's charm will be refreshed to the latest revision 
+in its current channel. An explicit revision can be chosen with the --revision option. 
 
 Refreshing a local packaged charm will require a path to be supplied to allow an
 updated copy of the charm.
@@ -250,6 +249,12 @@ cause unexpected behavior.
 ` + "`--force`" + ` option for LXD Profiles is not generally recommended when upgrading an
 application; overriding profiles on the container may cause unexpected
 behavior.
+
+### Behavior on machines vs. Kubernetes
+
+On machines, charm upgrades happen at the same time on all units of an application.
+However, on Kubernetes, because Juju deploys applications as ` + "`StatefulSets`" + `
+with rolling updates, charm upgrades happen sequentially, unit by unit.
 `
 
 const refreshExamples = `
@@ -295,7 +300,7 @@ func (c *refreshCommand) SetFlags(f *gnuflag.FlagSet) {
 	f.BoolVar(&c.ForceBase, "force-base", false, "Refresh even if the base of the deployed application is not supported by the new charm")
 	f.StringVar(&c.SwitchURL, "switch", "", "Crossgrade to a different charm")
 	f.StringVar(&c.CharmPath, "path", "", "Refresh to a charm located at path")
-	f.StringVar(&c.Base, "base", "", "Select a different base than what is currently running.")
+	f.StringVar(&c.Base, "base", "", "Specifies the base to match when picking the charm.")
 	f.IntVar(&c.Revision, "revision", -1, "Explicit revision of current charm")
 	f.Var(stringMap{mapping: &c.Resources}, "resource", "Resource to be uploaded to the controller")
 	f.Var(storageFlag{stores: &c.Storage, bundleStores: nil}, "storage", "Charm storage directives")
@@ -320,7 +325,7 @@ func (b *optBoolValue) Set(s string) error {
 	return err
 }
 
-func (b *optBoolValue) Get() interface{} {
+func (b *optBoolValue) Get() any {
 	if *b.target != nil {
 		return **b.target
 	}

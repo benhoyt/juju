@@ -5,6 +5,7 @@ package service
 
 import (
 	"context"
+	"maps"
 
 	"github.com/juju/collections/transform"
 	"github.com/juju/schema"
@@ -42,6 +43,10 @@ type ModelDefaultsProviderFunc func(context.Context) (modeldefaults.Defaults, er
 // support model config then a [coreerrors.NotSupported] error is returned.
 type ModelConfigProviderFunc func(string) (environs.ModelConfigProvider, error)
 
+// ConfigDefaultsFunc describes a function that returns a map of the core default
+// configuration values. It's intended to mask environs/config.ConfigDefaults
+type ConfigDefaultsFunc func() map[string]any
+
 // State is the model config state required by this service.
 type State interface {
 	// GetModelCloudUUID returns the cloud UUID for the given model.
@@ -75,9 +80,6 @@ type State interface {
 	// [clouderrors.NotFound] if the cloud region doesn't exist.
 	DeleteCloudRegionDefaults(ctx context.Context, cloudUID cloud.UUID, regionName string, attrs []string) error
 
-	// ConfigDefaults returns the default configuration values set in Juju.
-	ConfigDefaults(context.Context) map[string]any
-
 	// CloudDefaults returns the defaults associated with the given cloud. If
 	// no defaults are found then an empty map will be returned with a nil
 	// error. If no cloud exists for the given id an error satisfying
@@ -103,6 +105,7 @@ type State interface {
 	// a model's config. These include things like the model's name and uuid.
 	// If no model exists for the provided uuid then a [modelerrors.NotFound]
 	// error is returned.
+	//
 	// Deprecated: this is only to support legacy callers.
 	ModelMetadataDefaults(context.Context, coremodel.UUID) (map[string]string, error)
 
@@ -116,6 +119,7 @@ type State interface {
 // configuration options of a model.
 type Service struct {
 	modelConfigProviderGetter ModelConfigProviderFunc
+	configDefaults            ConfigDefaultsFunc
 	st                        State
 }
 
@@ -133,6 +137,7 @@ func NewService(
 ) *Service {
 	return &Service{
 		modelConfigProviderGetter: modelConfigProviderGetter,
+		configDefaults:            config.ConfigDefaults,
 		st:                        st,
 	}
 }
@@ -207,13 +212,9 @@ func ProviderDefaults(
 	coercedMap := coercedAttrs.(map[string]any)
 	rval := make(map[string]any, len(coercedMap)+len(modelDefaults))
 
-	for k, v := range coercedAttrs.(map[string]interface{}) {
-		rval[k] = v
-	}
+	maps.Copy(rval, coercedAttrs.(map[string]any))
 
-	for k, v := range modelDefaults {
-		rval[k] = v
-	}
+	maps.Copy(rval, modelDefaults)
 
 	return rval, nil
 }
@@ -494,7 +495,7 @@ func (s *Service) cloudDefaults(
 
 	defaults := modeldefaults.ModelCloudDefaultAttributes{}
 
-	jujuDefaults := s.st.ConfigDefaults(ctx)
+	jujuDefaults := s.configDefaults()
 	for k, v := range jujuDefaults {
 		defaults[k] = modeldefaults.CloudDefaultValues{
 			Default: v,
@@ -636,12 +637,8 @@ func coerceDefaultsToSchema(
 		return nil, errors.Errorf("coercing config to Juju schema: %w", err)
 	}
 
-	for k, v := range providerCfg {
-		resultCfg[k] = v
-	}
-	for k, v := range jujuCfg {
-		resultCfg[k] = v
-	}
+	maps.Copy(resultCfg, providerCfg)
+	maps.Copy(resultCfg, jujuCfg)
 	return resultCfg, nil
 }
 

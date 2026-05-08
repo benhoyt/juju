@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Placement directive reference: specify deployment locations using --to flag with machines, zones, subnets, and availability zones."
+---
+
 (placement-directive)=
 # Placement directive
 

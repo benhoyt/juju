@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/juju/collections/set"
@@ -17,12 +18,12 @@ import (
 	"github.com/juju/juju/api/client/application"
 	"github.com/juju/juju/api/client/charms"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/relation"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/charm/hooks"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/domain/deployment/charm"
+	"github.com/juju/juju/domain/deployment/charm/hooks"
 	"github.com/juju/juju/internal/network/ssh"
 	unitdebug "github.com/juju/juju/internal/worker/uniter/runner/debug"
 )
@@ -111,11 +112,8 @@ func (c *debugHooksCommand) Init(args []string) error {
 
 	// If any of the hooks is "*", then debug all hooks.
 	c.hooks = append([]string{}, args[1:]...)
-	for _, h := range c.hooks {
-		if h == "*" {
-			c.hooks = nil
-			break
-		}
+	if slices.Contains(c.hooks, "*") {
+		c.hooks = nil
 	}
 	return nil
 }
@@ -167,8 +165,8 @@ func (c *debugHooksCommand) validateHooksOrActions(ctx context.Context) error {
 	// If the unit/leader syntax is used, we need to manually extract the
 	// application name from the target parameter.
 	target := c.provider.getTarget()
-	if strings.HasSuffix(target, "/leader") {
-		appName = strings.TrimSuffix(target, "/leader")
+	if before, ok := strings.CutSuffix(target, "/leader"); ok {
+		appName = before
 	} else {
 		appName, err = names.UnitApplication(target)
 	}
@@ -264,6 +262,13 @@ func (c *debugHooksCommand) commonRun(
 	innercmd := fmt.Sprintf(`F=$(mktemp); echo %s | base64 -d > $F; chmod +x $F; exec $F`, b64Script)
 	args := []string{fmt.Sprintf(c.decideEntryPoint(ctx), innercmd)}
 	c.provider.setArgs(args)
+
+	// debug-hooks and debug-code always need a PTY because they launch a
+	// tmux session on the remote side. Force PTY allocation so that the
+	// enablePty heuristic (which disables PTY when args are present) does
+	// not prevent it.
+	_ = c.pty.Set("true")
+
 	return c.sshCommand.Run(ctx)
 }
 

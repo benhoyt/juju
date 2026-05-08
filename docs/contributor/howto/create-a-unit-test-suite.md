@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Build unit test suites for Juju with proper setup and teardown logic using gocheck test patterns."
+---
+
 (create-a-unit-test-suite)=
 # Create a unit test suite
 > See also: {ref}`unit-test-suite`

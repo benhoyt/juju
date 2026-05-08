@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn to bootstrap, configure, upgrade, backup, and manage Juju controllers across cloud environments with complete lifecycle management."
+---
+
 (manage-controllers)=
 # How to manage controllers
 

@@ -5,6 +5,7 @@ package service
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"strings"
 
@@ -22,21 +23,25 @@ import (
 	"github.com/juju/juju/core/leadership"
 	"github.com/juju/juju/core/logger"
 	coremachine "github.com/juju/juju/core/machine"
+	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/providertracker"
+	corestorage "github.com/juju/juju/core/storage"
 	"github.com/juju/juju/core/trace"
 	coreunit "github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/application"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
-	"github.com/juju/juju/domain/application/internal"
+	applicationinternal "github.com/juju/juju/domain/application/internal"
 	"github.com/juju/juju/domain/application/service/storage"
 	"github.com/juju/juju/domain/constraints"
 	"github.com/juju/juju/domain/deployment"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/domain/life"
 	modelerrors "github.com/juju/juju/domain/model/errors"
 	domainnetwork "github.com/juju/juju/domain/network"
 	"github.com/juju/juju/domain/status"
+	domainstorage "github.com/juju/juju/domain/storage"
+	storageerrors "github.com/juju/juju/domain/storage/errors"
 	"github.com/juju/juju/environs"
-	internalcharm "github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/internal/password"
 )
@@ -52,7 +57,15 @@ type Provider interface {
 // underlying provider for CAAS applications.
 type CAASProvider interface {
 	environs.SupportedFeatureEnumerator
+	// Application returns an (k8s) Application interface.
 	Application(string, caas.DeploymentType) caas.Application
+}
+
+// CloudInfoProvider instances provide a means to get
+// the API version of the underlying cloud.
+type CloudInfoProvider interface {
+	// APIVersion returns the version info for provider's cloud.
+	APIVersion() (string, error)
 }
 
 // ProviderService defines a service for interacting with the underlying
@@ -64,6 +77,7 @@ type ProviderService struct {
 	agentVersionGetter      AgentVersionGetter
 	provider                providertracker.ProviderGetter[Provider]
 	caasApplicationProvider providertracker.ProviderGetter[CAASProvider]
+	cloudInfoGetter         providertracker.ProviderGetter[CloudInfoProvider]
 	st                      State
 }
 
@@ -75,8 +89,10 @@ func NewProviderService(
 	agentVersionGetter AgentVersionGetter,
 	provider providertracker.ProviderGetter[Provider],
 	caasApplicationProvider providertracker.ProviderGetter[CAASProvider],
+	cloudInfoGetter providertracker.ProviderGetter[CloudInfoProvider],
 	charmStore CharmStore,
 	statusHistory StatusHistory,
+	modelUUID model.UUID,
 	clock clock.Clock,
 	logger logger.Logger,
 ) *ProviderService {
@@ -86,6 +102,7 @@ func NewProviderService(
 			leaderEnsurer,
 			charmStore,
 			statusHistory,
+			modelUUID,
 			clock,
 			logger,
 		),
@@ -93,8 +110,19 @@ func NewProviderService(
 		agentVersionGetter:      agentVersionGetter,
 		provider:                provider,
 		caasApplicationProvider: caasApplicationProvider,
+		cloudInfoGetter:         cloudInfoGetter,
 		st:                      st,
 	}
+}
+
+// GetApplicationStorageDirectivesInfo returns the storage directives set for an application,
+// keyed to the storage name. If the application does not have any storage
+// directives set then an empty result is returned.
+//
+// If the application does not exist, then a [applicationerrors.ApplicationNotFound]
+// error is returned.
+func (s *ProviderService) GetApplicationStorageDirectivesInfo(ctx context.Context, uuid coreapplication.UUID) (map[string]application.ApplicationStorageInfo, error) {
+	return s.storageService.GetApplicationStorageDirectivesInfo(ctx, uuid)
 }
 
 // CreateIAASApplication creates the specified IAAS application and units if
@@ -114,7 +142,7 @@ func (s *ProviderService) CreateIAASApplication(
 
 	appName, appArg, unitArgs, err := s.makeIAASApplicationArg(ctx, name, charm, origin, args, units...)
 	if err != nil {
-		return "", errors.Errorf("preparing IAAS application args: %w", err)
+		return "", errors.Errorf("preparing application args: %w", err)
 	}
 
 	// Precheck any instances that are being created.
@@ -127,16 +155,16 @@ func (s *ProviderService) CreateIAASApplication(
 
 	appID, machineNames, err := s.st.CreateIAASApplication(ctx, appName, appArg, unitArgs)
 	if err != nil {
-		return "", errors.Errorf("creating IAAS application %q: %w", appName, err)
+		return "", errors.Errorf("creating application %q: %w", appName, err)
 	}
 
-	s.logger.Infof(ctx, "created IAAS application %q with ID %q", appName, appID)
+	s.logger.Infof(ctx, "created application %q with ID %q", appName, appID)
 
 	if args.ApplicationStatus != nil {
 		if err := s.statusHistory.RecordStatus(
 			ctx, status.ApplicationNamespace.WithID(appName), *args.ApplicationStatus,
 		); err != nil {
-			s.logger.Warningf(ctx, "recording IAAS application status history: %w", err)
+			s.logger.Warningf(ctx, "recording application status history: %w", err)
 		}
 	}
 	s.recordInitMachinesStatusHistory(ctx, machineNames)
@@ -252,7 +280,7 @@ func (s *ProviderService) SetApplicationConstraints(
 }
 
 // AddIAASUnits adds the specified units to the IAAS application, returning an
-// error satisfying [applicationerrors.ApplicationNotFoundError] if the
+// error satisfying [applicationerrors.ApplicationNotFound] if the
 // application doesn't exist. If no units are provided, it will return nil.
 func (s *ProviderService) AddIAASUnits(
 	ctx context.Context, appName string, units ...AddIAASUnitArg,
@@ -292,10 +320,10 @@ func (s *ProviderService) AddIAASUnits(
 	}
 
 	args, err := s.makeIAASUnitArgs(
-		ctx, units, storageDirectives, origin.Platform, constraints.DecodeConstraints(cons),
+		ctx, units, storageDirectives, origin.Platform, cons,
 	)
 	if err != nil {
-		return nil, nil, errors.Errorf("making IAAS unit args: %w", err)
+		return nil, nil, errors.Errorf("making unit args: %w", err)
 	}
 
 	if err := s.precheckInstances(
@@ -308,7 +336,7 @@ func (s *ProviderService) AddIAASUnits(
 
 	unitNames, machineNames, err := s.st.AddIAASUnits(ctx, appUUID, args...)
 	if err != nil {
-		return nil, nil, errors.Errorf("adding IAAS units to application %q: %w", appName, err)
+		return nil, nil, errors.Errorf("adding units to application %q: %w", appName, err)
 	}
 
 	for i, name := range unitNames {
@@ -323,7 +351,7 @@ func (s *ProviderService) AddIAASUnits(
 }
 
 // AddCAASUnits adds the specified units to the CAAS application, returning an
-// error satisfying [applicationerrors.ApplicationNotFoundError] if the
+// error satisfying [applicationerrors.ApplicationNotFound] if the
 // application doesn't exist. If no units are provided, it will return nil.
 func (s *ProviderService) AddCAASUnits(
 	ctx context.Context, appName string, units ...AddUnitArg,
@@ -358,7 +386,7 @@ func (s *ProviderService) AddCAASUnits(
 	}
 
 	args, err := s.makeCAASUnitArgs(
-		ctx, units, storageDirectives, constraints.DecodeConstraints(cons),
+		ctx, units, storageDirectives, cons,
 	)
 	if err != nil {
 		return nil, errors.Errorf("making CAAS unit args: %w", err)
@@ -418,7 +446,7 @@ func (s *ProviderService) CAASUnitTerminating(ctx context.Context, unitNameStr s
 
 	caasApplicationProvider, err := s.caasApplicationProvider(ctx)
 	if err != nil {
-		return false, errors.Errorf("terminating k8s unit %s/%q: %w", appName, unitNum, err)
+		return false, errors.Errorf("terminating k8s unit %s/%d: %w", appName, unitNum, err)
 	}
 
 	// We currently only support statefulset.
@@ -446,7 +474,7 @@ func (s *ProviderService) CAASUnitTerminating(ctx context.Context, unitNameStr s
 // model, returning an error satisfying
 //
 // The following errors may occur:
-// - [applicationerrors.ApplicationNotFoundError] if the application doesn't
+// - [applicationerrors.ApplicationNotFound] if the application doesn't
 // exist. If the unit life is Dead, an error satisfying
 func (s *ProviderService) RegisterCAASUnit(
 	ctx context.Context,
@@ -501,9 +529,12 @@ func (s *ProviderService) RegisterCAASUnit(
 	}
 
 	if !isRegistered {
-		// TODO (tlm): This code SHOULD be responsible for generating the unit
-		// uuid of a new CAAS unit. However this is still done in state. We need
-		// to fix this and have this driven from above.
+		unitUUID, err = coreunit.NewUUID()
+		if err != nil {
+			return "", "", errors.Errorf(
+				"generating new unit %q uuid: %w", unitName, err,
+			)
+		}
 		unitNetNodeUUID, err = domainnetwork.NewNetNodeUUID()
 		if err != nil {
 			return "", "", errors.Errorf(
@@ -512,6 +543,7 @@ func (s *ProviderService) RegisterCAASUnit(
 		}
 	}
 
+	registerArgs.UnitUUID = unitUUID
 	registerArgs.NetNodeUUID = unitNetNodeUUID
 
 	// Find the pod/unit in the provider.
@@ -543,7 +575,7 @@ func (s *ProviderService) RegisterCAASUnit(
 		registerArgs.Ports = &caasUnit.Ports
 	}
 
-	var storageArg internal.RegisterUnitStorageArg
+	var storageArg domainstorage.RegisterUnitStorageArg
 	if isRegistered {
 		storageArg, err = s.storageService.MakeRegisterExistingCAASUnitStorageArg(
 			ctx, unitUUID, unitNetNodeUUID, caasUnit.FilesystemInfo,
@@ -575,11 +607,59 @@ func (s *ProviderService) RegisterCAASUnit(
 // into account the model constraints.
 func (s *ProviderService) ResolveApplicationConstraints(
 	ctx context.Context, appCons coreconstraints.Value,
-) (coreconstraints.Value, error) {
+) (constraints.Constraints, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
 	return s.resolveApplicationConstraints(ctx, appCons)
+}
+
+// PrepareUnitAddStorage validates and prepares the storage add arguments for a
+// unit without performing any writes.
+//
+// The following errors can be expected:
+// - [coreerrors.NotSupported] with k8s models.
+func (s *ProviderService) PrepareUnitAddStorage(
+	ctx context.Context,
+	storageName corestorage.Name,
+	unitUUID coreunit.UUID,
+	addCount uint32,
+) (domainstorage.IAASUnitAddStorageArg, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	modelType, err := s.st.GetModelType(ctx)
+	if err != nil {
+		return domainstorage.IAASUnitAddStorageArg{}, errors.Capture(err)
+	}
+	if modelType == model.CAAS {
+		return domainstorage.IAASUnitAddStorageArg{}, errors.New(
+			"adding storage to a unit is not supported on k8s",
+		).Add(coreerrors.NotSupported)
+	}
+
+	unitStorageArgs, err := s.populateAddStorageArgs(
+		ctx,
+		storageName,
+		unitUUID,
+		addCount,
+		application.AddUnitStorageOverride{},
+	)
+	if err != nil {
+		return domainstorage.IAASUnitAddStorageArg{}, errors.Capture(err)
+	}
+
+	iassUnitStorageArgs, err := s.storageService.MakeIAASUnitStorageArgs(
+		ctx, unitStorageArgs.StorageInstances)
+	if err != nil {
+		return domainstorage.IAASUnitAddStorageArg{}, errors.Capture(err)
+	}
+
+	return domainstorage.IAASUnitAddStorageArg{
+		UnitAddStorageArg: unitStorageArgs,
+		FilesystemsToOwn:  iassUnitStorageArgs.FilesystemsToOwn,
+		VolumesToOwn:      iassUnitStorageArgs.VolumesToOwn,
+	}, nil
 }
 
 func (s *ProviderService) makeIAASApplicationArg(ctx context.Context,
@@ -589,7 +669,8 @@ func (s *ProviderService) makeIAASApplicationArg(ctx context.Context,
 	args AddApplicationArgs,
 	units ...AddIAASUnitArg,
 ) (string, application.AddIAASApplicationArg, []application.AddIAASUnitArg, error) {
-	if err := s.validateCreateApplicationArgs(ctx, name, charm, origin, args); err != nil {
+	var err error
+	if args, err = s.validateCreateApplicationArgs(ctx, name, charm, origin, args); err != nil {
 		return "", application.AddIAASApplicationArg{}, nil,
 			errors.Errorf("validating create application args: %w", err)
 	}
@@ -598,51 +679,54 @@ func (s *ProviderService) makeIAASApplicationArg(ctx context.Context,
 	// in trying to resolve them.
 	// Also, we know that the charm must have a non-nil meta, since we have already
 	// validated the args.
-	cons := coreconstraints.Value{}
+	var resolvedConstraints constraints.Constraints
 	if !charm.Meta().Subordinate {
-		var err error
-		cons, err = s.resolveApplicationConstraints(ctx, args.Constraints)
+		cons, err := s.resolveApplicationConstraints(ctx, args.Constraints)
 		if err != nil {
 			return "", application.AddIAASApplicationArg{}, nil,
-				errors.Errorf("merging IAAS application and model constraints: %w", err)
+				errors.Errorf("merging application and model constraints: %w", err)
+		} else if cons.Arch == nil {
+			return "", application.AddIAASApplicationArg{}, nil,
+				errors.Errorf("application constraints must have a resolved architecture")
 		}
 
-		// Sometimes the arch on the origin platform is not set. But sometimes an arch
-		// is passed in through constraints instead (or at least, after resolve we
-		// will have a value). Ensure we these two params don't contradict each other,
-		// and ensure they are set to the same value.
-		if origin.Platform.Architecture != "" && cons.Arch != nil && origin.Platform.Architecture != *cons.Arch {
+		// Sometimes the arch on the origin platform is not set. But sometimes
+		// an arch is passed in through constraints instead (or at least, after
+		// resolve we will have a value). Ensure we these two params don't
+		// contradict each other, and ensure they are set to the same value.
+		originArch := origin.Platform.Architecture
+		if originArch != "" && originArch != *cons.Arch {
 			return "", application.AddIAASApplicationArg{}, nil,
 				errors.Errorf("arch in platform and constraints for application do not match")
 		}
-		if origin.Platform.Architecture == "" {
-			if cons.Arch != nil {
-				origin.Platform.Architecture = *cons.Arch
-			} else {
-				origin.Platform.Architecture = arch.DefaultArchitecture
-			}
+
+		// If the origin arch is not set, we know we have a constraint arch
+		// here, as it was resolved in the call above.
+		if originArch == "" {
+			origin.Platform.Architecture = *cons.Arch
 		}
+
+		resolvedConstraints = cons
 	}
 
-	appName, arg, err := s.makeApplicationArg(ctx, name, charm, origin, args)
+	appName, arg, err := s.makeApplicationArg(ctx, name, charm, origin, resolvedConstraints, args)
 	if err != nil {
-		return "", application.AddIAASApplicationArg{}, nil, errors.Errorf("preparing IAAS application args: %w", err)
+		return "", application.AddIAASApplicationArg{}, nil, errors.Errorf("preparing application args: %w", err)
 	}
+
 	addIAASApplicationArgs := application.AddIAASApplicationArg{
 		BaseAddApplicationArg: arg,
 	}
-	addIAASApplicationArgs.Constraints = constraints.DecodeConstraints(cons)
-
 	storageDirectives := storage.MakeStorageDirectiveFromApplicationArg(
 		charm.Meta().Name,
 		charm.Meta().Storage,
 		arg.StorageDirectives,
 	)
 	unitArgs, err := s.makeIAASUnitArgs(
-		ctx, units, storageDirectives, arg.Platform, constraints.DecodeConstraints(cons),
+		ctx, units, storageDirectives, arg.Platform, arg.Constraints,
 	)
 	if err != nil {
-		return "", application.AddIAASApplicationArg{}, nil, errors.Errorf("making IAAS unit args: %w", err)
+		return "", application.AddIAASApplicationArg{}, nil, errors.Errorf("making unit args: %w", err)
 	}
 
 	return appName, addIAASApplicationArgs, unitArgs, nil
@@ -656,7 +740,8 @@ func (s *ProviderService) makeCAASApplicationArg(
 	args AddApplicationArgs,
 	units ...AddUnitArg,
 ) (string, application.AddCAASApplicationArg, []application.AddCAASUnitArg, error) {
-	if err := s.validateCreateApplicationArgs(ctx, name, charm, origin, args); err != nil {
+	var err error
+	if args, err = s.validateCreateApplicationArgs(ctx, name, charm, origin, args); err != nil {
 		return "", application.AddCAASApplicationArg{}, nil,
 			errors.Errorf("validating create application args: %w", err)
 	}
@@ -683,7 +768,7 @@ func (s *ProviderService) makeCAASApplicationArg(
 		}
 	}
 
-	appName, arg, err := s.makeApplicationArg(ctx, name, charm, origin, args)
+	appName, arg, err := s.makeApplicationArg(ctx, name, charm, origin, cons, args)
 	if err != nil {
 		return "", application.AddCAASApplicationArg{}, nil, errors.Errorf("preparing CAAS application args: %w", err)
 	}
@@ -691,7 +776,6 @@ func (s *ProviderService) makeCAASApplicationArg(
 		BaseAddApplicationArg: arg,
 		Scale:                 len(units),
 	}
-	addCAASApplicationArg.Constraints = constraints.DecodeConstraints(cons)
 
 	storageDirectives := storage.MakeStorageDirectiveFromApplicationArg(
 		charm.Meta().Name,
@@ -699,7 +783,7 @@ func (s *ProviderService) makeCAASApplicationArg(
 		arg.StorageDirectives,
 	)
 	unitArgs, err := s.makeCAASUnitArgs(
-		ctx, units, storageDirectives, constraints.DecodeConstraints(cons),
+		ctx, units, storageDirectives, arg.Constraints,
 	)
 	if err != nil {
 		return "", application.AddCAASApplicationArg{}, nil, errors.Errorf("making CAAS unit args: %w", err)
@@ -713,45 +797,53 @@ func (s *ProviderService) validateCreateApplicationArgs(
 	charm internalcharm.Charm,
 	origin corecharm.Origin,
 	args AddApplicationArgs,
-) error {
+) (AddApplicationArgs, error) {
 	if err := validateCharmAndApplicationParams(
 		name,
 		args.ReferenceName,
 		charm,
 		origin,
 	); err != nil {
-		return errors.Errorf("invalid application args: %w", err)
+		return AddApplicationArgs{}, errors.Errorf("invalid application args: %w", err)
 	}
 
-	err := s.storageService.ValidateApplicationStorageDirectiveOverrides(
-		ctx,
+	err := s.storageService.ValidateCharmStorage(ctx, charm.Meta().Storage)
+	if err != nil {
+		return AddApplicationArgs{}, errors.Errorf("invalid charm storage: %w", err)
+	}
+
+	charmStorageDefsForValidation := applicationinternal.StorageDefinitionsForValidationFromCharm(
 		charm.Meta().Storage,
+	)
+	err = s.storageService.ValidateApplicationStorageDirectiveOverrides(
+		ctx,
+		charmStorageDefsForValidation,
 		args.StorageDirectiveOverrides,
 	)
 	if err != nil {
-		return errors.Errorf(
+		return AddApplicationArgs{}, errors.Errorf(
 			"invalid storage directive overrides: %w", err,
 		)
 	}
 
 	if err := validateDownloadInfoParams(origin.Source, args.DownloadInfo); err != nil {
-		return errors.Errorf("invalid application args: %w", err)
+		return AddApplicationArgs{}, errors.Errorf("invalid application args: %w", err)
 	}
 
 	if err := validateCreateApplicationResourceParams(charm, args.ResolvedResources, args.PendingResources); err != nil {
-		return errors.Errorf("create application: %w", err)
+		return AddApplicationArgs{}, errors.Errorf("create application: %w", err)
 	}
 
 	if err := validateDeviceConstraints(args.Devices, charm.Meta()); err != nil {
-		return errors.Errorf("validating device constraints: %w", err)
+		return AddApplicationArgs{}, errors.Errorf("validating device constraints: %w", err)
 	}
 
 	// ValidateApplicationConfig also coerces config values to the correct type
 	if args.ApplicationConfig, err = charm.Config().ValidateApplicationConfig(args.ApplicationConfig); err != nil {
-		return errors.Errorf("validating application config: %w", err)
+		return AddApplicationArgs{}, errors.Errorf("validating application config: %w", err)
 	}
 
-	return nil
+	return args, nil
 }
 
 func (s *ProviderService) makeApplicationArg(
@@ -759,9 +851,10 @@ func (s *ProviderService) makeApplicationArg(
 	name string,
 	charm internalcharm.Charm,
 	origin corecharm.Origin,
+	resolvedConstraints constraints.Constraints,
 	args AddApplicationArgs,
 ) (string, application.BaseAddApplicationArg, error) {
-	appArg, err := makeCreateApplicationArgs(ctx, s.storageService, charm, origin, args)
+	appArg, err := makeCreateApplicationArgs(ctx, s.storageService, charm, origin, resolvedConstraints, args)
 	if err != nil {
 		return "", application.BaseAddApplicationArg{}, errors.Errorf("creating application args: %w", err)
 	}
@@ -806,15 +899,15 @@ func (s *ProviderService) precheckInstances(
 
 func (s *ProviderService) makeApplicationConstraints(
 	ctx context.Context, appUUID coreapplication.UUID,
-) (coreconstraints.Value, error) {
+) (constraints.Constraints, error) {
 	appCons, err := s.st.GetApplicationConstraints(ctx, appUUID)
 	if err != nil {
-		return coreconstraints.Value{}, errors.Errorf("getting application constraints: %w", err)
+		return constraints.Constraints{}, errors.Errorf("getting application constraints: %w", err)
 	}
 
 	cons, err := s.resolveApplicationConstraints(ctx, constraints.EncodeConstraints(appCons))
 	if err != nil {
-		return coreconstraints.Value{}, errors.Capture(err)
+		return constraints.Constraints{}, errors.Capture(err)
 	}
 
 	return cons, nil
@@ -841,22 +934,29 @@ func (s *ProviderService) constraintsValidator(ctx context.Context) (coreconstra
 
 func (s *ProviderService) resolveApplicationConstraints(
 	ctx context.Context, appCons coreconstraints.Value,
-) (coreconstraints.Value, error) {
+) (constraints.Constraints, error) {
 	validator, err := s.constraintsValidator(ctx)
 	if err != nil {
-		return coreconstraints.Value{}, errors.Capture(err)
+		return constraints.Constraints{}, errors.Capture(err)
 	}
 	modelCons, err := s.st.GetModelConstraints(ctx)
 	if err != nil && !errors.Is(err, modelerrors.ConstraintsNotFound) {
-		return coreconstraints.Value{}, errors.Errorf("retrieving model constraints constraints: %w	", err)
+		return constraints.Constraints{}, errors.Errorf("retrieving model constraints constraints: %w	", err)
 	}
 
 	mergedCons, err := validator.Merge(constraints.EncodeConstraints(modelCons), appCons)
 	if err != nil {
-		return coreconstraints.Value{}, errors.Errorf("merging application and model constraints: %w", err)
+		return constraints.Constraints{}, errors.Errorf("merging application and model constraints: %w", err)
 	}
 
-	return mergedCons, nil
+	// If we don't have an arch set, set it to the default architecture. This
+	// ensures that we don't end up with an empty arch in places that expect
+	// one.
+	if !mergedCons.HasArch() {
+		mergedCons.Arch = new(arch.DefaultArchitecture)
+	}
+
+	return constraints.DecodeConstraints(mergedCons), nil
 }
 
 func (s *ProviderService) validateConstraints(ctx context.Context, cons coreconstraints.Value) error {
@@ -883,6 +983,7 @@ func makeCreateApplicationArgs(
 	storageSvc StorageService,
 	charm internalcharm.Charm,
 	origin corecharm.Origin,
+	resolvedConstraints constraints.Constraints,
 	args AddApplicationArgs,
 ) (application.BaseAddApplicationArg, error) {
 	charmMeta := charm.Meta()
@@ -897,7 +998,7 @@ func makeCreateApplicationArgs(
 		)
 	}
 
-	err = validateApplicationStorageDirectives(charmMeta.Storage, storageDirectiveArgs)
+	err = storage.ValidateApplicationStorageDirectives(charmMeta.Storage, storageDirectiveArgs)
 	if err != nil {
 		return application.BaseAddApplicationArg{}, errors.Errorf(
 			"invalid application storage directives: %w", err,
@@ -939,7 +1040,6 @@ func makeCreateApplicationArgs(
 	if err != nil {
 		return application.BaseAddApplicationArg{}, errors.Errorf("encoding charm origin: %w", err)
 	}
-
 	applicationConfig, err := application.EncodeApplicationConfig(args.ApplicationConfig, ch.Config)
 	if err != nil {
 		return application.BaseAddApplicationArg{}, errors.Errorf("encoding application config: %w", err)
@@ -953,7 +1053,7 @@ func makeCreateApplicationArgs(
 	return application.BaseAddApplicationArg{
 		Charm:             ch,
 		CharmDownloadInfo: args.DownloadInfo,
-		Constraints:       constraints.DecodeConstraints(args.Constraints),
+		Constraints:       resolvedConstraints,
 		Platform:          platformArg,
 		Channel:           channelArg,
 		EndpointBindings:  args.EndpointBindings,
@@ -991,4 +1091,376 @@ func encodeUnitPlacement(placement deployment.Placement) string {
 	}
 
 	return placement.Directive
+}
+
+func (s *ProviderService) populateAddStorageArgs(
+	ctx context.Context,
+	storageName corestorage.Name,
+	unitUUID coreunit.UUID, addCount uint32,
+	arg application.AddUnitStorageOverride,
+) (domainstorage.UnitAddStorageArg, error) {
+	unitStorageDirective, err := s.storageService.GetUnitStorageDirectiveByName(ctx, unitUUID, storageName)
+	if err != nil {
+		return domainstorage.UnitAddStorageArg{}, errors.Errorf(
+			"getting unit %q storage directive: %w",
+			unitUUID, err,
+		)
+	}
+
+	storageAddInfo, err := s.st.GetStorageAddInfoByUnitUUID(
+		ctx, unitUUID, storageName,
+	)
+	if err != nil {
+		return domainstorage.UnitAddStorageArg{}, errors.Errorf(
+			"getting unit %q charm storage %q and count: %w",
+			unitUUID, storageName, err,
+		)
+	}
+
+	storageDirective := unitStorageDirective
+	if arg.StoragePoolUUID != nil {
+		storageDirective.PoolUUID = *arg.StoragePoolUUID
+	}
+	if arg.SizeMiB != nil {
+		storageDirective.Size = *arg.SizeMiB
+	}
+
+	wantCount := addCount + storageAddInfo.AlreadyAttachedCount
+	toCheck := map[string]storage.StorageDirectiveOverride{
+		storageName.String(): {
+			Count:    &wantCount,
+			PoolUUID: &storageDirective.PoolUUID,
+			Size:     &storageDirective.Size,
+		},
+	}
+	err = s.storageService.ValidateApplicationStorageDirectiveOverrides(
+		ctx,
+		map[string]applicationinternal.CharmStorageDefinitionForValidation{
+			storageAddInfo.CharmStorageDefinitionForValidation.Name: storageAddInfo.CharmStorageDefinitionForValidation,
+		},
+		toCheck,
+	)
+	if err != nil {
+		return domainstorage.UnitAddStorageArg{}, errors.Capture(err)
+	}
+
+	args, err := s.storageService.MakeUnitAddStorageArgs(
+		ctx,
+		unitUUID,
+		addCount,
+		storageDirective,
+	)
+	if err != nil {
+		return domainstorage.UnitAddStorageArg{}, errors.Capture(err)
+	}
+	// Record the max allowed count precondition.
+	// This will be checked inside the transaction.
+	args.CountLessThanEqual = uint32(math.MaxUint32) - addCount
+	if storageAddInfo.CountMax > 0 {
+		args.CountLessThanEqual = uint32(storageAddInfo.CountMax) - addCount
+	}
+	return args, nil
+}
+
+// AddStorageForIAASUnit adds storage instances to the given IAAS unit.
+// The following error types can be expected:
+// - [github.com/juju/juju/core/storage.InvalidStorageName]: when the storage
+// name is not valid.
+// - [github.com/juju/juju/domain/application/errors.UnitNotFound]: when the
+// unit does not exist.
+// - [github.com/juju/juju/domain/application/errors.UnitNotAlive]: when the
+// unit is not alive.
+// - [github.com/juju/juju/domain/application/errors.StorageNameNotSupported]:
+// when storage name is not defined in charm metadata.
+// - [github.com/juju/juju/domain/application/errors.StorageCountLimitExceeded]
+// when the requested storage falls outside of the bounds defined by the charm.
+func (s *ProviderService) AddStorageForIAASUnit(
+	ctx context.Context, storageName corestorage.Name, unitUUID coreunit.UUID,
+	count uint32, arg application.AddUnitStorageOverride,
+) ([]corestorage.ID, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	// Unit UUID and storage name are validated in populateAddStorageArgs.
+	unitStorageArgs, err := s.populateAddStorageArgs(ctx, storageName, unitUUID, count, arg)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	iaasUnitStorageArgs, err := s.storageService.MakeIAASUnitStorageArgs(
+		ctx, unitStorageArgs.StorageInstances)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	added, err := s.st.AddStorageForIAASUnit(ctx, unitUUID, storageName, domainstorage.IAASUnitAddStorageArg{
+		UnitAddStorageArg: unitStorageArgs,
+		FilesystemsToOwn:  iaasUnitStorageArgs.FilesystemsToOwn,
+		VolumesToOwn:      iaasUnitStorageArgs.VolumesToOwn,
+	})
+	if errors.Is(err, storageerrors.MaxStorageCountPreconditionFailed) {
+		maxCount := int(unitStorageArgs.CountLessThanEqual + count)
+		return nil, applicationerrors.StorageCountLimitExceeded{
+			Maximum:     &maxCount,
+			Requested:   int(count),
+			StorageName: storageName.String(),
+		}
+	}
+	return added, errors.Capture(err)
+}
+
+// AddStorageForCAASUnit adds storage instances to the given CAAS unit.
+// The following error types can be expected:
+// - [github.com/juju/juju/core/storage.InvalidStorageName]: when the storage
+// name is not valid.
+// - [github.com/juju/juju/domain/application/errors.UnitNotFound]: when the
+// unit does not exist.
+// - [github.com/juju/juju/domain/application/errors.UnitNotAlive]: when the
+// unit is not alive.
+// - [github.com/juju/juju/domain/application/errors.StorageNameNotSupported]:
+// when storage name is not defined in charm metadata.
+// - [github.com/juju/juju/domain/application/errors.StorageCountLimitExceeded]
+// when the requested storage falls outside of the bounds defined by the charm.
+func (s *ProviderService) AddStorageForCAASUnit(
+	ctx context.Context, storageName corestorage.Name, unitUUID coreunit.UUID,
+	count uint32, arg application.AddUnitStorageOverride,
+) ([]corestorage.ID, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	// Unit UUID and storage name are validated in populateAddStorageArgs.
+	unitStorageArgs, err := s.populateAddStorageArgs(ctx, storageName, unitUUID, count, arg)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	added, err := s.st.AddStorageForCAASUnit(ctx, unitUUID, storageName, unitStorageArgs)
+	if errors.Is(err, storageerrors.MaxStorageCountPreconditionFailed) {
+		maxCount := int(unitStorageArgs.CountLessThanEqual + count)
+		return nil, applicationerrors.StorageCountLimitExceeded{
+			Maximum:     &maxCount,
+			Requested:   int(count),
+			StorageName: storageName.String(),
+		}
+	}
+	return added, errors.Capture(err)
+}
+
+// AttachStorageToUnit ensures the specified storage instance can be attached
+// to the specified unit and then attaches it.
+//
+// The following error types can be expected:
+// - [coreerrors.NotValid] when the storage or unit UUID is not valid.
+// - [storageerrors.StorageInstanceNotFound] when the storage instance does not
+// exist.
+// - [storageerrors.StorageInstanceNotAlive] when the storage instance is not
+// alive.
+// - [applicationerrors.UnitNotFound] when the unit does not exist.
+// - [applicationerrors.UnitNotAlive] when the unit is not alive.
+// - [applicationerrors.StorageNameNotSupported] when the unit's charm does not
+// define the storage name.
+// - [applicationerrors.StorageInstanceCharmNameMismatch] when the storage
+// instance charm name does not match the unit charm.
+// - [applicationerrors.StorageInstanceKindNotValidForCharmStorageDefinition]
+// when the storage kind does not match the charm storage definition.
+// - [applicationerrors.StorageInstanceSizeNotValidForCharmStorageDefinition]
+// when the storage size is below the charm minimum.
+// - [applicationerrors.StorageCountLimitExceeded] when attaching would exceed
+// the charm storage maximum.
+// - [applicationerrors.StorageInstanceAlreadyAttachedToUnit] when the storage
+// instance is already attached to the unit.
+// - [applicationerrors.StorageInstanceUnexpectedAttachments] when the charm
+// storage definition is not shared and existing attachments are present.
+// - [applicationerrors.UnitAttachmentCountExceedsLimit] when the unit already
+// has too many attachments for the storage name.
+// - [applicationerrors.UnitCharmChanged] when the unit's charm has changed.
+// - [applicationerrors.UnitMachineChanged] when the unit's machine has
+// changed.
+// - [applicationerrors.StorageInstanceAttachMachineOwnerMismatch] when the
+// storage instance owning machine does not match the unit's machine.
+func (s *ProviderService) AttachStorageToUnit(
+	ctx context.Context, storageUUID domainstorage.StorageInstanceUUID, unitUUID coreunit.UUID,
+) error {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	if storageUUID.Validate() != nil {
+		return errors.New("storage uuid is not valid").Add(coreerrors.NotValid)
+	}
+	if unitUUID.Validate() != nil {
+		return errors.New("unit uuid is not valid").Add(coreerrors.NotValid)
+	}
+
+	storageAttachInfo, err := s.st.GetStorageAttachInfoByUnitUUIDAndStorageUUID(
+		ctx, unitUUID, storageUUID,
+	)
+	if err != nil {
+		return errors.Errorf(
+			"getting unit %q info and storage instance %q info for attachment: %w",
+			unitUUID, storageUUID, err,
+		)
+	}
+
+	// Can this storage instance be attached to this unit?
+	err = s.validateStorageInstanceForUnitAttachment(ctx, storageAttachInfo)
+	if err != nil {
+		return errors.Errorf(
+			"getting machine for unit %q: %w",
+			unitUUID, err)
+	}
+
+	// Generate the new storage instance attachment arg.
+	unitAttachStorageArg, err := s.storageService.MakeAttachStorageInstanceToUnitArg(
+		ctx,
+		storageAttachInfo,
+	)
+	if err != nil {
+		return errors.Errorf(
+			"making attach storage instance arguments: %w", err,
+		)
+	}
+
+	err = s.st.AttachStorageInstanceToUnit(ctx, unitUUID, unitAttachStorageArg)
+	return errors.Capture(err)
+}
+
+// validateStorageInstanceForUnitAttachment validates whether a storage
+// instance can be attached to a unit based on unit state, charm storage
+// definition, and existing attachments.
+//
+// The following errors may be returned:
+// - [storageerrors.StorageInstanceNotAlive] when the storage instance is not alive.
+// - [applicationerrors.UnitNotAlive] when the unit is not alive.
+// - [applicationerrors.StorageInstanceCharmNameMismatch] when the storage
+// instance charm name does not match the unit charm.
+// - [applicationerrors.StorageInstanceKindNotValidForCharmStorageDefinition]
+// when the storage instance kind does not match the charm storage definition.
+// - [applicationerrors.StorageInstanceSizeNotValidForCharmStorageDefinition]
+// when the storage instance size is below the charm storage minimum.
+// - [applicationerrors.StorageCountLimitExceeded] when attaching would exceed
+// the charm storage maximum.
+// - [applicationerrors.StorageInstanceAlreadyAttachedToUnit] when the storage
+// instance is already attached to the unit.
+// - [applicationerrors.StorageInstanceUnexpectedAttachments] when the charm
+// storage definition is not shared and the storage instance has existing
+// attachments.
+// - [applicationerrors.StorageInstanceAttachMachineOwnerMismatch] when the
+// storage instance owning machine does not match the unit's machine.
+func (s *ProviderService) validateStorageInstanceForUnitAttachment(
+	ctx context.Context,
+	info domainstorage.StorageInstanceInfoForUnitAttach,
+) error {
+	// Validate that the storage instance is alive.
+	if info.StorageInstanceInfoForAttach.Life != life.Alive {
+		return errors.Errorf(
+			"storage instance %q is not alive",
+			info.StorageInstanceInfoForAttach.UUID,
+		).Add(storageerrors.StorageInstanceNotAlive)
+	}
+
+	// Validate that the unit is alive.
+	if info.UnitAttachNamedStorageInfo.Life != life.Alive {
+		return errors.Errorf(
+			"unit %q is not alive",
+			info.UnitAttachNamedStorageInfo.Name,
+		).Add(applicationerrors.UnitNotAlive)
+	}
+
+	// If the Storage Instance has a charm name set then it must match the
+	// Unit's charm metadata name. Should these values not match then it
+	// indicates that the Storage Instance was not supposed to be used with the
+	// Unit's charm.
+	if info.StorageInstanceAttachInfo.CharmName != nil &&
+		*info.StorageInstanceAttachInfo.CharmName != info.UnitAttachNamedStorageInfo.CharmMetadataName {
+		return errors.Errorf(
+			"storage instance %q charm name %q does not match unit charm %q",
+			info.StorageInstanceAttachInfo.UUID,
+			*info.StorageInstanceAttachInfo.CharmName,
+			info.UnitAttachNamedStorageInfo.CharmMetadataName,
+		).Add(applicationerrors.StorageInstanceCharmNameMismatch)
+	}
+
+	charmStorageDef := info.UnitAttachNamedStorageInfo.CharmStorageDefinition
+	expectedKind, err := storage.StorageKindFromCharmStorageType(charmStorageDef.Type)
+	if err != nil {
+		return errors.Errorf(
+			"determining storage kind for charm storage definition %q: %w",
+			charmStorageDef.Name, err,
+		)
+	}
+
+	// The Storage Instance kind must be of the same type the Charm is
+	// expecting. i.e we can not attach a block device to a filesystem.
+	if info.StorageInstanceAttachInfo.Kind != expectedKind {
+		return errors.Errorf(
+			"storage instance %q kind %q is not valid for charm storage definition %q of kind %q",
+			info.StorageInstanceAttachInfo.UUID,
+			info.StorageInstanceAttachInfo.Kind,
+			charmStorageDef.Name,
+			charmStorageDef.Type,
+		).Add(applicationerrors.StorageInstanceKindNotValidForCharmStorageDefinition)
+	}
+
+	// Validate that the size of the storage instance doesn't exceed the minimum
+	// supported by the charm.
+	sizeMIB := storage.CalculateStorageInstanceSizeForAttachment(info.StorageInstanceAttachInfo)
+	if sizeMIB < charmStorageDef.MinimumSize {
+		return errors.Errorf(
+			"storage instance %q size %d MiB is below charm storage definition %q minimum size %d MiB",
+			info.StorageInstanceAttachInfo.UUID,
+			sizeMIB,
+			charmStorageDef.Name,
+			charmStorageDef.MinimumSize,
+		).Add(applicationerrors.StorageInstanceSizeNotValidForCharmStorageDefinition)
+	}
+
+	// Validating that attaching this storage instance to the unit doesn't
+	// violate the max count of the charm's storage definition.
+	if charmStorageDef.CountMax >= 0 {
+		wantCount := int(info.UnitAttachNamedStorageInfo.AlreadyAttachedCount) + 1
+		if wantCount > charmStorageDef.CountMax {
+			return applicationerrors.StorageCountLimitExceeded{
+				Maximum:     &charmStorageDef.CountMax,
+				Minimum:     charmStorageDef.CountMin,
+				Requested:   wantCount,
+				StorageName: charmStorageDef.Name,
+			}
+		}
+	}
+
+	// Validate that the unit is not already attach to the storage instance. We
+	// do this after the checks above, by this stage we know that the storage
+	// instance is valid for attachment.
+	//
+	// It is an explicit decision to return an error for this case as it should
+	// be the callers decression if this is a case they are concerned with.
+	// Our job is to report that the operation as requested cannot be performed.
+	for _, attachment := range info.StorageInstanceAttachments {
+		if attachment.UnitUUID == info.UnitAttachNamedStorageInfo.UUID {
+			return errors.Errorf(
+				"storage instance %q already attached to unit %q",
+				info.StorageInstanceAttachInfo.UUID,
+				info.UnitAttachNamedStorageInfo.Name,
+			).Add(applicationerrors.StorageInstanceAlreadyAttachedToUnit)
+		}
+	}
+
+	// Validate that if the storage instance already has existing attachments
+	// that the charm storage definition supports shared storage.
+	if !charmStorageDef.Shared && len(info.StorageInstanceAttachments) > 0 {
+		return errors.Errorf(
+			"storage instance %q has existing attachments but charm storage definition %q is not shared",
+			info.StorageInstanceAttachInfo.UUID,
+			charmStorageDef.Name,
+		).Add(applicationerrors.StorageInstanceUnexpectedAttachments)
+	}
+
+	// Validate that the storage instance owning machines if any are compatible
+	// with the machine the unit is running on.
+	err = validateStorageInstanceOwningMachine(info)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	return nil
 }

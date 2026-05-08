@@ -15,32 +15,27 @@ import (
 	"github.com/juju/juju/core/base"
 	coreconstraints "github.com/juju/juju/core/constraints"
 	coreerrors "github.com/juju/juju/core/errors"
-	"github.com/juju/juju/core/lxdprofile"
 	"github.com/juju/juju/core/machine"
-	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/domain/constraints"
 	"github.com/juju/juju/domain/deployment"
 	domainmachine "github.com/juju/juju/domain/machine"
-	"github.com/juju/juju/domain/machine/internal"
 	modelerrors "github.com/juju/juju/domain/model/errors"
 	domainstatus "github.com/juju/juju/domain/status"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
-	statushistory "github.com/juju/juju/internal/statushistory"
+	"github.com/juju/juju/internal/statushistory"
 	"github.com/juju/juju/internal/testhelpers"
-	coretesting "github.com/juju/juju/internal/testing"
 )
 
 type providerServiceSuite struct {
 	testhelpers.IsolationSuite
 
-	state              *MockState
-	statusHistory      *MockStatusHistory
-	provider           *MockProvider
-	lxdProfileProvider *MockLXDProfileProvider
-	validator          *MockValidator
+	state         *MockState
+	statusHistory *MockStatusHistory
+	provider      *MockProvider
+	validator     *MockValidator
 
 	service *ProviderService
 }
@@ -61,15 +56,10 @@ func (s *providerServiceSuite) setupMocks(c *tc.C) *gomock.Controller {
 		return s.provider, nil
 	}
 
-	lxdProfileProviderGetter := func(ctx context.Context) (LXDProfileProvider, error) {
-		return s.lxdProfileProvider, nil
-	}
-
 	s.service = NewProviderService(
 		s.state,
 		s.statusHistory,
 		providerGetter,
-		lxdProfileProviderGetter,
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -78,7 +68,6 @@ func (s *providerServiceSuite) setupMocks(c *tc.C) *gomock.Controller {
 		s.state = nil
 		s.statusHistory = nil
 		s.provider = nil
-		s.lxdProfileProvider = nil
 		s.service = nil
 	})
 
@@ -93,9 +82,14 @@ func (s *providerServiceSuite) TestAddMachineProviderNotSupported(c *tc.C) {
 	}
 
 	service := NewProviderService(
-		s.state, s.statusHistory, providerGetter, nil, clock.WallClock, loggertesting.WrapCheckLog(c))
+		s.state, s.statusHistory, providerGetter, clock.WallClock, loggertesting.WrapCheckLog(c))
 
-	_, err := service.AddMachine(c.Context(), domainmachine.AddMachineArgs{})
+	_, err := service.AddMachine(c.Context(), domainmachine.AddMachineArgs{
+		Platform: deployment.Platform{
+			OSType:  deployment.Ubuntu,
+			Channel: "22.04",
+		},
+	})
 	c.Assert(err, tc.ErrorIs, coreerrors.NotSupported)
 }
 
@@ -150,7 +144,7 @@ func (s *providerServiceSuite) TestAddMachineSuccessNonce(c *tc.C) {
 		},
 	}).Return(nil)
 	s.state.EXPECT().AddMachine(gomock.Any(), domainmachine.AddMachineArgs{
-		Nonce: ptr("foo"),
+		Nonce: new("foo"),
 		Platform: deployment.Platform{
 			OSType:  deployment.Ubuntu,
 			Channel: "22.04",
@@ -160,7 +154,7 @@ func (s *providerServiceSuite) TestAddMachineSuccessNonce(c *tc.C) {
 	s.expectCreateMachineStatusHistory(c, machine.Name("name"))
 
 	res, err := s.service.AddMachine(c.Context(), domainmachine.AddMachineArgs{
-		Nonce: ptr("foo"),
+		Nonce: new("foo"),
 		Platform: deployment.Platform{
 			OSType:  deployment.Ubuntu,
 			Channel: "22.04",
@@ -168,6 +162,39 @@ func (s *providerServiceSuite) TestAddMachineSuccessNonce(c *tc.C) {
 	})
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(res.MachineName, tc.Equals, machine.Name("name"))
+}
+
+func (s *providerServiceSuite) TestAddMachineContainer(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	s.state.EXPECT().GetModelConstraints(gomock.Any()).Return(constraints.Constraints{}, nil)
+	s.provider.EXPECT().ConstraintsValidator(gomock.Any()).Return(coreconstraints.NewValidator(), nil)
+	s.provider.EXPECT().PrecheckInstance(gomock.Any(), environs.PrecheckInstanceParams{
+		Base: base.Base{
+			OS:      "ubuntu",
+			Channel: base.Channel{Risk: base.Stable, Track: "22.04"},
+		},
+	}).Return(nil)
+	s.state.EXPECT().AddMachine(gomock.Any(), gomock.Any()).Return("netNodeUUID", []machine.Name{"0", "0/lxd/0"}, nil)
+
+	s.expectCreateMachineStatusHistory(c, machine.Name("0"))
+	s.expectCreateMachineStatusHistory(c, machine.Name("0/lxd/0"))
+
+	res, err := s.service.AddMachine(c.Context(), domainmachine.AddMachineArgs{
+		Directive: deployment.Placement{
+			Type:      deployment.PlacementTypeContainer,
+			Container: deployment.ContainerTypeLXD,
+			Directive: "0",
+		},
+		Platform: deployment.Platform{
+			OSType:  deployment.Ubuntu,
+			Channel: "22.04",
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(res.MachineName, tc.Equals, machine.Name("0"))
+	c.Assert(res.ChildMachineName, tc.NotNil)
+	c.Check(*res.ChildMachineName, tc.Equals, machine.Name("0/lxd/0"))
 }
 
 // TestAddMachineError asserts that an error coming from the state layer is
@@ -244,14 +271,14 @@ func (s *providerServiceSuite) TestMergeApplicationAndModelConstraintsNotSubordi
 	s.validator.EXPECT().Merge(
 		constraints.EncodeConstraints(constraints.Constraints{}),
 		constraints.EncodeConstraints(constraints.Constraints{
-			Arch: ptr(arch.AMD64),
+			Arch: new(arch.AMD64),
 		})).
 		Return(coreconstraints.Value{
-			Arch: ptr(arch.AMD64),
+			Arch: new(arch.AMD64),
 		}, nil)
 
 	merged, err := s.service.mergeMachineAndModelConstraints(c.Context(), constraints.Constraints{
-		Arch: ptr(arch.AMD64),
+		Arch: new(arch.AMD64),
 	})
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(*merged.Arch, tc.Equals, arch.AMD64)
@@ -264,26 +291,26 @@ func (s *providerServiceSuite) TestMergeApplicationAndModelConstraintsSubordinat
 	s.provider.EXPECT().ConstraintsValidator(gomock.Any()).Return(s.validator, nil)
 
 	s.state.EXPECT().GetModelConstraints(gomock.Any()).Return(constraints.Constraints{
-		RootDiskSource: ptr("source-disk"),
-		Mem:            ptr(uint64(42)),
+		RootDiskSource: new("source-disk"),
+		Mem:            new(uint64(42)),
 	}, modelerrors.ConstraintsNotFound)
 
 	s.validator.EXPECT().Merge(
 		constraints.EncodeConstraints(constraints.Constraints{
-			RootDiskSource: ptr("source-disk"),
-			Mem:            ptr(uint64(42)),
+			RootDiskSource: new("source-disk"),
+			Mem:            new(uint64(42)),
 		}),
 		constraints.EncodeConstraints(constraints.Constraints{
-			Arch: ptr(arch.AMD64),
+			Arch: new(arch.AMD64),
 		})).
 		Return(coreconstraints.Value{
-			Arch:           ptr(arch.AMD64),
-			RootDiskSource: ptr("source-disk"),
-			Mem:            ptr(uint64(42)),
+			Arch:           new(arch.AMD64),
+			RootDiskSource: new("source-disk"),
+			Mem:            new(uint64(42)),
 		}, nil)
 
 	merged, err := s.service.mergeMachineAndModelConstraints(c.Context(), constraints.Constraints{
-		Arch: ptr(arch.AMD64),
+		Arch: new(arch.AMD64),
 	})
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(*merged.RootDiskSource, tc.Equals, "source-disk")
@@ -297,23 +324,23 @@ func (s *providerServiceSuite) TestMergeApplicationAndModelConstraintsNotSubordi
 	s.provider.EXPECT().ConstraintsValidator(gomock.Any()).Return(s.validator, nil)
 
 	s.state.EXPECT().GetModelConstraints(gomock.Any()).Return(constraints.Constraints{
-		Mem: ptr(uint64(42)),
+		Mem: new(uint64(42)),
 	}, modelerrors.ConstraintsNotFound)
 
 	s.validator.EXPECT().Merge(
 		constraints.EncodeConstraints(constraints.Constraints{
-			Mem: ptr(uint64(42)),
+			Mem: new(uint64(42)),
 		}),
 		constraints.EncodeConstraints(constraints.Constraints{
-			RootDiskSource: ptr("source-disk"),
+			RootDiskSource: new("source-disk"),
 		})).
 		Return(coreconstraints.Value{
-			RootDiskSource: ptr("source-disk"),
-			Mem:            ptr(uint64(42)),
+			RootDiskSource: new("source-disk"),
+			Mem:            new(uint64(42)),
 		}, nil)
 
 	merged, err := s.service.mergeMachineAndModelConstraints(c.Context(), constraints.Constraints{
-		RootDiskSource: ptr("source-disk"),
+		RootDiskSource: new("source-disk"),
 	})
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(*merged.RootDiskSource, tc.Equals, "source-disk")
@@ -333,114 +360,7 @@ func (s *providerServiceSuite) expectCreateMachineStatusHistory(c *tc.C, machine
 		})
 }
 
-type lxdProviderServiceSuite struct {
-	testhelpers.IsolationSuite
-
-	state              *MockState
-	provider           *MockProvider
-	lxdProfileProvider *MockLXDProfileProvider
-}
-
-func TestLXDProviderServiceSuite(t *testing.T) {
-	tc.Run(t, &lxdProviderServiceSuite{})
-}
-
-func (s *lxdProviderServiceSuite) setupMocks(c *tc.C) *gomock.Controller {
-	ctrl := gomock.NewController(c)
-
-	s.provider = NewMockProvider(ctrl)
-	s.lxdProfileProvider = NewMockLXDProfileProvider(ctrl)
-	s.state = NewMockState(ctrl)
-
-	c.Cleanup(func() {
-		s.provider = nil
-		s.state = nil
-	})
-
-	return ctrl
-}
-
-func (s *lxdProviderServiceSuite) TestUpdateLXDProfiles(c *tc.C) {
-	ctrl := s.setupMocks(c)
-	defer ctrl.Finish()
-
-	// Arrange
-	machineID := "7"
-	result := []internal.CreateLXDProfileDetails{
-		{
-			ApplicationName: "ubuntu",
-			CharmRevision:   4,
-			LXDProfile:      []byte(`{"config": {"foo":"bar"}, "description": "description", "devices": {"gpu":{"baz": "x"}}}`),
-		}, {
-			ApplicationName: "test",
-			CharmRevision:   8,
-			LXDProfile:      []byte(`{"config": {"foo":"baz"}, "description": "another"}`),
-		},
-	}
-	pName0 := "juju-test-deadbe-ubuntu-4"
-	pName1 := "juju-test-deadbe-test-8"
-	s.state.EXPECT().GetLXDProfilesForMachine(gomock.Any(), machineID).Return(result, nil)
-	s.lxdProfileProvider.EXPECT().MaybeWriteLXDProfile(pName0, lxdprofile.Profile{
-		Config:      map[string]string{"foo": "bar"},
-		Description: "description",
-		Devices:     map[string]map[string]string{"gpu": {"baz": "x"}},
-	}).Return(nil)
-	s.lxdProfileProvider.EXPECT().MaybeWriteLXDProfile(pName1, lxdprofile.Profile{
-		Config:      map[string]string{"foo": "baz"},
-		Description: "another",
-	}).Return(nil)
-
-	providerGetter := func(ctx context.Context) (LXDProfileProvider, error) {
-		return s.lxdProfileProvider, nil
-	}
-	service := NewProviderService(s.state, nil, nil, providerGetter, nil, loggertesting.WrapCheckLog(c))
-	modelUUID := model.UUID(coretesting.ModelTag.Id())
-
-	// Act
-	obtainedProfileNames, err := service.UpdateLXDProfiles(c.Context(), "test", modelUUID, machineID)
-
-	// Assert:
-	c.Assert(err, tc.IsNil)
-	c.Assert(obtainedProfileNames, tc.SameContents, []string{pName0, pName1})
-}
-
-func (s *lxdProviderServiceSuite) TestUpdateLXDProfilesNoSupport(c *tc.C) {
-	ctrl := s.setupMocks(c)
-	defer ctrl.Finish()
-
-	// Arrange: the provider does not support LXDProfiles
-	providerGetter := func(ctx context.Context) (LXDProfileProvider, error) {
-		return nil, coreerrors.NotSupported
-	}
-	service := NewProviderService(s.state, nil, nil, providerGetter, nil, loggertesting.WrapCheckLog(c))
-	modelUUID := model.UUID(coretesting.ModelTag.Id())
-
-	// Act
-	_, err := service.UpdateLXDProfiles(c.Context(), "blue", modelUUID, "7")
-
-	// Assert: no work is done and the method doesn't fail
-	c.Assert(err, tc.IsNil)
-}
-
-func (s *lxdProviderServiceSuite) TestUpdateLXDProfilesFail(c *tc.C) {
-	ctrl := s.setupMocks(c)
-	defer ctrl.Finish()
-
-	// Arrange
-	providerGetter := func(ctx context.Context) (LXDProfileProvider, error) {
-		return nil, errors.Errorf("boom")
-	}
-	service := NewProviderService(s.state, nil, nil, providerGetter, nil, loggertesting.WrapCheckLog(c))
-	modelUUID := model.UUID(coretesting.ModelTag.Id())
-
-	// Act
-	_, err := service.UpdateLXDProfiles(c.Context(), "blue", modelUUID, "7")
-
-	// Assert
-	c.Assert(err, tc.ErrorMatches, "getting provider: boom")
-}
-
-func (s *lxdProviderServiceSuite) TestGetBootstrapEnviron(c *tc.C) {
+func (s *providerServiceSuite) TestGetBootstrapEnviron(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
@@ -448,7 +368,7 @@ func (s *lxdProviderServiceSuite) TestGetBootstrapEnviron(c *tc.C) {
 	providerGetter := func(ctx context.Context) (Provider, error) {
 		return s.provider, nil
 	}
-	service := NewProviderService(s.state, nil, providerGetter, nil, nil, loggertesting.WrapCheckLog(c))
+	service := NewProviderService(s.state, nil, providerGetter, nil, loggertesting.WrapCheckLog(c))
 
 	// Act
 	p, err := service.GetBootstrapEnviron(c.Context())
@@ -458,7 +378,7 @@ func (s *lxdProviderServiceSuite) TestGetBootstrapEnviron(c *tc.C) {
 	c.Assert(p, tc.NotNil)
 }
 
-func (s *lxdProviderServiceSuite) TestGetBootstrapEnvironFail(c *tc.C) {
+func (s *providerServiceSuite) TestGetBootstrapEnvironFail(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
@@ -466,7 +386,7 @@ func (s *lxdProviderServiceSuite) TestGetBootstrapEnvironFail(c *tc.C) {
 	providerGetter := func(ctx context.Context) (Provider, error) {
 		return nil, errors.Errorf("boom")
 	}
-	service := NewProviderService(s.state, nil, providerGetter, nil, nil, loggertesting.WrapCheckLog(c))
+	service := NewProviderService(s.state, nil, providerGetter, nil, loggertesting.WrapCheckLog(c))
 
 	// Act
 	_, err := service.GetBootstrapEnviron(c.Context())

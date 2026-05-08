@@ -1,7 +1,7 @@
 (hook-command-secret-get)=
 # `secret-get`
 ## Summary
-Get the content of a secret.
+Gets the content of a secret.
 
 ## Usage
 ``` secret-get [options] <ID> [key[#base64]]```
@@ -10,10 +10,10 @@ Get the content of a secret.
 | Flag | Default | Usage |
 | --- | --- | --- |
 | `--format` | yaml | Specify output format (json&#x7c;yaml) |
-| `--label` |  | a label used to identify the secret in hooks |
+| `--label` |  | Specifies a label used to identify the secret in hooks. |
 | `-o`, `--output` |  | Specify an output file |
-| `--peek` | false | get the latest revision just this time |
-| `--refresh` | false | get the latest revision and also get this same revision for subsequent calls |
+| `--peek` | false | Gets the latest revision just this time. |
+| `--refresh` | false | Gets the latest revision and also gets this same revision for subsequent calls. |
 
 ## Examples
 
@@ -31,9 +31,9 @@ Get the content of a secret.
 Get the content of a secret with a given secret ID.
 The first time the value is fetched, the latest revision is used.
 Subsequent calls will always return this same revision unless
---peek or --refresh are used.
-Using --peek will fetch the latest revision just this time.
-Using --refresh will fetch the latest revision and continue to
-return the same revision next time unless --peek or --refresh is used.
+`--peek` or `--refresh` are used.
+Using `--peek` will fetch the latest revision just this time.
+Using `--refresh` will fetch the latest revision and continue to
+return the same revision next time unless `--peek` or `--refresh` is used.
 
 Either the ID or label can be used to identify the secret.

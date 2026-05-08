@@ -19,10 +19,9 @@ import (
 
 	"github.com/juju/juju/api/base"
 	corecharm "github.com/juju/juju/core/charm"
-	"github.com/juju/juju/core/lxdprofile"
 	"github.com/juju/juju/core/semversion"
 	jujuversion "github.com/juju/juju/core/version"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 )
 
 // LocalCharmClient allows access to the API endpoints
@@ -54,11 +53,6 @@ func (c *LocalCharmClient) AddLocalCharm(curl *charm.URL, ch charm.Charm, force 
 
 	if err := c.validateCharmVersion(ch, agentVersion); err != nil {
 		return nil, errors.Trace(err)
-	}
-	if err := lxdprofile.ValidateLXDProfile(lxdCharmProfiler{Charm: ch}); err != nil {
-		if !force {
-			return nil, errors.Trace(err)
-		}
 	}
 
 	// Package the charm for uploading.
@@ -99,27 +93,6 @@ func (c *LocalCharmClient) AddLocalCharm(curl *charm.URL, ch charm.Charm, force 
 		return nil, errors.Trace(err)
 	}
 	return newCurl, nil
-}
-
-// lxdCharmProfiler massages a charm.Charm into a LXDProfiler inside of the
-// core package.
-type lxdCharmProfiler struct {
-	Charm charm.Charm
-}
-
-// LXDProfile implements core.lxdprofile.LXDProfiler
-func (p lxdCharmProfiler) LXDProfile() lxdprofile.LXDProfile {
-	if p.Charm == nil {
-		return nil
-	}
-	if profiler, ok := p.Charm.(charm.LXDProfiler); ok {
-		profile := profiler.LXDProfile()
-		if profile == nil {
-			return nil
-		}
-		return profile
-	}
-	return nil
 }
 
 var hasHooksOrDispatch = hasHooksFolderOrDispatchFile

@@ -21,27 +21,32 @@ import (
 	"github.com/juju/juju/core/instance"
 	coremachine "github.com/juju/juju/core/machine"
 	machinetesting "github.com/juju/juju/core/machine/testing"
+	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
 	objectstoretesting "github.com/juju/juju/core/objectstore/testing"
 	"github.com/juju/juju/core/resource"
 	resourcetesting "github.com/juju/juju/core/resource/testing"
 	"github.com/juju/juju/core/semversion"
 	corestatus "github.com/juju/juju/core/status"
+	corestorage "github.com/juju/juju/core/storage"
 	coreunit "github.com/juju/juju/core/unit"
-	unittesting "github.com/juju/juju/core/unit/testing"
 	"github.com/juju/juju/domain/application"
 	"github.com/juju/juju/domain/application/architecture"
 	applicationcharm "github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
+	"github.com/juju/juju/domain/application/internal"
+	storageservice "github.com/juju/juju/domain/application/service/storage"
 	"github.com/juju/juju/domain/constraints"
 	"github.com/juju/juju/domain/deployment"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	modelerrors "github.com/juju/juju/domain/model/errors"
 	domainnetwork "github.com/juju/juju/domain/network"
 	"github.com/juju/juju/domain/status"
+	domainstorage "github.com/juju/juju/domain/storage"
 	"github.com/juju/juju/environs"
-	"github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	"github.com/juju/juju/internal/errors"
+	loggertesting "github.com/juju/juju/internal/logger/testing"
 )
 
 type providerServiceSuite struct {
@@ -54,14 +59,15 @@ func TestProviderServiceSuite(t *testing.T) {
 
 func (s *providerServiceSuite) TestCreateCAASApplication(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	id := tc.Must(c, coreapplication.NewUUID)
 	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
 
-	now := ptr(s.clock.Now())
+	now := new(s.clock.Now())
 	us := []application.AddCAASUnitArg{{
 		AddUnitArg: application.AddUnitArg{
+			UnitUUID:    tc.Must(c, coreunit.NewUUID),
 			NetNodeUUID: tc.Must(c, domainnetwork.NewNetNodeUUID),
 			UnitStatusArg: application.UnitStatusArg{
 				AgentStatus: &status.StatusInfo[status.UnitAgentStatusType]{
@@ -75,7 +81,7 @@ func (s *providerServiceSuite) TestCreateCAASApplication(c *tc.C) {
 				},
 			},
 			Constraints: constraints.Constraints{
-				Arch: ptr(arch.ARM64),
+				Arch: new(arch.ARM64),
 			},
 		},
 	}}
@@ -119,7 +125,7 @@ func (s *providerServiceSuite) TestCreateCAASApplication(c *tc.C) {
 				},
 				{
 					Name:     "bar",
-					Revision: ptr(42),
+					Revision: new(42),
 					Origin:   charmresource.OriginStore,
 				},
 				{
@@ -135,7 +141,7 @@ func (s *providerServiceSuite) TestCreateCAASApplication(c *tc.C) {
 				"provider": "beta",
 			},
 			Constraints: constraints.Constraints{
-				Arch: ptr("arm64"),
+				Arch: new("arm64"),
 			},
 		},
 		Scale: 1,
@@ -160,20 +166,20 @@ func (s *providerServiceSuite) TestCreateCAASApplication(c *tc.C) {
 		return id, nil
 	})
 
-	s.charm.EXPECT().Actions().Return(&charm.Actions{})
-	s.charm.EXPECT().Config().Return(&charm.ConfigSpec{}).MinTimes(1)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{
-		Bases: []charm.Base{
+	s.charm.EXPECT().Actions().Return(&internalcharm.Actions{})
+	s.charm.EXPECT().Config().Return(&internalcharm.ConfigSpec{}).MinTimes(1)
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
+		Bases: []internalcharm.Base{
 			{
 				Name: "ubuntu",
-				Channel: charm.Channel{
-					Risk: charm.Stable,
+				Channel: internalcharm.Channel{
+					Risk: internalcharm.Stable,
 				},
 				Architectures: []string{"amd64"},
 			},
 		},
 	}).MinTimes(1)
-	s.charm.EXPECT().Meta().Return(&charm.Meta{
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{
 		Name: "ubuntu",
 		Resources: map[string]charmresource.Meta{
 			"foo": {Name: "foo", Type: charmresource.TypeFile},
@@ -185,7 +191,7 @@ func (s *providerServiceSuite) TestCreateCAASApplication(c *tc.C) {
 	_, err := s.service.CreateCAASApplication(c.Context(), "ubuntu", s.charm, corecharm.Origin{
 		Source:   corecharm.CharmHub,
 		Platform: corecharm.MustParsePlatform("arm64/ubuntu/24.04"),
-		Revision: ptr(42),
+		Revision: new(42),
 	}, AddApplicationArgs{
 		ReferenceName: "ubuntu",
 		DownloadInfo: &applicationcharm.DownloadInfo{
@@ -202,7 +208,7 @@ func (s *providerServiceSuite) TestCreateCAASApplication(c *tc.C) {
 			},
 			{
 				Name:     "bar",
-				Revision: ptr(42),
+				Revision: new(42),
 				Origin:   charmresource.OriginStore,
 			},
 			{
@@ -223,12 +229,12 @@ func (s *providerServiceSuite) TestCreateCAASApplication(c *tc.C) {
 
 func (s *providerServiceSuite) TestCreateIAASApplicationWithApplicationStatus(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	id := tc.Must(c, coreapplication.NewUUID)
 	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
 
-	now := ptr(s.clock.Now())
+	now := new(s.clock.Now())
 	status := &status.StatusInfo[status.WorkloadStatusType]{
 		Status:  status.WorkloadStatusActive,
 		Message: "active",
@@ -245,27 +251,27 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithApplicationStatus(c 
 		return id, nil, nil
 	})
 
-	s.charm.EXPECT().Actions().Return(&charm.Actions{})
-	s.charm.EXPECT().Config().Return(&charm.ConfigSpec{}).MinTimes(1)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{
-		Bases: []charm.Base{
+	s.charm.EXPECT().Actions().Return(&internalcharm.Actions{})
+	s.charm.EXPECT().Config().Return(&internalcharm.ConfigSpec{}).MinTimes(1)
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
+		Bases: []internalcharm.Base{
 			{
 				Name: "ubuntu",
-				Channel: charm.Channel{
-					Risk: charm.Stable,
+				Channel: internalcharm.Channel{
+					Risk: internalcharm.Stable,
 				},
 				Architectures: []string{"amd64"},
 			},
 		},
 	}).MinTimes(1)
-	s.charm.EXPECT().Meta().Return(&charm.Meta{
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{
 		Name: "ubuntu",
 	}).MinTimes(1)
 
 	_, err := s.service.CreateIAASApplication(c.Context(), "ubuntu", s.charm, corecharm.Origin{
 		Source:   corecharm.CharmHub,
 		Platform: corecharm.MustParsePlatform("arm64/ubuntu/24.04"),
-		Revision: ptr(42),
+		Revision: new(42),
 	}, AddApplicationArgs{
 		ReferenceName: "ubuntu",
 		DownloadInfo: &applicationcharm.DownloadInfo{
@@ -278,7 +284,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithApplicationStatus(c 
 		ApplicationStatus: &corestatus.StatusInfo{
 			Status:  corestatus.Active,
 			Message: "active",
-			Data:    map[string]interface{}{"active": true},
+			Data:    map[string]any{"active": true},
 			Since:   now,
 		},
 		Constraints: coreconstraints.MustParse("arch=arm64"),
@@ -289,7 +295,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithApplicationStatus(c 
 
 func (s *providerServiceSuite) TestCreateIAASApplication(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	id := tc.Must(c, coreapplication.NewUUID)
 	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
@@ -323,9 +329,9 @@ func (s *providerServiceSuite) TestCreateIAASApplication(c *tc.C) {
 			},
 			Platform: platform,
 			Constraints: constraints.Constraints{
-				CpuCores: ptr(uint64(4)),
-				CpuPower: ptr(uint64(75)),
-				Arch:     ptr("arm64"),
+				CpuCores: new(uint64(4)),
+				CpuPower: new(uint64(75)),
+				Arch:     new("arm64"),
 			},
 		},
 	}
@@ -345,27 +351,27 @@ func (s *providerServiceSuite) TestCreateIAASApplication(c *tc.C) {
 
 	s.state.EXPECT().CreateIAASApplication(gomock.Any(), "ubuntu", app, gomock.Any()).Return(id, nil, nil)
 
-	s.charm.EXPECT().Actions().Return(&charm.Actions{})
-	s.charm.EXPECT().Config().Return(&charm.ConfigSpec{}).MinTimes(1)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{
-		Bases: []charm.Base{
+	s.charm.EXPECT().Actions().Return(&internalcharm.Actions{})
+	s.charm.EXPECT().Config().Return(&internalcharm.ConfigSpec{}).MinTimes(1)
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
+		Bases: []internalcharm.Base{
 			{
 				Name: "ubuntu",
-				Channel: charm.Channel{
-					Risk: charm.Stable,
+				Channel: internalcharm.Channel{
+					Risk: internalcharm.Stable,
 				},
 				Architectures: []string{"amd64"},
 			},
 		},
 	}).MinTimes(1)
-	s.charm.EXPECT().Meta().Return(&charm.Meta{
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{
 		Name: "ubuntu",
 	}).MinTimes(1)
 
 	_, err := s.service.CreateIAASApplication(c.Context(), "ubuntu", s.charm, corecharm.Origin{
 		Source:   corecharm.CharmHub,
 		Platform: corecharm.MustParsePlatform("arm64/ubuntu/24.04"),
-		Revision: ptr(42),
+		Revision: new(42),
 	}, AddApplicationArgs{
 		ReferenceName: "ubuntu",
 		DownloadInfo: &applicationcharm.DownloadInfo{
@@ -387,9 +393,133 @@ func (s *providerServiceSuite) TestCreateIAASApplication(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 }
 
+func (s *providerServiceSuite) TestCreateIAASApplicationWithConfig(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
+
+	id := tc.Must(c, coreapplication.NewUUID)
+	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
+
+	option := make(map[string]applicationcharm.Option)
+	option["foo"] = applicationcharm.Option{
+		Type:        "int",
+		Description: "foo option",
+		Default:     0,
+	}
+	ch := applicationcharm.Charm{
+		Metadata: applicationcharm.Metadata{
+			Name:  "ubuntu",
+			RunAs: "default",
+		},
+		Manifest:        s.minimalManifest(),
+		ReferenceName:   "ubuntu",
+		Source:          applicationcharm.CharmHubSource,
+		Revision:        42,
+		Architecture:    architecture.ARM64,
+		ObjectStoreUUID: objectStoreUUID,
+		Config: applicationcharm.Config{
+			Options: option,
+		},
+	}
+	platform := deployment.Platform{
+		Channel:      "24.04",
+		OSType:       deployment.Ubuntu,
+		Architecture: architecture.ARM64,
+	}
+
+	app := application.AddIAASApplicationArg{
+		BaseAddApplicationArg: application.BaseAddApplicationArg{
+			Charm: ch,
+			CharmDownloadInfo: &applicationcharm.DownloadInfo{
+				Provenance:         applicationcharm.ProvenanceDownload,
+				CharmhubIdentifier: "foo",
+				DownloadURL:        "https://example.com/foo",
+				DownloadSize:       42,
+			},
+			Platform: platform,
+			Constraints: constraints.Constraints{
+				CpuCores: new(uint64(4)),
+				CpuPower: new(uint64(75)),
+				Arch:     new("arm64"),
+			},
+			Config: map[string]application.AddApplicationConfig{
+				"foo": {
+					Value: "3",
+					Type:  applicationcharm.OptionInt,
+				},
+			},
+		},
+	}
+
+	s.state.EXPECT().GetModelConstraints(gomock.Any()).Return(constraints.Constraints{}, nil)
+	s.provider.EXPECT().ConstraintsValidator(gomock.Any()).Return(coreconstraints.NewValidator(), nil)
+	s.provider.EXPECT().PrecheckInstance(gomock.Any(), environs.PrecheckInstanceParams{
+		Constraints: coreconstraints.MustParse("cores=4 cpu-power=75 arch=arm64"),
+		Base: corebase.Base{
+			OS: "ubuntu",
+			Channel: corebase.Channel{
+				Track: "24.04",
+			},
+		},
+		Placement: "zone=default",
+	}).Return(nil)
+
+	s.state.EXPECT().CreateIAASApplication(gomock.Any(), "ubuntu", app, gomock.Any()).Return(id, nil, nil)
+	options := make(map[string]internalcharm.Option)
+	options["foo"] = internalcharm.Option{
+		Type:        "int",
+		Description: "foo option",
+		Default:     0,
+	}
+	s.charm.EXPECT().Actions().Return(&internalcharm.Actions{})
+	s.charm.EXPECT().Config().Return(&internalcharm.ConfigSpec{
+		Options: options,
+	}).MinTimes(1)
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
+		Bases: []internalcharm.Base{
+			{
+				Name: "ubuntu",
+				Channel: internalcharm.Channel{
+					Risk: internalcharm.Stable,
+				},
+				Architectures: []string{"amd64"},
+			},
+		},
+	}).MinTimes(1)
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{
+		Name: "ubuntu",
+	}).MinTimes(1)
+	_, err := s.service.CreateIAASApplication(c.Context(), "ubuntu", s.charm, corecharm.Origin{
+		Source:   corecharm.CharmHub,
+		Platform: corecharm.MustParsePlatform("arm64/ubuntu/24.04"),
+		Revision: new(42),
+	}, AddApplicationArgs{
+		ReferenceName: "ubuntu",
+		DownloadInfo: &applicationcharm.DownloadInfo{
+			Provenance:         applicationcharm.ProvenanceDownload,
+			CharmhubIdentifier: "foo",
+			DownloadURL:        "https://example.com/foo",
+			DownloadSize:       42,
+		},
+		CharmObjectStoreUUID: objectStoreUUID,
+		Constraints:          coreconstraints.MustParse("arch=arm64 cores=4 cpu-power=75"),
+		ApplicationConfig: internalcharm.Config{
+			"foo": "3",
+		},
+	}, AddIAASUnitArg{
+		AddUnitArg: AddUnitArg{
+			Placement: &instance.Placement{
+				Scope:     instance.ModelScope,
+				Directive: "zone=default",
+			},
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+}
+
 func (s *providerServiceSuite) TestCreateIAASApplicationMachineScope(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	id := tc.Must(c, coreapplication.NewUUID)
 	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
@@ -425,9 +555,9 @@ func (s *providerServiceSuite) TestCreateIAASApplicationMachineScope(c *tc.C) {
 			},
 			Platform: platform,
 			Constraints: constraints.Constraints{
-				CpuCores: ptr(uint64(4)),
-				CpuPower: ptr(uint64(75)),
-				Arch:     ptr("arm64"),
+				CpuCores: new(uint64(4)),
+				CpuPower: new(uint64(75)),
+				Arch:     new("arm64"),
 			},
 		},
 	}
@@ -460,27 +590,27 @@ func (s *providerServiceSuite) TestCreateIAASApplicationMachineScope(c *tc.C) {
 		return id, nil, nil
 	})
 
-	s.charm.EXPECT().Actions().Return(&charm.Actions{})
-	s.charm.EXPECT().Config().Return(&charm.ConfigSpec{}).MinTimes(1)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{
-		Bases: []charm.Base{
+	s.charm.EXPECT().Actions().Return(&internalcharm.Actions{})
+	s.charm.EXPECT().Config().Return(&internalcharm.ConfigSpec{}).MinTimes(1)
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
+		Bases: []internalcharm.Base{
 			{
 				Name: "ubuntu",
-				Channel: charm.Channel{
-					Risk: charm.Stable,
+				Channel: internalcharm.Channel{
+					Risk: internalcharm.Stable,
 				},
 				Architectures: []string{"amd64"},
 			},
 		},
 	}).MinTimes(1)
-	s.charm.EXPECT().Meta().Return(&charm.Meta{
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{
 		Name: "ubuntu",
 	}).MinTimes(1)
 
 	_, err := s.service.CreateIAASApplication(c.Context(), "ubuntu", s.charm, corecharm.Origin{
 		Source:   corecharm.CharmHub,
 		Platform: corecharm.MustParsePlatform("arm64/ubuntu/24.04"),
-		Revision: ptr(42),
+		Revision: new(42),
 	}, AddApplicationArgs{
 		ReferenceName: "ubuntu",
 		DownloadInfo: &applicationcharm.DownloadInfo{
@@ -505,7 +635,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationMachineScope(c *tc.C) {
 	c.Check(recievedUnitArgs[0].MachineUUID, tc.Equals, machineUUID)
 }
 
-//func (s *providerServiceSuite) TestCreateIAASApplicationWithDefaultStorage(c *tc.C) {
+// func (s *providerServiceSuite) TestCreateIAASApplicationWithDefaultStorage(c *tc.C) {
 //	defer s.setupMocks(c).Finish()
 //
 //	id := tc.Must(c, coreapplication.NewUUID)
@@ -557,7 +687,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationMachineScope(c *tc.C) {
 //				DownloadSize:       42,
 //			},
 //			Platform: platform,
-//			StorageDirectives: []application.CreateApplicationStorageDirectiveArg{{
+//			StorageDirectives: []domainstorage.DirectiveArg{{
 //				Name:     "foo-data",
 //				Count:    2,
 //				Size:     2048,
@@ -594,7 +724,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationMachineScope(c *tc.C) {
 //		mc := tc.NewMultiChecker()
 //		mc.AddExpr(
 //			`_.BaseAddApplicationArg.StorageDirectives`,
-//			tc.UnorderedMatch[[]application.CreateApplicationStorageDirectiveArg](tc.DeepEquals),
+//			tc.UnorderedMatch[[]domainstorage.DirectiveArg](tc.DeepEquals),
 //			tc.ExpectedValue,
 //		)
 //		c.Assert(a, mc, app)
@@ -637,7 +767,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationMachineScope(c *tc.C) {
 //	_, err := s.service.CreateIAASApplication(c.Context(), "ubuntu", s.charm, corecharm.Origin{
 //		Source:   corecharm.CharmHub,
 //		Platform: corecharm.MustParsePlatform("arm64/ubuntu/24.04"),
-//		Revision: ptr(42),
+//		Revision: new(42),
 //	}, AddApplicationArgs{
 //		ReferenceName: "ubuntu",
 //		DownloadInfo: &applicationcharm.DownloadInfo{
@@ -652,9 +782,9 @@ func (s *providerServiceSuite) TestCreateIAASApplicationMachineScope(c *tc.C) {
 //		AddUnitArg: AddUnitArg{},
 //	})
 //	c.Assert(err, tc.ErrorIsNil)
-//}
+// }
 //
-//func (s *providerServiceSuite) TestCreateIAASApplicationWithExplicitStorage(c *tc.C) {
+// func (s *providerServiceSuite) TestCreateIAASApplicationWithExplicitStorage(c *tc.C) {
 //	defer s.setupMocks(c).Finish()
 //
 //	id := tc.Must(c, coreapplication.NewUUID)
@@ -706,7 +836,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationMachineScope(c *tc.C) {
 //				DownloadSize:       42,
 //			},
 //			Platform: platform,
-//			StorageDirectives: []application.CreateApplicationStorageDirectiveArg{{
+//			StorageDirectives: []domainstorage.DirectiveArg{{
 //				Name:     "foo-data",
 //				Count:    2,
 //				PoolUUID: blockDeviceStoragePoolUUID,
@@ -742,7 +872,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationMachineScope(c *tc.C) {
 //		mc := tc.NewMultiChecker()
 //		mc.AddExpr(
 //			`_.BaseAddApplicationArg.StorageDirectives`,
-//			tc.UnorderedMatch[[]application.CreateApplicationStorageDirectiveArg](tc.DeepEquals),
+//			tc.UnorderedMatch[[]domainstorage.DirectiveArg](tc.DeepEquals),
 //			tc.ExpectedValue,
 //		)
 //		c.Assert(a, mc, app)
@@ -788,7 +918,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationMachineScope(c *tc.C) {
 //	_, err := s.service.CreateIAASApplication(c.Context(), "ubuntu", s.charm, corecharm.Origin{
 //		Source:   corecharm.CharmHub,
 //		Platform: corecharm.MustParsePlatform("arm64/ubuntu/24.04"),
-//		Revision: ptr(42),
+//		Revision: new(42),
 //	}, AddApplicationArgs{
 //		ReferenceName: "ubuntu",
 //		DownloadInfo: &applicationcharm.DownloadInfo{
@@ -813,11 +943,11 @@ func (s *providerServiceSuite) TestCreateIAASApplicationMachineScope(c *tc.C) {
 //		},
 //	})
 //	c.Assert(err, tc.ErrorIsNil)
-//}
+// }
 
 func (s *providerServiceSuite) TestCreateIAASApplicationPrecheckFailure(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
 	preCheckError := errors.New("precheck failure error")
@@ -837,27 +967,27 @@ func (s *providerServiceSuite) TestCreateIAASApplicationPrecheckFailure(c *tc.C)
 		},
 	}).Return(preCheckError)
 
-	s.charm.EXPECT().Actions().Return(&charm.Actions{})
-	s.charm.EXPECT().Config().Return(&charm.ConfigSpec{}).MinTimes(1)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{
-		Bases: []charm.Base{
+	s.charm.EXPECT().Actions().Return(&internalcharm.Actions{})
+	s.charm.EXPECT().Config().Return(&internalcharm.ConfigSpec{}).MinTimes(1)
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
+		Bases: []internalcharm.Base{
 			{
 				Name: "ubuntu",
-				Channel: charm.Channel{
-					Risk: charm.Stable,
+				Channel: internalcharm.Channel{
+					Risk: internalcharm.Stable,
 				},
 				Architectures: []string{"arm64"},
 			},
 		},
 	}).MinTimes(1)
-	s.charm.EXPECT().Meta().Return(&charm.Meta{
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{
 		Name: "ubuntu",
 	}).MinTimes(1)
 
 	_, err := s.service.CreateIAASApplication(c.Context(), "ubuntu", s.charm, corecharm.Origin{
 		Source:   corecharm.CharmHub,
 		Platform: corecharm.MustParsePlatform("arm64/ubuntu/24.04"),
-		Revision: ptr(42),
+		Revision: new(42),
 	}, AddApplicationArgs{
 		ReferenceName: "ubuntu",
 		DownloadInfo: &applicationcharm.DownloadInfo{
@@ -881,7 +1011,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationPrecheckFailure(c *tc.C)
 
 func (s *providerServiceSuite) TestCreateIAASApplicationPendingResources(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	id := tc.Must(c, coreapplication.NewUUID)
 	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
@@ -920,9 +1050,9 @@ func (s *providerServiceSuite) TestCreateIAASApplicationPendingResources(c *tc.C
 			Platform:         platform,
 			PendingResources: []resource.UUID{resourceUUID},
 			Constraints: constraints.Constraints{
-				CpuCores: ptr(uint64(4)),
-				CpuPower: ptr(uint64(75)),
-				Arch:     ptr("arm64"),
+				CpuCores: new(uint64(4)),
+				CpuPower: new(uint64(75)),
+				Arch:     new("arm64"),
 			},
 		},
 	}
@@ -944,20 +1074,20 @@ func (s *providerServiceSuite) TestCreateIAASApplicationPendingResources(c *tc.C
 		return id, nil, nil
 	})
 
-	s.charm.EXPECT().Actions().Return(&charm.Actions{})
-	s.charm.EXPECT().Config().Return(&charm.ConfigSpec{}).MinTimes(1)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{
-		Bases: []charm.Base{
+	s.charm.EXPECT().Actions().Return(&internalcharm.Actions{})
+	s.charm.EXPECT().Config().Return(&internalcharm.ConfigSpec{}).MinTimes(1)
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
+		Bases: []internalcharm.Base{
 			{
 				Name: "ubuntu",
-				Channel: charm.Channel{
-					Risk: charm.Stable,
+				Channel: internalcharm.Channel{
+					Risk: internalcharm.Stable,
 				},
 				Architectures: []string{"amd64"},
 			},
 		},
 	}).MinTimes(1)
-	s.charm.EXPECT().Meta().Return(&charm.Meta{
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{
 		Name: "ubuntu",
 		Resources: map[string]charmresource.Meta{
 			"foo": {Name: "foo", Type: charmresource.TypeFile},
@@ -967,7 +1097,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationPendingResources(c *tc.C
 	_, err := s.service.CreateIAASApplication(c.Context(), "ubuntu", s.charm, corecharm.Origin{
 		Source:   corecharm.CharmHub,
 		Platform: corecharm.MustParsePlatform("arm64/ubuntu/24.04"),
-		Revision: ptr(42),
+		Revision: new(42),
 	}, AddApplicationArgs{
 		ReferenceName: "ubuntu",
 		DownloadInfo: &applicationcharm.DownloadInfo{
@@ -989,7 +1119,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidApplicationNa
 	_, err := s.service.CreateIAASApplication(c.Context(), "666", s.charm, corecharm.Origin{
 		Source:   corecharm.CharmHub,
 		Platform: corecharm.MustParsePlatform("arm64/ubuntu/24.04"),
-		Revision: ptr(42),
+		Revision: new(42),
 	}, AddApplicationArgs{
 		ReferenceName: "ubuntu",
 	})
@@ -999,14 +1129,14 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidApplicationNa
 func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidCharmName(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	s.charm.EXPECT().Meta().Return(&charm.Meta{
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{
 		Name: "666",
 	}).AnyTimes()
 
 	_, err := s.service.CreateIAASApplication(c.Context(), "ubuntu", s.charm, corecharm.Origin{
 		Source:   corecharm.CharmHub,
 		Platform: corecharm.MustParsePlatform("arm64/ubuntu/24.04"),
-		Revision: ptr(42),
+		Revision: new(42),
 	}, AddApplicationArgs{
 		ReferenceName: "ubuntu",
 	})
@@ -1016,17 +1146,17 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidCharmName(c *
 func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidReferenceName(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	s.charm.EXPECT().Meta().Return(&charm.Meta{
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{
 		Name: "ubuntu",
 	}).AnyTimes()
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{
-		Bases: []charm.Base{{}},
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
+		Bases: []internalcharm.Base{{}},
 	}).AnyTimes()
 
 	_, err := s.service.CreateIAASApplication(c.Context(), "ubuntu", s.charm, corecharm.Origin{
 		Source:   corecharm.CharmHub,
 		Platform: corecharm.MustParsePlatform("arm64/ubuntu/24.04"),
-		Revision: ptr(42),
+		Revision: new(42),
 	}, AddApplicationArgs{
 		ReferenceName: "666",
 		DownloadInfo: &applicationcharm.DownloadInfo{
@@ -1041,7 +1171,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidReferenceName
 func (s *providerServiceSuite) TestCreateIAASApplicationWithNoCharmName(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	s.charm.EXPECT().Meta().Return(&charm.Meta{}).AnyTimes()
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{}).AnyTimes()
 
 	_, err := s.service.CreateIAASApplication(c.Context(), "foo", s.charm, corecharm.Origin{
 		Platform: corecharm.MustParsePlatform("amd64/ubuntu/24.04"),
@@ -1052,7 +1182,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithNoCharmName(c *tc.C)
 func (s *providerServiceSuite) TestCreateIAASApplicationWithNoApplicationOrCharmName(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	s.charm.EXPECT().Meta().Return(&charm.Meta{}).AnyTimes()
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{}).AnyTimes()
 
 	_, err := s.service.CreateIAASApplication(c.Context(), "", s.charm, corecharm.Origin{
 		Platform: corecharm.MustParsePlatform("arm64/ubuntu/24.04"),
@@ -1074,9 +1204,9 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithNoMeta(c *tc.C) {
 func (s *providerServiceSuite) TestCreateIAASApplicationWithNoArchitecture(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	s.charm.EXPECT().Meta().Return(&charm.Meta{Name: "foo"}).MinTimes(1)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{
-		Bases: []charm.Base{{}},
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{Name: "foo"}).MinTimes(1)
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
+		Bases: []internalcharm.Base{{}},
 	}).MinTimes(1)
 
 	_, err := s.service.CreateIAASApplication(c.Context(), "foo", s.charm, corecharm.Origin{
@@ -1096,16 +1226,16 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithNoArchitecture(c *tc
 
 func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidResourcesNotAllResourcesResolved(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
-	s.charm.EXPECT().Meta().Return(&charm.Meta{Name: "foo", Resources: map[string]charmresource.Meta{
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{Name: "foo", Resources: map[string]charmresource.Meta{
 		"not-resolved": {Name: "not-resolved"},
 	}}).MinTimes(1)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{
-		Bases: []charm.Base{{
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
+		Bases: []internalcharm.Base{{
 			Name: "ubuntu",
-			Channel: charm.Channel{
-				Risk: charm.Stable,
+			Channel: internalcharm.Channel{
+				Risk: internalcharm.Stable,
 			},
 			Architectures: []string{"arm64"},
 		}},
@@ -1129,16 +1259,16 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidResourcesNotA
 // pending resources are mutually exclusive.
 func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidResourceBothTypes(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
-	s.charm.EXPECT().Meta().Return(&charm.Meta{Name: "foo", Resources: map[string]charmresource.Meta{
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{Name: "foo", Resources: map[string]charmresource.Meta{
 		"not-resolved": {Name: "not-resolved"},
 	}}).MinTimes(1)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{
-		Bases: []charm.Base{{
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
+		Bases: []internalcharm.Base{{
 			Name: "ubuntu",
-			Channel: charm.Channel{
-				Risk: charm.Stable,
+			Channel: internalcharm.Channel{
+				Risk: internalcharm.Stable,
 			},
 			Architectures: []string{"amd64"},
 		}},
@@ -1166,7 +1296,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidResourcesMore
 		{
 			Name:     "not-in-charm",
 			Origin:   charmresource.OriginStore,
-			Revision: ptr(42),
+			Revision: new(42),
 		},
 	}
 	s.testCreateIAASApplicationWithInvalidResource(c, resources)
@@ -1177,7 +1307,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidResourcesUplo
 		{
 			Name:     "Upload-revision",
 			Origin:   charmresource.OriginUpload,
-			Revision: ptr(42),
+			Revision: new(42),
 		},
 	}
 	s.testCreateIAASApplicationWithInvalidResource(c, resources)
@@ -1187,7 +1317,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidResourcesNoNa
 	resources := ResolvedResources{
 		{
 			Origin:   charmresource.OriginStore,
-			Revision: ptr(42),
+			Revision: new(42),
 		},
 	}
 	s.testCreateIAASApplicationWithInvalidResource(c, resources)
@@ -1205,14 +1335,14 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidResourcesInva
 
 func (s *providerServiceSuite) testCreateIAASApplicationWithInvalidResource(c *tc.C, resources ResolvedResources) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
-	s.charm.EXPECT().Meta().Return(&charm.Meta{Name: "foo"}).MinTimes(1)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{
-		Bases: []charm.Base{{
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{Name: "foo"}).MinTimes(1)
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
+		Bases: []internalcharm.Base{{
 			Name: "ubuntu",
-			Channel: charm.Channel{
-				Risk: charm.Stable,
+			Channel: internalcharm.Channel{
+				Risk: internalcharm.Stable,
 			},
 			Architectures: []string{"amd64"},
 		}},
@@ -1231,20 +1361,20 @@ func (s *providerServiceSuite) testCreateIAASApplicationWithInvalidResource(c *t
 
 func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidApplicationConfigMissingOption(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
-	s.charm.EXPECT().Meta().Return(&charm.Meta{Name: "foo"}).MinTimes(1)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{
-		Bases: []charm.Base{{
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{Name: "foo"}).MinTimes(1)
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
+		Bases: []internalcharm.Base{{
 			Name: "ubuntu",
-			Channel: charm.Channel{
-				Risk: charm.Stable,
+			Channel: internalcharm.Channel{
+				Risk: internalcharm.Stable,
 			},
 			Architectures: []string{"amd64"},
 		}},
 	}).MinTimes(1)
-	s.charm.EXPECT().Config().Return(&charm.ConfigSpec{
-		Options: map[string]charm.Option{
+	s.charm.EXPECT().Config().Return(&internalcharm.ConfigSpec{
+		Options: map[string]internalcharm.Option{
 			"foo": {
 				Type:        "string",
 				Description: "a foo",
@@ -1264,7 +1394,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidApplicationCo
 	},
 		AddApplicationArgs{
 			ReferenceName: "foo",
-			ApplicationConfig: charm.Config{
+			ApplicationConfig: internalcharm.Config{
 				"foo": "bar",
 				"baz": "qux",
 			},
@@ -1274,20 +1404,20 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidApplicationCo
 
 func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidApplicationConfigWrongType(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
-	s.charm.EXPECT().Meta().Return(&charm.Meta{Name: "foo"}).MinTimes(1)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{
-		Bases: []charm.Base{{
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{Name: "foo"}).MinTimes(1)
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
+		Bases: []internalcharm.Base{{
 			Name: "ubuntu",
-			Channel: charm.Channel{
-				Risk: charm.Stable,
+			Channel: internalcharm.Channel{
+				Risk: internalcharm.Stable,
 			},
 			Architectures: []string{"amd64"},
 		}},
 	}).MinTimes(1)
-	s.charm.EXPECT().Config().Return(&charm.ConfigSpec{
-		Options: map[string]charm.Option{
+	s.charm.EXPECT().Config().Return(&internalcharm.ConfigSpec{
+		Options: map[string]internalcharm.Option{
 			"foo": {
 				Type:        "int",
 				Description: "a foo",
@@ -1307,7 +1437,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidApplicationCo
 	},
 		AddApplicationArgs{
 			ReferenceName: "foo",
-			ApplicationConfig: charm.Config{
+			ApplicationConfig: internalcharm.Config{
 				"foo": "bar",
 			},
 		})
@@ -1316,7 +1446,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidApplicationCo
 
 func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	id := tc.Must(c, coreapplication.NewUUID)
 
@@ -1326,16 +1456,16 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 	rErr := errors.New("boom")
 	s.state.EXPECT().CreateIAASApplication(gomock.Any(), "foo", gomock.Any(), []application.AddIAASUnitArg{}).Return(id, nil, rErr)
 
-	s.charm.EXPECT().Meta().Return(&charm.Meta{
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{
 		Name: "foo",
 	}).MinTimes(1)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{Bases: []charm.Base{{
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{Bases: []internalcharm.Base{{
 		Name:          "ubuntu",
-		Channel:       charm.Channel{Risk: charm.Beta},
+		Channel:       internalcharm.Channel{Risk: internalcharm.Beta},
 		Architectures: []string{"arm64"},
 	}}}).MinTimes(1)
-	s.charm.EXPECT().Actions().Return(&charm.Actions{})
-	s.charm.EXPECT().Config().Return(&charm.ConfigSpec{}).MinTimes(1)
+	s.charm.EXPECT().Actions().Return(&internalcharm.Actions{})
+	s.charm.EXPECT().Config().Return(&internalcharm.ConfigSpec{}).MinTimes(1)
 
 	_, err := s.service.CreateIAASApplication(c.Context(), "foo", s.charm, corecharm.Origin{
 		Source:   corecharm.CharmHub,
@@ -1351,16 +1481,16 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 		Constraints: coreconstraints.MustParse("arch=arm64"),
 	})
 	c.Check(err, tc.ErrorIs, rErr)
-	c.Assert(err, tc.ErrorMatches, `creating IAAS application "foo": boom`)
+	c.Assert(err, tc.ErrorMatches, `creating application "foo": boom`)
 }
 
-//func (s *providerServiceSuite) TestCreateIAASApplicationWithStorageBlock(c *tc.C) {
+// func (s *providerServiceSuite) TestCreateIAASApplicationWithStorageBlock(c *tc.C) {
 //	defer s.setupMocks(c).Finish()
 //
 //	id := tc.Must(c, coreapplication.NewUUID)
 //	blockDeviceStoragePoolUUID := storagetesting.GenStoragePoolUUID(c)
 //
-//	now := ptr(s.clock.Now())
+//	now := new(s.clock.Now())
 //	us := []application.AddIAASUnitArg{{
 //		AddUnitArg: application.AddUnitArg{
 //			NetNodeUUID: tc.Must(c, domainnetwork.NewNetNodeUUID),
@@ -1376,7 +1506,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //				},
 //			},
 //			CreateUnitStorageArg: application.CreateUnitStorageArg{
-//				StorageDirectives: []application.CreateUnitStorageDirectiveArg{
+//				StorageDirectives: []domainstorage.DirectiveArg{
 //					{
 //						Count:    1,
 //						Name:     "data",
@@ -1389,7 +1519,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //						Name: "data",
 //					},
 //				},
-//				StorageToAttach: []application.CreateStorageAttachmentArg{
+//				NewStorageToAttach: []application.CreateStorageAttachmentArg{
 //					{},
 //				},
 //				StorageToOwn: []storage.StorageInstanceUUID{""},
@@ -1435,7 +1565,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //				DownloadSize:       42,
 //			},
 //			Platform: platform,
-//			StorageDirectives: []application.CreateApplicationStorageDirectiveArg{
+//			StorageDirectives: []domainstorage.DirectiveArg{
 //				{
 //					Name:     "data",
 //					Count:    1,
@@ -1496,7 +1626,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //	_, err := s.service.CreateIAASApplication(c.Context(), "foo", s.charm, corecharm.Origin{
 //		Source:   corecharm.Local,
 //		Platform: corecharm.MustParsePlatform("amd64/ubuntu/24.04"),
-//		Revision: ptr(42),
+//		Revision: new(42),
 //	}, AddApplicationArgs{
 //		ReferenceName: "foo",
 //		DownloadInfo: &applicationcharm.DownloadInfo{
@@ -1511,18 +1641,18 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //		},
 //	}, AddIAASUnitArg{})
 //	c.Assert(err, tc.ErrorIsNil)
-//}
+// }
 
 // TODO (tlm): Add a case where a default block and or file system source cannot
 // be supplied. What happens then?
-//func (s *providerServiceSuite) TestCreateIAASApplicationWithStorageBlockDefaultSource(c *tc.C) {
+// func (s *providerServiceSuite) TestCreateIAASApplicationWithStorageBlockDefaultSource(c *tc.C) {
 //	defer s.setupMocks(c).Finish()
 
 //	id := tc.Must(c, coreapplication.NewUUID)
 //	blockDeviceStoragePoolUUID := storagetesting.GenStoragePoolUUID(c)
 //	filesystemStoragePoolUUID := storagetesting.GenStoragePoolUUID(c)
 
-//	now := ptr(s.clock.Now())
+//	now := new(s.clock.Now())
 //	us := []application.AddIAASUnitArg{{
 //		AddUnitArg: application.AddUnitArg{
 //			NetNodeUUID: tc.Must(c, domainnetwork.NewNetNodeUUID),
@@ -1538,7 +1668,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //				},
 //			},
 //			CreateUnitStorageArg: application.CreateUnitStorageArg{
-//				StorageDirectives: []application.CreateUnitStorageDirectiveArg{
+//				StorageDirectives: []domainstorage.DirectiveArg{
 //					{
 //						Name:     "data",
 //						Count:    3,
@@ -1557,7 +1687,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //						Name: "data",
 //					},
 //				},
-//				StorageToAttach: []application.CreateStorageAttachmentArg{
+//				NewStorageToAttach: []application.CreateStorageAttachmentArg{
 //					{}, {}, {},
 //				},
 //				StorageToOwn: []storage.StorageInstanceUUID{"", "", ""},
@@ -1604,7 +1734,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //				DownloadSize:       42,
 //			},
 //			Platform: platform,
-//			StorageDirectives: []application.CreateApplicationStorageDirectiveArg{
+//			StorageDirectives: []domainstorage.DirectiveArg{
 //				{
 //					Count:    3,
 //					Name:     "data",
@@ -1665,7 +1795,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //	_, err := s.service.CreateIAASApplication(c.Context(), "foo", s.charm, corecharm.Origin{
 //		Source:   corecharm.CharmHub,
 //		Platform: corecharm.MustParsePlatform("amd64/ubuntu/24.04"),
-//		Revision: ptr(42),
+//		Revision: new(42),
 //	}, AddApplicationArgs{
 //		ReferenceName: "foo",
 //		DownloadInfo: &applicationcharm.DownloadInfo{
@@ -1675,19 +1805,19 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //			DownloadSize:       42,
 //		},
 //		StorageDirectiveOverrides: map[string]ApplicationStorageDirectiveOverride{
-//			"data": {Count: ptr(uint32(3))},
+//			"data": {Count: new(uint32(3))},
 //		},
 //	}, AddIAASUnitArg{})
 //	c.Assert(err, tc.ErrorIsNil)
-//}
+// }
 
-//func (s *providerServiceSuite) TestCreateIAASApplicationWithStorageFilesystem(c *tc.C) {
+// func (s *providerServiceSuite) TestCreateIAASApplicationWithStorageFilesystem(c *tc.C) {
 //	defer s.setupMocks(c).Finish()
 //
 //	id := tc.Must(c, coreapplication.NewUUID)
 //	filesystemStoragePoolUUID := storagetesting.GenStoragePoolUUID(c)
 //
-//	now := ptr(s.clock.Now())
+//	now := new(s.clock.Now())
 //	us := []application.AddIAASUnitArg{{
 //		AddUnitArg: application.AddUnitArg{
 //			NetNodeUUID: tc.Must(c, domainnetwork.NewNetNodeUUID),
@@ -1703,7 +1833,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //				},
 //			},
 //			CreateUnitStorageArg: application.CreateUnitStorageArg{
-//				StorageDirectives: []application.CreateUnitStorageDirectiveArg{
+//				StorageDirectives: []domainstorage.DirectiveArg{
 //					{
 //						Name:     "data",
 //						Count:    1,
@@ -1716,7 +1846,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //						Name: "data",
 //					},
 //				},
-//				StorageToAttach: []application.CreateStorageAttachmentArg{
+//				NewStorageToAttach: []application.CreateStorageAttachmentArg{
 //					{},
 //				},
 //				StorageToOwn: []storage.StorageInstanceUUID{""},
@@ -1763,7 +1893,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //				DownloadSize:       42,
 //			},
 //			Platform: platform,
-//			StorageDirectives: []application.CreateApplicationStorageDirectiveArg{
+//			StorageDirectives: []domainstorage.DirectiveArg{
 //				{
 //					Count:    1,
 //					Name:     "data",
@@ -1824,7 +1954,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //	_, err := s.service.CreateIAASApplication(c.Context(), "foo", s.charm, corecharm.Origin{
 //		Source:   corecharm.CharmHub,
 //		Platform: corecharm.MustParsePlatform("amd64/ubuntu/24.04"),
-//		Revision: ptr(42),
+//		Revision: new(42),
 //	}, AddApplicationArgs{
 //		ReferenceName: "foo",
 //		DownloadInfo: &applicationcharm.DownloadInfo{
@@ -1840,16 +1970,16 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //		},
 //	}, AddIAASUnitArg{})
 //	c.Assert(err, tc.ErrorIsNil)
-//}
+// }
 //
-//func (s *providerServiceSuite) TestCreateIAASApplicationWithStorageFilesystemDefaultSource(c *tc.C) {
+// func (s *providerServiceSuite) TestCreateIAASApplicationWithStorageFilesystemDefaultSource(c *tc.C) {
 //	defer s.setupMocks(c).Finish()
 //
 //	id := tc.Must(c, coreapplication.NewUUID)
 //	blockDeviceStoragePoolUUID := storagetesting.GenStoragePoolUUID(c)
 //	filesystemStoragePoolUUID := storagetesting.GenStoragePoolUUID(c)
 //
-//	now := ptr(s.clock.Now())
+//	now := new(s.clock.Now())
 //	us := []application.AddIAASUnitArg{{
 //		AddUnitArg: application.AddUnitArg{
 //			UnitStatusArg: application.UnitStatusArg{
@@ -1864,7 +1994,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //				},
 //			},
 //			CreateUnitStorageArg: application.CreateUnitStorageArg{
-//				StorageDirectives: []application.CreateUnitStorageDirectiveArg{
+//				StorageDirectives: []domainstorage.DirectiveArg{
 //					{
 //						Name:     "data",
 //						Count:    2,
@@ -1880,7 +2010,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //						Name: "data",
 //					},
 //				},
-//				StorageToAttach: []application.CreateStorageAttachmentArg{
+//				NewStorageToAttach: []application.CreateStorageAttachmentArg{
 //					{}, {},
 //				},
 //				StorageToOwn: []storage.StorageInstanceUUID{"", ""},
@@ -1927,7 +2057,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //				DownloadSize:       42,
 //			},
 //			Platform: platform,
-//			StorageDirectives: []application.CreateApplicationStorageDirectiveArg{
+//			StorageDirectives: []domainstorage.DirectiveArg{
 //				{
 //					Count:    2,
 //					Name:     "data",
@@ -1988,7 +2118,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //	_, err := s.service.CreateIAASApplication(c.Context(), "foo", s.charm, corecharm.Origin{
 //		Source:   corecharm.CharmHub,
 //		Platform: corecharm.MustParsePlatform("amd64/ubuntu/24.04"),
-//		Revision: ptr(42),
+//		Revision: new(42),
 //	}, AddApplicationArgs{
 //		ReferenceName: "foo",
 //		DownloadInfo: &applicationcharm.DownloadInfo{
@@ -1998,13 +2128,13 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //			DownloadSize:       42,
 //		},
 //		StorageDirectiveOverrides: map[string]ApplicationStorageDirectiveOverride{
-//			"data": {Count: ptr(uint32(2))},
+//			"data": {Count: new(uint32(2))},
 //		},
 //	}, AddIAASUnitArg{})
 //	c.Assert(err, tc.ErrorIsNil)
-//}
+// }
 
-//func (s *providerServiceSuite) TestCreateIAASApplicationWithSharedStorage(c *tc.C) {
+// func (s *providerServiceSuite) TestCreateIAASApplicationWithSharedStorage(c *tc.C) {
 //	defer s.setupMocks(c).Finish()
 //
 //	id := tc.Must(c, coreapplication.NewUUID)
@@ -2015,7 +2145,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //		Architecture: architecture.AMD64,
 //	}
 //
-//	now := ptr(s.clock.Now())
+//	now := new(s.clock.Now())
 //	us := []application.AddIAASUnitArg{{
 //		AddUnitArg: application.AddUnitArg{
 //			UnitStatusArg: application.UnitStatusArg{
@@ -2061,7 +2191,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //				DownloadSize:       42,
 //			},
 //			Platform:          platform,
-//			StorageDirectives: []application.CreateApplicationStorageDirectiveArg{},
+//			StorageDirectives: []domainstorage.DirectiveArg{},
 //		},
 //	}
 //
@@ -2107,7 +2237,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //	_, err := s.service.CreateIAASApplication(c.Context(), "foo", s.charm, corecharm.Origin{
 //		Source:   corecharm.CharmHub,
 //		Platform: corecharm.MustParsePlatform("amd64/ubuntu/24.04"),
-//		Revision: ptr(42),
+//		Revision: new(42),
 //	}, AddApplicationArgs{
 //		ReferenceName: "foo",
 //		DownloadInfo: &applicationcharm.DownloadInfo{
@@ -2118,36 +2248,36 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //		},
 //	}, AddIAASUnitArg{})
 //	c.Assert(err, tc.ErrorIsNil)
-//}
+// }
 
 func (s *providerServiceSuite) TestCreateIAASApplicationPlatformArchContradictsConstraints(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	s.provider.EXPECT().ConstraintsValidator(gomock.Any()).Return(nil, nil)
 	s.state.EXPECT().GetModelConstraints(gomock.Any()).Return(constraints.Constraints{}, nil)
-	s.charm.EXPECT().Meta().Return(&charm.Meta{
+	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{
 		Name: "foo",
-		Storage: map[string]charm.Storage{
+		Storage: map[string]internalcharm.Storage{
 			"data": {
 				Name:     "data",
-				Type:     charm.StorageFilesystem,
+				Type:     internalcharm.StorageFilesystem,
 				Shared:   true,
 				CountMin: 0,
 			},
 		},
 	}).MinTimes(1)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{Bases: []charm.Base{{
+	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{Bases: []internalcharm.Base{{
 		Name:          "ubuntu",
-		Channel:       charm.Channel{Risk: charm.Stable},
+		Channel:       internalcharm.Channel{Risk: internalcharm.Stable},
 		Architectures: []string{"amd64"},
 	}}}).MinTimes(1)
-	s.charm.EXPECT().Config().Return(&charm.ConfigSpec{}).MinTimes(1)
+	s.charm.EXPECT().Config().Return(&internalcharm.ConfigSpec{}).MinTimes(1)
 
 	_, err := s.service.CreateIAASApplication(c.Context(), "foo", s.charm, corecharm.Origin{
 		Source:   corecharm.CharmHub,
 		Platform: corecharm.MustParsePlatform("arm64/ubuntu/24.04"),
-		Revision: ptr(42),
+		Revision: new(42),
 	}, AddApplicationArgs{
 		ReferenceName: "foo",
 		DownloadInfo: &applicationcharm.DownloadInfo{
@@ -2162,7 +2292,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationPlatformArchContradictsC
 }
 
 // TODO (tlm): Add this test back in.
-//func (s *providerServiceSuite) TestCreateIAASApplicationWithStorageValidates(c *tc.C) {
+// func (s *providerServiceSuite) TestCreateIAASApplicationWithStorageValidates(c *tc.C) {
 //	defer s.setupMocks(c).Finish()
 //
 //	s.charm.EXPECT().Meta().Return(&charm.Meta{
@@ -2194,7 +2324,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationPlatformArchContradictsC
 //		},
 //	}, AddUnitArg{})
 //	c.Assert(err, tc.ErrorMatches, `.*invalid storage directives: charm "mine" has no store called "logs"`)
-//}
+// }
 
 func (s *providerServiceSuite) TestDeviceConstraintsValidateNotInCharmMeta(c *tc.C) {
 	deviceConstraints := map[string]devices.Constraints{
@@ -2203,9 +2333,9 @@ func (s *providerServiceSuite) TestDeviceConstraintsValidateNotInCharmMeta(c *tc
 			Count: 42,
 		},
 	}
-	charmMeta := &charm.Meta{
+	charmMeta := &internalcharm.Meta{
 		Name: "foo",
-		Devices: map[string]charm.Device{
+		Devices: map[string]internalcharm.Device{
 			"dev1": {
 				Description: "dev1 description",
 				Type:        "type1",
@@ -2225,9 +2355,9 @@ func (s *providerServiceSuite) TestDeviceConstraintsValidateCount(c *tc.C) {
 			Count: 42,
 		},
 	}
-	charmMeta := &charm.Meta{
+	charmMeta := &internalcharm.Meta{
 		Name: "foo",
-		Devices: map[string]charm.Device{
+		Devices: map[string]internalcharm.Device{
 			"dev0": {
 				Description: "dev0 description",
 				Type:        "type0",
@@ -2247,9 +2377,9 @@ func (s *providerServiceSuite) TestDeviceConstraintsMissingFromMeta(c *tc.C) {
 			Count: 43,
 		},
 	}
-	charmMeta := &charm.Meta{
+	charmMeta := &internalcharm.Meta{
 		Name: "foo",
-		Devices: map[string]charm.Device{
+		Devices: map[string]internalcharm.Device{
 			"dev0": {
 				Description: "dev0 description",
 				Type:        "type0",
@@ -2278,9 +2408,9 @@ func (s *providerServiceSuite) TestDeviceConstraintsValid(c *tc.C) {
 			Count: 2,
 		},
 	}
-	charmMeta := &charm.Meta{
+	charmMeta := &internalcharm.Meta{
 		Name: "foo",
-		Devices: map[string]charm.Device{
+		Devices: map[string]internalcharm.Device{
 			"dev0": {
 				Description: "dev0 description",
 				Type:        "type0",
@@ -2319,8 +2449,38 @@ func (s *providerServiceSuite) TestGetSupportedFeatures(c *tc.C) {
 }
 
 func (s *providerServiceSuite) TestGetSupportedFeaturesNotSupported(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, providerNotSupported, providerNotSupported)
+	ctrl := gomock.NewController(c)
 	defer ctrl.Finish()
+
+	s.agentVersionGetter = NewMockAgentVersionGetter(ctrl)
+	s.state = NewMockState(ctrl)
+
+	c.Cleanup(func() {
+		s.agentVersionGetter = nil
+		s.state = nil
+	})
+
+	modelUUID := tc.Must(c, model.NewUUID)
+
+	s.service = NewProviderService(
+		s.state,
+		nil, nil,
+		s.agentVersionGetter,
+		func(ctx context.Context) (Provider, error) {
+			return nil, nil
+		},
+		func(ctx context.Context) (CAASProvider, error) {
+			return nil, coreerrors.NotSupported
+		},
+		func(ctx context.Context) (CloudInfoProvider, error) {
+			return nil, nil
+		},
+		nil,
+		nil,
+		modelUUID,
+		nil,
+		loggertesting.WrapCheckLog(c),
+	)
 
 	agentVersion := semversion.MustParse("4.0.0")
 	s.agentVersionGetter.EXPECT().GetModelTargetAgentVersion(gomock.Any()).Return(agentVersion, nil)
@@ -2352,8 +2512,34 @@ func (s *providerServiceSuite) TestSetApplicationConstraintsInvalidAppID(c *tc.C
 }
 
 func (s *providerServiceSuite) TestSetConstraintsProviderNotSupported(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, providerNotSupported, providerNotSupported)
+	ctrl := gomock.NewController(c)
 	defer ctrl.Finish()
+
+	s.state = NewMockState(ctrl)
+
+	c.Cleanup(func() {
+		s.state = nil
+	})
+
+	modelUUID := tc.Must(c, model.NewUUID)
+
+	s.service = NewProviderService(
+		s.state,
+		nil, nil, nil,
+		func(ctx context.Context) (Provider, error) {
+			return nil, coreerrors.NotSupported
+		},
+		func(ctx context.Context) (CAASProvider, error) {
+			return nil, nil
+		},
+		func(ctx context.Context) (CloudInfoProvider, error) {
+			return nil, nil
+		},
+		nil, nil,
+		modelUUID,
+		nil,
+		loggertesting.WrapCheckLog(c),
+	)
 
 	id := tc.Must(c, coreapplication.NewUUID)
 
@@ -2362,7 +2548,7 @@ func (s *providerServiceSuite) TestSetConstraintsProviderNotSupported(c *tc.C) {
 }
 
 func (s *providerServiceSuite) TestSetConstraintsValidatorError(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
 	id := tc.Must(c, coreapplication.NewUUID)
@@ -2374,7 +2560,7 @@ func (s *providerServiceSuite) TestSetConstraintsValidatorError(c *tc.C) {
 }
 
 func (s *providerServiceSuite) TestSetConstraintsValidateError(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
 	id := tc.Must(c, coreapplication.NewUUID)
@@ -2388,7 +2574,7 @@ func (s *providerServiceSuite) TestSetConstraintsValidateError(c *tc.C) {
 }
 
 func (s *providerServiceSuite) TestSetConstraintsUnsupportedValues(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
 	id := tc.Must(c, coreapplication.NewUUID)
@@ -2396,15 +2582,15 @@ func (s *providerServiceSuite) TestSetConstraintsUnsupportedValues(c *tc.C) {
 	validator := NewMockValidator(ctrl)
 	s.provider.EXPECT().ConstraintsValidator(gomock.Any()).Return(validator, nil)
 	validator.EXPECT().Validate(gomock.Any()).Return([]string{"arch", "mem"}, nil)
-	s.state.EXPECT().SetApplicationConstraints(gomock.Any(), id, constraints.Constraints{Arch: ptr("amd64"), Mem: ptr(uint64(8))}).Return(nil)
+	s.state.EXPECT().SetApplicationConstraints(gomock.Any(), id, constraints.Constraints{Arch: new("amd64"), Mem: new(uint64(8))}).Return(nil)
 
-	err := s.service.SetApplicationConstraints(c.Context(), id, coreconstraints.Value{Arch: ptr("amd64"), Mem: ptr(uint64(8))})
+	err := s.service.SetApplicationConstraints(c.Context(), id, coreconstraints.Value{Arch: new("amd64"), Mem: new(uint64(8))})
 	c.Assert(err, tc.ErrorIsNil)
-	//c.Check(c.GetTestLog(), tc.Contains, "unsupported constraints: arch,mem")
+	// c.Check(c.GetTestLog(), tc.Contains, "unsupported constraints: arch,mem")
 }
 
 func (s *providerServiceSuite) TestSetConstraints(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
 	defer s.setupMocks(c).Finish()
@@ -2414,20 +2600,20 @@ func (s *providerServiceSuite) TestSetConstraints(c *tc.C) {
 	validator := NewMockValidator(ctrl)
 	s.provider.EXPECT().ConstraintsValidator(gomock.Any()).Return(validator, nil)
 	validator.EXPECT().Validate(gomock.Any()).Return(nil, nil)
-	s.state.EXPECT().SetApplicationConstraints(gomock.Any(), id, constraints.Constraints{Arch: ptr("amd64"), Mem: ptr(uint64(8))}).Return(nil)
+	s.state.EXPECT().SetApplicationConstraints(gomock.Any(), id, constraints.Constraints{Arch: new("amd64"), Mem: new(uint64(8))}).Return(nil)
 
-	err := s.service.SetApplicationConstraints(c.Context(), id, coreconstraints.Value{Arch: ptr("amd64"), Mem: ptr(uint64(8))})
+	err := s.service.SetApplicationConstraints(c.Context(), id, coreconstraints.Value{Arch: new("amd64"), Mem: new(uint64(8))})
 	c.Assert(err, tc.ErrorIsNil)
 }
 
 func (s *providerServiceSuite) TestAddCAASUnitsEmptyConstraints(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
-	setAddUnitNoopStorageExpects(s.storageService)
+	setAddUnitNoopStorageExpects(c, s.state, s.storageService)
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
 
-	now := ptr(s.clock.Now())
+	now := new(s.clock.Now())
 	u := []application.AddCAASUnitArg{{
 		AddUnitArg: application.AddUnitArg{
 			UnitStatusArg: application.UnitStatusArg{
@@ -2441,6 +2627,9 @@ func (s *providerServiceSuite) TestAddCAASUnitsEmptyConstraints(c *tc.C) {
 					Since:   now,
 				},
 			},
+			Constraints: constraints.Constraints{
+				Arch: new(arch.AMD64),
+			},
 		},
 	}}
 	s.state.EXPECT().GetApplicationUUIDByName(gomock.Any(), "ubuntu").Return(appUUID, nil)
@@ -2448,6 +2637,9 @@ func (s *providerServiceSuite) TestAddCAASUnitsEmptyConstraints(c *tc.C) {
 	s.provider.EXPECT().PrecheckInstance(gomock.Any(), environs.PrecheckInstanceParams{
 		Base: corebase.Base{
 			OS: "ubuntu",
+		},
+		Constraints: coreconstraints.Value{
+			Arch: new(arch.AMD64),
 		},
 	}).Return(nil)
 	s.expectEmptyUnitConstraints(c, appUUID)
@@ -2466,32 +2658,31 @@ func (s *providerServiceSuite) TestAddCAASUnitsEmptyConstraints(c *tc.C) {
 }
 
 func (s *providerServiceSuite) TestAddCAASUnitsAppConstraints(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
-	setAddUnitNoopStorageExpects(s.storageService)
+	setAddUnitNoopStorageExpects(c, s.state, s.storageService)
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
-	unitUUID := unittesting.GenUnitUUID(c)
 
-	now := ptr(s.clock.Now())
+	now := new(s.clock.Now())
 	u := []application.AddCAASUnitArg{{
 		AddUnitArg: application.AddUnitArg{
 			Constraints: constraints.Constraints{
-				Arch:           ptr("amd64"),
-				Container:      ptr(instance.LXD),
-				CpuCores:       ptr(uint64(4)),
-				Mem:            ptr(uint64(1024)),
-				RootDisk:       ptr(uint64(1024)),
-				RootDiskSource: ptr("root-disk-source"),
-				Tags:           ptr([]string{"tag1", "tag2"}),
-				InstanceRole:   ptr("instance-role"),
-				InstanceType:   ptr("instance-type"),
-				Spaces: ptr([]constraints.SpaceConstraint{
+				Arch:           new("amd64"),
+				Container:      new(instance.LXD),
+				CpuCores:       new(uint64(4)),
+				Mem:            new(uint64(1024)),
+				RootDisk:       new(uint64(1024)),
+				RootDiskSource: new("root-disk-source"),
+				Tags:           new([]string{"tag1", "tag2"}),
+				InstanceRole:   new("instance-role"),
+				InstanceType:   new("instance-type"),
+				Spaces: new([]constraints.SpaceConstraint{
 					{SpaceName: "space1", Exclude: false},
 				}),
-				VirtType:         ptr("virt-type"),
-				Zones:            ptr([]string{"zone1", "zone2"}),
-				AllocatePublicIP: ptr(true),
+				VirtType:         new("virt-type"),
+				Zones:            new([]string{"zone1", "zone2"}),
+				AllocatePublicIP: new(true),
 			},
 			UnitStatusArg: application.UnitStatusArg{
 				AgentStatus: &status.StatusInfo[status.UnitAgentStatusType]{
@@ -2518,7 +2709,7 @@ func (s *providerServiceSuite) TestAddCAASUnitsAppConstraints(c *tc.C) {
 		},
 		Constraints: coreconstraints.MustParse("arch=amd64 container=lxd cores=4 instance-role=instance-role instance-type=instance-type mem=1024M root-disk=1024M root-disk-source=root-disk-source tags=tag1,tag2 spaces=space1 virt-type=virt-type zones=zone1,zone2 allocate-public-ip=true"),
 	}).Return(nil)
-	s.expectAppConstraints(c, unitUUID, appUUID)
+	s.expectAppConstraints(c, appUUID)
 
 	var received []application.AddCAASUnitArg
 	s.state.EXPECT().AddCAASUnits(gomock.Any(), appUUID, gomock.Any()).DoAndReturn(func(_ context.Context, _ coreapplication.UUID, args ...application.AddCAASUnitArg) ([]coreunit.Name, error) {
@@ -2537,31 +2728,31 @@ func (s *providerServiceSuite) TestAddCAASUnitsAppConstraints(c *tc.C) {
 }
 
 func (s *providerServiceSuite) TestAddCAASUnitsModelConstraints(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
-	setAddUnitNoopStorageExpects(s.storageService)
+	setAddUnitNoopStorageExpects(c, s.state, s.storageService)
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
 
-	now := ptr(s.clock.Now())
+	now := new(s.clock.Now())
 	u := []application.AddCAASUnitArg{{
 		AddUnitArg: application.AddUnitArg{
 			Constraints: constraints.Constraints{
-				Arch:           ptr("amd64"),
-				Container:      ptr(instance.LXD),
-				CpuCores:       ptr(uint64(4)),
-				Mem:            ptr(uint64(1024)),
-				RootDisk:       ptr(uint64(1024)),
-				RootDiskSource: ptr("root-disk-source"),
-				Tags:           ptr([]string{"tag1", "tag2"}),
-				InstanceRole:   ptr("instance-role"),
-				InstanceType:   ptr("instance-type"),
-				Spaces: ptr([]constraints.SpaceConstraint{
+				Arch:           new("amd64"),
+				Container:      new(instance.LXD),
+				CpuCores:       new(uint64(4)),
+				Mem:            new(uint64(1024)),
+				RootDisk:       new(uint64(1024)),
+				RootDiskSource: new("root-disk-source"),
+				Tags:           new([]string{"tag1", "tag2"}),
+				InstanceRole:   new("instance-role"),
+				InstanceType:   new("instance-type"),
+				Spaces: new([]constraints.SpaceConstraint{
 					{SpaceName: "space1", Exclude: false},
 				}),
-				VirtType:         ptr("virt-type"),
-				Zones:            ptr([]string{"zone1", "zone2"}),
-				AllocatePublicIP: ptr(true),
+				VirtType:         new("virt-type"),
+				Zones:            new([]string{"zone1", "zone2"}),
+				AllocatePublicIP: new(true),
 			},
 			UnitStatusArg: application.UnitStatusArg{
 				AgentStatus: &status.StatusInfo[status.UnitAgentStatusType]{
@@ -2600,19 +2791,20 @@ func (s *providerServiceSuite) TestAddCAASUnitsModelConstraints(c *tc.C) {
 }
 
 func (s *providerServiceSuite) TestAddCAASUnitsFullConstraints(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
-	setAddUnitNoopStorageExpects(s.storageService)
+	setAddUnitNoopStorageExpects(c, s.state, s.storageService)
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
-	unitUUID := unittesting.GenUnitUUID(c)
+	unitUUID := tc.Must(c, coreunit.NewUUID)
 
-	now := ptr(s.clock.Now())
+	now := new(s.clock.Now())
 	u := []application.AddCAASUnitArg{{
 		AddUnitArg: application.AddUnitArg{
 			Constraints: constraints.Constraints{
-				CpuCores: ptr(uint64(4)),
-				CpuPower: ptr(uint64(75)),
+				CpuCores: new(uint64(4)),
+				CpuPower: new(uint64(75)),
+				Arch:     new(arch.AMD64),
 			},
 			UnitStatusArg: application.UnitStatusArg{
 				AgentStatus: &status.StatusInfo[status.UnitAgentStatusType]{
@@ -2633,7 +2825,7 @@ func (s *providerServiceSuite) TestAddCAASUnitsFullConstraints(c *tc.C) {
 		Base: corebase.Base{
 			OS: "ubuntu",
 		},
-		Constraints: coreconstraints.MustParse("cores=4 cpu-power=75"),
+		Constraints: coreconstraints.MustParse("cores=4 cpu-power=75 arch=amd64"),
 	}).Return(nil)
 	s.expectFullConstraints(c, unitUUID, appUUID)
 
@@ -2651,7 +2843,7 @@ func (s *providerServiceSuite) TestAddCAASUnitsFullConstraints(c *tc.C) {
 }
 
 func (s *providerServiceSuite) TestAddIAASUnitsInvalidName(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
 	_, _, err := s.service.AddIAASUnits(c.Context(), "!!!", AddIAASUnitArg{})
@@ -2659,7 +2851,7 @@ func (s *providerServiceSuite) TestAddIAASUnitsInvalidName(c *tc.C) {
 }
 
 func (s *providerServiceSuite) TestAddIAASUnitsNoUnits(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
 	units, _, err := s.service.AddIAASUnits(c.Context(), "foo")
@@ -2668,7 +2860,7 @@ func (s *providerServiceSuite) TestAddIAASUnitsNoUnits(c *tc.C) {
 }
 
 func (s *providerServiceSuite) TestAddIAASUnitsApplicationNotFound(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
@@ -2680,12 +2872,12 @@ func (s *providerServiceSuite) TestAddIAASUnitsApplicationNotFound(c *tc.C) {
 }
 
 func (s *providerServiceSuite) TestAddIAASUnitsInvalidPlacement(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
-	setAddUnitNoopStorageExpects(s.storageService)
+	setAddUnitNoopStorageExpects(c, s.state, s.storageService)
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
-	unitUUID := unittesting.GenUnitUUID(c)
+	unitUUID := tc.Must(c, coreunit.NewUUID)
 
 	s.state.EXPECT().GetApplicationCharmOrigin(gomock.Any(), appUUID).Return(application.CharmOrigin{}, nil)
 	s.state.EXPECT().GetApplicationUUIDByName(gomock.Any(), "ubuntu").Return(appUUID, nil)
@@ -2713,9 +2905,9 @@ func (s *providerServiceSuite) TestAddIAASUnitsInvalidPlacement(c *tc.C) {
 // and that the machine uuid and netnode uuid that are used for the machine
 // match the already existing machine.
 func (s *providerServiceSuite) TestAddIAASUnitsMachinePlacement(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
-	setAddUnitNoopStorageExpects(s.storageService)
+	setAddUnitNoopStorageExpects(c, s.state, s.storageService)
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
 	unitUUID := tc.Must(c, coreunit.NewUUID)
@@ -2729,13 +2921,13 @@ func (s *providerServiceSuite) TestAddIAASUnitsMachinePlacement(c *tc.C) {
 		},
 	}, nil)
 	s.provider.EXPECT().PrecheckInstance(gomock.Any(), environs.PrecheckInstanceParams{
-		Constraints: coreconstraints.MustParse("cores=4 cpu-power=75"),
 		Base: corebase.Base{
 			OS: "ubuntu",
 			Channel: corebase.Channel{
 				Track: "24.04",
 			},
 		},
+		Constraints: coreconstraints.MustParse("cores=4 cpu-power=75 arch=amd64"),
 	}).Return(nil)
 	s.state.EXPECT().GetMachineUUIDAndNetNodeForName(gomock.Any(), "0").Return(
 		machineUUID, netNodeUUID, nil,
@@ -2787,12 +2979,16 @@ func (s *providerServiceSuite) TestResolveApplicationConstraintsNilValidator(c *
 
 	cons, err := s.service.ResolveApplicationConstraints(c.Context(), coreconstraints.Value{})
 	c.Assert(err, tc.ErrorIsNil)
-	// We should always fill in the arch, even if it's not in the model constraints.
-	c.Check(cons, tc.DeepEquals, coreconstraints.Value{})
+
+	// We should always fill in the arch, even if it's not in the model
+	// constraints.
+	c.Check(cons, tc.DeepEquals, constraints.Constraints{
+		Arch: new(arch.AMD64),
+	})
 }
 
 func (s *providerServiceSuite) TestResolveApplicationConstraintsConstraintsNotFound(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
 	s.provider.EXPECT().ConstraintsValidator(gomock.Any()).Return(s.validator, nil)
@@ -2809,7 +3005,7 @@ func (s *providerServiceSuite) TestResolveApplicationConstraintsConstraintsNotFo
 }
 
 func (s *providerServiceSuite) TestResolveApplicationConstraintsWithArch(c *tc.C) {
-	ctrl := s.setupMocksWithProvider(c, noProviderError, noProviderError)
+	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
 
 	s.provider.EXPECT().ConstraintsValidator(gomock.Any()).Return(s.validator, nil)
@@ -2819,10 +3015,10 @@ func (s *providerServiceSuite) TestResolveApplicationConstraintsWithArch(c *tc.C
 	s.validator.EXPECT().Merge(
 		constraints.EncodeConstraints(constraints.Constraints{}),
 		constraints.EncodeConstraints(constraints.Constraints{
-			Arch: ptr(arch.AMD64),
+			Arch: new(arch.AMD64),
 		})).
 		Return(coreconstraints.Value{
-			Arch: ptr(arch.AMD64),
+			Arch: new(arch.AMD64),
 		}, nil)
 
 	merged, err := s.service.ResolveApplicationConstraints(c.Context(), coreconstraints.MustParse("arch=amd64"))
@@ -2831,6 +3027,8 @@ func (s *providerServiceSuite) TestResolveApplicationConstraintsWithArch(c *tc.C
 }
 
 func (s *providerServiceSuite) expectEmptyUnitConstraints(c *tc.C, appUUID coreapplication.UUID) {
+	c.Helper()
+
 	appConstraints := constraints.Constraints{}
 	modelConstraints := constraints.Constraints{}
 
@@ -2842,23 +3040,25 @@ func (s *providerServiceSuite) expectEmptyUnitConstraints(c *tc.C, appUUID corea
 	s.validator.EXPECT().Merge(constraints.EncodeConstraints(appConstraints), constraints.EncodeConstraints(modelConstraints)).Return(coreconstraints.Value{}, nil)
 }
 
-func (s *providerServiceSuite) expectAppConstraints(c *tc.C, unitUUID coreunit.UUID, appUUID coreapplication.UUID) {
+func (s *providerServiceSuite) expectAppConstraints(c *tc.C, appUUID coreapplication.UUID) {
+	c.Helper()
+
 	appConstraints := constraints.Constraints{
-		Arch:           ptr("amd64"),
-		Container:      ptr(instance.LXD),
-		CpuCores:       ptr(uint64(4)),
-		Mem:            ptr(uint64(1024)),
-		RootDisk:       ptr(uint64(1024)),
-		RootDiskSource: ptr("root-disk-source"),
-		Tags:           ptr([]string{"tag1", "tag2"}),
-		InstanceRole:   ptr("instance-role"),
-		InstanceType:   ptr("instance-type"),
-		Spaces: ptr([]constraints.SpaceConstraint{
+		Arch:           new("amd64"),
+		Container:      new(instance.LXD),
+		CpuCores:       new(uint64(4)),
+		Mem:            new(uint64(1024)),
+		RootDisk:       new(uint64(1024)),
+		RootDiskSource: new("root-disk-source"),
+		Tags:           new([]string{"tag1", "tag2"}),
+		InstanceRole:   new("instance-role"),
+		InstanceType:   new("instance-type"),
+		Spaces: new([]constraints.SpaceConstraint{
 			{SpaceName: "space1", Exclude: false},
 		}),
-		VirtType:         ptr("virt-type"),
-		Zones:            ptr([]string{"zone1", "zone2"}),
-		AllocatePublicIP: ptr(true),
+		VirtType:         new("virt-type"),
+		Zones:            new([]string{"zone1", "zone2"}),
+		AllocatePublicIP: new(true),
 	}
 	modelConstraints := constraints.Constraints{}
 	unitConstraints := appConstraints
@@ -2874,21 +3074,21 @@ func (s *providerServiceSuite) expectAppConstraints(c *tc.C, unitUUID coreunit.U
 
 func (s *providerServiceSuite) expectModelConstraints(appUUID coreapplication.UUID) {
 	modelConstraints := constraints.Constraints{
-		Arch:           ptr("amd64"),
-		Container:      ptr(instance.LXD),
-		CpuCores:       ptr(uint64(4)),
-		Mem:            ptr(uint64(1024)),
-		RootDisk:       ptr(uint64(1024)),
-		RootDiskSource: ptr("root-disk-source"),
-		Tags:           ptr([]string{"tag1", "tag2"}),
-		InstanceRole:   ptr("instance-role"),
-		InstanceType:   ptr("instance-type"),
-		Spaces: ptr([]constraints.SpaceConstraint{
+		Arch:           new("amd64"),
+		Container:      new(instance.LXD),
+		CpuCores:       new(uint64(4)),
+		Mem:            new(uint64(1024)),
+		RootDisk:       new(uint64(1024)),
+		RootDiskSource: new("root-disk-source"),
+		Tags:           new([]string{"tag1", "tag2"}),
+		InstanceRole:   new("instance-role"),
+		InstanceType:   new("instance-type"),
+		Spaces: new([]constraints.SpaceConstraint{
 			{SpaceName: "space1", Exclude: false},
 		}),
-		VirtType:         ptr("virt-type"),
-		Zones:            ptr([]string{"zone1", "zone2"}),
-		AllocatePublicIP: ptr(true),
+		VirtType:         new("virt-type"),
+		Zones:            new([]string{"zone1", "zone2"}),
+		AllocatePublicIP: new(true),
 	}
 	appConstraints := constraints.Constraints{}
 	unitConstraints := modelConstraints
@@ -2903,14 +3103,14 @@ func (s *providerServiceSuite) expectModelConstraints(appUUID coreapplication.UU
 
 func (s *providerServiceSuite) expectFullConstraints(c *tc.C, unitUUID coreunit.UUID, appUUID coreapplication.UUID) {
 	modelConstraints := constraints.Constraints{
-		CpuCores: ptr(uint64(4)),
+		CpuCores: new(uint64(4)),
 	}
 	appConstraints := constraints.Constraints{
-		CpuPower: ptr(uint64(75)),
+		CpuPower: new(uint64(75)),
 	}
 	unitConstraints := constraints.Constraints{
-		CpuCores: ptr(uint64(4)),
-		CpuPower: ptr(uint64(75)),
+		CpuCores: new(uint64(4)),
+		CpuPower: new(uint64(75)),
 	}
 
 	s.provider.EXPECT().ConstraintsValidator(gomock.Any()).Return(s.validator, nil)
@@ -2919,4 +3119,402 @@ func (s *providerServiceSuite) expectFullConstraints(c *tc.C, unitUUID coreunit.
 
 	s.state.EXPECT().GetApplicationConstraints(gomock.Any(), appUUID).Return(appConstraints, nil)
 	s.state.EXPECT().GetModelConstraints(gomock.Any()).Return(modelConstraints, nil)
+}
+
+func (s *providerServiceSuite) TestAddStorageForIAASUnitNotFound(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+
+	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
+		Return(internal.StorageDirective{}, applicationerrors.UnitNotFound)
+
+	_, err := s.service.AddStorageForIAASUnit(c.Context(), "pgdata", unitUUID, 1, application.AddUnitStorageOverride{})
+	c.Assert(err, tc.ErrorIs, applicationerrors.UnitNotFound)
+}
+
+func (s *providerServiceSuite) TestAddStorageForIAASUnitInvalidUUID(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), coreunit.UUID("!!!"), corestorage.Name("pgdata")).
+		Return(internal.StorageDirective{}, coreerrors.NotValid)
+
+	_, err := s.service.AddStorageForIAASUnit(c.Context(), "pgdata", "!!!", 1, application.AddUnitStorageOverride{})
+	c.Assert(err, tc.ErrorIs, coreerrors.NotValid)
+}
+
+func (s *providerServiceSuite) TestAddStorageForIAASUnitInvalidName(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("!!!")).
+		Return(internal.StorageDirective{}, corestorage.InvalidStorageName)
+
+	_, err := s.service.AddStorageForIAASUnit(c.Context(), "!!!", unitUUID, 1, application.AddUnitStorageOverride{})
+	c.Assert(err, tc.ErrorIs, corestorage.InvalidStorageName)
+}
+
+func (s *providerServiceSuite) TestAddStorageForIAASUnitValidates(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	poolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
+	charmStorageDef := internal.CharmStorageDefinitionForValidation{
+		Name:        "pgdata",
+		Type:        applicationcharm.StorageFilesystem,
+		MinimumSize: 10,
+		CountMin:    1,
+		CountMax:    666,
+	}
+	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
+		Return(internal.StorageDirective{
+			Name:             "pgdata",
+			CharmStorageType: applicationcharm.StorageFilesystem,
+			Count:            1,
+			MaxCount:         666,
+		}, nil)
+	s.state.EXPECT().GetStorageAddInfoByUnitUUID(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
+		Return(internal.StorageInfoForAdd{
+			CharmStorageDefinitionForValidation: charmStorageDef,
+			AlreadyAttachedCount:                66,
+		}, nil)
+	s.storageService.EXPECT().ValidateApplicationStorageDirectiveOverrides(
+		gomock.Any(),
+		map[string]internal.CharmStorageDefinitionForValidation{
+			"pgdata": {
+				Name:        "pgdata",
+				Type:        applicationcharm.StorageFilesystem,
+				CountMin:    1,
+				CountMax:    666,
+				MinimumSize: 10,
+			},
+		}, map[string]storageservice.StorageDirectiveOverride{
+			"pgdata": {
+				Count:    new(uint32(76)),
+				PoolUUID: new(poolUUID),
+				Size:     new(uint64(6)),
+			},
+		}).Return(applicationerrors.StorageCountLimitExceeded{})
+
+	_, err := s.service.AddStorageForIAASUnit(c.Context(), "pgdata", unitUUID, 10, application.AddUnitStorageOverride{
+		SizeMiB:         new(uint64(6)),
+		StoragePoolUUID: new(poolUUID),
+	})
+	c.Assert(err, tc.ErrorIs, applicationerrors.StorageCountLimitExceeded{})
+}
+
+func (s *providerServiceSuite) TestAddStorageForIAASUnit(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	poolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
+	charmStorageDef := internal.CharmStorageDefinitionForValidation{
+		Name:        "pgdata",
+		Type:        applicationcharm.StorageFilesystem,
+		MinimumSize: 10,
+		CountMin:    1,
+		CountMax:    666,
+	}
+
+	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
+		Return(internal.StorageDirective{
+			Name:             "pgdata",
+			CharmStorageType: applicationcharm.StorageFilesystem,
+			Count:            1,
+			MaxCount:         666,
+		}, nil)
+	s.state.EXPECT().GetStorageAddInfoByUnitUUID(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
+		Return(internal.StorageInfoForAdd{
+			CharmStorageDefinitionForValidation: charmStorageDef,
+			AlreadyAttachedCount:                66,
+		}, nil)
+	s.storageService.EXPECT().ValidateApplicationStorageDirectiveOverrides(gomock.Any(), map[string]internal.CharmStorageDefinitionForValidation{
+		"pgdata": charmStorageDef,
+	}, map[string]storageservice.StorageDirectiveOverride{
+		"pgdata": {
+			Count:    new(uint32(76)),
+			PoolUUID: new(poolUUID),
+			Size:     new(uint64(6)),
+		},
+	})
+	unitStorageArgs := domainstorage.UnitAddStorageArg{
+		StorageInstances: []domainstorage.CreateUnitStorageInstanceArg{{
+			Name: "pgdata",
+		}},
+		CountLessThanEqual: 656,
+	}
+	fsToOwn := []domainstorage.FilesystemUUID{tc.Must(c, domainstorage.NewFilesystemUUID)}
+	volToOwn := []domainstorage.VolumeUUID{tc.Must(c, domainstorage.NewVolumeUUID)}
+
+	s.storageService.EXPECT().MakeUnitAddStorageArgs(gomock.Any(), unitUUID, uint32(10), internal.StorageDirective{
+		Name:             "pgdata",
+		CharmStorageType: applicationcharm.StorageFilesystem,
+		Count:            1,
+		MaxCount:         666,
+		PoolUUID:         poolUUID,
+		Size:             uint64(6),
+	}).
+		Return(unitStorageArgs, nil)
+	s.storageService.EXPECT().MakeIAASUnitStorageArgs(gomock.Any(), unitStorageArgs.StorageInstances).
+		Return(domainstorage.CreateIAASUnitStorageArg{
+			FilesystemsToOwn: fsToOwn,
+			VolumesToOwn:     volToOwn,
+		}, nil)
+
+	s.state.EXPECT().AddStorageForIAASUnit(gomock.Any(), unitUUID, corestorage.Name("pgdata"), domainstorage.IAASUnitAddStorageArg{
+		UnitAddStorageArg: unitStorageArgs,
+		FilesystemsToOwn:  fsToOwn,
+		VolumesToOwn:      volToOwn,
+	})
+
+	_, err := s.service.AddStorageForIAASUnit(c.Context(), "pgdata", unitUUID, uint32(10), application.AddUnitStorageOverride{
+		SizeMiB:         new(uint64(6)),
+		StoragePoolUUID: new(poolUUID),
+	})
+	c.Assert(err, tc.ErrorIs, nil)
+}
+
+func (s *providerServiceSuite) TestAddStorageForCAASUnitNotFound(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+
+	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
+		Return(internal.StorageDirective{}, applicationerrors.UnitNotFound)
+
+	_, err := s.service.AddStorageForCAASUnit(c.Context(), "pgdata", unitUUID, 1, application.AddUnitStorageOverride{})
+	c.Assert(err, tc.ErrorIs, applicationerrors.UnitNotFound)
+}
+
+func (s *providerServiceSuite) TestAddStorageForCAASUnitInvalidUUID(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), coreunit.UUID("!!!"), corestorage.Name("pgdata")).
+		Return(internal.StorageDirective{}, coreerrors.NotValid)
+
+	_, err := s.service.AddStorageForCAASUnit(c.Context(), "pgdata", "!!!", 1, application.AddUnitStorageOverride{})
+	c.Assert(err, tc.ErrorIs, coreerrors.NotValid)
+}
+
+func (s *providerServiceSuite) TestAddStorageForCAASUnitInvalidName(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("!!!")).
+		Return(internal.StorageDirective{}, corestorage.InvalidStorageName)
+
+	_, err := s.service.AddStorageForCAASUnit(c.Context(), "!!!", unitUUID, 1, application.AddUnitStorageOverride{})
+	c.Assert(err, tc.ErrorIs, corestorage.InvalidStorageName)
+}
+
+func (s *providerServiceSuite) TestAddStorageForCAASUnitValidates(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	poolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
+	charmStorageDef := internal.CharmStorageDefinitionForValidation{
+		Name:        "pgdata",
+		Type:        applicationcharm.StorageFilesystem,
+		MinimumSize: 10,
+		CountMin:    1,
+		CountMax:    666,
+	}
+
+	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
+		Return(internal.StorageDirective{
+			Name:             "pgdata",
+			CharmStorageType: applicationcharm.StorageFilesystem,
+			Count:            1,
+			MaxCount:         666,
+		}, nil)
+	s.state.EXPECT().GetStorageAddInfoByUnitUUID(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
+		Return(internal.StorageInfoForAdd{
+			CharmStorageDefinitionForValidation: charmStorageDef,
+			AlreadyAttachedCount:                66,
+		}, nil)
+	s.storageService.EXPECT().ValidateApplicationStorageDirectiveOverrides(
+		gomock.Any(),
+		map[string]internal.CharmStorageDefinitionForValidation{
+			"pgdata": {
+				Name:        "pgdata",
+				Type:        applicationcharm.StorageFilesystem,
+				CountMin:    1,
+				CountMax:    666,
+				MinimumSize: 10,
+			},
+		}, map[string]storageservice.StorageDirectiveOverride{
+			"pgdata": {
+				Count:    new(uint32(76)),
+				PoolUUID: new(poolUUID),
+				Size:     new(uint64(6)),
+			},
+		}).Return(applicationerrors.StorageCountLimitExceeded{})
+
+	_, err := s.service.AddStorageForCAASUnit(c.Context(), "pgdata", unitUUID, 10, application.AddUnitStorageOverride{
+		SizeMiB:         new(uint64(6)),
+		StoragePoolUUID: new(poolUUID),
+	})
+	c.Assert(err, tc.ErrorIs, applicationerrors.StorageCountLimitExceeded{})
+}
+
+func (s *providerServiceSuite) TestAddStorageForCAASUnit(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	poolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
+	charmStorageDef := internal.CharmStorageDefinitionForValidation{
+		Name:        "pgdata",
+		Type:        applicationcharm.StorageFilesystem,
+		MinimumSize: 10,
+		CountMin:    1,
+		CountMax:    666,
+	}
+
+	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
+		Return(internal.StorageDirective{
+			Name:             "pgdata",
+			CharmStorageType: applicationcharm.StorageFilesystem,
+			Count:            1,
+			MaxCount:         666,
+		}, nil)
+	s.state.EXPECT().GetStorageAddInfoByUnitUUID(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
+		Return(internal.StorageInfoForAdd{
+			CharmStorageDefinitionForValidation: charmStorageDef,
+			AlreadyAttachedCount:                66,
+		}, nil)
+	s.storageService.EXPECT().ValidateApplicationStorageDirectiveOverrides(
+		gomock.Any(),
+		map[string]internal.CharmStorageDefinitionForValidation{
+			"pgdata": charmStorageDef,
+		},
+		map[string]storageservice.StorageDirectiveOverride{
+			"pgdata": {
+				Count:    new(uint32(76)),
+				PoolUUID: new(poolUUID),
+				Size:     new(uint64(6)),
+			},
+		})
+	unitStorageArgs := domainstorage.UnitAddStorageArg{
+		StorageInstances: []domainstorage.CreateUnitStorageInstanceArg{{
+			Name: "pgdata",
+		}},
+		CountLessThanEqual: 656,
+	}
+
+	s.storageService.EXPECT().MakeUnitAddStorageArgs(gomock.Any(), unitUUID, uint32(10), internal.StorageDirective{
+		Name:             "pgdata",
+		CharmStorageType: applicationcharm.StorageFilesystem,
+		Count:            1,
+		MaxCount:         666,
+		PoolUUID:         poolUUID,
+		Size:             uint64(6),
+	}).Return(unitStorageArgs, nil)
+
+	s.state.EXPECT().AddStorageForCAASUnit(gomock.Any(), unitUUID, corestorage.Name("pgdata"), unitStorageArgs)
+
+	_, err := s.service.AddStorageForCAASUnit(c.Context(), "pgdata", unitUUID, 10, application.AddUnitStorageOverride{
+		SizeMiB:         new(uint64(6)),
+		StoragePoolUUID: new(poolUUID),
+	})
+	c.Assert(err, tc.ErrorIs, nil)
+}
+func (s *providerServiceSuite) TestPrepareUnitAddStorage(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	poolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
+	directive := internal.StorageDirective{
+		Name:             "pgdata",
+		CharmStorageType: applicationcharm.StorageFilesystem,
+		Count:            1,
+		MaxCount:         10,
+		PoolUUID:         poolUUID,
+		Size:             1024,
+	}
+	charmStorageDef := internal.CharmStorageDefinitionForValidation{
+		Name:        "pgdata",
+		Type:        applicationcharm.StorageFilesystem,
+		MinimumSize: 512,
+		CountMin:    1,
+		CountMax:    10,
+	}
+
+	s.state.EXPECT().GetModelType(gomock.Any()).Return(model.IAAS, nil)
+	s.storageService.EXPECT().GetUnitStorageDirectiveByName(
+		gomock.Any(), unitUUID, corestorage.Name("pgdata"),
+	).Return(directive, nil)
+	s.state.EXPECT().GetStorageAddInfoByUnitUUID(
+		gomock.Any(), unitUUID, corestorage.Name("pgdata"),
+	).Return(internal.StorageInfoForAdd{
+		CharmStorageDefinitionForValidation: charmStorageDef,
+		AlreadyAttachedCount:                2,
+	}, nil)
+	s.storageService.EXPECT().ValidateApplicationStorageDirectiveOverrides(
+		gomock.Any(),
+		map[string]internal.CharmStorageDefinitionForValidation{
+			"pgdata": charmStorageDef,
+		},
+		map[string]storageservice.StorageDirectiveOverride{
+			"pgdata": {
+				Count:    new(uint32(5)),
+				PoolUUID: new(poolUUID),
+				Size:     new(uint64(1024)),
+			},
+		},
+	).Return(nil)
+
+	unitStorageArgs := domainstorage.UnitAddStorageArg{
+		StorageInstances: []domainstorage.CreateUnitStorageInstanceArg{{
+			Name: "pgdata",
+		}},
+		// CountLessThanEqual is set to CountMax-addCount.
+		CountLessThanEqual: 7,
+	}
+	fsToOwn := []domainstorage.FilesystemUUID{tc.Must(c, domainstorage.NewFilesystemUUID)}
+	volToOwn := []domainstorage.VolumeUUID{tc.Must(c, domainstorage.NewVolumeUUID)}
+
+	s.storageService.EXPECT().MakeUnitAddStorageArgs(
+		gomock.Any(), unitUUID, uint32(3), directive,
+	).Return(unitStorageArgs, nil)
+	s.storageService.EXPECT().MakeIAASUnitStorageArgs(
+		gomock.Any(), unitStorageArgs.StorageInstances,
+	).Return(domainstorage.CreateIAASUnitStorageArg{
+		FilesystemsToOwn: fsToOwn,
+		VolumesToOwn:     volToOwn,
+	}, nil)
+
+	got, err := s.service.PrepareUnitAddStorage(
+		c.Context(), "pgdata", unitUUID, 3,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(got, tc.DeepEquals, domainstorage.IAASUnitAddStorageArg{
+		UnitAddStorageArg: unitStorageArgs,
+		FilesystemsToOwn:  fsToOwn,
+		VolumesToOwn:      volToOwn,
+	})
+}
+
+func (s *providerServiceSuite) TestPrepareUnitAddStorageCAASNotSupported(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+
+	s.state.EXPECT().GetModelType(gomock.Any()).Return(model.CAAS, nil)
+
+	_, err := s.service.PrepareUnitAddStorage(
+		c.Context(), "pgdata", unitUUID, 3,
+	)
+	c.Assert(err, tc.ErrorIs, coreerrors.NotSupported)
 }

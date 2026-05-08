@@ -32,7 +32,7 @@ func firewallSpec(name, target string, sourceCIDRs []string, ports protocolPorts
 	}
 	firewall := computepb.Firewall{
 		Name:        &name,
-		Description: ptr(fmt.Sprintf("created by Juju with target %s", target)),
+		Description: new(fmt.Sprintf("created by Juju with target %s", target)),
 		// SourceTags is not set.
 		TargetTags:   []string{target},
 		SourceRanges: sourceCIDRs,
@@ -74,7 +74,7 @@ var randomSuffixNamer = func(sourceCIDRs []string, prefix string, existingNames 
 		return prefix, nil
 	}
 	data := make([]byte, 4)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		_, err := rand.Read(data)
 		if err != nil {
 			return "", errors.Trace(err)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/crossmodel"
+	"github.com/juju/juju/core/database"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/machine"
@@ -16,9 +17,8 @@ import (
 	"github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/application/charm"
 	"github.com/juju/juju/domain/deployment"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/domain/storage"
-	"github.com/juju/juju/domain/storageprovisioning"
-	internalcharm "github.com/juju/juju/internal/charm"
 )
 
 // Application represents the status of an application.
@@ -65,6 +65,7 @@ type Machine struct {
 	DNSName                 string
 	IPAddresses             []string
 	InstanceID              instance.Id
+	IsController            bool
 	Life                    life.Value
 	MachineStatus           status.StatusInfo
 	InstanceStatus          status.StatusInfo
@@ -72,6 +73,14 @@ type Machine struct {
 	Constraints             constraints.Value
 	HardwareCharacteristics instance.HardwareCharacteristics
 	LXDProfiles             []string
+	ClusterInfo             *MachineClusterInfo
+}
+
+// MachineClusterInfo represents the cluster information of a controller
+// machine.
+type MachineClusterInfo struct {
+	Present bool
+	Role    database.NodeRole
 }
 
 // StatusHistoryFilter holds the parameters to filter a status history query.
@@ -90,26 +99,33 @@ type StatusHistoryRequest struct {
 
 // StorageInstance represents the status of a storage instance.
 type StorageInstance struct {
+	UUID        storage.StorageInstanceUUID
 	ID          string
 	Owner       *unit.Name
 	Kind        storage.StorageKind
 	Life        life.Value
+	Status      status.StatusInfo
 	Attachments map[unit.Name]StorageAttachment
+	Name        string
 }
 
 // StorageAttachment represents the status of a storage attachment.
 type StorageAttachment struct {
-	Life    life.Value
-	Unit    unit.Name
-	Machine *machine.Name
+	Life     life.Value
+	Unit     unit.Name
+	Machine  *machine.Name
+	Location string
 }
 
 // Filesystem represents the status of a filesystem.
 type Filesystem struct {
+	UUID               storage.FilesystemUUID
+	StorageUUID        *storage.StorageInstanceUUID
 	ID                 string
 	Life               life.Value
 	Status             status.StatusInfo
 	StorageID          string
+	PoolName           string
 	VolumeID           *string
 	ProviderID         string
 	SizeMiB            uint64
@@ -119,10 +135,13 @@ type Filesystem struct {
 
 // Volume represents the status of a volume.
 type Volume struct {
+	UUID               storage.VolumeUUID
+	StorageUUID        *storage.StorageInstanceUUID
 	ID                 string
 	Life               life.Value
 	Status             status.StatusInfo
 	StorageID          string
+	PoolName           string
 	ProviderID         string
 	HardwareID         string
 	WWN                string
@@ -151,7 +170,7 @@ type VolumeAttachment struct {
 
 // VolumeAttachmentPlan represents the status of a volume attachment plan.
 type VolumeAttachmentPlan struct {
-	DeviceType       storageprovisioning.PlanDeviceType
+	DeviceType       storage.VolumeDeviceType
 	DeviceAttributes map[string]string
 }
 

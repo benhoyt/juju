@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Containeragent reference: binary implementing Juju agent functionality for units in Kubernetes cloud deployments."
+---
+
 (containeragent)=
 # `containeragent`
 

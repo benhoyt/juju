@@ -13,10 +13,11 @@ import (
 
 	"github.com/juju/tc"
 
-	modeltesting "github.com/juju/juju/core/model/testing"
+	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/core/semversion"
 	domainagentbinary "github.com/juju/juju/domain/agentbinary"
+	"github.com/juju/juju/domain/controllerupgrader/internal"
 	schematesting "github.com/juju/juju/domain/schema/testing"
 	"github.com/juju/juju/internal/uuid"
 )
@@ -35,9 +36,7 @@ func TestControllerStateSuite(t *testing.T) {
 // addControllerNodeAgentVersion adds a controller node to the cluster and sets
 // its current reported agent version to the given value. The new controller
 // node id is returned.
-func (s *controllerStateSuite) addControllerNodeAgentVersion(
-	c *tc.C, version string,
-) string {
+func (s *controllerStateSuite) addControllerNodeAgentVersion(c *tc.C, version string, architecture domainagentbinary.Architecture) string {
 	id, err := uuid.NewUUID()
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -50,7 +49,7 @@ func (s *controllerStateSuite) addControllerNodeAgentVersion(
 INSERT INTO controller_node_agent_version (controller_id, version, architecture_id)
 VALUES (?, ?, ?)
 `,
-		id.String(), version, 0,
+		id.String(), version, architecture,
 	)
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -64,7 +63,7 @@ func (s *controllerStateSuite) setInitialControllerTargetVersion(
 ) {
 	controllerUUID, err := uuid.NewUUID()
 	c.Assert(err, tc.ErrorIsNil)
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 
 	_, err = s.DB().Exec("INSERT INTO controller (uuid, model_uuid, target_version) VALUES (?, ?, ?)", controllerUUID.String(), modelUUID.String(), version)
 	c.Assert(err, tc.ErrorIsNil)
@@ -100,33 +99,33 @@ INSERT INTO agent_binary_store(version, architecture_id, object_store_uuid) VALU
 	c.Assert(err, tc.ErrorIsNil)
 }
 
-// TestGetControllerNodeVersionsEmpty tests that when no controller node
-// versions have been reported an empty value is returned with no error.
-func (s *controllerStateSuite) TestGetControllerNodeVersionsEmpty(c *tc.C) {
+// TestGetControllerNodesEmpty tests that when no controller node
+// have been reported an empty value is returned with no error.
+func (s *controllerStateSuite) TestGetControllerNodesEmpty(c *tc.C) {
 	st := NewControllerState(s.TxnRunnerFactory())
-	versions, err := st.GetControllerNodeVersions(c.Context())
-	c.Check(err, tc.ErrorIsNil)
+	versions, err := st.GetControllerNodes(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
 	c.Check(versions, tc.HasLen, 0)
 }
 
-// TestGetControllerNodeVersions verifies that the controller node versions are
+// TestGetControllerNodes verifies that the controller node versions are
 // reported correctly when two nodes have their version recorded.
-func (s *controllerStateSuite) TestGetControllerNodeVersions(c *tc.C) {
+func (s *controllerStateSuite) TestGetControllerNodes(c *tc.C) {
 	st := NewControllerState(s.TxnRunnerFactory())
 
 	c1Version, err := semversion.Parse("4.0.0")
 	c.Assert(err, tc.ErrorIsNil)
-	id1 := s.addControllerNodeAgentVersion(c, c1Version.String())
+	id1 := s.addControllerNodeAgentVersion(c, c1Version.String(), domainagentbinary.AMD64)
 	c2Version, err := semversion.Parse("4.0.4")
 	c.Assert(err, tc.ErrorIsNil)
-	id2 := s.addControllerNodeAgentVersion(c, c2Version.String())
+	id2 := s.addControllerNodeAgentVersion(c, c2Version.String(), domainagentbinary.PPC64EL)
 
 	// Get the versions.
-	versions, err := st.GetControllerNodeVersions(c.Context())
-	c.Check(err, tc.ErrorIsNil)
-	c.Check(versions, tc.DeepEquals, map[string]semversion.Number{
-		id1: c1Version,
-		id2: c2Version,
+	versions, err := st.GetControllerNodes(c.Context())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(versions, tc.SameContents, []internal.ControllerNode{
+		{ID: id1, Version: c1Version, Architecture: domainagentbinary.AMD64},
+		{ID: id2, Version: c2Version, Architecture: domainagentbinary.PPC64EL},
 	})
 }
 
@@ -146,16 +145,16 @@ func (s *controllerStateSuite) TestSetAndGetControllerVersion(c *tc.C) {
 
 	// Check initial version is reported correctly.
 	ver, err := st.GetControllerTargetVersion(c.Context())
-	c.Check(err, tc.ErrorIsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Check(ver, tc.Equals, initialVersion)
 
 	// Upgrade version.
 	err = st.SetControllerTargetVersion(c.Context(), upgradeVersion)
-	c.Check(err, tc.ErrorIsNil)
+	c.Assert(err, tc.ErrorIsNil)
 
 	// Check upgraded version is reported correctly.
 	ver, err = st.GetControllerTargetVersion(c.Context())
-	c.Check(err, tc.ErrorIsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Check(ver, tc.Equals, upgradeVersion)
 }
 
@@ -176,59 +175,64 @@ func (s *controllerStateSuite) TestSetControllerVersionMultipleSetSafe(c *tc.C) 
 
 	// Upgrade version #1.
 	err = st.SetControllerTargetVersion(c.Context(), upgradeVersion)
-	c.Check(err, tc.ErrorIsNil)
+	c.Assert(err, tc.ErrorIsNil)
 
 	// Upgrade version #2.
 	err = st.SetControllerTargetVersion(c.Context(), upgradeVersion)
-	c.Check(err, tc.ErrorIsNil)
+	c.Assert(err, tc.ErrorIsNil)
 
 	// Upgrade version #3.
 	err = st.SetControllerTargetVersion(c.Context(), upgradeVersion)
-	c.Check(err, tc.ErrorIsNil)
+	c.Assert(err, tc.ErrorIsNil)
 
 	// Check upgraded version is reported correctly.
 	ver, err := st.GetControllerTargetVersion(c.Context())
-	c.Check(err, tc.ErrorIsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Check(ver, tc.Equals, upgradeVersion)
 }
 
-// TestHasAgentBinaryForVersionArchitecturesAndStream tests determining whether an agent for
-// a given version and architectures work without errors.
-func (s *controllerStateSuite) TestHasAgentBinaryForVersionArchitecturesAndStream(c *tc.C) {
-	version, err := semversion.Parse("4.0.0")
-	c.Assert(err, tc.ErrorIsNil)
-	storeUUID := s.addObjectStore(c)
-	s.addAgentBinaryStore(c, version, domainagentbinary.AMD64, storeUUID)
-	s.addAgentBinaryStore(c, version, domainagentbinary.ARM64, storeUUID)
-
+// TestGetAllAgentStoreBinariesForStreamEmpty tests that when no agent binaries
+// exist for a given stream an empty slice is returned with no error.
+func (s *controllerStateSuite) TestGetAllAgentStoreBinariesForStreamEmpty(c *tc.C) {
 	st := NewControllerState(s.TxnRunnerFactory())
-
-	agents, err := st.HasAgentBinariesForVersionArchitecturesAndStream(c.Context(), version, []domainagentbinary.Architecture{domainagentbinary.AMD64, domainagentbinary.ARM64}, domainagentbinary.AgentStreamReleased)
-
+	vals, err := st.GetAllAgentStoreBinariesForStream(
+		c.Context(), domainagentbinary.AgentStreamReleased,
+	)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(agents, tc.DeepEquals, map[domainagentbinary.Architecture]bool{
-		domainagentbinary.AMD64: true,
-		domainagentbinary.ARM64: true,
-	})
+	c.Check(vals, tc.HasLen, 0)
 }
 
-// TestHasAgentBinaryForVersionArchitecturesAndStream tests determining whether an agent for
-// a given version and architectures work with some architectures not existing.
-func (s *controllerStateSuite) TestHasAgentBinaryForVersionArchitecturesAndStreamNotSupported(c *tc.C) {
-	version, err := semversion.Parse("4.0.0")
+// TestGetAllAgentStoreBinariesForStream tests that when the controller storage
+// has agent binaries they are returned to the caller.
+//
+// NOTE (tlm): We currently don't have the agent stream against binaries in the
+// controller store. This needs to be done in a future patch. For the moment we
+// just return all binaries regardless of stream.
+func (s *controllerStateSuite) TestGetAllAgentStoreBinariesForStream(c *tc.C) {
+	version1, err := semversion.Parse("4.0.0")
 	c.Assert(err, tc.ErrorIsNil)
-	storeUUID := s.addObjectStore(c)
-	s.addAgentBinaryStore(c, version, domainagentbinary.AMD64, storeUUID)
-	s.addAgentBinaryStore(c, version, domainagentbinary.ARM64, storeUUID)
+	version2, err := semversion.Parse("4.1.0")
+	c.Assert(err, tc.ErrorIsNil)
+	storeUUID1 := s.addObjectStore(c)
+	s.addAgentBinaryStore(c, version1, domainagentbinary.AMD64, storeUUID1)
+	storeUUID2 := s.addObjectStore(c)
+	s.addAgentBinaryStore(c, version2, domainagentbinary.ARM64, storeUUID2)
 
 	st := NewControllerState(s.TxnRunnerFactory())
-
-	agents, err := st.HasAgentBinariesForVersionArchitecturesAndStream(c.Context(), version, []domainagentbinary.Architecture{domainagentbinary.AMD64, domainagentbinary.PPC64EL, domainagentbinary.RISCV64}, domainagentbinary.AgentStreamReleased)
-
+	agentBinaries, err := st.GetAllAgentStoreBinariesForStream(
+		c.Context(), domainagentbinary.AgentStreamReleased,
+	)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(agents, tc.DeepEquals, map[domainagentbinary.Architecture]bool{
-		domainagentbinary.AMD64:   true,
-		domainagentbinary.PPC64EL: false,
-		domainagentbinary.RISCV64: false,
+	c.Check(agentBinaries, tc.SameContents, []domainagentbinary.AgentBinary{
+		{
+			Architecture: domainagentbinary.ARM64,
+			Stream:       domainagentbinary.AgentStreamReleased,
+			Version:      version2,
+		},
+		{
+			Architecture: domainagentbinary.AMD64,
+			Stream:       domainagentbinary.AgentStreamReleased,
+			Version:      version1,
+		},
 	})
 }

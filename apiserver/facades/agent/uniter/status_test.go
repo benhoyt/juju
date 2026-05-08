@@ -42,7 +42,7 @@ func (s *statusBaseSuite) setupMocks(c *tc.C) *gomock.Controller {
 	auth := func(ctx context.Context) (common.AuthFunc, error) {
 		return s.authFunc, nil
 	}
-	s.api = NewStatusAPI(s.statusService, auth, nil, clock)
+	s.api = NewStatusAPI(s.statusService, auth, clock)
 
 	return ctrl
 }
@@ -91,7 +91,7 @@ func (s *ApplicationStatusAPISuite) TestSetApplicationStatusNotFound(c *tc.C) {
 		Message: "it's active",
 		Data:    map[string]any{"foo": "bar"},
 		Since:   &s.now,
-	}).Return(statuserrors.UnitNotFound)
+	}).Return(applicationerrors.UnitNotFound)
 
 	result, err := s.api.SetApplicationStatus(c.Context(), params.SetStatus{
 		Entities: []params.EntityStatusArgs{{
@@ -365,7 +365,9 @@ func (s *UnitStatusAPISuite) TestSetUnitStatusUnitNotFound(c *tc.C) {
 
 	tag := names.NewUnitTag("ubuntu/42")
 
-	s.statusService.EXPECT().SetUnitWorkloadStatus(gomock.Any(), coreunit.Name("ubuntu/42"), gomock.Any()).Return(statuserrors.UnitNotFound)
+	s.statusService.EXPECT().
+		SetUnitWorkloadStatus(gomock.Any(), coreunit.Name("ubuntu/42"), gomock.Any()).
+		Return(applicationerrors.UnitNotFound)
 
 	result, err := s.api.SetUnitStatus(c.Context(), params.SetStatus{Entities: []params.EntityStatusArgs{{
 		Tag:    tag.String(),
@@ -447,7 +449,9 @@ func (s *UnitStatusAPISuite) TestUnitStatusUnitNotFound(c *tc.C) {
 
 	tag := names.NewUnitTag("ubuntu/42")
 
-	s.statusService.EXPECT().GetUnitWorkloadStatus(gomock.Any(), coreunit.Name("ubuntu/42")).Return(status.StatusInfo{}, statuserrors.UnitNotFound)
+	s.statusService.EXPECT().
+		GetUnitWorkloadStatus(gomock.Any(), coreunit.Name("ubuntu/42")).
+		Return(status.StatusInfo{}, applicationerrors.UnitNotFound)
 
 	result, err := s.api.UnitStatus(c.Context(), params.Entities{Entities: []params.Entity{{
 		Tag: tag.String(),

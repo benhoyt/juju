@@ -16,6 +16,9 @@ run_secrets() {
 	short_uri2=${full_uri2##*/}
 	check_contains "$(microk8s kubectl -n "$model_name" get secrets -o json | jq -r '.items[].metadata.name | select(. == "'"${short_uri1}"'-1")')" "${short_uri1}-1"
 	check_contains "$(microk8s kubectl -n "$model_name" get secrets -o json | jq -r '.items[].metadata.name | select(. == "'"${short_uri2}"'-1")')" "${short_uri2}-1"
+	echo "checking charm secrets' backend name"
+	check_contains "$(juju secrets --owner application-alertmanager-k8s --revisions --format yaml | yq -r ".${short_uri1}.revisions[0].backend")" "${model_name}-local"
+	check_contains "$(juju secrets --owner unit-alertmanager-k8s-0 --revisions --format yaml | yq -r ".${short_uri2}.revisions[0].backend")" "${model_name}-local"
 
 	echo "add another unit and create a unit owned secret"
 	juju --show-log scale-application alertmanager-k8s 2
@@ -166,12 +169,14 @@ run_user_secrets() {
 
 	juju --show-log deploy snappass-test
 
-	wait_for "active" '.applications["hello-kubecon"] | ."application-status".current'
-
 	# create user secrets.
 	secret_uri=$(juju --show-log add-secret mysecret owned-by="$model_name-1" --info "this is a user secret")
 	secret_short_uri=${secret_uri##*:}
 
+	# check secret backend with show-secret using secret name.
+	check_contains "$(juju --show-log show-secret mysecret --revisions --format yaml | yq -r ".${secret_short_uri}.revisions[0].backend")" "${model_name}-local"
+
+	# check secret description.
 	check_contains "$(juju --show-log show-secret "$secret_uri" --revisions | yq ".${secret_short_uri}.description")" 'this is a user secret'
 
 	# create a new revision 2.
@@ -218,8 +223,16 @@ run_user_secrets() {
 	check_contains "$(juju exec --unit snappass-test/0 -- secret-get "$secret_uri" 2>&1)" 'is not allowed to read this secret'
 
 	juju --show-log remove-secret $secret_uri
-	check_contains "$(juju --show-log secrets --format yaml | yq length)" '0'
-	until [[ -z $(microk8s kubectl -n "$model_name" get secrets -o json | jq -r '.items[].metadata.name | select(. == "'"${secret_short_uri}"'-1")') ]]; do
+
+	# Both checks are async after remove-secret because remove job runs async, so
+  # poll until both pass.
+	check_secret_deleted() {
+		[[ $(juju --show-log secrets --format yaml | yq length) == '0' ]] &&
+			[[ -z $(microk8s kubectl -n "$model_name" get secrets -o json | jq -r '.items[].metadata.name | select(. == "'"${secret_short_uri}"'-1")') ]]
+	}
+
+	local attempt=0
+	until check_secret_deleted; do
 		if [[ ${attempt} -ge 30 ]]; then
 			echo "Failed: user secret was not deleted."
 			exit 1
@@ -227,6 +240,8 @@ run_user_secrets() {
 		sleep 2
 		attempt=$((attempt + 1))
 	done
+
+	destroy_model "$model_name"
 }
 
 run_secret_drain() {
@@ -393,6 +408,7 @@ run_test_add_multiple_secrets_parallel() {
 	# Check logs during juju add-secret in controller model for any errors.
 	if ! seq 1 100 | xargs -P5 -I{} juju add-secret "test{}" "foo=bar{}" >"$ctrl_log_file" 2>&1 || grep -iq 'error' "$ctrl_log_file"; then
 		echo "Failed: could not add multiple secrets in parallel for controller model."
+		cat "$ctrl_log_file"
 		exit 1
 	fi
 	verify_secrets_exist "$ctrl_log_file"

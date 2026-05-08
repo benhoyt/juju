@@ -85,12 +85,12 @@ type MachineService interface {
 	GetMachineLife(ctx context.Context, name machine.Name) (life.Value, error)
 	// SetMachineHostname sets the hostname for the given machine.
 	SetMachineHostname(ctx context.Context, mUUID machine.UUID, hostname string) error
-	// WatchMachineAndMachineUnitLife returns a NotifyWatcher that is subscribed to
+	// WatchMachineLifeAndDependants returns a NotifyWatcher that is subscribed to
 	// the changes in the machine and machine unit lifecycle tables in the model,
-	// for the given machine name. It emits changes for both machine and the
-	// machine unit lifecycle events, so it can be used to track the lifecycle of
-	// a machine and its units together.
-	WatchMachineAndMachineUnitLife(ctx context.Context, machineName machine.Name) (watcher.NotifyWatcher, error)
+	// for the given machine name. It emits changes for the machine, the
+	// machine unit lifecycle events and storage entities it is responsible for, so
+	// it can be used to track the lifecycle of a machine and its dependants.
+	WatchMachineLifeAndDependants(ctx context.Context, machineName machine.Name) (watcher.NotifyWatcher, error)
 }
 
 // ApplicationService defines the methods that the facade assumes from the
@@ -120,13 +120,6 @@ type RemovalService interface {
 	// and will not allow it to be transitioned back to alive.
 	// Returns an error if the machine does not exist.
 	MarkMachineAsDead(context.Context, machine.UUID) error
-}
-
-// ModelInfoService is the interface that is used to ask questions about the
-// current model.
-type ModelInfoService interface {
-	// GetModelCloudType returns the type of the cloud that is in use by this model.
-	GetModelCloudType(context.Context) (string, error)
 }
 
 // MachinerAPI implements the API used by the machiner worker.
@@ -223,14 +216,28 @@ func (api *MachinerAPI) EnsureDead(ctx context.Context, args params.Entities) (p
 
 		err = api.removalService.MarkMachineAsDead(ctx, machineUUID)
 		if errors.Is(err, machineerrors.MachineNotFound) {
-			results.Results[i].Error = apiservererrors.ParamsErrorf(params.CodeNotFound, "machine %q not found", tag.Id())
+			results.Results[i].Error = apiservererrors.ParamsErrorf(
+				params.CodeNotFound,
+				"machine %q not found", tag.Id(),
+			)
 			continue
 		} else if errors.Is(err, removalerrors.MachineHasContainers) {
-			results.Results[i].Error = apiservererrors.ParamsErrorf(params.CodeMachineHasContainers, "machine %q hosts containers", tag.Id())
+			results.Results[i].Error = apiservererrors.ParamsErrorf(
+				params.CodeMachineHasContainers,
+				"machine %q hosts containers", tag.Id(),
+			)
 			continue
 		} else if errors.Is(err, removalerrors.MachineHasUnits) {
-			results.Results[i].Error = apiservererrors.ParamsErrorf(params.CodeHasAssignedUnits, "machine %q hosts units", tag.Id())
+			results.Results[i].Error = apiservererrors.ParamsErrorf(
+				params.CodeHasAssignedUnits,
+				"machine %q hosts units", tag.Id(),
+			)
 			continue
+		} else if errors.Is(err, removalerrors.MachineHasStorage) {
+			results.Results[i].Error = apiservererrors.ParamsErrorf(
+				params.CodeMachineHasAttachedStorage,
+				"machine %q has attached storage", tag.Id(),
+			)
 		} else if err != nil {
 			results.Results[i].Error = apiservererrors.ServerError(err)
 			continue
@@ -317,6 +324,7 @@ func (api *MachinerAPI) SetStatus(ctx context.Context, args params.SetStatus) (p
 }
 
 // SetMachineAddresses is not supported in MachinerAPI at version 5.
+//
 // Deprecated: SetMachineAddresses is being deprecated.
 func (api *MachinerAPI) SetMachineAddresses(ctx context.Context, args params.SetMachinesAddresses) (params.ErrorResults, error) {
 	return params.ErrorResults{
@@ -325,6 +333,7 @@ func (api *MachinerAPI) SetMachineAddresses(ctx context.Context, args params.Set
 }
 
 // Jobs is not supported in MachinerAPI at version 5.
+//
 // Deprecated: Jobs is being deprecated. Use IsController instead.
 func (api *MachinerAPIv5) Jobs(ctx context.Context, args params.Entities) (params.JobsResults, error) {
 	results := params.JobsResults{
@@ -451,9 +460,12 @@ func (api *MachinerAPI) Watch(ctx context.Context, args params.Entities) (params
 }
 
 func (api *MachinerAPI) watchMachine(ctx context.Context, machineName machine.Name) (string, error) {
-	// Yes this is correct. Turns out the machiner worker needs to also watch
-	// the machine unit lifecycle events that live in the machine as well.
-	watch, err := api.machineService.WatchMachineAndMachineUnitLife(ctx, machineName)
+	// This is very important that this watcher sees the lifecycle changes of
+	// the machine, the units on the machine and the removal of any filesystem,
+	// volume, filesystem attachment, volume attachment and volume attachment
+	// plan that is provisoned by this machine. Without it, the machine agent
+	// will never correctly shutdown.
+	watch, err := api.machineService.WatchMachineLifeAndDependants(ctx, machineName)
 	if err != nil {
 		return "", err
 	}

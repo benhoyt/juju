@@ -10,7 +10,7 @@ import (
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -28,22 +28,21 @@ func NewUnitGetCommand(ctx Context) (cmd.Command, error) {
 
 func (c *UnitGetCommand) Info() *cmd.Info {
 	doc := `
-Further details:
-unit-get returns the IP address of the unit.
+` + "`unit-get`" + ` returns the IP address of the unit.
 
 It accepts a single argument, which must be
-private-address or public-address. It is not
+` + "`private-address`" + ` or ` + "`public-address`" + `. It is not
 affected by context.
 
 Note that if a unit has been deployed with
---bind space then the address returned from
-unit-get private-address will get the address
-from this space, not the ‘default’ space.
+` + "`--bind space`" + ` then the address returned from
+` + "`unit-get private-address`" + ` will get the address
+from this space, not the ` + "`default`" + ` space.
 `
 	return jujucmd.Info(&cmd.Info{
 		Name:    "unit-get",
 		Args:    "<setting>",
-		Purpose: "Print public-address or private-address.",
+		Purpose: "Prints public-address or private-address.",
 		Doc:     doc,
 	})
 }

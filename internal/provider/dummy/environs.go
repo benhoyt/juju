@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -24,7 +25,6 @@ import (
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/container"
 	"github.com/juju/juju/core/instance"
-	"github.com/juju/juju/core/lxdprofile"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/core/status"
@@ -49,7 +49,7 @@ const BootstrapInstanceId = "localhost"
 var errNotPrepared = errors.New("model is not prepared")
 
 // Operation represents an action on the dummy provider.
-type Operation interface{}
+type Operation any
 
 type OpBootstrap struct {
 	Context environs.BootstrapContext
@@ -198,7 +198,7 @@ var configDefaults = schema.Defaults{
 
 type environConfig struct {
 	*config.Config
-	attrs map[string]interface{}
+	attrs map[string]any
 }
 
 func (c *environConfig) broken() string {
@@ -341,10 +341,8 @@ func (e *environ) ecfg() *environConfig {
 }
 
 func (e *environ) checkBroken(method string) error {
-	for _, m := range strings.Fields(e.ecfg().broken()) {
-		if m == method {
-			return fmt.Errorf("dummy.%s is broken", method)
-		}
+	if slices.Contains(strings.Fields(e.ecfg().broken()), method) {
+		return fmt.Errorf("dummy.%s is broken", method)
 	}
 	return nil
 }
@@ -668,7 +666,7 @@ func (e *environ) StartInstance(ctx context.Context, args environs.StartInstance
 		if subnetsToZones == nil {
 			subnetsToZones = make(map[network.Id][]string)
 		}
-		for isn := 0; isn < 2; isn++ {
+		for isn := range 2 {
 			providerId := fmt.Sprintf("subnet-%d", isp+isn)
 			zone := fmt.Sprintf("zone%d", isp+isn)
 			subnetsToZones[network.Id(providerId)] = []string{zone}
@@ -1073,10 +1071,8 @@ func SetInstanceStatus(inst instances.Instance, status string) {
 }
 
 func (inst *dummyInstance) checkBroken(method string) error {
-	for _, m := range inst.broken {
-		if m == method {
-			return fmt.Errorf("dummyInstance.%s is broken", method)
-		}
+	if slices.Contains(inst.broken, method) {
+		return fmt.Errorf("dummyInstance.%s is broken", method)
 	}
 	return nil
 }
@@ -1106,19 +1102,4 @@ func delay() {
 // ProviderSpaceInfo implements NetworkingEnviron.
 func (*environ) ProviderSpaceInfo(context.Context, *network.SpaceInfo) (*environs.ProviderSpaceInfo, error) {
 	return nil, errors.NotSupportedf("provider space info")
-}
-
-// MaybeWriteLXDProfile implements environs.LXDProfiler.
-func (*environ) MaybeWriteLXDProfile(string, lxdprofile.Profile) error {
-	return nil
-}
-
-// LXDProfileNames implements environs.LXDProfiler.
-func (*environ) LXDProfileNames(string) ([]string, error) {
-	return nil, nil
-}
-
-// AssignLXDProfiles implements environs.LXDProfiler.
-func (*environ) AssignLXDProfiles(_ string, profilesNames []string, _ []lxdprofile.ProfilePost) (current []string, err error) {
-	return profilesNames, nil
 }

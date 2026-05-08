@@ -9,9 +9,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"sync"
+	"time"
 
-	"github.com/canonical/go-dqlite/v2/app"
-	"github.com/canonical/go-dqlite/v2/client"
+	"github.com/canonical/go-dqlite/v3/app"
+	"github.com/canonical/go-dqlite/v3/client"
 	"github.com/juju/errors"
 )
 
@@ -64,6 +65,17 @@ func WithLogFunc(log client.LogFunc) Option {
 // statement gets executed.
 func WithTracing(level client.LogLevel) Option {
 	return app.WithTracing(level)
+}
+
+// WithBusyTimeout sets the timeout for how long a database operation will wait
+// for a lock to be released before returning an error, tailoring the amount
+// of time a writer will wait for others to finish writing on the same
+// database.
+func WithBusyTimeout(timeout time.Duration) Option {
+	if timeout < 0 {
+		timeout = 0
+	}
+	return app.WithBusyTimeout(timeout)
 }
 
 // App is a high-level helper for initializing a typical dqlite-based Go

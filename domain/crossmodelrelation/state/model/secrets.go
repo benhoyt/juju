@@ -11,6 +11,8 @@ import (
 	coredatabase "github.com/juju/juju/core/database"
 	coresecrets "github.com/juju/juju/core/secrets"
 	"github.com/juju/juju/core/watcher/eventsource"
+	applicationerrors "github.com/juju/juju/domain/application/errors"
+	crossmodelrelationerrors "github.com/juju/juju/domain/crossmodelrelation/errors"
 	domainsecret "github.com/juju/juju/domain/secret"
 	secreterrors "github.com/juju/juju/domain/secret/errors"
 	"github.com/juju/juju/internal/errors"
@@ -33,7 +35,8 @@ SELECT DISTINCT sr.uuid AS &revisionUUID.uuid
 FROM      secret_remote_unit_consumer sruc
 LEFT JOIN secret_revision sr ON sr.secret_id = sruc.secret_id
 JOIN      application app ON app.name = substr(sruc.unit_name, 1, instr(sruc.unit_name, '/')-1)
-WHERE     app.uuid = $applicationUUID.uuid
+JOIN      application_remote_consumer arc ON arc.offer_connection_uuid = app.uuid
+WHERE     arc.offerer_application_uuid = $applicationUUID.uuid
 GROUP BY  sruc.secret_id
 HAVING    sruc.current_revision < MAX(sr.revision)`
 		app := applicationUUID{UUID: appUUID}
@@ -77,7 +80,8 @@ SELECT DISTINCT sruc.secret_id AS &secretRemoteUnitConsumer.secret_id
 FROM      secret_remote_unit_consumer sruc
 LEFT JOIN secret_revision sr ON sr.secret_id = sruc.secret_id
 JOIN      application app ON app.name = substr(sruc.unit_name, 1, instr(sruc.unit_name, '/')-1)
-WHERE     app.uuid = $applicationUUID.uuid`
+JOIN      application_remote_consumer arc ON arc.offer_connection_uuid = app.uuid
+WHERE     arc.offerer_application_uuid = $applicationUUID.uuid`
 	queryParams := []any{
 		applicationUUID{UUID: appUUID},
 	}
@@ -322,7 +326,9 @@ ON CONFLICT(revision_uuid) DO UPDATE SET
 
 // UpdateRemoteSecretRevision records the latest revision
 // of the specified cross model secret.
-func (st *State) UpdateRemoteSecretRevision(ctx context.Context, uri *coresecrets.URI, latestRevision int) error {
+func (st *State) UpdateRemoteSecretRevision(
+	ctx context.Context, uri *coresecrets.URI, latestRevision int, applicationUUID string,
+) error {
 	db, err := st.DB(ctx)
 	if err != nil {
 		return errors.Capture(err)
@@ -338,11 +344,22 @@ ON CONFLICT(id) DO NOTHING`
 		return errors.Capture(err)
 	}
 
+	// When a model consuming a secret through a cross-model relation is
+	// migrated, the owner application uuid for the secret cannot be set
+	// during migration.
+	// This is why we may have a conflict on secret ID even if the
+	// latest_revision as not changed. The first purpose of this query is
+	// to update latest_revision, but we also update the owner_application_uuid
+	// (just in case), and set the migrated to false (missing piece of information
+	// are known at this point.
 	insertLatestQuery := `
 INSERT INTO secret_reference (*)
 VALUES ($secretLatestRevision.*)
 ON CONFLICT(secret_id) DO UPDATE SET
-    latest_revision=excluded.latest_revision`
+    latest_revision=excluded.latest_revision,
+    owner_application_uuid=excluded.owner_application_uuid,
+    updated_at=excluded.updated_at,
+    migrated=false`
 
 	insertLatestStmt, err := st.Prepare(insertLatestQuery, secretLatestRevision{})
 	if err != nil {
@@ -350,8 +367,10 @@ ON CONFLICT(secret_id) DO UPDATE SET
 	}
 
 	secret := secretLatestRevision{
-		ID:             uri.ID,
-		LatestRevision: latestRevision,
+		ID:              uri.ID,
+		LatestRevision:  latestRevision,
+		ApplicationUUID: applicationUUID,
+		UpdatedAt:       st.clock.Now().UTC(),
 	}
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
 		err = tx.Query(ctx, insertStmt, secretRef{ID: uri.ID}).Run()
@@ -367,6 +386,182 @@ ON CONFLICT(secret_id) DO UPDATE SET
 		return nil
 	})
 	return errors.Capture(err)
+}
+
+// SaveRemoteSecretConsumer saves the consumer metadata for the given secret and unit.
+// If the corresponding synthetic application for the relation does not exist,
+// an error satisfying [crossmodelrelationerrors.RemoteApplicationNotFound] is returned.
+// If the unit does not exist, an error satisfying [applicationerrors.UnitNotFound] is returned.
+// If the secret does not exist, an error satisfying [secreterrors.SecretNotFound] is returned.
+func (st *State) SaveRemoteSecretConsumer(
+	ctx context.Context, uri *coresecrets.URI, unitUUID string,
+	md coresecrets.SecretConsumerMetadata, appUUID, relUUID string,
+) error {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	// We might be saving the tracked revision for a remote secret
+	// before we have been notified of a revision change.
+	// So we might need to insert the parent secret URI.
+	secretRef := secretRef{ID: uri.ID}
+	insertRemoteSecretQuery := `
+INSERT INTO secret (id)
+VALUES ($secretRef.secret_id)
+ON CONFLICT DO NOTHING`
+
+	insertRemoteSecretStmt, err := st.Prepare(insertRemoteSecretQuery, secretRef)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	rUUID := remoteRelationUUID{UUID: relUUID}
+	aUUID := applicationUUID{UUID: appUUID}
+	remoteRef := secretLatestRevision{
+		ID:             uri.ID,
+		LatestRevision: md.CurrentRevision,
+		UpdatedAt:      st.clock.Now().UTC(),
+	}
+
+	offerAppUUIDQuery, err := st.Prepare(`
+SELECT ae.application_uuid AS &secretLatestRevision.owner_application_uuid
+FROM   relation_endpoint re
+JOIN   application_endpoint ae ON ae.uuid = re.endpoint_uuid
+JOIN   application_remote_offerer aro ON aro.application_uuid = ae.application_uuid 
+WHERE  re.relation_uuid = $remoteRelationUUID.uuid
+AND    ae.application_uuid <> $applicationUUID.uuid
+`, rUUID, aUUID, remoteRef)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	// When a model consuming a secret through a cross-model relation is
+	// migrated, the owner application uuid for the secret cannot be set
+	// during migration.
+	// The insertion below doesn't need to do anything if the secret already
+	// exists.
+	// However, due to this migration workaround, we need to use this opportunity
+	// to setup the owner_application_uuid if the secret was imported.
+	// This why we don't do nothing in case of conflict, but instead do update
+	// if the reference has been migrated.
+	insertRemoteSecretReferenceQuery := `
+INSERT INTO secret_reference (*)
+VALUES ($secretLatestRevision.*)
+ON CONFLICT (secret_id) DO UPDATE SET
+    owner_application_uuid=excluded.owner_application_uuid,
+    updated_at=excluded.updated_at,
+    migrated=false
+WHERE secret_reference.migrated IS TRUE`
+
+	insertRemoteSecretReferenceStmt, err := st.Prepare(insertRemoteSecretReferenceQuery, remoteRef)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err := tx.Query(ctx, offerAppUUIDQuery, rUUID, aUUID).Get(&remoteRef)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return errors.Errorf("offering application uuid for relation %q not found", relUUID).
+				Add(crossmodelrelationerrors.RemoteApplicationNotFound)
+		} else if err != nil {
+			return errors.Errorf("querying offering application uuid for relation %q: %w", relUUID, err)
+		}
+		// Ensure a remote secret parent URI and revision is recorded.
+		// This will normally be done by the watcher but it may not have fired yet.
+		err = tx.Query(ctx, insertRemoteSecretStmt, secretRef).Run()
+		if err != nil {
+			return errors.Errorf("inserting remote secret reference for %q: %w", uri, err)
+		}
+		err = tx.Query(ctx, insertRemoteSecretReferenceStmt, remoteRef).Run()
+		if err != nil {
+			return errors.Errorf("inserting remote secret revision for %q: %w", uri, err)
+		}
+		err = st.saveSecretConsumer(ctx, tx, uri, unitUUID, md)
+		if err != nil {
+			return errors.Errorf("saving remote secret consumer info: %w", err)
+		}
+		return nil
+	})
+	return errors.Capture(err)
+}
+
+func (st *State) saveSecretConsumer(ctx context.Context, tx *sqlair.TX, uri *coresecrets.URI, unitUUID string, md coresecrets.SecretConsumerMetadata) error {
+	u := unit{UUID: unitUUID}
+
+	selectUnitUUIDStmt, err := st.Prepare(`
+SELECT uuid AS &unit.uuid
+FROM   unit
+WHERE  uuid=$unit.uuid`, u)
+	if err != nil {
+		return errors.Capture(err)
+	}
+	err = tx.Query(ctx, selectUnitUUIDStmt, u).Get(&u)
+	if errors.Is(err, sqlair.ErrNoRows) {
+		return errors.Errorf("unit %q not found", unitUUID).Add(applicationerrors.UnitNotFound)
+	} else if err != nil {
+		return errors.Capture(err)
+	}
+
+	insertQuery := `
+INSERT INTO secret_unit_consumer (*)
+VALUES ($secretUnitConsumer.*)
+ON CONFLICT(secret_id, unit_uuid) DO UPDATE SET
+    label=excluded.label,
+    current_revision=excluded.current_revision`
+
+	insertStmt, err := st.Prepare(insertQuery, secretUnitConsumer{})
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	consumer := secretUnitConsumer{
+		UnitUUID:        unitUUID,
+		SecretID:        uri.ID,
+		SourceModelUUID: uri.SourceUUID,
+		Label:           md.Label,
+		CurrentRevision: md.CurrentRevision,
+	}
+	if err := tx.Query(ctx, insertStmt, consumer).Run(); err != nil {
+		return errors.Capture(err)
+	}
+
+	if err := st.markObsoleteRevisions(ctx, tx, uri); err != nil {
+		return errors.Errorf("marking obsolete revisions for secret %q: %w", uri, err)
+	}
+
+	return nil
+}
+
+// GetUnitUUID returns the unit UUID for the specified unit.
+// It returns an error satisfying [applicationerrors.UnitNotFound] if the
+// unit doesn't exist.
+func (st *State) GetUnitUUID(ctx context.Context, unitName string) (string, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	u := unit{Name: unitName}
+
+	selectUnitUUIDStmt, err := st.Prepare(`
+SELECT &unit.uuid
+FROM   unit
+WHERE  name=$unit.name`, u)
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err = tx.Query(ctx, selectUnitUUIDStmt, u).Get(&u)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return errors.Errorf("unit %q not found", unitName).Add(applicationerrors.UnitNotFound)
+		}
+		if err != nil {
+			return errors.Errorf("looking up unit UUID for %q: %w", unitName, err)
+		}
+		return nil
+	})
+	return u.UUID, errors.Capture(err)
 }
 
 // GetSecretValue returns the contents - either data or value reference - of a

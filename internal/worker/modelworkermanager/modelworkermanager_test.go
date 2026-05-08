@@ -12,9 +12,9 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 	"gopkg.in/tomb.v2"
@@ -22,7 +22,6 @@ import (
 	"github.com/juju/juju/controller"
 	corelogger "github.com/juju/juju/core/logger"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	coretesting "github.com/juju/juju/core/testing"
 	"github.com/juju/juju/core/watcher/watchertest"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
@@ -88,7 +87,7 @@ func (s *suite) TestStartsInitialWorker(c *tc.C) {
 		watcher, nil,
 	)
 
-	activatedModelUUID1 := modeltesting.GenModelUUID(c)
+	activatedModelUUID1 := tc.Must0(c, coremodel.NewUUID)
 	activatedModelUUIDs := []coremodel.UUID{activatedModelUUID1}
 
 	s.expectServicesForModel(activatedModelUUID1)
@@ -125,7 +124,7 @@ func (s *suite) TestStartsLaterWorker(c *tc.C) {
 		c.Fatal("timed out sending changes")
 	}
 
-	activatedModelUUID1 := modeltesting.GenModelUUID(c)
+	activatedModelUUID1 := tc.Must0(c, coremodel.NewUUID)
 	activatedModelUUIDs := []coremodel.UUID{activatedModelUUID1}
 
 	s.expectServicesForModel(activatedModelUUID1)
@@ -156,8 +155,8 @@ func (s *suite) TestStartsMultiple(c *tc.C) {
 	)
 
 	var activatedModelUUIDs []string
-	for i := 0; i < 3; i++ {
-		uuid := modeltesting.GenModelUUID(c)
+	for range 3 {
+		uuid := tc.Must0(c, coremodel.NewUUID)
 
 		activatedModelUUIDs = append(activatedModelUUIDs, uuid.String())
 
@@ -187,8 +186,8 @@ func (s *suite) TestIgnoresRepetition(c *tc.C) {
 	)
 
 	var activatedModelUUIDs []string
-	for i := 0; i < 3; i++ {
-		uuid := modeltesting.GenModelUUID(c)
+	for range 3 {
+		uuid := tc.Must0(c, coremodel.NewUUID)
 
 		activatedModelUUIDs = append(activatedModelUUIDs, uuid.String())
 
@@ -222,7 +221,7 @@ func (s *suite) TestRestartsErrorWorker(c *tc.C) {
 		watcher, nil,
 	)
 
-	activatedModelUUID1 := modeltesting.GenModelUUID(c)
+	activatedModelUUID1 := tc.Must0(c, coremodel.NewUUID)
 	s.expectServicesForModel(activatedModelUUID1)
 	s.expectGetModel(activatedModelUUID1)
 
@@ -255,7 +254,7 @@ func (s *suite) TestRestartsFinishedWorker(c *tc.C) {
 		watcher, nil,
 	)
 
-	activatedModelUUID1 := modeltesting.GenModelUUID(c)
+	activatedModelUUID1 := tc.Must0(c, coremodel.NewUUID)
 	s.expectServicesForModelTimes(activatedModelUUID1, 2)
 	s.expectGetModelTimes(activatedModelUUID1, 2)
 
@@ -291,8 +290,8 @@ func (s *suite) TestKillsManagers(c *tc.C) {
 	)
 
 	var activatedModelUUIDs []string
-	for i := 0; i < 2; i++ {
-		uuid := modeltesting.GenModelUUID(c)
+	for range 2 {
+		uuid := tc.Must0(c, coremodel.NewUUID)
 
 		activatedModelUUIDs = append(activatedModelUUIDs, uuid.String())
 
@@ -329,8 +328,8 @@ func (s *suite) TestClosedChangesChannel(c *tc.C) {
 	)
 
 	var activatedModelUUIDs []string
-	for i := 0; i < 2; i++ {
-		uuid := modeltesting.GenModelUUID(c)
+	for range 2 {
+		uuid := tc.Must0(c, coremodel.NewUUID)
 
 		activatedModelUUIDs = append(activatedModelUUIDs, uuid.String())
 
@@ -367,7 +366,7 @@ func (s *suite) TestReport(c *tc.C) {
 		watcher, nil,
 	)
 
-	activatedModelUUID1 := modeltesting.GenModelUUID(c)
+	activatedModelUUID1 := tc.Must0(c, coremodel.NewUUID)
 	s.expectServicesForModel(activatedModelUUID1)
 	s.expectGetModel(activatedModelUUID1)
 
@@ -381,7 +380,7 @@ func (s *suite) TestReport(c *tc.C) {
 
 		reporter, ok := w.(worker.Reporter)
 		c.Assert(ok, tc.IsTrue)
-		report := reporter.Report()
+		report := reporter.Report(c.Context())
 		c.Assert(report, tc.NotNil)
 		// TODO: pass a clock through in the worker config so it can be passed
 		// to the worker.Runner used in the model to control time.

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Build integration test suites for Juju with organized setup, teardown logic, and reusable test includes for bash-based testing."
+---
+
 (integration-test-suite)=
 # Integration test suite
 > Source: https://github.com/juju/juju/tree/main/tests/suites

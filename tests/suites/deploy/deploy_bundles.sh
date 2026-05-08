@@ -112,15 +112,6 @@ run_deploy_cmr_bundle() {
 	juju switch "other"
 	wait_for "active" '."application-endpoints"["dummy-source"]."application-status".current'
 
-	# TODO: no need to remove-relation before destroying model once we fixed(lp:1952221).
-	juju remove-relation dummy-sink dummy-source
-	# wait for relation removed.
-	wait_for null '.applications["dummy-sink"] | .relations.source[0]'
-	# The offer must be removed before model/controller destruction will work.
-	# See discussion under https://bugs.launchpad.net/juju/+bug/1830292.
-	juju switch "test-cmr-bundles-deploy"
-	juju remove-offer "admin/test-cmr-bundles-deploy.dummy-source" -y
-
 	destroy_model "other"
 	destroy_model "test-cmr-bundles-deploy"
 }
@@ -343,6 +334,7 @@ test_deploy_bundles() {
 		# run "run_deploy_exported_charmhub_bundle_with_float_revisions"
 		run "run_deploy_trusted_bundle"
 		run "run_deploy_multi_app_single_charm_bundle"
+		run "run_deploy_cmr_bundle"
 
 		# LXD specific profile tests.
 		case "${BOOTSTRAP_PROVIDER:-}" in
@@ -376,9 +368,5 @@ test_deploy_bundles() {
 			echo "==> TEST SKIPPED: deploy_bundle_with_image_id_no_base - tests for AWS only"
 			;;
 		esac
-
-		# Run this last so the other tests run, there are intermittent issues
-		# in cmr tear down.
-		run "run_deploy_cmr_bundle"
 	)
 }

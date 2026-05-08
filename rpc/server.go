@@ -13,12 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/juju/errors"
-
 	"github.com/juju/juju/core/flightrecorder"
 	"github.com/juju/juju/core/trace"
+	"github.com/juju/juju/internal/errors"
 	internallogger "github.com/juju/juju/internal/logger"
-	"github.com/juju/juju/internal/rpcreflect"
+	"github.com/juju/juju/rpc/rpcreflect"
 )
 
 const codeNotImplemented = "not implemented"
@@ -38,13 +37,13 @@ type Codec interface {
 	// is a request; if not, it's a response.  The body value will
 	// be a non-nil struct pointer, or nil to signify that the body
 	// should be read and discarded.
-	ReadBody(body interface{}, isRequest bool) error
+	ReadBody(body any, isRequest bool) error
 
 	// WriteMessage writes a message with the given header and body.
 	// The body will always be a struct. It may be called concurrently
 	// with ReadHeader and ReadBody, but will not be called
 	// concurrently with itself.
-	WriteMessage(hdr *Header, body interface{}) error
+	WriteMessage(hdr *Header, body any) error
 
 	// Close closes the codec. It may be called concurrently
 	// and should cause the Read methods to unblock.
@@ -79,7 +78,7 @@ type Header struct {
 	// error.
 	// TODO (stickupkid): This should have been metadata for all responses
 	// not just errors.
-	ErrorInfo map[string]interface{}
+	ErrorInfo map[string]any
 
 	// Version defines the wire format of the request and response structure.
 	Version int
@@ -128,8 +127,8 @@ type RecorderFactory func() Recorder
 // audit logging), and when it does the request should be failed as
 // well.
 type Recorder interface {
-	HandleRequest(hdr *Header, body interface{}) error
-	HandleReply(req Request, replyHdr *Header, body interface{}) error
+	HandleRequest(hdr *Header, body any) error
+	HandleReply(req Request, replyHdr *Header, body any) error
 }
 
 type noopTracingRoot struct {
@@ -275,7 +274,7 @@ func (conn *Conn) Start(ctx context.Context) {
 // set of methods being served by the connection. This will have
 // no effect on calls that are currently being services.
 // If root is nil, the connection will serve no methods.
-func (conn *Conn) Serve(root interface{}, factory RecorderFactory, transformErrors func(error) error) {
+func (conn *Conn) Serve(root any, factory RecorderFactory, transformErrors func(error) error) {
 	rootValue := rpcreflect.ValueOf(reflect.ValueOf(root))
 	if rootValue.IsValid() {
 		conn.serve(noopTracingRoot{
@@ -392,13 +391,15 @@ func (conn *Conn) Close() error {
 // ErrorCoder represents any error that has an associated error code. An error
 // code is a short string that represents the kind of an error.
 type ErrorCoder interface {
+	Error() string
 	ErrorCode() string
 }
 
 // ErrorInfoProvider represents any error that can provide additional error
 // information as a map.
 type ErrorInfoProvider interface {
-	ErrorInfo() map[string]interface{}
+	Error() string
+	ErrorInfo() map[string]any
 }
 
 // Root represents a type that can be used to lookup a Method and place
@@ -431,8 +432,10 @@ func (conn *Conn) input() {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
 
-	if conn.closing || errors.Cause(err) == io.EOF {
-		err = ErrShutdown
+	if conn.closing || errors.Is(err, io.EOF) {
+		err = errors.Errorf(
+			"connection is shut down: %w", err,
+		).Add(ErrShutdown)
 	} else {
 		// Make the error available for Conn.Close to see.
 		conn.inputLoopError = err
@@ -440,7 +443,7 @@ func (conn *Conn) input() {
 	// Terminate all client requests.
 	for _, call := range conn.clientPending {
 		call.Error = err
-		call.done()
+		call.done(conn.context)
 	}
 	conn.clientPending = nil
 	conn.shutdown = true
@@ -454,24 +457,28 @@ func (conn *Conn) loop() error {
 		var hdr Header
 		err := conn.codec.ReadHeader(&hdr)
 		switch {
-		case errors.Cause(err) == io.EOF:
+		case errors.Is(err, io.EOF):
 			// handle sentinel error specially
 			return err
 		case err != nil:
-			return errors.Annotate(err, "codec.ReadHeader error")
+			return errors.Errorf("codec.ReadHeader error: %w", err)
 		case hdr.IsRequest():
 			if err := conn.handleRequest(&hdr); err != nil {
-				return errors.Annotatef(err, "codec.handleRequest %#v error", hdr)
+				return errors.Errorf(
+					"codec.handleRequest %#v error: %w", hdr, err,
+				)
 			}
 		default:
 			if err := conn.handleResponse(&hdr); err != nil {
-				return errors.Annotatef(err, "codec.handleResponse %#v error", hdr)
+				return errors.Errorf(
+					"codec.handleResponse %#v error: %w", hdr, err,
+				)
 			}
 		}
 	}
 }
 
-func (conn *Conn) readBody(resp interface{}, isRequest bool) error {
+func (conn *Conn) readBody(resp any, isRequest bool) error {
 	if resp == nil {
 		resp = &struct{}{}
 	}
@@ -489,7 +496,7 @@ func (conn *Conn) handleRequest(hdr *Header) error {
 	req, err := conn.bindRequest(hdr)
 	if err != nil {
 		if err := recorder.HandleRequest(hdr, nil); err != nil {
-			return errors.Trace(err)
+			return errors.Capture(err)
 		}
 		if err := conn.readBody(nil, true); err != nil {
 			return err
@@ -498,7 +505,7 @@ func (conn *Conn) handleRequest(hdr *Header) error {
 		// already transformed it and returned a zero req.
 		return conn.writeErrorResponse(hdr, err, recorder)
 	}
-	var argp interface{}
+	var argp any
 	var arg reflect.Value
 	if req.ParamsType() != nil {
 		v := reflect.New(req.ParamsType())
@@ -507,12 +514,12 @@ func (conn *Conn) handleRequest(hdr *Header) error {
 	}
 	if err := conn.readBody(argp, true); err != nil {
 		if err := recorder.HandleRequest(hdr, nil); err != nil {
-			return errors.Trace(err)
+			return errors.Capture(err)
 		}
 
 		// If we get EOF, we know the connection is a
 		// goner, so don't try to respond.
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			return err
 		}
 		// An error reading the body often indicates bad
@@ -525,7 +532,7 @@ func (conn *Conn) handleRequest(hdr *Header) error {
 		// up the problem and abort.
 		return conn.writeErrorResponse(hdr, req.transformErrors(err), recorder)
 	}
-	var body interface{} = struct{}{}
+	var body any = struct{}{}
 	if req.ParamsType() != nil {
 		body = arg.Interface()
 	}
@@ -700,7 +707,7 @@ func (conn *Conn) callRequest(
 			SpanID:     req.hdr.SpanID,
 			TraceFlags: req.hdr.TraceFlags,
 		}
-		var rvi interface{}
+		var rvi any
 		if rv.IsValid() {
 			rvi = rv.Interface()
 		} else {
@@ -770,6 +777,6 @@ func ensureFactory(f RecorderFactory) RecorderFactory {
 
 type nopRecorder struct{}
 
-func (nopRecorder) HandleRequest(hdr *Header, body interface{}) error { return nil }
+func (nopRecorder) HandleRequest(hdr *Header, body any) error { return nil }
 
-func (nopRecorder) HandleReply(req Request, hdr *Header, body interface{}) error { return nil }
+func (nopRecorder) HandleReply(req Request, hdr *Header, body any) error { return nil }

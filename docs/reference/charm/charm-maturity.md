@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Understand charm maturity stages, quality requirements, and capabilities for building reusable, production-ready charms with Juju."
+---
+
 (charm-maturity)=
 # Charm maturity
 

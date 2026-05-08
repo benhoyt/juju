@@ -83,7 +83,7 @@ func (c *MockSecretServiceCreateUserSecretCall) DoAndReturn(f func(context.Conte
 }
 
 // DeleteSecret mocks base method.
-func (m *MockSecretService) DeleteSecret(arg0 context.Context, arg1 *secrets.URI, arg2 service.DeleteSecretParams) error {
+func (m *MockSecretService) DeleteSecret(arg0 context.Context, arg1 *secrets.URI, arg2 secret.DeleteSecretParams) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "DeleteSecret", arg0, arg1, arg2)
 	ret0, _ := ret[0].(error)
@@ -109,13 +109,13 @@ func (c *MockSecretServiceDeleteSecretCall) Return(arg0 error) *MockSecretServic
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretServiceDeleteSecretCall) Do(f func(context.Context, *secrets.URI, service.DeleteSecretParams) error) *MockSecretServiceDeleteSecretCall {
+func (c *MockSecretServiceDeleteSecretCall) Do(f func(context.Context, *secrets.URI, secret.DeleteSecretParams) error) *MockSecretServiceDeleteSecretCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretServiceDeleteSecretCall) DoAndReturn(f func(context.Context, *secrets.URI, service.DeleteSecretParams) error) *MockSecretServiceDeleteSecretCall {
+func (c *MockSecretServiceDeleteSecretCall) DoAndReturn(f func(context.Context, *secrets.URI, secret.DeleteSecretParams) error) *MockSecretServiceDeleteSecretCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -238,7 +238,7 @@ func (c *MockSecretServiceGetUserSecretURIByLabelCall) DoAndReturn(f func(contex
 }
 
 // GrantSecretAccess mocks base method.
-func (m *MockSecretService) GrantSecretAccess(arg0 context.Context, arg1 *secrets.URI, arg2 service.SecretAccessParams) error {
+func (m *MockSecretService) GrantSecretAccess(arg0 context.Context, arg1 *secrets.URI, arg2 secret.SecretAccessParams) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GrantSecretAccess", arg0, arg1, arg2)
 	ret0, _ := ret[0].(error)
@@ -264,19 +264,19 @@ func (c *MockSecretServiceGrantSecretAccessCall) Return(arg0 error) *MockSecretS
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretServiceGrantSecretAccessCall) Do(f func(context.Context, *secrets.URI, service.SecretAccessParams) error) *MockSecretServiceGrantSecretAccessCall {
+func (c *MockSecretServiceGrantSecretAccessCall) Do(f func(context.Context, *secrets.URI, secret.SecretAccessParams) error) *MockSecretServiceGrantSecretAccessCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretServiceGrantSecretAccessCall) DoAndReturn(f func(context.Context, *secrets.URI, service.SecretAccessParams) error) *MockSecretServiceGrantSecretAccessCall {
+func (c *MockSecretServiceGrantSecretAccessCall) DoAndReturn(f func(context.Context, *secrets.URI, secret.SecretAccessParams) error) *MockSecretServiceGrantSecretAccessCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
 
 // ListCharmSecrets mocks base method.
-func (m *MockSecretService) ListCharmSecrets(arg0 context.Context, arg1 ...service.CharmSecretOwner) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error) {
+func (m *MockSecretService) ListCharmSecrets(arg0 context.Context, arg1 ...secret.CharmSecretOwner) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0}
 	for _, a := range arg1 {
@@ -309,13 +309,13 @@ func (c *MockSecretServiceListCharmSecretsCall) Return(arg0 []*secrets.SecretMet
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretServiceListCharmSecretsCall) Do(f func(context.Context, ...service.CharmSecretOwner) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error)) *MockSecretServiceListCharmSecretsCall {
+func (c *MockSecretServiceListCharmSecretsCall) Do(f func(context.Context, ...secret.CharmSecretOwner) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error)) *MockSecretServiceListCharmSecretsCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretServiceListCharmSecretsCall) DoAndReturn(f func(context.Context, ...service.CharmSecretOwner) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error)) *MockSecretServiceListCharmSecretsCall {
+func (c *MockSecretServiceListCharmSecretsCall) DoAndReturn(f func(context.Context, ...secret.CharmSecretOwner) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error)) *MockSecretServiceListCharmSecretsCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -361,7 +361,7 @@ func (c *MockSecretServiceListSecretsCall) DoAndReturn(f func(context.Context, *
 }
 
 // RevokeSecretAccess mocks base method.
-func (m *MockSecretService) RevokeSecretAccess(arg0 context.Context, arg1 *secrets.URI, arg2 service.SecretAccessParams) error {
+func (m *MockSecretService) RevokeSecretAccess(arg0 context.Context, arg1 *secrets.URI, arg2 secret.SecretAccessParams) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "RevokeSecretAccess", arg0, arg1, arg2)
 	ret0, _ := ret[0].(error)
@@ -387,13 +387,13 @@ func (c *MockSecretServiceRevokeSecretAccessCall) Return(arg0 error) *MockSecret
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockSecretServiceRevokeSecretAccessCall) Do(f func(context.Context, *secrets.URI, service.SecretAccessParams) error) *MockSecretServiceRevokeSecretAccessCall {
+func (c *MockSecretServiceRevokeSecretAccessCall) Do(f func(context.Context, *secrets.URI, secret.SecretAccessParams) error) *MockSecretServiceRevokeSecretAccessCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSecretServiceRevokeSecretAccessCall) DoAndReturn(f func(context.Context, *secrets.URI, service.SecretAccessParams) error) *MockSecretServiceRevokeSecretAccessCall {
+func (c *MockSecretServiceRevokeSecretAccessCall) DoAndReturn(f func(context.Context, *secrets.URI, secret.SecretAccessParams) error) *MockSecretServiceRevokeSecretAccessCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

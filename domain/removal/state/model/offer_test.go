@@ -67,8 +67,7 @@ func (s *offerSuite) TestDeleteOfferSuperfluousForce(c *tc.C) {
 }
 
 func (s *offerSuite) TestDeleteOfferFailsWithRelations(c *tc.C) {
-	offerUUID := s.createOffer(c, "foo")
-	s.createRemoteApplicationConsumer(c, "bar", offerUUID)
+	_, _, offerUUID := s.createRelationWithRemoteConsumer(c)
 
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
@@ -78,10 +77,7 @@ func (s *offerSuite) TestDeleteOfferFailsWithRelations(c *tc.C) {
 }
 
 func (s *offerSuite) TestDeleteOfferForceWithRelations(c *tc.C) {
-	offerUUID := s.createOffer(c, "foo")
-	s.createRemoteApplicationConsumer(c, "bar", offerUUID)
-
-	s.DumpTable(c, "relation", "application_remote_consumer", "application")
+	_, _, offerUUID := s.createRelationWithRemoteConsumer(c)
 
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 

@@ -54,7 +54,7 @@ func (n Namespace) String() string {
 	return n.Kind.String() + " (" + n.ID + ")"
 }
 
-// StatusHistory records status information into a generalized way.
+// StatusHistory records the status of a juju entity.
 type StatusHistory struct {
 	recorder Recorder
 	clock    clock.Clock

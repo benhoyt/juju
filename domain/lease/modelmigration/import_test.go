@@ -7,11 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/core/lease"
+	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/modelmigration"
 	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
@@ -48,7 +49,7 @@ func (s *importSuite) TestSetup(c *tc.C) {
 
 	// We don't currently need the model DB, so for this instance we can just
 	// pass nil.
-	err := op.Setup(modelmigration.NewScope(nil, nil, nil))
+	err := op.Setup(modelmigration.NewScope(nil, nil, nil, nil, tc.Must0(c, model.NewUUID)))
 	c.Assert(err, tc.ErrorIsNil)
 }
 

@@ -14,7 +14,6 @@ import (
 	relationerrors "github.com/juju/juju/domain/relation/errors"
 	"github.com/juju/juju/domain/removal"
 	removalerrors "github.com/juju/juju/domain/removal/errors"
-	"github.com/juju/juju/internal/database"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -238,66 +237,12 @@ func (st *State) DeleteRelationUnits(ctx context.Context, rUUID string) error {
 
 	relationUUID := entityUUID{UUID: rUUID}
 
-	settingsStmt, err := st.Prepare(`
-WITH rru AS (
-    SELECT ru.uuid, re.relation_uuid
-    FROM   relation_unit ru 
-           JOIN relation_endpoint re ON ru.relation_endpoint_uuid = re.uuid
-)
-DELETE FROM relation_unit_setting
-WHERE  relation_unit_uuid IN (
-    SELECT uuid FROM rru WHERE relation_uuid = $entityUUID.uuid
-)`, relationUUID)
-	if err != nil {
-		return errors.Errorf("preparing relation unit settings deletion: %w", err)
-	}
-
-	settingsHashStmt, err := st.Prepare(`
-WITH rru AS (
-    SELECT ru.uuid, re.relation_uuid
-    FROM   relation_unit ru 
-           JOIN relation_endpoint re ON ru.relation_endpoint_uuid = re.uuid
-)
-DELETE FROM relation_unit_settings_hash
-WHERE  relation_unit_uuid IN (
-    SELECT uuid FROM rru WHERE relation_uuid = $entityUUID.uuid
-)`, relationUUID)
-	if err != nil {
-		return errors.Errorf("preparing relation unit settings hash deletion: %w", err)
-	}
-
-	ruStmt, err := st.Prepare(`
-DELETE FROM relation_unit 
-WHERE  relation_endpoint_uuid IN (
-    SELECT uuid FROM relation_endpoint WHERE relation_uuid = $entityUUID.uuid
-)`, relationUUID)
-	if err != nil {
-		return errors.Errorf("preparing relation unit deletion: %w", err)
-	}
-
 	return errors.Capture(db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		err = tx.Query(ctx, settingsStmt, relationUUID).Run()
-		if err != nil {
-			return errors.Errorf("running relation unit settings deletion: %w", err)
-		}
-
-		err = tx.Query(ctx, settingsHashStmt, relationUUID).Run()
-		if err != nil {
-			return errors.Errorf("running relation unit settings hash deletion: %w", err)
-		}
-
-		err = tx.Query(ctx, ruStmt, relationUUID).Run()
-		if err != nil {
-			return errors.Errorf("running relation unit deletion: %w", err)
-		}
-
-		return nil
+		return st.deleteRelationUnitsForRelation(ctx, tx, relationUUID)
 	}))
 }
 
 // DeleteRelation removes a relation from the database completely.
-// Note that if any units are in scope, this will return a
-// constraint violation error.
 func (st *State) DeleteRelation(ctx context.Context, rUUID string) error {
 	db, err := st.DB(ctx)
 	if err != nil {
@@ -312,6 +257,16 @@ func (st *State) DeleteRelation(ctx context.Context, rUUID string) error {
 }
 
 func (st *State) deleteRelation(ctx context.Context, tx *sqlair.TX, relationUUID entityUUID) error {
+	// Include both regular units and synthetic units in scope
+	countUnitsInScopeStmt, err := st.Prepare(`
+SELECT COUNT(*) AS &count.count
+FROM   relation_unit ru
+JOIN   relation_endpoint re ON ru.relation_endpoint_uuid = re.uuid
+WHERE  re.relation_uuid = $entityUUID.uuid`, count{}, relationUUID)
+	if err != nil {
+		return errors.Errorf("preparing relation units in scope count query: %w", err)
+	}
+
 	settingsStmt, err := st.Prepare(`
 DELETE FROM relation_application_setting
 WHERE  relation_endpoint_uuid IN (
@@ -346,9 +301,30 @@ WHERE  relation_endpoint_uuid IN (
 		return errors.Errorf("preparing relation status deletion: %w", err)
 	}
 
+	secretPermissionStmt, err := st.Prepare(`
+DELETE FROM secret_permission
+WHERE  scope_type_id = 3
+AND    scope_uuid = $entityUUID.uuid`, relationUUID)
+	if err != nil {
+		return errors.Errorf("preparing relation secret permission deletion: %w", err)
+	}
+
 	relStmt, err := st.Prepare("DELETE FROM relation WHERE uuid = $entityUUID.uuid ", relationUUID)
 	if err != nil {
 		return errors.Errorf("preparing relation deletion: %w", err)
+	}
+
+	var unitsInScope count
+	err = tx.Query(ctx, countUnitsInScopeStmt, relationUUID).Get(&unitsInScope)
+	if err != nil {
+		return errors.Errorf("running relation units in scope count query: %w", err)
+	}
+	if unitsInScope.Count > 0 {
+		// NOTE: units may be real or synthetic, so return incomplete in order
+		// to allow removal jobs for cmrs to complete.
+		return errors.Errorf("%d units still in scope for relation %q", unitsInScope.Count, relationUUID.UUID).
+			Add(removalerrors.UnitsStillInScope).
+			Add(removalerrors.RemovalJobIncomplete)
 	}
 
 	err = tx.Query(ctx, settingsStmt, relationUUID).Run()
@@ -363,9 +339,6 @@ WHERE  relation_endpoint_uuid IN (
 
 	err = tx.Query(ctx, endpointStmt, relationUUID).Run()
 	if err != nil {
-		if database.IsErrConstraintForeignKey(err) {
-			err = removalerrors.UnitsStillInScope
-		}
 		return errors.Errorf("running relation endpoint deletion: %w", err)
 	}
 
@@ -377,6 +350,11 @@ WHERE  relation_endpoint_uuid IN (
 	err = tx.Query(ctx, statusStmt, relationUUID).Run()
 	if err != nil {
 		return errors.Errorf("running relation status deletion: %w", err)
+	}
+
+	err = tx.Query(ctx, secretPermissionStmt, relationUUID).Run()
+	if err != nil {
+		return errors.Errorf("running relation secret permission deletion: %w", err)
 	}
 
 	err = tx.Query(ctx, relStmt, relationUUID).Run()
@@ -409,6 +387,28 @@ WHERE  uuid = $entityUUID.uuid`, id)
 		return errors.Errorf("preparing relation unit exists query: %w", err)
 	}
 
+	isSyntheticStmt, err := st.Prepare(`
+SELECT u.uuid AS &entityUUID.uuid
+FROM   relation_unit AS re
+JOIN   unit AS u ON re.unit_uuid = u.uuid
+JOIN   charm AS c ON u.charm_uuid = c.uuid
+JOIN   charm_source AS cs ON c.source_id = cs.id
+WHERE  re.uuid = $entityUUID.uuid
+AND    cs.name = 'cmr'
+	`, entityUUID{})
+	if err != nil {
+		return errors.Errorf("preparing relation unit is synthetic query: %w", err)
+	}
+
+	isUnitStillInScopeStmt, err := st.Prepare(`
+SELECT COUNT(*) AS &count.count
+FROM   relation_unit
+WHERE  unit_uuid = $entityUUID.uuid
+	`, count{}, entityUUID{})
+	if err != nil {
+		return errors.Errorf("preparing synthetic unit still in scope query: %w", err)
+	}
+
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
 		err = tx.Query(ctx, existsStmt, id).Get(&id)
 		if errors.Is(err, sqlair.ErrNoRows) {
@@ -417,14 +417,35 @@ WHERE  uuid = $entityUUID.uuid`, id)
 			return errors.Errorf("running relation unit exists query: %w", err)
 		}
 
+		var synthUnitUUID entityUUID
+		err = tx.Query(ctx, isSyntheticStmt, id).Get(&synthUnitUUID)
+		if errors.Is(err, sqlair.ErrNoRows) {
+		} else if err != nil {
+			return errors.Errorf("checking if unit is synthetic: %w", err)
+		}
+
 		err = st.archiveRelationUnitSettings(ctx, tx, id)
 		if err != nil {
-			return errors.Capture(err)
+			return errors.Errorf("archiving relation unit settings: %w", err)
 		}
 
 		err = st.deleteRelationUnit(ctx, tx, id)
 		if err != nil {
-			return errors.Capture(err)
+			return errors.Errorf("deleting relation unit: %w", err)
+		}
+
+		if synthUnitUUID.UUID != "" {
+			var unitStillInScope count
+			err = tx.Query(ctx, isUnitStillInScopeStmt, synthUnitUUID).Get(&unitStillInScope)
+			if err != nil {
+				return errors.Errorf("checking if synthetic unit still in scope: %w", err)
+			}
+
+			if unitStillInScope.Count == 0 {
+				if err := st.deleteSynthUnit(ctx, tx, synthUnitUUID); err != nil {
+					return errors.Errorf("deleting synthetic unit %q: %w", synthUnitUUID.UUID, err)
+				}
+			}
 		}
 
 		return nil
@@ -434,6 +455,47 @@ WHERE  uuid = $entityUUID.uuid`, id)
 	}
 
 	return nil
+}
+
+// IsUnitDyingAndBlocked returns true if the unit with the input name is dying,
+// or is in a blocked state. The blocked state indicated if the unit workload
+// has an error or blocked status.
+func (st *State) IsUnitDyingAndBlocked(ctx context.Context, name string) (bool, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return false, errors.Capture(err)
+	}
+
+	type result struct {
+		Result int `db:"result"`
+	}
+
+	unitName := entityName{Name: name}
+	getUnitStatusStmt, err := st.Prepare(`
+SELECT 1 AS &result.result
+FROM   v_unit_workload_status
+JOIN   unit AS u ON v_unit_workload_status.unit_uuid = u.uuid
+JOIN   workload_status_value AS wsv ON v_unit_workload_status.status_id = wsv.id
+WHERE  unit_name = $entityName.name AND
+       u.life_id > 0 AND
+       (wsv.status = 'error' OR wsv.status = 'blocked');
+`, result{}, unitName)
+	if err != nil {
+		return false, errors.Capture(err)
+	}
+
+	var res result
+	if err := db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err := tx.Query(ctx, getUnitStatusStmt, unitName).Get(&res)
+		if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
+			return err
+		}
+		return nil
+	}); err != nil {
+		return false, errors.Errorf("getting workload status for unit %q: %w", name, err)
+	}
+
+	return res.Result == 1, nil
 }
 
 func (st *State) archiveRelationUnitSettings(ctx context.Context, tx *sqlair.TX, id entityUUID) error {
@@ -451,7 +513,7 @@ WHERE (relation_uuid, unit_name) IN (
 	}
 
 	if err := tx.Query(ctx, delStmt, id).Run(); err != nil {
-		return errors.Capture(err)
+		return errors.Errorf("deleting existing archived relation unit settings: %w", err)
 	}
 
 	copyStmt, err := st.Prepare(`
@@ -467,7 +529,7 @@ WHERE  ru.uuid = $entityUUID.uuid`, id)
 	}
 
 	if err := tx.Query(ctx, copyStmt, id).Run(); err != nil {
-		return errors.Capture(err)
+		return errors.Errorf("archiving relation unit settings: %w", err)
 	}
 
 	return nil
@@ -482,7 +544,7 @@ WHERE relation_unit_uuid = $entityUUID.uuid`, id)
 	}
 	err = tx.Query(ctx, deleteSettingsStmt, id).Run()
 	if err != nil {
-		return errors.Capture(err)
+		return errors.Errorf("deleting relation unit settings: %w", err)
 	}
 
 	deleteSettingsHashStmt, err := st.Prepare(`
@@ -493,7 +555,7 @@ WHERE relation_unit_uuid = $entityUUID.uuid`, id)
 	}
 	err = tx.Query(ctx, deleteSettingsHashStmt, id).Run()
 	if err != nil {
-		return errors.Capture(err)
+		return errors.Errorf("deleting relation unit settings hash: %w", err)
 	}
 
 	deleteRelationUnitStmt, err := st.Prepare(`
@@ -506,14 +568,70 @@ WHERE uuid = $entityUUID.uuid`, id)
 	var outcome sqlair.Outcome
 	err = tx.Query(ctx, deleteRelationUnitStmt, id).Get(&outcome)
 	if err != nil {
-		return errors.Capture(err)
+		return errors.Errorf("deleting relation unit: %w", err)
 	}
 
 	rows, err := outcome.Result().RowsAffected()
 	if err != nil {
 		return errors.Capture(err)
 	} else if rows != 1 {
-		return errors.Errorf("deleting relation unit: expected 1 row affected, got %d", rows)
+		return errors.Errorf("checking delete relation unit outcome: expected 1 row affected, got %d", rows)
+	}
+
+	return nil
+}
+
+func (st *State) deleteRelationUnitsForRelation(ctx context.Context, tx *sqlair.TX, relationUUID entityUUID) error {
+	settingsStmt, err := st.Prepare(`
+WITH rru AS (
+    SELECT ru.uuid, re.relation_uuid
+    FROM   relation_unit ru 
+    JOIN relation_endpoint re ON ru.relation_endpoint_uuid = re.uuid
+)
+DELETE FROM relation_unit_setting
+WHERE  relation_unit_uuid IN (
+    SELECT uuid FROM rru WHERE relation_uuid = $entityUUID.uuid
+)`, relationUUID)
+	if err != nil {
+		return errors.Errorf("preparing relation unit settings deletion: %w", err)
+	}
+
+	settingsHashStmt, err := st.Prepare(`
+WITH rru AS (
+    SELECT ru.uuid, re.relation_uuid
+    FROM   relation_unit ru 
+    JOIN relation_endpoint re ON ru.relation_endpoint_uuid = re.uuid
+)
+DELETE FROM relation_unit_settings_hash
+WHERE  relation_unit_uuid IN (
+    SELECT uuid FROM rru WHERE relation_uuid = $entityUUID.uuid
+)`, relationUUID)
+	if err != nil {
+		return errors.Errorf("preparing relation unit settings hash deletion: %w", err)
+	}
+
+	ruStmt, err := st.Prepare(`
+DELETE FROM relation_unit 
+WHERE  relation_endpoint_uuid IN (
+    SELECT uuid FROM relation_endpoint WHERE relation_uuid = $entityUUID.uuid
+)`, relationUUID)
+	if err != nil {
+		return errors.Errorf("preparing relation unit deletion: %w", err)
+	}
+
+	err = tx.Query(ctx, settingsStmt, relationUUID).Run()
+	if err != nil {
+		return errors.Errorf("running relation unit settings deletion: %w", err)
+	}
+
+	err = tx.Query(ctx, settingsHashStmt, relationUUID).Run()
+	if err != nil {
+		return errors.Errorf("running relation unit settings hash deletion: %w", err)
+	}
+
+	err = tx.Query(ctx, ruStmt, relationUUID).Run()
+	if err != nil {
+		return errors.Errorf("running relation unit deletion: %w", err)
 	}
 
 	return nil

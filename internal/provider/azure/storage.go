@@ -24,9 +24,10 @@ import (
 const (
 	azureStorageProviderType = "azure"
 
-	accountTypeAttr        = "account-type"
-	accountTypeStandardLRS = "Standard_LRS"
-	accountTypePremiumLRS  = "Premium_LRS"
+	accountTypeAttr           = "account-type"
+	accountTypeStandardLRS    = "Standard_LRS"
+	accountTypePremiumLRS     = "Premium_LRS"
+	accountTypeStandardSSDLRS = "StandardSSD_LRS"
 
 	// volumeSizeMaxGiB is the maximum disk size (in gibibytes) for Azure disks.
 	//
@@ -84,6 +85,7 @@ var _ storage.Provider = (*azureStorageProvider)(nil)
 var azureStorageConfigFields = schema.Fields{
 	accountTypeAttr: schema.OneOf(
 		schema.Const(accountTypeStandardLRS),
+		schema.Const(accountTypeStandardSSDLRS),
 		schema.Const(accountTypePremiumLRS),
 	),
 }
@@ -91,7 +93,7 @@ var azureStorageConfigFields = schema.Fields{
 var azureStorageConfigChecker = schema.FieldMap(
 	azureStorageConfigFields,
 	schema.Defaults{
-		accountTypeAttr: accountTypeStandardLRS,
+		accountTypeAttr: accountTypeStandardSSDLRS,
 	},
 )
 
@@ -99,12 +101,12 @@ type azureStorageConfig struct {
 	storageType armcompute.DiskStorageAccountTypes
 }
 
-func newAzureStorageConfig(attrs map[string]interface{}) (*azureStorageConfig, error) {
+func newAzureStorageConfig(attrs map[string]any) (*azureStorageConfig, error) {
 	coerced, err := azureStorageConfigChecker.Coerce(attrs, nil)
 	if err != nil {
 		return nil, errors.Annotate(err, "validating Azure storage config")
 	}
-	attrs = coerced.(map[string]interface{})
+	attrs = coerced.(map[string]any)
 	azureStorageConfig := &azureStorageConfig{
 		storageType: armcompute.DiskStorageAccountTypes(attrs[accountTypeAttr].(string)),
 	}
@@ -214,20 +216,20 @@ func (v *azureVolumeSource) createManagedDiskVolume(ctx context.Context, p stora
 
 	diskTags := make(map[string]*string)
 	for k, v := range p.ResourceTags {
-		diskTags[k] = to.Ptr(v)
+		diskTags[k] = new(v)
 	}
 	diskName := p.Tag.String()
 	sizeInGib := mibToGib(p.Size)
 	diskModel := armcompute.Disk{
-		Name:     to.Ptr(diskName),
-		Location: to.Ptr(v.env.location),
+		Name:     new(diskName),
+		Location: new(v.env.location),
 		Tags:     diskTags,
 		SKU: &armcompute.DiskSKU{
-			Name: to.Ptr(cfg.storageType),
+			Name: new(cfg.storageType),
 		},
 		Properties: &armcompute.DiskProperties{
 			CreationData: &armcompute.CreationData{CreateOption: to.Ptr(armcompute.DiskCreateOptionEmpty)},
-			DiskSizeGB:   to.Ptr(int32(sizeInGib)),
+			DiskSizeGB:   new(int32(sizeInGib)),
 		},
 	}
 
@@ -515,15 +517,15 @@ func (v *azureVolumeSource) addDataDisk(
 	}
 
 	dataDisk := &armcompute.DataDisk{
-		Lun:          to.Ptr(lun),
-		Name:         to.Ptr(diskName),
+		Lun:          new(lun),
+		Name:         new(diskName),
 		Caching:      to.Ptr(armcompute.CachingTypesReadWrite),
-		CreateOption: to.Ptr(createOption),
+		CreateOption: new(createOption),
 		DiskSizeGB:   diskSizeGB,
 	}
 	diskResourceID := v.diskResourceID(diskName)
 	dataDisk.ManagedDisk = &armcompute.ManagedDiskParameters{
-		ID: to.Ptr(diskResourceID),
+		ID: new(diskResourceID),
 	}
 
 	if vm.Properties != nil {

@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"gopkg.in/httprequest.v1"
@@ -24,7 +24,7 @@ import (
 	"github.com/juju/juju/core/resource"
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/core/watcher"
-	charmresource "github.com/juju/juju/internal/charm/resource"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -52,7 +52,7 @@ func NewClient(caller base.APICaller, newWatcher NewWatcherFunc, options ...Opti
 type Client struct {
 	caller            base.FacadeCaller
 	newWatcher        NewWatcherFunc
-	httpClientFactory func() (*httprequest.Client, error)
+	httpClientFactory func(base.HTTPClientScope) (*httprequest.Client, error)
 }
 
 // Watch returns a watcher which reports when a migration is active
@@ -254,7 +254,7 @@ func (c *Client) ProcessRelations(ctx context.Context, controllerAlias string) e
 
 // OpenResource downloads the named resource for an application.
 func (c *Client) OpenResource(ctx context.Context, application, name string) (io.ReadCloser, error) {
-	httpClient, err := c.httpClientFactory()
+	httpClient, err := c.httpClientFactory(base.HTTPClientScopeModel)
 	if err != nil {
 		return nil, errors.Annotate(err, "unable to create HTTP client")
 	}
@@ -360,7 +360,7 @@ func groupTagIds(tagStrs []string) ([]string, []string, []string, error) {
 	var units []string
 	var applications []string
 
-	for i := 0; i < len(tagStrs); i++ {
+	for i := range tagStrs {
 		tag, err := names.ParseTag(tagStrs[i])
 		if err != nil {
 			return nil, nil, nil, errors.Trace(err)

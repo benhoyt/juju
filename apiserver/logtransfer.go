@@ -40,7 +40,7 @@ func newMigrationLogWriteFunc(ctxt httpContext, modelLogger corelogger.ModelLogg
 }
 
 func (s *migrationLoggingStrategy) init(ctxt httpContext, req *http.Request) error {
-	domainServices, err := ctxt.domainServicesForRequest(req.Context())
+	domainServices, err := ctxt.domainServicesForRequest(req)
 	if err != nil {
 		return errors.Trace(err)
 	}

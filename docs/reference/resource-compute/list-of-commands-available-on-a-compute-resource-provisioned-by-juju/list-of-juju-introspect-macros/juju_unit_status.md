@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Check status of unit agents running within a single Juju process using juju_unit_status introspect function."
+---
+
 (juju_unit_status)=
 # `juju_unit_status`
 

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Comprehensive guide to managing Juju models: create, configure, switch between, export, import, migrate, and remove models."
+---
+
 (manage-models)=
 # How to manage models
 

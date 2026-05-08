@@ -10,6 +10,7 @@ import (
 	"github.com/juju/tc"
 
 	coreapplication "github.com/juju/juju/core/application"
+	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/domain/application"
 	"github.com/juju/juju/domain/application/architecture"
 	"github.com/juju/juju/domain/application/charm"
@@ -42,10 +43,11 @@ func (s *applicationStorageSuite) createApplicationWithStorageDirectives(
 	c *tc.C,
 	charmName string,
 	charmStorage map[string]charm.Storage,
-	directives []internal.CreateApplicationStorageDirectiveArg,
+	directives []domainstorage.DirectiveArg,
 ) coreapplication.UUID {
 	state := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		tc.Must0(c, model.NewUUID),
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -137,7 +139,7 @@ func (s *applicationStorageSuite) TestGetApplicationStorageDirectives(c *tc.C) {
 				Type:     charm.StorageFilesystem,
 			},
 		},
-		[]internal.CreateApplicationStorageDirectiveArg{
+		[]domainstorage.DirectiveArg{
 			{
 				Count:    2,
 				Name:     domainstorage.Name("str1"),
@@ -155,11 +157,12 @@ func (s *applicationStorageSuite) TestGetApplicationStorageDirectives(c *tc.C) {
 
 	st := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		tc.Must0(c, model.NewUUID),
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
 
-	expected := []application.StorageDirective{
+	expected := []internal.StorageDirective{
 		{
 			CharmMetadataName: "testcharm",
 			CharmStorageType:  charm.StorageFilesystem,
@@ -192,11 +195,12 @@ func (s *applicationStorageSuite) TestGetApplicationStorageDirectivesEmpty(c *tc
 		c,
 		"testcharm",
 		map[string]charm.Storage{},
-		[]internal.CreateApplicationStorageDirectiveArg{},
+		[]domainstorage.DirectiveArg{},
 	)
 
 	st := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		tc.Must0(c, model.NewUUID),
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -212,6 +216,7 @@ func (s *applicationStorageSuite) TestGetApplicationStorageDirectivesNotFound(c 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
 	st := NewState(
 		s.ModelSuite.TxnRunnerFactory(),
+		tc.Must0(c, model.NewUUID),
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)

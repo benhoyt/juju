@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"maps"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/juju/collections/set"
 	"github.com/juju/collections/transform"
@@ -16,8 +18,9 @@ import (
 
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/apiserver/internal/charms"
+	"github.com/juju/juju/controller"
+	coreapplication "github.com/juju/juju/core/application"
 	"github.com/juju/juju/core/base"
-	"github.com/juju/juju/core/blockdevice"
 	"github.com/juju/juju/core/crossmodel"
 	"github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/instance"
@@ -34,15 +37,13 @@ import (
 	"github.com/juju/juju/domain/crossmodelrelation"
 	crossmodelrelationservice "github.com/juju/juju/domain/crossmodelrelation/service"
 	"github.com/juju/juju/domain/deployment"
-	machineerrors "github.com/juju/juju/domain/machine/errors"
+	"github.com/juju/juju/domain/deployment/charm"
 	domainmodelerrors "github.com/juju/juju/domain/model/errors"
 	domainnetwork "github.com/juju/juju/domain/network"
 	"github.com/juju/juju/domain/port"
 	"github.com/juju/juju/domain/relation"
 	statusservice "github.com/juju/juju/domain/status/service"
 	"github.com/juju/juju/domain/storage"
-	"github.com/juju/juju/domain/storageprovisioning"
-	"github.com/juju/juju/internal/charm"
 	internalerrors "github.com/juju/juju/internal/errors"
 	internalstorage "github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/rpc/params"
@@ -128,24 +129,13 @@ func (c *Client) FullStatus(ctx context.Context, args params.StatusParams) (para
 		return params.FullStatus{}, err
 	}
 
-	if len(args.Patterns) > 0 {
-		// Patterns have been disabled until we tackle the status epic. This
-		// will require pushing the patterns down through the status service.
-		// For now, just black hole the request.
-		return params.FullStatus{}, internalerrors.Errorf("patterns are not implemented").Add(
-			errors.NotImplemented,
-		)
-	}
-
-	machineJobFetcher := func(context.Context, coremachine.Name) []model.MachineJob {
+	machineJobFetcher := func(_ context.Context, _ statusservice.Machine) []model.MachineJob {
 		return []model.MachineJob{model.JobHostUnits}
 	}
 	if c.isControllerModel {
-		machineJobFetcher = func(ctx context.Context, name coremachine.Name) []model.MachineJob {
+		machineJobFetcher = func(_ context.Context, machine statusservice.Machine) []model.MachineJob {
 			jobs := []model.MachineJob{model.JobHostUnits}
-			if isController, err := c.machineService.IsMachineController(ctx, name); err != nil && !internalerrors.Is(err, machineerrors.MachineNotFound) {
-				logger.Errorf(ctx, "error checking if machine %q is controller: %v", name, err)
-			} else if isController {
+			if machine.IsController {
 				jobs = append(jobs, model.JobManageModel)
 			}
 			return jobs
@@ -156,7 +146,6 @@ func (c *Client) FullStatus(ctx context.Context, args params.StatusParams) (para
 	context := statusContext{
 		applicationService:        c.applicationService,
 		statusService:             c.statusService,
-		machineService:            c.machineService,
 		crossModelRelationService: c.crossModelRelationService,
 
 		machineJobFetcher: machineJobFetcher,
@@ -175,6 +164,9 @@ func (c *Client) FullStatus(ctx context.Context, args params.StatusParams) (para
 		fetchAllApplicationsAndUnits(ctx, c.statusService, c.applicationService); err != nil {
 		return noStatus, internalerrors.Errorf("could not fetch applications and units: %w", err)
 	}
+	if hasExposedApplications(context.allAppsUnitsCharmBindings.applications) {
+		context.exposedEndpoints, context.exposedEndpointsErr = c.applicationService.GetAllExposedEndpoints(ctx)
+	}
 	// Only admins can see offer details.
 	if err := c.checkIsAdmin(ctx); err == nil {
 		context.offers, err = fetchOffers(ctx, c.crossModelRelationService)
@@ -190,6 +182,13 @@ func (c *Client) FullStatus(ctx context.Context, args params.StatusParams) (para
 	}
 	if err = context.fetchAllOpenPortRanges(ctx, c.portService); err != nil {
 		return noStatus, internalerrors.Errorf("could not fetch open port ranges: %w", err)
+	}
+	if c.isControllerModel {
+		controllerConfig, err := c.controllerConfigService.ControllerConfig(ctx)
+		if err != nil {
+			return noStatus, internalerrors.Errorf("could not fetch controller config: %w", err)
+		}
+		context.populateControllerPorts(controllerConfig)
 	}
 	// These may be empty when machines have not finished deployment.
 	if context.ipAddresses, context.linkLayerDevices, err = fetchNetworkInterfaces(ctx,
@@ -223,6 +222,18 @@ func (c *Client) FullStatus(ctx context.Context, args params.StatusParams) (para
 		logger.Tracef(ctx, "Relations: %v", context.relations)
 	}
 
+	var matchedUnits map[coreunit.Name]struct{}
+	if len(args.Patterns) > 0 {
+		matches := statusservice.MatchStatusNames(
+			args.Patterns,
+			context.allAppsUnitsCharmBindings.applications,
+			context.units,
+			context.allMachines,
+		)
+		context.applyNameMatches(matches)
+		matchedUnits = matches.Units
+	}
+
 	modelStatus, err := context.processModel(ctx)
 	if err != nil {
 		return noStatus, internalerrors.Errorf("cannot determine model status: %w", err)
@@ -235,7 +246,7 @@ func (c *Client) FullStatus(ctx context.Context, args params.StatusParams) (para
 	)
 	if args.IncludeStorage {
 		allStorage, filesystems, volumes, err = processStorage(ctx,
-			c.statusService)
+			c.statusService, matchedUnits)
 		if err != nil {
 			return noStatus, internalerrors.Errorf("fetching storage: %w", err)
 		}
@@ -247,7 +258,7 @@ func (c *Client) FullStatus(ctx context.Context, args params.StatusParams) (para
 		Machines:                  context.processMachines(ctx),
 		Applications:              context.processApplications(ctx),
 		Offers:                    context.processOffers(),
-		Relations:                 context.processRelations(ctx),
+		Relations:                 context.processRelations(),
 		RemoteApplicationOfferers: context.processRemoteApplicationOfferers(ctx),
 		Storage:                   allStorage,
 		Filesystems:               filesystems,
@@ -316,19 +327,18 @@ func (s relationStatus) RelatedEndpoints(applicationName string) ([]relation.End
 		}
 	}
 	if eps == nil {
-		return nil, internalerrors.Errorf("fetching endpoints of %q related to application %q: %w", s,
+		return nil, internalerrors.Errorf("fetching endpoints of %q related to application %q: %w", s.Key.String(),
 			applicationName, errors.NotFound)
 	}
 	return eps, nil
 }
 
 // MachineJobFetcherFunc is a function that fetches jobs for a given machine.
-type MachineJobFetcherFunc func(context.Context, coremachine.Name) []model.MachineJob
+type MachineJobFetcherFunc func(context.Context, statusservice.Machine) []model.MachineJob
 
 type statusContext struct {
 	applicationService        ApplicationService
 	crossModelRelationService CrossModelRelationService
-	machineService            MachineService
 	statusService             StatusService
 
 	machineJobFetcher MachineJobFetcherFunc
@@ -357,6 +367,12 @@ type statusContext struct {
 
 	// remoteAppOfferers: remote application name -> remote application offerer
 	remoteAppOfferers map[string]statusservice.RemoteApplicationOfferer
+
+	// exposedEndpoints: application name -> endpoint name -> exposed endpoint details.
+	exposedEndpoints map[string]map[string]application.ExposedEndpoint
+	// exposedEndpointsErr stores a bulk prefetch error so exposed applications can
+	// surface the same per-application error without failing the whole response.
+	exposedEndpointsErr error
 
 	allAppsUnitsCharmBindings applicationStatusInfo
 	units                     map[coreunit.Name]statusservice.Unit
@@ -424,6 +440,41 @@ func (c *statusContext) fetchAllOpenPortRanges(ctx context.Context, portService 
 	return err
 }
 
+func (c *statusContext) populateControllerPorts(controllerConfig controller.Config) {
+	controllerApp, ok := c.allAppsUnitsCharmBindings.applications[coreapplication.ControllerApplicationName]
+	if !ok || len(controllerApp.Units) == 0 {
+		return
+	}
+
+	if c.allOpenPortRanges == nil {
+		c.allOpenPortRanges = make(port.UnitGroupedPortRanges)
+	}
+	controllerPorts := []network.PortRange{
+		network.MustParsePortRange(strconv.Itoa(controllerConfig.APIPort())),
+		network.MustParsePortRange(strconv.Itoa(controllerConfig.SSHServerPort())),
+	}
+	for unitName := range controllerApp.Units {
+		existing := c.allOpenPortRanges[unitName]
+		// Build a lookup of currently-open ports for this unit.
+		existingSet := make(map[network.PortRange]struct{}, len(existing))
+		for _, openedPort := range existing {
+			existingSet[openedPort] = struct{}{}
+		}
+		// Add controller API and SSH ports when missing.
+		for _, controllerPort := range controllerPorts {
+			if _, found := existingSet[controllerPort]; !found {
+				existing = append(existing, controllerPort)
+				existingSet[controllerPort] = struct{}{}
+			}
+		}
+		// Keep deterministic order for status rendering and tests.
+		sort.Slice(existing, func(i, j int) bool {
+			return existing[i].LessThan(existing[j])
+		})
+		c.allOpenPortRanges[unitName] = existing
+	}
+}
+
 func fetchNetworkInterfaces(
 	ctx context.Context,
 	networkService NetworkService,
@@ -468,6 +519,111 @@ func fetchNetworkInterfaces(
 	})
 
 	return ipAddresses, devices, nil
+}
+
+func (c *statusContext) applyNameMatches(matches statusservice.NameMatchResult) {
+	keptApplications := make(map[string]statusservice.Application, len(matches.Applications))
+	keptCharmURLs := make(map[string]string, len(matches.Applications))
+	keptBindings := make(map[string]map[string]network.SpaceName, len(matches.Applications))
+	keptExposedEndpoints := make(map[string]map[string]application.ExposedEndpoint, len(matches.Applications))
+	keptLeaders := make(map[string]string, len(matches.Applications))
+	for appName, app := range c.allAppsUnitsCharmBindings.applications {
+		if _, ok := matches.Applications[appName]; !ok {
+			continue
+		}
+		filteredUnits := make(map[coreunit.Name]statusservice.Unit)
+		for unitName, unit := range app.Units {
+			if _, ok := matches.Units[unitName]; ok {
+				filteredUnits[unitName] = unit
+			}
+		}
+		app.Units = filteredUnits
+		keptApplications[appName] = app
+		if charmURL, ok := c.allAppsUnitsCharmBindings.applicationCharmURL[appName]; ok {
+			keptCharmURLs[appName] = charmURL
+		}
+		if bindings, ok := c.allAppsUnitsCharmBindings.endpointBindings[appName]; ok {
+			keptBindings[appName] = bindings
+		}
+		if endpoints, ok := c.exposedEndpoints[appName]; ok {
+			keptExposedEndpoints[appName] = endpoints
+		}
+		if leader, ok := c.leaders[appName]; ok {
+			keptLeaders[appName] = leader
+		}
+	}
+	c.allAppsUnitsCharmBindings.applications = keptApplications
+	c.allAppsUnitsCharmBindings.applicationCharmURL = keptCharmURLs
+	c.allAppsUnitsCharmBindings.endpointBindings = keptBindings
+	c.exposedEndpoints = keptExposedEndpoints
+	c.leaders = keptLeaders
+
+	keptUnits := make(map[coreunit.Name]statusservice.Unit, len(matches.Units))
+	keptPodsInfo := make(map[coreunit.Name]application.K8sPodInfo, len(matches.Units))
+	for unitName, unit := range c.units {
+		if _, ok := matches.Units[unitName]; !ok {
+			continue
+		}
+		keptUnits[unitName] = unit
+		if podInfo, ok := c.podsInfo[unitName]; ok {
+			keptPodsInfo[unitName] = podInfo
+		}
+	}
+	c.units = keptUnits
+	c.podsInfo = keptPodsInfo
+
+	keptMachines := make(map[coremachine.Name][]statusservice.Machine)
+	for hostMachineName, machines := range c.machines {
+		filtered := make([]statusservice.Machine, 0, len(machines))
+		for _, machine := range machines {
+			if _, ok := matches.Machines[machine.Name]; ok {
+				filtered = append(filtered, machine)
+			}
+		}
+		if len(filtered) > 0 {
+			keptMachines[hostMachineName] = filtered
+		}
+	}
+	c.machines = keptMachines
+
+	keptAllMachines := make(map[coremachine.Name]statusservice.Machine, len(matches.Machines))
+	for machineName, machine := range c.allMachines {
+		if _, ok := matches.Machines[machineName]; ok {
+			keptAllMachines[machineName] = machine
+		}
+	}
+	c.allMachines = keptAllMachines
+
+	keptRelationsByID := make(map[int]relationStatus)
+	keptRelations := make(map[string][]relationStatus)
+	for id, rel := range c.relationsByID {
+		keep := true
+		for _, endpoint := range rel.Endpoints {
+			if _, ok := matches.Applications[endpoint.ApplicationName]; !ok {
+				keep = false
+				break
+			}
+		}
+		if !keep {
+			continue
+		}
+		keptRelationsByID[id] = rel
+		for _, endpoint := range rel.Endpoints {
+			keptRelations[endpoint.ApplicationName] = append(keptRelations[endpoint.ApplicationName], rel)
+		}
+	}
+	c.relationsByID = keptRelationsByID
+	c.relations = keptRelations
+
+	keptOffers := make(map[string]offerStatus)
+	for offerName, offer := range c.offers {
+		if _, ok := matches.Applications[offer.ApplicationName]; ok {
+			keptOffers[offerName] = offer
+		}
+	}
+	c.offers = keptOffers
+
+	c.remoteAppOfferers = map[string]statusservice.RemoteApplicationOfferer{}
 }
 
 // fetchAllApplicationsAndUnits returns a map from application name to application,
@@ -578,14 +734,9 @@ func fetchRelations(ctx context.Context, relationService RelationService,
 		statuses = make(map[corerelation.UUID]status.StatusInfo)
 	}
 	for _, detail := range details {
-		var identifiers []corerelation.EndpointIdentifier
-		for _, ep := range detail.Endpoints {
-			identifiers = append(identifiers, ep.EndpointIdentifier())
-		}
-		key, err := corerelation.NewKey(identifiers)
-		if err != nil {
-			logger.Warningf(ctx, "failed to generate relation key for %q: %v", detail.UUID, err)
-			continue
+		key := make(corerelation.Key, len(detail.Endpoints))
+		for i, ep := range detail.Endpoints {
+			key[i] = ep.EndpointIdentifier()
 		}
 
 		relStatus, ok := statuses[detail.UUID]
@@ -648,15 +799,15 @@ func fetchOffers(ctx context.Context, service CrossModelRelationService) (map[st
 	}), nil
 }
 
-func (s *statusContext) processModel(ctx context.Context) (params.ModelStatusInfo, error) {
+func (c *statusContext) processModel(ctx context.Context) (params.ModelStatusInfo, error) {
 	var info params.ModelStatusInfo
 
-	info.Name = s.model.Name
-	info.Type = s.model.Type.String()
-	info.CloudTag = names.NewCloudTag(s.model.Cloud).String()
-	info.CloudRegion = s.model.CloudRegion
+	info.Name = c.model.Name
+	info.Type = c.model.Type.String()
+	info.CloudTag = names.NewCloudTag(c.model.Cloud).String()
+	info.CloudRegion = c.model.CloudRegion
 
-	currentVersion := s.model.AgentVersion
+	currentVersion := c.model.AgentVersion
 	info.Version = currentVersion.String()
 
 	// TODO: AvailableVersion being an empty string controls if the juju client
@@ -664,15 +815,15 @@ func (s *statusContext) processModel(ctx context.Context) (params.ModelStatusInf
 	// is the controller should just report the version back to the client of
 	// the facade. Let the client do the calculation and work out if some
 	// information should be displayed.
-	latestVersion := s.model.LatestAgentVersion
+	latestVersion := c.model.LatestAgentVersion
 	if currentVersion.Compare(latestVersion) < 0 {
 		info.AvailableVersion = latestVersion.String()
 	}
 
-	aStatus, err := s.statusService.GetModelStatus(ctx)
+	aStatus, err := c.statusService.GetModelStatus(ctx)
 	if internalerrors.Is(err, domainmodelerrors.NotFound) {
 		// This should never happen but just in case.
-		return params.ModelStatusInfo{}, internalerrors.Errorf("model status for %q: %w", s.model.Name, errors.NotFound)
+		return params.ModelStatusInfo{}, internalerrors.Errorf("model status for %q: %w", c.model.Name, errors.NotFound)
 	}
 	if err != nil {
 		return params.ModelStatusInfo{}, internalerrors.Errorf("cannot obtain model status info: %w", err)
@@ -739,28 +890,31 @@ func (c *statusContext) makeMachineStatus(
 	status.Constraints = machine.Constraints.String()
 	status.Containers = make(map[string]params.MachineStatus)
 
-	status.Jobs = c.machineJobFetcher(ctx, machineName)
+	status.Jobs = c.machineJobFetcher(ctx, machine)
+
+	if clusterInfo := machine.ClusterInfo; clusterInfo != nil {
+		if clusterInfo.Present {
+			// If the machine has a cluster info with a voting role, it has vote
+			// and wants vote. This back fills the information missing from the
+			// machine status. We don't have the fidelity to know if it actually
+			// wants a vote, so we assume it does if it has one, or it never
+			// has one.
+			if clusterInfo.Role.HasVote() {
+				status.HasVote = true
+				status.WantsVote = true
+			}
+
+			// Instead of sending the has and wants vote booleans, we send the
+			// role string instead. This allows us to provide more concrete
+			// information about the cluster role of the machine.
+			status.ClusterRole = new(clusterInfo.Role.String())
+		} else {
+			status.ClusterRole = new("unknown")
+		}
+	}
 
 	if instanceID := machine.InstanceID; instanceID != instance.UnknownId {
 		status.InstanceId = instanceID
-
-		// TODO (stickupkid): Return the public address of the unit's machine.
-		// addr, err := machine.PublicAddress()
-		// if err != nil {
-		// 	// Usually this indicates that no addresses have been set on the
-		// 	// machine yet.
-		// 	addr = network.SpaceAddress{}
-		// 	logger.Debugf(ctx, "error fetching public address: %q", err)
-		// }
-		// status.DNSName = addr.Value
-
-		// if len(status.IPAddresses) == 0 {
-		// 	logger.Debugf(ctx, "no IP addresses fetched for machine %q", instanceID)
-		// 	// At least give it the newly created DNSName address, if it exists.
-		// 	if addr.Value != "" {
-		// 		status.IPAddresses = append(status.IPAddresses, addr.Value)
-		// 	}
-		// }
 
 		linkLayerDevices := c.linkLayerDevices[machineName]
 		status.NetworkInterfaces = transform.SliceToMap(linkLayerDevices, func(llDev domainnetwork.NetInterface) (string, params.NetworkInterface) {
@@ -790,22 +944,10 @@ func (c *statusContext) makeMachineStatus(
 		status.InstanceId = "pending"
 	}
 
-	lxdProfiles := make(map[string]params.LXDProfile)
-	for _, v := range machine.LXDProfiles {
-		if profile, ok := appStatusInfo.lxdProfiles[v]; ok {
-			lxdProfiles[v] = params.LXDProfile{
-				Config:      profile.Config,
-				Description: profile.Description,
-				Devices:     profile.Devices,
-			}
-		}
-	}
-	status.LXDProfiles = lxdProfiles
-
 	return
 }
 
-func (c *statusContext) processRelations(ctx context.Context) []params.RelationStatus {
+func (c *statusContext) processRelations() []params.RelationStatus {
 	var out []params.RelationStatus
 	for _, current := range c.relationsByID {
 		var eps []params.EndpointStatus
@@ -862,17 +1004,14 @@ func (c *statusContext) processApplications(ctx context.Context) map[string]para
 
 func (c *statusContext) processApplicationExposedEndpoints(ctx context.Context, name string, application statusservice.Application) (map[string]params.ExposedEndpoint, error) {
 	// If the application is not exposed, then we don't need to try and get the
-	// exposed endpoints for the application. This reduces the number of default
-	// calls to the application service.
+	// exposed endpoints for the application.
 	if !application.Exposed {
 		return nil, nil
 	}
-
-	exposedEndpoints, err := c.applicationService.GetExposedEndpoints(ctx, name)
-	if err != nil {
-		return nil, err
+	if c.exposedEndpointsErr != nil {
+		return nil, c.exposedEndpointsErr
 	}
-	return c.mapExposedEndpointsFromDomain(exposedEndpoints)
+	return c.mapExposedEndpointsFromDomain(c.exposedEndpoints[name])
 }
 
 func (c *statusContext) processApplication(ctx context.Context, name string, application statusservice.Application) params.ApplicationStatus {
@@ -1264,8 +1403,8 @@ func (c *statusContext) processMachine(ctx context.Context, m statusservice.Mach
 
 // filterStatusData limits what agent StatusData data is passed over
 // the API. This prevents unintended leakage of internal-only data.
-func filterStatusData(status map[string]interface{}) map[string]interface{} {
-	out := make(map[string]interface{})
+func filterStatusData(status map[string]any) map[string]any {
+	out := make(map[string]any)
 	for name, value := range status {
 		// use a set here if we end up with a larger whitelist
 		if name == "relation-id" {
@@ -1303,17 +1442,41 @@ func encodeOSType(ostype deployment.OSType) (string, error) {
 
 // processStorage produces status for all storage in the model.
 func processStorage(
-	ctx context.Context, statusService StatusService,
+	ctx context.Context,
+	statusService StatusService,
+	matchedUnits map[coreunit.Name]struct{},
 ) ([]params.StorageDetails, []params.FilesystemDetails, []params.VolumeDetails, error) {
-	storageInstances, err := statusService.GetStorageInstanceStatuses(ctx)
+	storageInstances, err := statusService.GetAllStorageInstanceStatuses(ctx)
 	if err != nil {
 		return nil, nil, nil, internalerrors.Capture(err)
 	}
-	storageMap := map[string]*params.StorageDetails{}
-	for _, v := range storageInstances {
+	if matchedUnits != nil {
+		storageInstances = filterStorageInstances(storageInstances, matchedUnits)
+	}
+
+	// zeroTime is used to set the status time no status time is available.
+	zeroTime := time.UnixMicro(0).UTC()
+
+	storageResult := make([]params.StorageDetails, len(storageInstances))
+	storageMap := make(map[string]params.StorageDetails, len(storageInstances))
+	for i, v := range storageInstances {
 		details := params.StorageDetails{
 			StorageTag: names.NewStorageTag(v.ID).String(),
 			Life:       v.Life,
+			Status: params.EntityStatus{
+				Status: v.Status.Status,
+				Info:   v.Status.Message,
+				Data:   v.Status.Data,
+				Since:  v.Status.Since,
+			},
+		}
+		if v.Status.Since == nil {
+			// This prevents a panic in clients due to a storage instance after
+			// 4.0 possibly having no filesystem or volume to get a status from.
+			// This is poor API design anyway, since a storage instance does not
+			// have a status, instead, we've pulled one from the provisioned
+			// entities.
+			details.Status.Since = &zeroTime
 		}
 		if v.Owner != nil {
 			details.OwnerTag = names.NewUnitTag(v.Owner.String()).String()
@@ -1331,6 +1494,8 @@ func processStorage(
 			sad := params.StorageAttachmentDetails{
 				StorageTag: details.StorageTag,
 				UnitTag:    names.NewUnitTag(sa.Unit.String()).String(),
+				Life:       sa.Life,
+				Location:   sa.Location,
 			}
 			if sa.Machine != nil {
 				sad.MachineTag = names.NewMachineTag(sa.Machine.String()).String()
@@ -1340,15 +1505,16 @@ func processStorage(
 			}
 			details.Attachments[unitTag.String()] = sad
 		}
-		// Store in a map to get the status and location from either the
-		// filesystem or volumes. These are a facade concern, hence why it
-		// is done here.
-		storageMap[v.ID] = &details
+		storageResult[i] = details
+		storageMap[v.ID] = details
 	}
 
-	filesystems, err := statusService.GetFilesystemStatuses(ctx)
+	filesystems, err := statusService.GetAllFilesystemStatuses(ctx)
 	if err != nil {
 		return nil, nil, nil, internalerrors.Capture(err)
+	}
+	if matchedUnits != nil {
+		filesystems = filterFilesystems(filesystems, storageInstances)
 	}
 	filesystemResult := make([]params.FilesystemDetails, 0, len(filesystems))
 	for _, v := range filesystems {
@@ -1357,6 +1523,7 @@ func processStorage(
 			Life:          v.Life,
 			Info: params.FilesystemInfo{
 				ProviderId: v.ProviderID,
+				Pool:       v.PoolName,
 				SizeMiB:    v.SizeMiB,
 			},
 			Status: params.EntityStatus{
@@ -1369,7 +1536,9 @@ func processStorage(
 		if v.VolumeID != nil {
 			details.VolumeTag = names.NewVolumeTag(*v.VolumeID).String()
 		}
-		unitAttachmentLocations := map[string]string{}
+		if v.Status.Since == nil {
+			details.Status.Since = &zeroTime
+		}
 		for unit, fa := range v.UnitAttachments {
 			fad := params.FilesystemAttachmentDetails{
 				Life: fa.Life,
@@ -1383,7 +1552,6 @@ func processStorage(
 			}
 			unitTag := names.NewUnitTag(unit.String()).String()
 			details.UnitAttachments[unitTag] = fad
-			unitAttachmentLocations[unitTag] = fa.MountPoint
 		}
 		for machine, fa := range v.MachineAttachments {
 			fad := params.FilesystemAttachmentDetails{
@@ -1400,28 +1568,17 @@ func processStorage(
 			details.MachineAttachments[machineTag] = fad
 		}
 		if storage, ok := storageMap[v.StorageID]; ok {
-			if storage.Kind == params.StorageKindFilesystem {
-				storage.Status = details.Status
-
-				// give the storage instance attachment the unit's attachment
-				// location.
-				for k, v := range unitAttachmentLocations {
-					ad, ok := storage.Attachments[k]
-					if !ok {
-						continue
-					}
-					ad.Location = v
-					storage.Attachments[k] = ad
-				}
-			}
-			details.Storage = storage
+			details.Storage = &storage
 		}
 		filesystemResult = append(filesystemResult, details)
 	}
 
-	volumes, err := statusService.GetVolumeStatuses(ctx)
+	volumes, err := statusService.GetAllVolumeStatuses(ctx)
 	if err != nil {
 		return nil, nil, nil, internalerrors.Capture(err)
+	}
+	if matchedUnits != nil {
+		volumes = filterVolumes(volumes, storageInstances)
 	}
 	volumeResult := make([]params.VolumeDetails, 0, len(volumes))
 	for _, v := range volumes {
@@ -1432,6 +1589,7 @@ func processStorage(
 				ProviderId: v.ProviderID,
 				HardwareId: v.HardwareID,
 				WWN:        v.WWN,
+				Pool:       v.PoolName,
 				SizeMiB:    v.SizeMiB,
 				Persistent: v.Persistent,
 			},
@@ -1442,7 +1600,9 @@ func processStorage(
 				Since:  v.Status.Since,
 			},
 		}
-		unitAttachmentLocations := map[string]string{}
+		if v.Status.Since == nil {
+			details.Status.Since = &zeroTime
+		}
 		for unit, va := range v.UnitAttachments {
 			vad := params.VolumeAttachmentDetails{
 				Life: va.Life,
@@ -1457,12 +1617,7 @@ func processStorage(
 				pi := params.VolumeAttachmentPlanInfo{
 					DeviceAttributes: vap.DeviceAttributes,
 				}
-				switch vap.DeviceType {
-				case storageprovisioning.PlanDeviceTypeLocal:
-					pi.DeviceType = internalstorage.DeviceTypeLocal
-				case storageprovisioning.PlanDeviceTypeISCSI:
-					pi.DeviceType = internalstorage.DeviceTypeISCSI
-				}
+				pi.DeviceType = vap.DeviceType.String()
 				vad.VolumeAttachmentInfo.PlanInfo = &pi
 			}
 			if details.UnitAttachments == nil {
@@ -1470,18 +1625,6 @@ func processStorage(
 			}
 			unitTag := names.NewUnitTag(unit.String()).String()
 			details.UnitAttachments[unitTag] = vad
-
-			var deviceLinks []string
-			if va.DeviceLink != "" {
-				deviceLinks = append(deviceLinks, vad.DeviceLink)
-			}
-			blockDevicePath, _ := blockdevice.BlockDevicePath(blockdevice.BlockDevice{
-				HardwareId:  v.HardwareID,
-				WWN:         v.WWN,
-				DeviceName:  va.DeviceName,
-				DeviceLinks: deviceLinks,
-			})
-			unitAttachmentLocations[unitTag] = blockDevicePath
 		}
 		for machine, va := range v.MachineAttachments {
 			vad := params.VolumeAttachmentDetails{
@@ -1498,10 +1641,10 @@ func processStorage(
 					DeviceAttributes: vap.DeviceAttributes,
 				}
 				switch vap.DeviceType {
-				case storageprovisioning.PlanDeviceTypeLocal:
-					pi.DeviceType = internalstorage.DeviceTypeLocal
-				case storageprovisioning.PlanDeviceTypeISCSI:
-					pi.DeviceType = internalstorage.DeviceTypeISCSI
+				case storage.VolumeDeviceTypeLocal:
+					pi.DeviceType = internalstorage.DeviceTypeLocal.String()
+				case storage.VolumeDeviceTypeISCSI:
+					pi.DeviceType = internalstorage.DeviceTypeISCSI.String()
 				}
 				vad.VolumeAttachmentInfo.PlanInfo = &pi
 			}
@@ -1512,30 +1655,75 @@ func processStorage(
 			details.MachineAttachments[machineTag] = vad
 		}
 		if storage, ok := storageMap[v.StorageID]; ok {
-			if storage.Kind == params.StorageKindBlock {
-				storage.Status = details.Status
-				storage.Persistent = details.Info.Persistent
-				// give the storage instance attachment the unit's attachment
-				// location.
-				for k, v := range unitAttachmentLocations {
-					ad, ok := storage.Attachments[k]
-					if !ok {
-						continue
-					}
-					ad.Location = v
-					storage.Attachments[k] = ad
-				}
-			}
-			details.Storage = storage
+			details.Storage = &storage
 		}
 		volumeResult = append(volumeResult, details)
 	}
 
-	storageResult := make([]params.StorageDetails, 0, len(storageInstances))
-	for _, v := range storageInstances {
-		if storage, ok := storageMap[v.ID]; ok {
-			storageResult = append(storageResult, *storage)
+	return storageResult, filesystemResult, volumeResult, nil
+}
+
+func filterStorageInstances(
+	storageInstances []statusservice.StorageInstance,
+	matchedUnits map[coreunit.Name]struct{},
+) []statusservice.StorageInstance {
+	filtered := make([]statusservice.StorageInstance, 0, len(storageInstances))
+	for _, storageInstance := range storageInstances {
+		if storageInstance.Owner == nil {
+			continue
+		}
+		if _, ok := matchedUnits[*storageInstance.Owner]; ok {
+			filtered = append(filtered, storageInstance)
 		}
 	}
-	return storageResult, filesystemResult, volumeResult, nil
+	return filtered
+}
+
+func filterFilesystems(
+	filesystems []statusservice.Filesystem,
+	storageInstances []statusservice.StorageInstance,
+) []statusservice.Filesystem {
+	matchedStorageUUIDs := make(map[string]struct{}, len(storageInstances))
+	for _, storageInstance := range storageInstances {
+		matchedStorageUUIDs[storageInstance.UUID.String()] = struct{}{}
+	}
+	filtered := make([]statusservice.Filesystem, 0, len(filesystems))
+	for _, filesystem := range filesystems {
+		if filesystem.StorageUUID == nil {
+			continue
+		}
+		if _, ok := matchedStorageUUIDs[filesystem.StorageUUID.String()]; ok {
+			filtered = append(filtered, filesystem)
+		}
+	}
+	return filtered
+}
+
+func filterVolumes(
+	volumes []statusservice.Volume,
+	storageInstances []statusservice.StorageInstance,
+) []statusservice.Volume {
+	matchedStorageUUIDs := make(map[string]struct{}, len(storageInstances))
+	for _, storageInstance := range storageInstances {
+		matchedStorageUUIDs[storageInstance.UUID.String()] = struct{}{}
+	}
+	filtered := make([]statusservice.Volume, 0, len(volumes))
+	for _, volume := range volumes {
+		if volume.StorageUUID == nil {
+			continue
+		}
+		if _, ok := matchedStorageUUIDs[volume.StorageUUID.String()]; ok {
+			filtered = append(filtered, volume)
+		}
+	}
+	return filtered
+}
+
+func hasExposedApplications(applications map[string]statusservice.Application) bool {
+	for _, application := range applications {
+		if application.Exposed {
+			return true
+		}
+	}
+	return false
 }

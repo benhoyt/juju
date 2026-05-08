@@ -9,7 +9,7 @@ import (
 
 	"github.com/juju/errors"
 
-	"github.com/juju/juju/internal/storage"
+	"github.com/juju/juju/core/storage"
 )
 
 type disksFlag struct {
@@ -18,7 +18,7 @@ type disksFlag struct {
 
 // Set implements gnuflag.Value.Set.
 func (f disksFlag) Set(s string) error {
-	for _, field := range strings.Fields(s) {
+	for field := range strings.FieldsSeq(s) {
 		cons, err := storage.ParseDirective(field)
 		if err != nil {
 			return errors.Annotate(err, "cannot parse disk storage directives")

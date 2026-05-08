@@ -6,6 +6,8 @@ package provider_test
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	stdtesting "testing"
 
 	"github.com/juju/names/v6"
@@ -51,11 +53,11 @@ func (s *tmpfsSuite) tmpfsProvider(c *tc.C) storage.Provider {
 
 func (s *tmpfsSuite) TestFilesystemSource(c *tc.C) {
 	p := s.tmpfsProvider(c)
-	cfg, err := storage.NewConfig("name", provider.TmpfsProviderType, map[string]interface{}{})
+	cfg, err := storage.NewConfig("name", provider.TmpfsProviderType, map[string]any{})
 	c.Assert(err, tc.ErrorIsNil)
 	_, err = p.FilesystemSource(cfg)
 	c.Assert(err, tc.ErrorMatches, "storage directory not specified")
-	cfg, err = storage.NewConfig("name", provider.TmpfsProviderType, map[string]interface{}{
+	cfg, err = storage.NewConfig("name", provider.TmpfsProviderType, map[string]any{
 		"storage-dir": c.MkDir(),
 	})
 	c.Assert(err, tc.ErrorIsNil)
@@ -65,7 +67,7 @@ func (s *tmpfsSuite) TestFilesystemSource(c *tc.C) {
 
 func (s *tmpfsSuite) TestValidateConfig(c *tc.C) {
 	p := s.tmpfsProvider(c)
-	cfg, err := storage.NewConfig("name", provider.TmpfsProviderType, map[string]interface{}{})
+	cfg, err := storage.NewConfig("name", provider.TmpfsProviderType, map[string]any{})
 	c.Assert(err, tc.ErrorIsNil)
 	err = p.ValidateConfig(cfg)
 	// The tmpfs provider does not have any user
@@ -198,6 +200,9 @@ func (s *tmpfsSuite) TestAttachFilesystemsAlreadyMounted(c *tc.C) {
 			},
 		},
 	}})
+	data, err := os.ReadFile(filepath.Join(s.fakeEtcDir, "fstab"))
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(string(data), tc.Equals, "filesystem-123 /in/the/place tmpfs size=1m,nofail\n")
 }
 
 func (s *tmpfsSuite) TestAttachFilesystemsMountReadOnly(c *tc.C) {
@@ -229,6 +234,9 @@ func (s *tmpfsSuite) TestAttachFilesystemsMountReadOnly(c *tc.C) {
 			},
 		},
 	}})
+	data, err := os.ReadFile(filepath.Join(s.fakeEtcDir, "fstab"))
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(string(data), tc.Equals, "filesystem-1 /var/lib/juju/storage/fs/foo tmpfs size=1024m,ro,nofail\n")
 }
 
 func (s *tmpfsSuite) TestAttachFilesystemsMountFails(c *tc.C) {

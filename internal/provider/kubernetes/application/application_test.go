@@ -5,6 +5,7 @@ package application_test
 
 import (
 	"fmt"
+	"reflect"
 	stdtesting "testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/juju/clock/testclock"
 	"github.com/juju/errors"
 	"github.com/juju/tc"
+	"github.com/kr/pretty"
 	"go.uber.org/mock/gomock"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -131,7 +133,6 @@ func (s *applicationSuite) getApp(c *tc.C, deploymentType caas.DeploymentType, m
 
 	s.controllerUUID = controllerUUID.String()
 	s.modelUUID = modelUUID.String()
-
 	return application.NewApplicationForTest(
 		s.appName, s.namespace, modelUUID.String(), s.namespace, constants.LabelVersion2,
 		deploymentType,
@@ -152,7 +153,8 @@ func (s *applicationSuite) getApp(c *tc.C, deploymentType caas.DeploymentType, m
 
 func (s *applicationSuite) assertEnsure(c *tc.C, app caas.Application,
 	isPrivateImageRepo bool, cons constraints.Value, trust bool, rootless bool,
-	agentVersion string, checkMainResource func(),
+	agentVersion string, mutateAppConfig func(*caas.ApplicationConfig),
+	checkMainResource func(), assertEnsureErrFunc func(err error),
 ) {
 	if agentVersion == "" {
 		agentVersion = defaultAgentVersion
@@ -343,9 +345,16 @@ func (s *applicationSuite) assertEnsure(c *tc.C, app caas.Application,
 				StorageName: "database",
 				Size:        100,
 				Provider:    "kubernetes",
-				Attributes:  map[string]interface{}{"storage-class": "workload-storage"},
-				Attachment: &storage.KubernetesFilesystemAttachmentParams{
-					Path: "path/to/here",
+				Attributes:  map[string]any{"storage-class": "workload-storage"},
+				Attachments: []storage.KubernetesFilesystemAttachmentParams{
+					{
+						Path:          "path/to/here",
+						ContainerName: "charm",
+					},
+					{
+						Path:          "path/in/workload-container",
+						ContainerName: "gitlab",
+					},
 				},
 				ResourceTags: map[string]string{"foo": "bar"},
 			},
@@ -369,7 +378,7 @@ func (s *applicationSuite) assertEnsure(c *tc.C, app caas.Application,
 				Mounts: []caas.MountConfig{
 					{
 						StorageName: "database",
-						Path:        "path/to/here",
+						Path:        "path/in/workload-container",
 					},
 				},
 			},
@@ -410,6 +419,16 @@ func (s *applicationSuite) assertEnsure(c *tc.C, app caas.Application,
 			return caas.RunAsDefault
 		}(),
 		StorageUniqueID: "uniqid",
+	}
+
+	if mutateAppConfig != nil {
+		mutateAppConfig(&appConfig)
+	}
+
+	if assertEnsureErrFunc != nil {
+		err := app.Ensure(appConfig)
+		assertEnsureErrFunc(err)
+		return
 	}
 
 	c.Assert(app.Ensure(appConfig), tc.ErrorIsNil)
@@ -514,105 +533,495 @@ func (s *applicationSuite) assertDelete(c *tc.C, app caas.Application) {
 	c.Assert(validatingWebhookConfigurations.Items, tc.IsNil)
 }
 
+// TestEnsureStateful tests the behavior of the Ensure method for stateful applications.
+// It verifies that the correct Kubernetes resources (e.g., Services, PVCs, PodSpecs) are created
+// based on the application configuration and naming conventions. The test also ensures that
+// resources are cleaned up properly after the test.
 func (s *applicationSuite) TestEnsureStateful(c *tc.C) {
-	app, _ := s.getApp(c, caas.DeploymentStateful, false)
-	s.assertEnsure(
-		c, app, false, constraints.Value{}, true, false, "", func() {
-			svc, err := s.client.CoreV1().Services("test").Get(c.Context(), "gitlab-endpoints", metav1.GetOptions{})
-			c.Assert(err, tc.ErrorIsNil)
-			c.Assert(svc, tc.DeepEquals, &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "gitlab-endpoints",
-					Namespace: "test",
-					Labels: map[string]string{
-						"app.kubernetes.io/name":       "gitlab",
-						"app.kubernetes.io/managed-by": "juju",
-					},
-					Annotations: map[string]string{
-						"juju.is/version": "3.5-beta1",
-						"service.alpha.kubernetes.io/tolerate-unready-endpoints": "true",
-					},
-				},
-				Spec: corev1.ServiceSpec{
-					Selector:                 map[string]string{"app.kubernetes.io/name": "gitlab"},
-					Type:                     corev1.ServiceTypeClusterIP,
-					ClusterIP:                "None",
-					PublishNotReadyAddresses: true,
-				},
-			})
-
-			ss, err := s.client.AppsV1().StatefulSets("test").Get(c.Context(), "gitlab", metav1.GetOptions{})
-			c.Assert(err, tc.ErrorIsNil)
-			c.Assert(ss, tc.DeepEquals, &appsv1.StatefulSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "gitlab",
-					Namespace: "test",
-					Labels: map[string]string{
-						"app.kubernetes.io/name":       "gitlab",
-						"app.kubernetes.io/managed-by": "juju",
-					},
-					Annotations: map[string]string{
-						"juju.is/version":  "3.5-beta1",
-						"app.juju.is/uuid": "uniqid",
-					},
-				},
-				Spec: appsv1.StatefulSetSpec{
-					Replicas: pointer.Int32Ptr(3),
-					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"app.kubernetes.io/name": "gitlab",
-						},
-					},
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Labels:      map[string]string{"app.kubernetes.io/name": "gitlab"},
-							Annotations: map[string]string{"juju.is/version": "3.5-beta1"},
-						},
-						Spec: getPodSpec31(),
-					},
-					VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
-						{
-							ObjectMeta: metav1.ObjectMeta{
-								Name: "gitlab-database-uniqid",
-								Labels: map[string]string{
-									"storage.juju.is/name":         "database",
-									"app.kubernetes.io/managed-by": "juju",
-								},
-								Annotations: map[string]string{
-									"foo":                  "bar",
-									"storage.juju.is/name": "database",
-								}},
-							Spec: corev1.PersistentVolumeClaimSpec{
-								StorageClassName: pointer.StringPtr("test-workload-storage"),
-								AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-								Resources: corev1.VolumeResourceRequirements{
-									Requests: corev1.ResourceList{
-										corev1.ResourceStorage: k8sresource.MustParse("100Mi"),
-									},
-								},
-							},
-						},
-					},
-					PodManagementPolicy: appsv1.ParallelPodManagement,
-					ServiceName:         "gitlab-endpoints",
-				},
-			})
-
-			// No pvc is created.
-			_, err = s.client.CoreV1().PersistentVolumeClaims("test").
-				Get(c.Context(), "gitlab-database-uniqid-gitlab-0",
-					metav1.GetOptions{})
-			c.Assert(err, tc.ErrorMatches,
-				"persistentvolumeclaims \"gitlab-database-uniqid-gitlab-0\" not found")
+	// Base service used by all entry in test table.
+	expectedService := corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gitlab-endpoints",
+			Namespace: "test",
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "gitlab",
+				"app.kubernetes.io/managed-by": "juju",
+			},
+			Annotations: map[string]string{
+				"juju.is/version": "3.5-beta1",
+				"service.alpha.kubernetes.io/tolerate-unready-endpoints": "true",
+			},
 		},
+		Spec: corev1.ServiceSpec{
+			Selector:                 map[string]string{"app.kubernetes.io/name": "gitlab"},
+			Type:                     corev1.ServiceTypeClusterIP,
+			ClusterIP:                "None",
+			PublishNotReadyAddresses: true,
+		},
+	}
+	// Expected PVC that follows the modern naming format <app>-<storage>-<uniqid>-<app>-<ordinal>.
+	expectedPVCsModernFormat := []corev1.PersistentVolumeClaim{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "gitlab-database-uniqid",
+				Labels: map[string]string{
+					"storage.juju.is/name":         "database",
+					"app.kubernetes.io/managed-by": "juju",
+				},
+				Annotations: map[string]string{
+					"foo":                  "bar",
+					"storage.juju.is/name": "database",
+				},
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				StorageClassName: pointer.StringPtr("test-workload-storage"),
+				AccessModes: []corev1.PersistentVolumeAccessMode{
+					corev1.ReadWriteOnce,
+				},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: k8sresource.MustParse("100Mi"),
+					},
+				},
+			},
+		},
+	}
+	// Expected PVC that follows the legacy naming format <storage>-<uniqid>-<app>-<ordinal>.
+	expectedPVCsLegacyFormatWithUniqID := []corev1.PersistentVolumeClaim{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "database-uniqid",
+				Labels: map[string]string{
+					"storage.juju.is/name":         "database",
+					"app.kubernetes.io/managed-by": "juju",
+				},
+				Annotations: map[string]string{
+					"foo":                  "bar",
+					"storage.juju.is/name": "database",
+				},
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				StorageClassName: pointer.StringPtr("test-workload-storage"),
+				AccessModes: []corev1.PersistentVolumeAccessMode{
+					corev1.ReadWriteOnce,
+				},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: k8sresource.MustParse("100Mi"),
+					},
+				},
+			},
+		},
+	}
+	// Expected PVC that follows the legacy naming format juju-<storage>-<number>.
+	expectedPVCsLegacyFormatWithoutUniqID := []corev1.PersistentVolumeClaim{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "juju-database-123",
+				Labels: map[string]string{
+					"storage.juju.is/name":         "database",
+					"app.kubernetes.io/managed-by": "juju",
+				},
+				Annotations: map[string]string{
+					"foo":                  "bar",
+					"storage.juju.is/name": "database",
+				},
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				StorageClassName: pointer.StringPtr("test-workload-storage"),
+				AccessModes: []corev1.PersistentVolumeAccessMode{
+					corev1.ReadWriteOnce,
+				},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: k8sresource.MustParse("100Mi"),
+					},
+				},
+			},
+		},
+	}
+
+	// Expected pod spec without any modification.
+	expectedPodSpec := getPodSpec31()
+
+	// Expected pod spec modifying the volume name to reflect legacy format.
+	expectedPodSpecWithLegacyVolumeMountNameWithUniqID := getPodSpec31()
+	expectedPodSpecWithLegacyVolumeMountNameWithUniqID.Containers[0].
+		VolumeMounts[8].Name = "database-uniqid"
+	expectedPodSpecWithLegacyVolumeMountNameWithUniqID.Containers[1].
+		VolumeMounts[2].Name = "database-uniqid"
+
+	// Expected pod spec modifying the volume name to reflect legacy format.
+	expectedPodSpecWithLegacyVolumeMountNameWithoutUniqID := getPodSpec31()
+	expectedPodSpecWithLegacyVolumeMountNameWithoutUniqID.Containers[0].
+		VolumeMounts[8].Name = "juju-database-123"
+	expectedPodSpecWithLegacyVolumeMountNameWithoutUniqID.Containers[1].
+		VolumeMounts[2].Name = "juju-database-123"
+
+	tests := []struct {
+		name            string
+		assertErrorFunc func(error)
+		mutateConfig    func(*caas.ApplicationConfig)
+		expectedPVCs    []corev1.PersistentVolumeClaim
+		expectedService corev1.Service
+		expectedPodSpec corev1.PodSpec
+	}{
+		{
+			name:            "no realized attachments",
+			mutateConfig:    nil,
+			assertErrorFunc: nil,
+			expectedPVCs:    expectedPVCsModernFormat,
+			expectedService: expectedService,
+			expectedPodSpec: expectedPodSpec,
+		},
+		{
+			name: "with realized attachments pvc name format <app>-<storage>-<uniqid>-<app>-<ordinal>",
+			mutateConfig: func(config *caas.ApplicationConfig) {
+				realizedPVCNames := []string{
+					"gitlab-database-uniqid-gitlab-0",
+					"gitlab-database-uniqid-gitlab-1",
+					"gitlab-database-uniqid-gitlab-2",
+				}
+				for i := 0; i < len(config.Filesystems); i++ {
+					fs := config.Filesystems[i]
+					for j := 0; j < len(fs.Attachments); j++ {
+						fs.Attachments[j].ProvisionedPVCNames = realizedPVCNames
+					}
+				}
+			},
+			assertErrorFunc: nil,
+			expectedPVCs:    expectedPVCsModernFormat,
+			expectedService: expectedService,
+			expectedPodSpec: expectedPodSpec,
+		},
+		{
+			name: "with realized attachments pvc name legacy format <storage>-<uniqid>-<app>-<ordinal>",
+			mutateConfig: func(config *caas.ApplicationConfig) {
+				realizedPVCNames := []string{
+					"database-uniqid-gitlab-0",
+					"database-uniqid-gitlab-1",
+					"database-uniqid-gitlab-2",
+				}
+				for i := 0; i < len(config.Filesystems); i++ {
+					fs := config.Filesystems[i]
+					for j := 0; j < len(fs.Attachments); j++ {
+						fs.Attachments[j].ProvisionedPVCNames = realizedPVCNames
+					}
+				}
+			},
+			assertErrorFunc: nil,
+			expectedPVCs:    expectedPVCsLegacyFormatWithUniqID,
+			expectedService: expectedService,
+			expectedPodSpec: expectedPodSpecWithLegacyVolumeMountNameWithUniqID,
+		},
+		{
+			name: "with realized attachments pvc name legacy format juju-<storage>-<number>",
+			mutateConfig: func(config *caas.ApplicationConfig) {
+				realizedPVCNames := []string{
+					"juju-database-123-gitlab-0",
+					"juju-database-123-gitlab-1",
+					"juju-database-123-gitlab-2",
+				}
+				for i := 0; i < len(config.Filesystems); i++ {
+					fs := config.Filesystems[i]
+					for j := 0; j < len(fs.Attachments); j++ {
+						fs.Attachments[j].ProvisionedPVCNames = realizedPVCNames
+					}
+				}
+			},
+			assertErrorFunc: nil,
+			expectedPVCs:    expectedPVCsLegacyFormatWithoutUniqID,
+			expectedService: expectedService,
+			expectedPodSpec: expectedPodSpecWithLegacyVolumeMountNameWithoutUniqID,
+		},
+		{
+			name: "error because realized pvc names follow an unrecognized format",
+			mutateConfig: func(config *caas.ApplicationConfig) {
+				realizedPVCNames := []string{
+					"juju-database-123-gitlabunknown-!#0",
+					"juju-database-123-gitlabstrange-1$#@",
+					"juju-database-123-gitlaberror",
+				}
+				for i := 0; i < len(config.Filesystems); i++ {
+					fs := config.Filesystems[i]
+					for j := 0; j < len(fs.Attachments); j++ {
+						fs.Attachments[j].ProvisionedPVCNames = realizedPVCNames
+					}
+				}
+			},
+			assertErrorFunc: func(err error) {
+				c.Assert(err, tc.ErrorMatches, `mapping pvc template names for app "gitlab".*`)
+			},
+			expectedPVCs:    []corev1.PersistentVolumeClaim{},
+			expectedService: corev1.Service{},
+			expectedPodSpec: corev1.PodSpec{},
+		},
+	}
+
+	for i, tt := range tests {
+		c.Logf("running test case %d: %s", i, tt.name)
+		app, _ := s.getApp(c, caas.DeploymentStateful, false)
+
+		s.assertEnsure(
+			c,
+			app,
+			false,
+			constraints.Value{},
+			true,
+			false,
+			"",
+			tt.mutateConfig,
+			func() {
+				assertStatefulResources(c, s, tt.expectedPVCs,
+					tt.expectedService, tt.expectedPodSpec)
+			},
+			tt.assertErrorFunc,
+		)
+
+		s.assertDelete(c, app)
+	}
+}
+
+func assertStatefulResources(
+	c *tc.C,
+	s *applicationSuite,
+	expectedPVCs []corev1.PersistentVolumeClaim,
+	expectedService corev1.Service,
+	expectedPodSpec corev1.PodSpec,
+) {
+	svc, err := s.client.CoreV1().
+		Services("test").
+		Get(c.Context(), "gitlab-endpoints", metav1.GetOptions{})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(svc, tc.DeepEquals, &expectedService)
+
+	ss, err := s.client.AppsV1().
+		StatefulSets("test").
+		Get(c.Context(), "gitlab", metav1.GetOptions{})
+	c.Assert(err, tc.ErrorIsNil)
+
+	expected := expectedStatefulSet(expectedPVCs, expectedPodSpec)
+	c.Assert(ss, tc.DeepEquals, expected)
+}
+
+func expectedStatefulSet(
+	pvcs []corev1.PersistentVolumeClaim,
+	podspec corev1.PodSpec,
+) *appsv1.StatefulSet {
+	return &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gitlab",
+			Namespace: "test",
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "gitlab",
+				"app.kubernetes.io/managed-by": "juju",
+			},
+			Annotations: map[string]string{
+				"juju.is/version":  "3.5-beta1",
+				"app.juju.is/uuid": "uniqid",
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: pointer.Int32Ptr(3),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app.kubernetes.io/name": "gitlab",
+				},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      map[string]string{"app.kubernetes.io/name": "gitlab"},
+					Annotations: map[string]string{"juju.is/version": "3.5-beta1"},
+				},
+				Spec: podspec,
+			},
+			VolumeClaimTemplates: pvcs,
+			PodManagementPolicy:  appsv1.ParallelPodManagement,
+			ServiceName:          "gitlab-endpoints",
+		},
+	}
+}
+
+func (s *applicationSuite) TestEnsureStatefulDeletesOrphanedStatefulSet(c *tc.C) {
+	app, _ := s.getApp(c, caas.DeploymentStateful, false)
+
+	// Pre-create an orphaned StatefulSet with a different storage UUID
+	// but valid Juju ownership labels and annotations. This simulates
+	// the leftover from a force-removed deployment.
+	orphanSts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      s.appName,
+			Namespace: s.namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       s.appName,
+				"app.kubernetes.io/managed-by": "juju",
+			},
+			Annotations: map[string]string{
+				"app.juju.is/uuid":      "old-uuid",
+				"model.juju.is/id":      s.modelUUID,
+				"controller.juju.is/id": s.controllerUUID,
+				"juju.is/version":       defaultAgentVersion,
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app.kubernetes.io/name": s.appName},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app.kubernetes.io/name": s.appName},
+				},
+			},
+		},
+	}
+	_, err := s.client.AppsV1().StatefulSets(s.namespace).Create(
+		c.Context(), orphanSts, metav1.CreateOptions{},
 	)
-	s.assertDelete(c, app)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Set up a mock watcher so waitForStatefulSetDeletion can proceed.
+	// The fake client deletes synchronously, so by the time the watcher's
+	// initial event fires and getStatefulSet is called, the StatefulSet
+	// is already gone.
+	w, _ := k8swatchertest.NewKubernetesTestWatcher()
+	s.k8sWatcherFn = k8swatchertest.NewKubernetesTestWatcherFunc(w)
+
+	s.assertEnsure(
+		c, app, false, constraints.Value{}, true, false, "", nil,
+		func() {
+			ss, err := s.client.AppsV1().StatefulSets(s.namespace).Get(
+				c.Context(), s.appName, metav1.GetOptions{},
+			)
+			c.Assert(err, tc.ErrorIsNil)
+
+			// The new StatefulSet must have the new UUID, not the orphan's.
+			c.Assert(ss.Annotations["app.juju.is/uuid"], tc.Equals, "uniqid")
+
+			// Replicas must be nil (not 0) so Kubernetes defaults to 1.
+			// This is because exists stays true after the orphan deletion.
+			c.Assert(ss.Spec.Replicas, tc.IsNil)
+
+			// The VolumeClaimTemplates must contain the new UUID.
+			// Without the fix, the update path does not modify VCTs
+			// (they are immutable on a real cluster), so VCTs from the
+			// orphan would persist. With the fix, the orphan is deleted
+			// and a fresh StatefulSet is created with correct VCTs.
+			c.Assert(ss.Spec.VolumeClaimTemplates, tc.HasLen, 1)
+			c.Assert(ss.Spec.VolumeClaimTemplates[0].Name, tc.Equals, "gitlab-database-uniqid")
+		}, nil,
+	)
+}
+
+func (s *applicationSuite) TestEnsureStatefulSkipsOrphanNotOwnedByJuju(c *tc.C) {
+	app, _ := s.getApp(c, caas.DeploymentStateful, false)
+
+	// Pre-create a StatefulSet with a different UUID but NOT owned by Juju
+	// (missing the managed-by label). The fix must not delete it.
+	orphanSts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      s.appName,
+			Namespace: s.namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name": s.appName,
+				// No "app.kubernetes.io/managed-by": "juju" label.
+			},
+			Annotations: map[string]string{
+				"app.juju.is/uuid": "old-uuid",
+				"model.juju.is/id": s.modelUUID,
+				"juju.is/version":  defaultAgentVersion,
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app.kubernetes.io/name": s.appName},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app.kubernetes.io/name": s.appName},
+				},
+			},
+		},
+	}
+	_, err := s.client.AppsV1().StatefulSets(s.namespace).Create(
+		c.Context(), orphanSts, metav1.CreateOptions{},
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Ensure should succeed without deleting the orphan — the applier
+	// will update the existing StatefulSet in place (patching mutable fields).
+	s.assertEnsure(
+		c, app, false, constraints.Value{}, true, false, "", nil,
+		func() {
+			ss, err := s.client.AppsV1().StatefulSets(s.namespace).Get(
+				c.Context(), s.appName, metav1.GetOptions{},
+			)
+			c.Assert(err, tc.ErrorIsNil)
+
+			// The VCTs remain empty because the update path does not
+			// modify VolumeClaimTemplates (they are immutable in real K8s).
+			// This confirms the orphan was NOT deleted-and-recreated.
+			c.Assert(ss.Spec.VolumeClaimTemplates, tc.IsNil)
+		}, nil,
+	)
+}
+
+func (s *applicationSuite) TestEnsureStatefulSkipsOrphanFromDifferentModel(c *tc.C) {
+	app, _ := s.getApp(c, caas.DeploymentStateful, false)
+
+	// Pre-create a StatefulSet with a different UUID that is managed by Juju
+	// but belongs to a different model. The fix must not delete it.
+	orphanSts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      s.appName,
+			Namespace: s.namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       s.appName,
+				"app.kubernetes.io/managed-by": "juju",
+			},
+			Annotations: map[string]string{
+				"app.juju.is/uuid": "old-uuid",
+				"model.juju.is/id": "different-model-uuid",
+				"juju.is/version":  defaultAgentVersion,
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app.kubernetes.io/name": s.appName},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app.kubernetes.io/name": s.appName},
+				},
+			},
+		},
+	}
+	_, err := s.client.AppsV1().StatefulSets(s.namespace).Create(
+		c.Context(), orphanSts, metav1.CreateOptions{},
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Ensure should succeed without deleting the orphan — the applier
+	// will update the existing StatefulSet in place (patching mutable fields).
+	s.assertEnsure(
+		c, app, false, constraints.Value{}, true, false, "", nil,
+		func() {
+			ss, err := s.client.AppsV1().StatefulSets(s.namespace).Get(
+				c.Context(), s.appName, metav1.GetOptions{},
+			)
+			c.Assert(err, tc.ErrorIsNil)
+
+			// The VCTs remain empty because the update path does not
+			// modify VolumeClaimTemplates (they are immutable in real K8s).
+			// This confirms the orphan was NOT deleted-and-recreated.
+			c.Assert(ss.Spec.VolumeClaimTemplates, tc.IsNil)
+		}, nil,
+	)
 }
 
 func (s *applicationSuite) TestEnsureStatefulRootless35(c *tc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, true, true, "3.5-beta1", func() {
+		c, app, false, constraints.Value{}, true, true, "3.5-beta1", nil, func() {
 			svc, err := s.client.CoreV1().Services("test").Get(c.Context(), "gitlab-endpoints", metav1.GetOptions{})
 			c.Assert(err, tc.ErrorIsNil)
 			c.Assert(svc, tc.DeepEquals, &corev1.Service{
@@ -694,6 +1103,7 @@ func (s *applicationSuite) TestEnsureStatefulRootless35(c *tc.C) {
 				},
 			})
 		},
+		nil,
 	)
 	s.assertDelete(c, app)
 }
@@ -701,7 +1111,7 @@ func (s *applicationSuite) TestEnsureStatefulRootless35(c *tc.C) {
 func (s *applicationSuite) TestEnsureStatefulRootless(c *tc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, true, true, "3.6-beta3", func() {
+		c, app, false, constraints.Value{}, true, true, "3.6-beta3", nil, func() {
 			svc, err := s.client.CoreV1().Services("test").Get(c.Context(), "gitlab-endpoints", metav1.GetOptions{})
 			c.Assert(err, tc.ErrorIsNil)
 			c.Assert(svc, tc.DeepEquals, &corev1.Service{
@@ -783,6 +1193,130 @@ func (s *applicationSuite) TestEnsureStatefulRootless(c *tc.C) {
 				},
 			})
 		},
+		nil,
+	)
+	s.assertDelete(c, app)
+}
+
+func (s *applicationSuite) TestEnsureStatefulRootlessWithTempFSStorage(c *tc.C) {
+	app, _ := s.getApp(c, caas.DeploymentStateful, false)
+
+	s.assertEnsure(
+		c, app, false, constraints.Value{}, true, true, "4.0-beta8",
+		func(appConfig *caas.ApplicationConfig) {
+			appConfig.Filesystems = append(appConfig.Filesystems, storage.KubernetesFilesystemParams{
+				StorageName: "pgdata",
+				Size:        1024,
+				Provider:    "tmpfs",
+				ResourceTags: map[string]string{
+					"juju-storage-owner":   "postgresql-k8s",
+					"juju-controller-uuid": "37bc1df6-6287-45b9-895c-4184b037b2e3",
+					"juju-model-uuid":      "00d137c4-69b1-4122-807c-1a1d605a4a6e",
+				},
+				Attachments: []storage.KubernetesFilesystemAttachmentParams{
+					{
+						ReadOnly:      false,
+						Path:          "/var/lib/postgresql/data",
+						ContainerName: "charm",
+					},
+				},
+			})
+		}, func() {
+			svc, err := s.client.CoreV1().Services("test").Get(c.Context(), "gitlab-endpoints", metav1.GetOptions{})
+			c.Assert(err, tc.ErrorIsNil)
+			c.Assert(svc, tc.DeepEquals, &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gitlab-endpoints",
+					Namespace: "test",
+					Labels: map[string]string{
+						"app.kubernetes.io/name":       "gitlab",
+						"app.kubernetes.io/managed-by": "juju",
+					},
+					Annotations: map[string]string{
+						"juju.is/version": "4.0-beta8",
+						"service.alpha.kubernetes.io/tolerate-unready-endpoints": "true",
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Selector:                 map[string]string{"app.kubernetes.io/name": "gitlab"},
+					Type:                     corev1.ServiceTypeClusterIP,
+					ClusterIP:                "None",
+					PublishNotReadyAddresses: true,
+				},
+			})
+
+			emptyDirSize := tc.Must1(c, k8sresource.ParseQuantity, "1024Mi")
+			podSpec := getPodSpec368()
+			podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
+				Name: "gitlab-pgdata",
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{
+						SizeLimit: &emptyDirSize,
+					},
+				},
+			})
+			podSpec.Containers[0].VolumeMounts = append(podSpec.Containers[0].VolumeMounts, corev1.VolumeMount{
+				Name:      "gitlab-pgdata",
+				MountPath: "/var/lib/postgresql/data",
+			})
+			ss, err := s.client.AppsV1().StatefulSets("test").Get(c.Context(), "gitlab", metav1.GetOptions{})
+			c.Assert(err, tc.ErrorIsNil)
+			c.Assert(ss, tc.DeepEquals, &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gitlab",
+					Namespace: "test",
+					Labels: map[string]string{
+						"app.kubernetes.io/name":       "gitlab",
+						"app.kubernetes.io/managed-by": "juju",
+					},
+					Annotations: map[string]string{
+						"juju.is/version":  "4.0-beta8",
+						"app.juju.is/uuid": "uniqid",
+					},
+				},
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: pointer.Int32Ptr(3),
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"app.kubernetes.io/name": "gitlab",
+						},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels:      map[string]string{"app.kubernetes.io/name": "gitlab"},
+							Annotations: map[string]string{"juju.is/version": "4.0-beta8"},
+						},
+						Spec: podSpec,
+					},
+					VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
+						{
+							ObjectMeta: metav1.ObjectMeta{
+								Name: "gitlab-database-uniqid",
+								Labels: map[string]string{
+									"storage.juju.is/name":         "database",
+									"app.kubernetes.io/managed-by": "juju",
+								},
+								Annotations: map[string]string{
+									"foo":                  "bar",
+									"storage.juju.is/name": "database",
+								}},
+							Spec: corev1.PersistentVolumeClaimSpec{
+								StorageClassName: pointer.StringPtr("test-workload-storage"),
+								AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+								Resources: corev1.VolumeResourceRequirements{
+									Requests: corev1.ResourceList{
+										corev1.ResourceStorage: k8sresource.MustParse("100Mi"),
+									},
+								},
+							},
+						},
+					},
+					PodManagementPolicy: appsv1.ParallelPodManagement,
+					ServiceName:         "gitlab-endpoints",
+				},
+			})
+		},
+		nil,
 	)
 	s.assertDelete(c, app)
 }
@@ -790,7 +1324,8 @@ func (s *applicationSuite) TestEnsureStatefulRootless(c *tc.C) {
 func (s *applicationSuite) TestEnsureTrusted(c *tc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, true, false, "", func() {},
+		c, app, false, constraints.Value{}, true, false, "", nil, func() {},
+		nil,
 	)
 	s.assertDelete(c, app)
 }
@@ -798,7 +1333,8 @@ func (s *applicationSuite) TestEnsureTrusted(c *tc.C) {
 func (s *applicationSuite) TestEnsureUntrusted(c *tc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, false, false, "", func() {},
+		c, app, false, constraints.Value{}, false, false, "", nil, func() {},
+		nil,
 	)
 	s.assertDelete(c, app)
 }
@@ -814,7 +1350,7 @@ func (s *applicationSuite) TestEnsureStatefulPrivateImageRepo(c *tc.C) {
 		podSpec.ImagePullSecrets...,
 	)
 	s.assertEnsure(
-		c, app, true, constraints.Value{}, true, false, "", func() {
+		c, app, true, constraints.Value{}, true, false, "", nil, func() {
 			svc, err := s.client.CoreV1().Services("test").Get(c.Context(), "gitlab-endpoints", metav1.GetOptions{})
 			c.Assert(err, tc.ErrorIsNil)
 			c.Assert(svc, tc.DeepEquals, &corev1.Service{
@@ -895,6 +1431,7 @@ func (s *applicationSuite) TestEnsureStatefulPrivateImageRepo(c *tc.C) {
 				},
 			})
 		},
+		nil,
 	)
 	s.assertDelete(c, app)
 }
@@ -902,7 +1439,7 @@ func (s *applicationSuite) TestEnsureStatefulPrivateImageRepo(c *tc.C) {
 func (s *applicationSuite) TestEnsureStateless(c *tc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateless, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, true, false, "", func() {
+		c, app, false, constraints.Value{}, true, false, "", nil, func() {
 			ss, err := s.client.AppsV1().Deployments("test").Get(c.Context(), "gitlab", metav1.GetOptions{})
 			c.Assert(err, tc.ErrorIsNil)
 
@@ -969,6 +1506,7 @@ func (s *applicationSuite) TestEnsureStateless(c *tc.C) {
 				},
 			})
 		},
+		nil,
 	)
 	s.assertDelete(c, app)
 }
@@ -976,7 +1514,7 @@ func (s *applicationSuite) TestEnsureStateless(c *tc.C) {
 func (s *applicationSuite) TestEnsureDaemon(c *tc.C) {
 	app, _ := s.getApp(c, caas.DeploymentDaemon, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, true, false, "", func() {
+		c, app, false, constraints.Value{}, true, false, "", nil, func() {
 			ss, err := s.client.AppsV1().DaemonSets("test").Get(c.Context(), "gitlab", metav1.GetOptions{})
 			c.Assert(err, tc.ErrorIsNil)
 
@@ -1042,6 +1580,7 @@ func (s *applicationSuite) TestEnsureDaemon(c *tc.C) {
 				},
 			})
 		},
+		nil,
 	)
 	s.assertDelete(c, app)
 }
@@ -1173,7 +1712,7 @@ func (s *applicationSuite) TestExistsDaemonSet(c *tc.C) {
 // Test upgrades are performed by ensure. Regression bug for lp1997253
 func (s *applicationSuite) TestUpgradeStateful(c *tc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
-	s.assertEnsure(c, app, false, constraints.Value{}, true, false, "2.9.34", func() {
+	s.assertEnsure(c, app, false, constraints.Value{}, true, false, "2.9.34", nil, func() {
 		ss, err := s.client.AppsV1().StatefulSets("test").Get(c.Context(), "gitlab", metav1.GetOptions{})
 		c.Assert(err, tc.ErrorIsNil)
 
@@ -1183,9 +1722,10 @@ func (s *applicationSuite) TestUpgradeStateful(c *tc.C) {
 			"--data-dir", "/var/lib/juju",
 			"--bin-dir", "/charm/bin",
 		})
-	})
+	},
+		nil)
 
-	s.assertEnsure(c, app, false, constraints.Value{}, true, false, "2.9.37", func() {
+	s.assertEnsure(c, app, false, constraints.Value{}, true, false, "2.9.37", nil, func() {
 		ss, err := s.client.AppsV1().StatefulSets("test").Get(c.Context(), "gitlab", metav1.GetOptions{})
 		c.Assert(err, tc.ErrorIsNil)
 
@@ -1197,9 +1737,10 @@ func (s *applicationSuite) TestUpgradeStateful(c *tc.C) {
 			"--data-dir", "/var/lib/juju",
 			"--bin-dir", "/charm/bin",
 		})
-	})
+	},
+		nil)
 
-	s.assertEnsure(c, app, false, constraints.Value{}, true, false, "3.5-beta1.1", func() {
+	s.assertEnsure(c, app, false, constraints.Value{}, true, false, "3.5-beta1.1", nil, func() {
 		ss, err := s.client.AppsV1().StatefulSets("test").Get(c.Context(), "gitlab", metav1.GetOptions{})
 		c.Assert(err, tc.ErrorIsNil)
 
@@ -1212,7 +1753,8 @@ func (s *applicationSuite) TestUpgradeStateful(c *tc.C) {
 			"--bin-dir", "/charm/bin",
 			"--profile-dir", "/containeragent/etc/profile.d",
 		})
-	})
+	},
+		nil)
 }
 
 func (s *applicationSuite) TestDeleteStateful(c *tc.C) {
@@ -1220,15 +1762,33 @@ func (s *applicationSuite) TestDeleteStateful(c *tc.C) {
 	defer ctrl.Finish()
 
 	gomock.InOrder(
-		s.applier.EXPECT().Delete(resources.NewStatefulSet(s.client.AppsV1().StatefulSets("test"), "test", "gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewService(s.client.CoreV1().Services("test"), "test", "gitlab-endpoints", nil)),
-		s.applier.EXPECT().Delete(resources.NewService(s.client.CoreV1().Services("test"), "test", "gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewSecret(s.client.CoreV1().Secrets("test"), "test", "gitlab-application-config", nil)),
-		s.applier.EXPECT().Delete(resources.NewRoleBinding(s.client.RbacV1().RoleBindings("test"), "test", "gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewRole(s.client.RbacV1().Roles("test"), "test", "gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewClusterRoleBinding(s.client.RbacV1().ClusterRoleBindings(), "test-gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewClusterRole(s.client.RbacV1().ClusterRoles(), "test-gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewServiceAccount(s.client.CoreV1().ServiceAccounts("test"), "test", "gitlab", nil)),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewStatefulSet(
+				s.client.AppsV1().StatefulSets("test"), "test", "gitlab", nil).StatefulSet}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewService(
+				s.client.CoreV1().Services("test"), "test", "gitlab-endpoints", nil).Service}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewService(
+				s.client.CoreV1().Services("test"), "test", "gitlab", nil).Service}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewSecret(
+				s.client.CoreV1().Secrets("test"), "test", "gitlab-application-config", nil).Secret}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewRoleBinding(
+				s.client.RbacV1().RoleBindings("test"), "test", "gitlab", nil).RoleBinding}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewRole(
+				s.client.RbacV1().Roles("test"), "test", "gitlab", nil).Role}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewClusterRoleBinding(
+				s.client.RbacV1().ClusterRoleBindings(), "test-gitlab", nil).ClusterRoleBinding}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewClusterRole(
+				s.client.RbacV1().ClusterRoles(), "test-gitlab", nil).ClusterRole}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewServiceAccount(
+				s.client.CoreV1().ServiceAccounts("test"), "test", "gitlab", nil).ServiceAccount}),
 		s.applier.EXPECT().Run(gomock.Any(), false).Return(nil),
 	)
 	c.Assert(app.Delete(), tc.ErrorIsNil)
@@ -1239,14 +1799,30 @@ func (s *applicationSuite) TestDeleteStateless(c *tc.C) {
 	defer ctrl.Finish()
 
 	gomock.InOrder(
-		s.applier.EXPECT().Delete(resources.NewDeployment(s.client.AppsV1().Deployments("test"), "test", "gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewService(s.client.CoreV1().Services("test"), "test", "gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewSecret(s.client.CoreV1().Secrets("test"), "test", "gitlab-application-config", nil)),
-		s.applier.EXPECT().Delete(resources.NewRoleBinding(s.client.RbacV1().RoleBindings("test"), "test", "gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewRole(s.client.RbacV1().Roles("test"), "test", "gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewClusterRoleBinding(s.client.RbacV1().ClusterRoleBindings(), "test-gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewClusterRole(s.client.RbacV1().ClusterRoles(), "test-gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewServiceAccount(s.client.CoreV1().ServiceAccounts("test"), "test", "gitlab", nil)),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewDeployment(
+				s.client.AppsV1().Deployments("test"), "test", "gitlab", nil).Deployment}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewService(
+				s.client.CoreV1().Services("test"), "test", "gitlab", nil).Service}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewSecret(
+				s.client.CoreV1().Secrets("test"), "test", "gitlab-application-config", nil).Secret}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewRoleBinding(
+				s.client.RbacV1().RoleBindings("test"), "test", "gitlab", nil).RoleBinding}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewRole(
+				s.client.RbacV1().Roles("test"), "test", "gitlab", nil).Role}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewClusterRoleBinding(
+				s.client.RbacV1().ClusterRoleBindings(), "test-gitlab", nil).ClusterRoleBinding}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewClusterRole(
+				s.client.RbacV1().ClusterRoles(), "test-gitlab", nil).ClusterRole}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewServiceAccount(
+				s.client.CoreV1().ServiceAccounts("test"), "test", "gitlab", nil).ServiceAccount}),
 		s.applier.EXPECT().Run(gomock.Any(), false).Return(nil),
 	)
 	c.Assert(app.Delete(), tc.ErrorIsNil)
@@ -1257,14 +1833,30 @@ func (s *applicationSuite) TestDeleteDaemon(c *tc.C) {
 	defer ctrl.Finish()
 
 	gomock.InOrder(
-		s.applier.EXPECT().Delete(resources.NewDaemonSet(s.client.AppsV1().DaemonSets("test"), "test", "gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewService(s.client.CoreV1().Services("test"), "test", "gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewSecret(s.client.CoreV1().Secrets("test"), "test", "gitlab-application-config", nil)),
-		s.applier.EXPECT().Delete(resources.NewRoleBinding(s.client.RbacV1().RoleBindings("test"), "test", "gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewRole(s.client.RbacV1().Roles("test"), "test", "gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewClusterRoleBinding(s.client.RbacV1().ClusterRoleBindings(), "test-gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewClusterRole(s.client.RbacV1().ClusterRoles(), "test-gitlab", nil)),
-		s.applier.EXPECT().Delete(resources.NewServiceAccount(s.client.CoreV1().ServiceAccounts("test"), "test", "gitlab", nil)),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewDaemonSet(
+				s.client.AppsV1().DaemonSets("test"), "test", "gitlab", nil).DaemonSet}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewService(
+				s.client.CoreV1().Services("test"), "test", "gitlab", nil).Service}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewSecret(
+				s.client.CoreV1().Secrets("test"), "test", "gitlab-application-config", nil).Secret}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewRoleBinding(
+				s.client.RbacV1().RoleBindings("test"), "test", "gitlab", nil).RoleBinding}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewRole(
+				s.client.RbacV1().Roles("test"), "test", "gitlab", nil).Role}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewClusterRoleBinding(
+				s.client.RbacV1().ClusterRoleBindings(), "test-gitlab", nil).ClusterRoleBinding}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewClusterRole(
+				s.client.RbacV1().ClusterRoles(), "test-gitlab", nil).ClusterRole}),
+		s.applier.EXPECT().Delete(resourceMatcher{
+			expectedResource: resources.NewServiceAccount(
+				s.client.CoreV1().ServiceAccounts("test"), "test", "gitlab", nil).ServiceAccount}),
 		s.applier.EXPECT().Run(gomock.Any(), false).Return(nil),
 	)
 	c.Assert(app.Delete(), tc.ErrorIsNil)
@@ -1592,9 +2184,10 @@ func (s *applicationSuite) TestUpdatePortsStatelessUpdateContainerPorts(c *tc.C)
 			Protocol:      corev1.ProtocolTCP,
 		},
 	}
+	deployment := resources.NewDeployment(s.client.AppsV1().Deployments("test"), "test", "gitlab", updatedMainResource)
 	gomock.InOrder(
-		s.applier.EXPECT().Apply(updatedSvcResource),
-		s.applier.EXPECT().Apply(resources.NewDeployment(s.client.AppsV1().Deployments("test"), "test", "gitlab", updatedMainResource)),
+		s.applier.EXPECT().Apply(resourceMatcher{expectedResource: updatedSvcResource.Service}),
+		s.applier.EXPECT().Apply(resourceMatcher{expectedResource: deployment.Deployment}),
 		s.applier.EXPECT().Run(gomock.Any(), false).Return(nil),
 	)
 	c.Assert(app.UpdatePorts([]caas.ServicePort{
@@ -1721,9 +2314,10 @@ func (s *applicationSuite) TestUpdatePortsStatefulUpdateContainerPorts(c *tc.C) 
 			Protocol:      corev1.ProtocolTCP,
 		},
 	}
+	ss := resources.NewStatefulSet(s.client.AppsV1().StatefulSets("test"), "test", "gitlab", updatedMainResource)
 	gomock.InOrder(
-		s.applier.EXPECT().Apply(updatedSvcResource),
-		s.applier.EXPECT().Apply(resources.NewStatefulSet(s.client.AppsV1().StatefulSets("test"), "test", "gitlab", updatedMainResource)),
+		s.applier.EXPECT().Apply(resourceMatcher{expectedResource: updatedSvcResource.Service}),
+		s.applier.EXPECT().Apply(resourceMatcher{expectedResource: ss.StatefulSet}),
 		s.applier.EXPECT().Run(gomock.Any(), false).Return(nil),
 	)
 	c.Assert(app.UpdatePorts([]caas.ServicePort{
@@ -1810,9 +2404,10 @@ func (s *applicationSuite) TestUpdatePortsDaemonUpdateContainerPorts(c *tc.C) {
 			Protocol:      corev1.ProtocolTCP,
 		},
 	}
+	ds := resources.NewDaemonSet(s.client.AppsV1().DaemonSets("test"), "test", "gitlab", updatedMainResource)
 	gomock.InOrder(
-		s.applier.EXPECT().Apply(updatedSvcResource),
-		s.applier.EXPECT().Apply(resources.NewDaemonSet(s.client.AppsV1().DaemonSets("test"), "test", "gitlab", updatedMainResource)),
+		s.applier.EXPECT().Apply(resourceMatcher{expectedResource: updatedSvcResource.Service}),
+		s.applier.EXPECT().Apply(resourceMatcher{expectedResource: ds.DaemonSet}),
 		s.applier.EXPECT().Run(gomock.Any(), false).Return(nil),
 	)
 	c.Assert(app.UpdatePorts([]caas.ServicePort{
@@ -1903,10 +2498,10 @@ func (s *applicationSuite) TestUpdatePortsWithExistingPorts(c *tc.C) {
 	updatedSvcResource2nd.PatchType = &replacePortsPatchType
 
 	gomock.InOrder(
-		s.applier.EXPECT().Apply(updatedSvcResource),
+		s.applier.EXPECT().Apply(resourceMatcher{expectedResource: updatedSvcResource.Service}),
 		s.applier.EXPECT().Run(gomock.Any(), false).Return(nil),
 
-		s.applier.EXPECT().Apply(updatedSvcResource2nd),
+		s.applier.EXPECT().Apply(resourceMatcher{expectedResource: updatedSvcResource2nd.Service}),
 		s.applier.EXPECT().Run(gomock.Any(), false).Return(nil),
 	)
 	c.Assert(app.UpdatePorts([]caas.ServicePort{
@@ -1957,7 +2552,7 @@ func (s *applicationSuite) TestUpdatePortsStateless(c *tc.C) {
 	updatedSvcResource.PatchType = &replacePortsPatchType
 
 	gomock.InOrder(
-		s.applier.EXPECT().Apply(updatedSvcResource),
+		s.applier.EXPECT().Apply(resourceMatcher{expectedResource: updatedSvcResource.Service}),
 		s.applier.EXPECT().Run(gomock.Any(), false).Return(nil),
 	)
 	c.Assert(app.UpdatePorts([]caas.ServicePort{
@@ -1991,7 +2586,7 @@ func (s *applicationSuite) TestUpdatePortsStateful(c *tc.C) {
 	updatedSvcResource.PatchType = &replacePortsPatchType
 
 	gomock.InOrder(
-		s.applier.EXPECT().Apply(updatedSvcResource),
+		s.applier.EXPECT().Apply(resourceMatcher{expectedResource: updatedSvcResource.Service}),
 		s.applier.EXPECT().Run(gomock.Any(), false).Return(nil),
 	)
 	c.Assert(app.UpdatePorts([]caas.ServicePort{
@@ -2002,6 +2597,44 @@ func (s *applicationSuite) TestUpdatePortsStateful(c *tc.C) {
 			Protocol:   "TCP",
 		},
 	}, false), tc.ErrorIsNil)
+}
+
+type resourceMatcher struct {
+	expectedResource any
+}
+
+func (m resourceMatcher) Matches(x any) bool {
+	req, ok := x.(resources.Resource)
+	if !ok {
+		return false
+	}
+	switch res := req.(type) {
+	case *resources.Service:
+		return reflect.DeepEqual(m.expectedResource, res.Service)
+	case *resources.Deployment:
+		return reflect.DeepEqual(m.expectedResource, res.Deployment)
+	case *resources.Secret:
+		return reflect.DeepEqual(m.expectedResource, res.Secret)
+	case *resources.StatefulSet:
+		return reflect.DeepEqual(m.expectedResource, res.StatefulSet)
+	case *resources.DaemonSet:
+		return reflect.DeepEqual(m.expectedResource, res.DaemonSet)
+	case *resources.RoleBinding:
+		return reflect.DeepEqual(m.expectedResource, res.RoleBinding)
+	case *resources.Role:
+		return reflect.DeepEqual(m.expectedResource, res.Role)
+	case *resources.ClusterRoleBinding:
+		return reflect.DeepEqual(m.expectedResource, res.ClusterRoleBinding)
+	case *resources.ClusterRole:
+		return reflect.DeepEqual(m.expectedResource, res.ClusterRole)
+	case *resources.ServiceAccount:
+		return reflect.DeepEqual(m.expectedResource, res.ServiceAccount)
+	}
+	return false
+}
+
+func (m resourceMatcher) String() string {
+	return pretty.Sprint(m.expectedResource)
 }
 
 func (s *applicationSuite) TestUpdatePortsDaemonUpdate(c *tc.C) {
@@ -2025,7 +2658,7 @@ func (s *applicationSuite) TestUpdatePortsDaemonUpdate(c *tc.C) {
 	updatedSvcResource.PatchType = &replacePortsPatchType
 
 	gomock.InOrder(
-		s.applier.EXPECT().Apply(updatedSvcResource),
+		s.applier.EXPECT().Apply(resourceMatcher{expectedResource: updatedSvcResource.Service}),
 		s.applier.EXPECT().Run(gomock.Any(), false).Return(nil),
 	)
 	c.Assert(app.UpdatePorts([]caas.ServicePort{
@@ -2041,7 +2674,7 @@ func (s *applicationSuite) TestUpdatePortsDaemonUpdate(c *tc.C) {
 func (s *applicationSuite) TestUnits(c *tc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 
-	for i := 0; i < 9; i++ {
+	for i := range 9 {
 		podSpec := getPodSpec31()
 		podSpec.Volumes = append(podSpec.Volumes,
 			corev1.Volume{
@@ -2299,18 +2932,18 @@ func (s *applicationSuite) TestUnits(c *tc.C) {
 			},
 			FilesystemInfo: []caas.FilesystemInfo{
 				{
-					StorageName:  "gitlab-database",
-					FilesystemId: "",
-					Size:         1024,
-					MountPoint:   "path/to/here",
-					ReadOnly:     false,
+					StorageName:               "gitlab-database",
+					PersistentVolumeClaimName: "gitlab-database-uniqid-gitlab-0",
+					Size:                      1024,
+					MountPoint:                "path/to/here",
+					ReadOnly:                  false,
 					Status: status.StatusInfo{
 						Status: "attached",
 					},
 					Volume: caas.VolumeInfo{
-						VolumeId:   "pv-0",
-						Size:       1024,
-						Persistent: true,
+						PersistentVolumeName: "pv-0",
+						Size:                 1024,
+						Persistent:           true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2331,18 +2964,18 @@ func (s *applicationSuite) TestUnits(c *tc.C) {
 			},
 			FilesystemInfo: []caas.FilesystemInfo{
 				{
-					StorageName:  "gitlab-database",
-					FilesystemId: "",
-					Size:         1024,
-					MountPoint:   "path/to/here",
-					ReadOnly:     false,
+					StorageName:               "gitlab-database",
+					PersistentVolumeClaimName: "gitlab-database-uniqid-gitlab-1",
+					Size:                      1024,
+					MountPoint:                "path/to/here",
+					ReadOnly:                  false,
 					Status: status.StatusInfo{
 						Status: "attached",
 					},
 					Volume: caas.VolumeInfo{
-						VolumeId:   "pv-1",
-						Size:       1024,
-						Persistent: true,
+						PersistentVolumeName: "pv-1",
+						Size:                 1024,
+						Persistent:           true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2362,18 +2995,18 @@ func (s *applicationSuite) TestUnits(c *tc.C) {
 			},
 			FilesystemInfo: []caas.FilesystemInfo{
 				{
-					StorageName:  "gitlab-database",
-					FilesystemId: "",
-					Size:         1024,
-					MountPoint:   "path/to/here",
-					ReadOnly:     false,
+					StorageName:               "gitlab-database",
+					PersistentVolumeClaimName: "gitlab-database-uniqid-gitlab-2",
+					Size:                      1024,
+					MountPoint:                "path/to/here",
+					ReadOnly:                  false,
 					Status: status.StatusInfo{
 						Status: "attached",
 					},
 					Volume: caas.VolumeInfo{
-						VolumeId:   "pv-2",
-						Size:       1024,
-						Persistent: true,
+						PersistentVolumeName: "pv-2",
+						Size:                 1024,
+						Persistent:           true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2393,18 +3026,18 @@ func (s *applicationSuite) TestUnits(c *tc.C) {
 			},
 			FilesystemInfo: []caas.FilesystemInfo{
 				{
-					StorageName:  "gitlab-database",
-					FilesystemId: "",
-					Size:         1024,
-					MountPoint:   "path/to/here",
-					ReadOnly:     false,
+					StorageName:               "gitlab-database",
+					PersistentVolumeClaimName: "gitlab-database-uniqid-gitlab-3",
+					Size:                      1024,
+					MountPoint:                "path/to/here",
+					ReadOnly:                  false,
 					Status: status.StatusInfo{
 						Status: "attached",
 					},
 					Volume: caas.VolumeInfo{
-						VolumeId:   "pv-3",
-						Size:       1024,
-						Persistent: true,
+						PersistentVolumeName: "pv-3",
+						Size:                 1024,
+						Persistent:           true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2425,18 +3058,18 @@ func (s *applicationSuite) TestUnits(c *tc.C) {
 			},
 			FilesystemInfo: []caas.FilesystemInfo{
 				{
-					StorageName:  "gitlab-database",
-					FilesystemId: "",
-					Size:         1024,
-					MountPoint:   "path/to/here",
-					ReadOnly:     false,
+					StorageName:               "gitlab-database",
+					PersistentVolumeClaimName: "gitlab-database-uniqid-gitlab-4",
+					Size:                      1024,
+					MountPoint:                "path/to/here",
+					ReadOnly:                  false,
 					Status: status.StatusInfo{
 						Status: "attached",
 					},
 					Volume: caas.VolumeInfo{
-						VolumeId:   "pv-4",
-						Size:       1024,
-						Persistent: true,
+						PersistentVolumeName: "pv-4",
+						Size:                 1024,
+						Persistent:           true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2457,18 +3090,18 @@ func (s *applicationSuite) TestUnits(c *tc.C) {
 			},
 			FilesystemInfo: []caas.FilesystemInfo{
 				{
-					StorageName:  "gitlab-database",
-					FilesystemId: "",
-					Size:         1024,
-					MountPoint:   "path/to/here",
-					ReadOnly:     false,
+					StorageName:               "gitlab-database",
+					PersistentVolumeClaimName: "gitlab-database-uniqid-gitlab-5",
+					Size:                      1024,
+					MountPoint:                "path/to/here",
+					ReadOnly:                  false,
 					Status: status.StatusInfo{
 						Status: "attached",
 					},
 					Volume: caas.VolumeInfo{
-						VolumeId:   "pv-5",
-						Size:       1024,
-						Persistent: true,
+						PersistentVolumeName: "pv-5",
+						Size:                 1024,
+						Persistent:           true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2489,18 +3122,18 @@ func (s *applicationSuite) TestUnits(c *tc.C) {
 			},
 			FilesystemInfo: []caas.FilesystemInfo{
 				{
-					StorageName:  "gitlab-database",
-					FilesystemId: "",
-					Size:         1024,
-					MountPoint:   "path/to/here",
-					ReadOnly:     false,
+					StorageName:               "gitlab-database",
+					PersistentVolumeClaimName: "gitlab-database-uniqid-gitlab-6",
+					Size:                      1024,
+					MountPoint:                "path/to/here",
+					ReadOnly:                  false,
 					Status: status.StatusInfo{
 						Status: "attached",
 					},
 					Volume: caas.VolumeInfo{
-						VolumeId:   "pv-6",
-						Size:       1024,
-						Persistent: true,
+						PersistentVolumeName: "pv-6",
+						Size:                 1024,
+						Persistent:           true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2521,18 +3154,18 @@ func (s *applicationSuite) TestUnits(c *tc.C) {
 			},
 			FilesystemInfo: []caas.FilesystemInfo{
 				{
-					StorageName:  "gitlab-database",
-					FilesystemId: "",
-					Size:         1024,
-					MountPoint:   "path/to/here",
-					ReadOnly:     false,
+					StorageName:               "gitlab-database",
+					PersistentVolumeClaimName: "gitlab-database-uniqid-gitlab-7",
+					Size:                      1024,
+					MountPoint:                "path/to/here",
+					ReadOnly:                  false,
 					Status: status.StatusInfo{
 						Status: "attached",
 					},
 					Volume: caas.VolumeInfo{
-						VolumeId:   "pv-7",
-						Size:       1024,
-						Persistent: true,
+						PersistentVolumeName: "pv-7",
+						Size:                 1024,
+						Persistent:           true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2552,18 +3185,18 @@ func (s *applicationSuite) TestUnits(c *tc.C) {
 			},
 			FilesystemInfo: []caas.FilesystemInfo{
 				{
-					StorageName:  "gitlab-database",
-					FilesystemId: "",
-					Size:         1024,
-					MountPoint:   "path/to/here",
-					ReadOnly:     false,
+					StorageName:               "gitlab-database",
+					PersistentVolumeClaimName: "gitlab-database-uniqid-gitlab-8",
+					Size:                      1024,
+					MountPoint:                "path/to/here",
+					ReadOnly:                  false,
 					Status: status.StatusInfo{
 						Status: "attached",
 					},
 					Volume: caas.VolumeInfo{
-						VolumeId:   "pv-8",
-						Size:       1024,
-						Persistent: true,
+						PersistentVolumeName: "pv-8",
+						Size:                 1024,
+						Persistent:           true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2578,7 +3211,8 @@ func (s *applicationSuite) TestUnits(c *tc.C) {
 func (s *applicationSuite) TestServiceActive(c *tc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, false, false, "", func() {},
+		c, app, false, constraints.Value{}, false, false, "", nil, func() {},
+		nil,
 	)
 	defer s.assertDelete(c, app)
 
@@ -2617,7 +3251,8 @@ func (s *applicationSuite) TestServiceActive(c *tc.C) {
 func (s *applicationSuite) TestServiceNotSupportedDaemon(c *tc.C) {
 	app, _ := s.getApp(c, caas.DeploymentDaemon, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, false, false, "", func() {},
+		c, app, false, constraints.Value{}, false, false, "", nil, func() {},
+		nil,
 	)
 	defer s.assertDelete(c, app)
 
@@ -2634,7 +3269,8 @@ func (s *applicationSuite) TestServiceNotSupportedDaemon(c *tc.C) {
 func (s *applicationSuite) TestServiceNotSupportedStateless(c *tc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateless, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, false, false, "", func() {},
+		c, app, false, constraints.Value{}, false, false, "", nil, func() {},
+		nil,
 	)
 	defer s.assertDelete(c, app)
 
@@ -2651,7 +3287,8 @@ func (s *applicationSuite) TestServiceNotSupportedStateless(c *tc.C) {
 func (s *applicationSuite) TestServiceTerminated(c *tc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, false, false, "", func() {},
+		c, app, false, constraints.Value{}, false, false, "", nil, func() {},
+		nil,
 	)
 	defer s.assertDelete(c, app)
 
@@ -2691,7 +3328,8 @@ func (s *applicationSuite) TestServiceTerminated(c *tc.C) {
 func (s *applicationSuite) TestServiceError(c *tc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, false, false, "", func() {},
+		c, app, false, constraints.Value{}, false, false, "", nil, func() {},
+		nil,
 	)
 	defer s.assertDelete(c, app)
 
@@ -2750,7 +3388,7 @@ func (s *applicationSuite) TestServiceError(c *tc.C) {
 func (s *applicationSuite) TestEnsureConstraints(c *tc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.MustParse("mem=1G cpu-power=1000 arch=arm64"), true, false, "", func() {
+		c, app, false, constraints.MustParse("mem=1G cpu-power=1000 arch=arm64"), true, false, "", nil, func() {
 			svc, err := s.client.CoreV1().Services("test").Get(c.Context(), "gitlab-endpoints", metav1.GetOptions{})
 			c.Assert(err, tc.ErrorIsNil)
 			c.Assert(svc, tc.DeepEquals, &corev1.Service{
@@ -2844,6 +3482,7 @@ func (s *applicationSuite) TestEnsureConstraints(c *tc.C) {
 				},
 			})
 		},
+		nil,
 	)
 }
 
@@ -2890,7 +3529,8 @@ func (s *applicationSuite) TestPullSecretUpdate(c *tc.C) {
 		metav1.CreateOptions{})
 	c.Assert(err, tc.ErrorIsNil)
 
-	s.assertEnsure(c, app, false, constraints.Value{}, true, false, "", func() {})
+	s.assertEnsure(c, app, false, constraints.Value{}, true, false, "", nil, func() {},
+		nil)
 
 	_, err = s.client.CoreV1().Secrets(s.namespace).Get(c.Context(), "gitlab-oldcontainer-secret", metav1.GetOptions{})
 	c.Assert(err, tc.ErrorMatches, `secrets "gitlab-oldcontainer-secret" not found`)
@@ -2906,89 +3546,6 @@ func (s *applicationSuite) TestPullSecretUpdate(c *tc.C) {
 	c.Assert(*secret, tc.DeepEquals, newNginxPullSecret)
 }
 
-func (s *applicationSuite) TestPVCNames(c *tc.C) {
-	claims := []*corev1.PersistentVolumeClaim{
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "storage_a-abcd1234-gitlab-0",
-				Namespace: "test",
-				Labels: map[string]string{
-					"app.kubernetes.io/managed-by": "juju",
-					"app.kubernetes.io/name":       "gitlab",
-					"storage.juju.is/name":         "storage_a",
-				},
-			},
-		},
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "gitlab-storage_b-abcd1234-gitlab-0",
-				Namespace: "test",
-				Labels: map[string]string{
-					"app.kubernetes.io/managed-by": "juju",
-					"app.kubernetes.io/name":       "gitlab",
-					"storage.juju.is/name":         "storage_b",
-				},
-			},
-		},
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "gitlab-storage_g-abcd666-gitlab-0",
-				Namespace: "test",
-				Labels: map[string]string{
-					"app.kubernetes.io/managed-by": "juju",
-					"app.kubernetes.io/name":       "gitlab",
-					"storage.juju.is/name":         "storage_g",
-				},
-			},
-		},
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "juju-storage_c-42",
-				Namespace: "test",
-				Labels: map[string]string{
-					"app.kubernetes.io/managed-by": "juju",
-					"app.kubernetes.io/name":       "gitlab",
-					"storage.juju.is/name":         "storage_c",
-				},
-			},
-		},
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "storage_d-abcd1234-gitlab-0",
-				Namespace: "test",
-				Labels: map[string]string{
-					"app.kubernetes.io/managed-by": "juju",
-					"app.kubernetes.io/name":       "another-app",
-					"storage.juju.is/name":         "storage_d",
-				},
-			},
-		},
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "storage_e-abcd1236-gitlab-0",
-				Namespace: "test",
-				Labels: map[string]string{
-					"app.kubernetes.io/managed-by": "juju",
-					"app.kubernetes.io/name":       "gitlab",
-					// no "storage.juju.is/name" label -- will be ignored
-				},
-			},
-		},
-	}
-	for _, claim := range claims {
-		_, err := s.client.CoreV1().PersistentVolumeClaims("test").Create(c.Context(), claim, metav1.CreateOptions{})
-		c.Assert(err, tc.ErrorIsNil)
-	}
-
-	names, err := application.PVCNames(s.client, "test", "gitlab", "abcd1234")
-	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(names, tc.DeepEquals, map[string]string{
-		"gitlab-storage_a": "storage_a-abcd1234",
-		"gitlab-storage_b": "gitlab-storage_b-abcd1234",
-		"gitlab-storage_c": "juju-storage_c-42",
-	})
-}
-
 func (s *applicationSuite) TestLimits(c *tc.C) {
 	limits := corev1.ResourceList{
 		corev1.ResourceCPU:    *k8sresource.NewMilliQuantity(1000, k8sresource.DecimalSI),
@@ -2997,20 +3554,21 @@ func (s *applicationSuite) TestLimits(c *tc.C) {
 
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.MustParse("mem=1G cpu-power=1000 arch=arm64"), true, false, "", func() {
+		c, app, false, constraints.MustParse("mem=1G cpu-power=1000 arch=arm64"), true, false, "", nil, func() {
 			ss, err := s.client.AppsV1().StatefulSets("test").Get(c.Context(), "gitlab", metav1.GetOptions{})
 			c.Assert(err, tc.ErrorIsNil)
 			for _, ctr := range ss.Spec.Template.Spec.Containers {
 				c.Check(ctr.Resources.Limits, tc.DeepEquals, limits)
 			}
 		},
+		nil,
 	)
 }
 
 func (s *applicationSuite) TestEnsureUpdatedConstraints(c *tc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.MustParse("mem=1G cpu-power=1000"), true, true, "3.6.8", func() {
+		c, app, false, constraints.MustParse("mem=1G cpu-power=1000"), true, true, "3.6.8", nil, func() {
 			ps := getPodSpec368()
 			charmResourceMemRequest := corev1.ResourceList{
 				corev1.ResourceMemory: k8sresource.MustParse(constants.CharmMemRequestMi),
@@ -3047,6 +3605,7 @@ func (s *applicationSuite) TestEnsureUpdatedConstraints(c *tc.C) {
 				c.Check(ctr.Resources.Requests.Memory().Equal(*workloadResourceLimits.Memory()), tc.IsTrue)
 			}
 		},
+		nil,
 	)
 }
 
@@ -3282,20 +3841,20 @@ func (s *applicationSuite) TestDeleteAllCreatedResources(c *tc.C) {
 
 	// CR (namespace-scoped)
 	gvr := schema.GroupVersionResource{Group: "example.com", Version: "v1", Resource: "widgets"}
-	customResLabels := make(map[string]interface{}, len(resourceLabels))
+	customResLabels := make(map[string]any, len(resourceLabels))
 	for k, v := range resourceLabels {
 		customResLabels[k] = v
 	}
 	namespacedCR := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "example.com/v1",
 			"kind":       "Widget",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      "widget-1",
 				"namespace": modelName,
 				"labels":    customResLabels,
 			},
-			"spec": map[string]interface{}{"foo": "bar"},
+			"spec": map[string]any{"foo": "bar"},
 		},
 	}
 	_, err = s.dynamicClient.Resource(gvr).Namespace(modelName).Create(ctx, namespacedCR, metav1.CreateOptions{FieldManager: "juju"})
@@ -3339,20 +3898,20 @@ func (s *applicationSuite) TestDeleteAllCreatedResources(c *tc.C) {
 		Group: "example.com", Version: "v1", Resource: "clusterwidgets",
 	}
 	clusterCR := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "example.com/v1",
 			"kind":       "ClusterWidget",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name": "clusterwidget-1",
-				"labels": func() map[string]interface{} {
-					m := make(map[string]interface{}, len(resourceLabels))
+				"labels": func() map[string]any {
+					m := make(map[string]any, len(resourceLabels))
 					for k, v := range resourceLabels {
 						m[k] = v
 					}
 					return m
 				}(),
 			},
-			"spec": map[string]interface{}{"foo": "bar"},
+			"spec": map[string]any{"foo": "bar"},
 		},
 	}
 	_, err = s.dynamicClient.Resource(clusterGVR).Create(
@@ -3576,21 +4135,21 @@ func (s *applicationSuite) TestDeleteAllCreatedResources(c *tc.C) {
 
 	// Namespace-scoped CR (bad) — same GVR, different labels
 	namespacedCRBad := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "example.com/v1",
 			"kind":       "Widget",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      "widget-2",
 				"namespace": modelName,
-				"labels": func() map[string]interface{} {
-					m := map[string]interface{}{}
+				"labels": func() map[string]any {
+					m := map[string]any{}
 					for k, v := range wrongAppResourceLabels {
 						m[k] = v
 					}
 					return m
 				}(),
 			},
-			"spec": map[string]interface{}{"foo": "baz"},
+			"spec": map[string]any{"foo": "baz"},
 		},
 	}
 	_, err = s.dynamicClient.Resource(gvr).Namespace(modelName).Create(ctx, namespacedCRBad, metav1.CreateOptions{FieldManager: "juju"})
@@ -3598,20 +4157,20 @@ func (s *applicationSuite) TestDeleteAllCreatedResources(c *tc.C) {
 
 	// Cluster-scoped CR (bad) — same GVR, different labels
 	clusterCRBad := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "example.com/v1",
 			"kind":       "ClusterWidget",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name": "clusterwidget-2",
-				"labels": func() map[string]interface{} {
-					m := map[string]interface{}{}
+				"labels": func() map[string]any {
+					m := map[string]any{}
 					for k, v := range wrongAppResourceLabels {
 						m[k] = v
 					}
 					return m
 				}(),
 			},
-			"spec": map[string]interface{}{"foo": "baz"},
+			"spec": map[string]any{"foo": "baz"},
 		},
 	}
 	_, err = s.dynamicClient.Resource(clusterGVR).Create(ctx, clusterCRBad, metav1.CreateOptions{FieldManager: "juju"})
@@ -3729,8 +4288,4 @@ func (s *applicationSuite) TestDeleteAllCreatedResources(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(validatingWebhookConfigurations.Items, tc.NotNil)
 	c.Assert(validatingWebhookConfigurations.Items, tc.HasLen, 1)
-}
-
-func int64Ptr(a int64) *int64 {
-	return &a
 }

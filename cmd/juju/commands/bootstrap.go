@@ -7,8 +7,8 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"maps"
 	"os"
-	"path"
 	"sort"
 	"strings"
 
@@ -23,6 +23,7 @@ import (
 	k8s "github.com/juju/juju/caas/kubernetes"
 	jujucloud "github.com/juju/juju/cloud"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/constants"
 	"github.com/juju/juju/cmd/juju/application/refresher"
 	"github.com/juju/juju/cmd/juju/common"
@@ -35,16 +36,15 @@ import (
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/semversion"
+	corestorage "github.com/juju/juju/core/storage"
 	jujuversion "github.com/juju/juju/core/version"
-	domainstorage "github.com/juju/juju/domain/storage"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/bootstrap"
 	environscloudspec "github.com/juju/juju/environs/cloudspec"
 	environscmd "github.com/juju/juju/environs/cmd"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/environs/sync"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/internal/docker"
 	"github.com/juju/juju/internal/featureflag"
 	"github.com/juju/juju/internal/naturalsort"
@@ -220,24 +220,22 @@ type bootstrapCommand struct {
 
 	clock jujuclock.Clock
 
-	Constraints              constraints.Value
-	ConstraintsStr           common.ConstraintsFlag
-	BootstrapConstraints     constraints.Value
-	BootstrapConstraintsStr  common.BootstrapConstraintsFlag
-	BootstrapBase            string
-	BootstrapImage           string
-	BuildAgent               bool
-	JujuDbSnapPath           string
-	JujuDbSnapAssertionsPath string
-	MetadataSource           string
-	Placement                string
-	KeepBrokenEnvironment    bool
-	AutoUpgrade              bool
-	AgentVersionParam        string
-	AgentVersion             *semversion.Number
-	config                   common.ConfigFlag
-	modelDefaults            common.ConfigFlag
-	storagePool              common.ConfigFlag
+	Constraints             constraints.Value
+	ConstraintsStr          common.ConstraintsFlag
+	BootstrapConstraints    constraints.Value
+	BootstrapConstraintsStr common.BootstrapConstraintsFlag
+	BootstrapBase           string
+	BootstrapImage          string
+	BuildAgent              bool
+	MetadataSource          string
+	Placement               string
+	KeepBrokenEnvironment   bool
+	AutoUpgrade             bool
+	AgentVersionParam       string
+	AgentVersion            *semversion.Number
+	config                  common.ConfigFlag
+	modelDefaults           common.ConfigFlag
+	storagePool             common.ConfigFlag
 
 	showClouds          bool
 	showRegionsForCloud string
@@ -359,9 +357,6 @@ func (c *bootstrapCommand) SetFlags(f *gnuflag.FlagSet) {
 	f.StringVar(&c.BootstrapBase, "bootstrap-base", "", "Specify the base of the bootstrap machine")
 	f.StringVar(&c.BootstrapImage, "bootstrap-image", "", "Specify the image of the bootstrap machine (requires `--bootstrap-constraints` specifying architecture)")
 	f.BoolVar(&c.BuildAgent, "build-agent", false, "Build local version of agent binary before bootstrapping")
-	f.StringVar(&c.JujuDbSnapPath, "db-snap", "",
-		"Path to a locally built `.snap` to use as the internal `juju-db` service.")
-	f.StringVar(&c.JujuDbSnapAssertionsPath, "db-snap-asserts", "", "Path to a local `.assert` file. Requires `--db-snap`")
 	f.StringVar(&c.MetadataSource, "metadata-source", "", "Local path to use as agent and/or image metadata source")
 	f.StringVar(&c.Placement, "to", "", "Placement directive indicating an instance to bootstrap")
 	f.BoolVar(&c.KeepBrokenEnvironment, "keep-broken", false,
@@ -387,36 +382,11 @@ func (c *bootstrapCommand) SetFlags(f *gnuflag.FlagSet) {
 }
 
 func (c *bootstrapCommand) Init(args []string) (err error) {
-	if c.JujuDbSnapPath != "" {
-		_, err := c.Filesystem().Stat(c.JujuDbSnapPath)
-		if err != nil {
-			return errors.Annotatef(err, "problem with --db-snap")
-		}
-	}
-
 	// Validate the bootstrap base looks like a base.
 	if c.BootstrapBase != "" {
 		if _, err := corebase.ParseBaseFromString(c.BootstrapBase); err != nil {
 			return errors.NotValidf("base %q", c.BootstrapBase)
 		}
-	}
-
-	// fill in JujuDbSnapAssertionsPath from the same directory as JujuDbSnapPath
-	if c.JujuDbSnapAssertionsPath == "" && c.JujuDbSnapPath != "" {
-		assertionsPath := strings.Replace(c.JujuDbSnapPath, path.Ext(c.JujuDbSnapPath), ".assert", -1)
-		logger.Debugf(context.TODO(), "--db-snap-asserts unset, assuming %v", assertionsPath)
-		c.JujuDbSnapAssertionsPath = assertionsPath
-	}
-
-	if c.JujuDbSnapAssertionsPath != "" {
-		_, err := c.Filesystem().Stat(c.JujuDbSnapAssertionsPath)
-		if err != nil {
-			return errors.Annotatef(err, "problem with --db-snap-asserts")
-		}
-	}
-
-	if c.JujuDbSnapAssertionsPath != "" && c.JujuDbSnapPath == "" {
-		return errors.New("--db-snap-asserts requires --db-snap")
 	}
 
 	if c.ControllerCharmPath != "" {
@@ -583,9 +553,7 @@ func (c *bootstrapCommand) parseConstraints(ctx *cmd.Context) (err error) {
 	defer common.WarnConstraintAliases(ctx, allAliases)
 	if c.ConstraintsStr.String() != "" {
 		cons, aliases, err := constraints.ParseWithAliases(strings.Join(c.ConstraintsStr, " "))
-		for k, v := range aliases {
-			allAliases[k] = v
-		}
+		maps.Copy(allAliases, aliases)
 		if err != nil {
 			return err
 		}
@@ -593,9 +561,7 @@ func (c *bootstrapCommand) parseConstraints(ctx *cmd.Context) (err error) {
 	}
 	if c.BootstrapConstraintsStr.String() != "" {
 		cons, aliases, err := constraints.ParseWithAliases(strings.Join(c.BootstrapConstraintsStr, " "))
-		for k, v := range aliases {
-			allAliases[k] = v
-		}
+		maps.Copy(allAliases, aliases)
 		if err != nil {
 			return err
 		}
@@ -834,12 +800,10 @@ to create a new model to deploy %sworkloads.
 	registry := environ
 	for poolName, cfg := range bootstrapCfg.storagePools {
 		poolAttrs := make(storage.Attrs)
-		for k, v := range cfg {
-			poolAttrs[k] = v
-		}
-		poolType, _ := poolAttrs[domainstorage.StorageProviderType].(string)
-		delete(poolAttrs, domainstorage.StoragePoolName)
-		delete(poolAttrs, domainstorage.StorageProviderType)
+		maps.Copy(poolAttrs, cfg)
+		poolType, _ := poolAttrs[corestorage.BootstrapStoragePoolTypeKey].(string)
+		delete(poolAttrs, corestorage.BootstrapStoragePoolNameKey)
+		delete(poolAttrs, corestorage.BootstrapStoragePoolTypeKey)
 		sc, err := storage.NewConfig(poolName, storage.ProviderType(poolType), poolAttrs)
 		if err != nil {
 			return errors.Trace(err)
@@ -878,8 +842,6 @@ to create a new model to deploy %sworkloads.
 		ControllerServiceType:         bootstrapCfg.bootstrap.ControllerServiceType,
 		ControllerExternalName:        bootstrapCfg.bootstrap.ControllerExternalName,
 		ControllerExternalIPs:         append([]string(nil), bootstrapCfg.bootstrap.ControllerExternalIPs...),
-		JujuDbSnapPath:                c.JujuDbSnapPath,
-		JujuDbSnapAssertionsPath:      c.JujuDbSnapAssertionsPath,
 		StoragePools:                  bootstrapCfg.storagePools,
 		ControllerCharmPath:           c.ControllerCharmPath,
 		ControllerCharmChannel:        c.ControllerCharmChannel,
@@ -1050,6 +1012,7 @@ See %s.`[1:], "`juju kill-controller`")
 		&c.ModelCommandBase,
 		isCAASController,
 		c.controllerName,
+		common.TryAPI,
 	)
 }
 
@@ -1115,9 +1078,9 @@ func (c *bootstrapCommand) controllerDataRefresher(
 				AgentVersion:           agentVersion.String(),
 				CurrentHostPorts:       []network.MachineHostPorts{hps},
 				PublicDNSName:          newStringIfNonEmpty(bootstrapCfg.controller.AutocertDNSName()),
-				MachineCount:           newInt(1),
+				MachineCount:           new(1),
 				Proxier:                proxier,
-				ControllerMachineCount: newInt(1),
+				ControllerMachineCount: new(1),
 			},
 		),
 		"saving bootstrap endpoint address",
@@ -1367,11 +1330,11 @@ func (c *bootstrapCommand) credentialsAndRegionName(
 // bootstrapConfigs is a deconstructed representation of all of the config
 // options supplied by a user at bootstrap time into their various buckets.
 type bootstrapConfigs struct {
-	bootstrapModel           map[string]interface{}
+	bootstrapModel           map[string]any
 	controller               controller.Config
 	bootstrap                bootstrap.Config
-	inheritedControllerAttrs map[string]interface{}
-	userConfigAttrs          map[string]interface{}
+	inheritedControllerAttrs map[string]any
+	userConfigAttrs          map[string]any
 	storagePools             map[string]storage.Attrs
 }
 
@@ -1395,7 +1358,7 @@ func (c *bootstrapCommand) bootstrapConfigs(
 
 	// Create a model config, and split out any controller
 	// and bootstrap config attributes.
-	combinedConfig := map[string]interface{}{
+	combinedConfig := map[string]any{
 		"type":         cloud.Type,
 		"name":         bootstrap.ControllerModelName,
 		config.UUIDKey: controllerModelUUID.String(),
@@ -1413,9 +1376,9 @@ func (c *bootstrapCommand) bootstrapConfigs(
 
 	// The provider may define some custom attributes specific
 	// to the provider. These will be added to the model config.
-	var providerAttrs map[string]interface{}
+	var providerAttrs map[string]any
 	if ps, ok := provider.(config.ConfigSchemaSource); ok {
-		providerAttrs = make(map[string]interface{})
+		providerAttrs = make(map[string]any)
 		for attr := range ps.ConfigSchema() {
 			// Start with the model defaults, and if also specified
 			// in the user config attrs, they override the model default.
@@ -1432,7 +1395,7 @@ func (c *bootstrapCommand) bootstrapConfigs(
 			return bootstrapConfigs{},
 				errors.Annotatef(err, "invalid attribute value(s) for %v cloud", cloud.Type)
 		}
-		providerAttrs = coercedAttrs.(map[string]interface{})
+		providerAttrs = coercedAttrs.(map[string]any)
 	}
 
 	storagePoolAttrs, err := c.storagePool.ReadAttrs(ctx)
@@ -1441,23 +1404,29 @@ func (c *bootstrapCommand) bootstrapConfigs(
 	}
 	var storagePools map[string]storage.Attrs
 	if len(storagePoolAttrs) > 0 {
-		poolName, _ := storagePoolAttrs[domainstorage.StoragePoolName].(string)
+		poolName, _ := storagePoolAttrs[corestorage.BootstrapStoragePoolNameKey].(string)
 		if poolName == "" {
-			return bootstrapConfigs{}, errors.NewNotValid(nil, "storage pool requires a name")
+			return bootstrapConfigs{}, errors.NotValidf(
+				"storage pool requires a %q key to be set",
+				corestorage.BootstrapStoragePoolNameKey,
+			)
 		}
-		poolType, _ := storagePoolAttrs[domainstorage.StorageProviderType].(string)
+		poolType, _ := storagePoolAttrs[corestorage.BootstrapStoragePoolTypeKey].(string)
 		if poolType == "" {
-			return bootstrapConfigs{}, errors.NewNotValid(nil, "storage pool requires a type")
+			return bootstrapConfigs{}, errors.NotValidf(
+				"storage pool requires a %q key to be set",
+				corestorage.BootstrapStoragePoolTypeKey,
+			)
 		}
 		storagePools = make(map[string]storage.Attrs)
 		storagePools[poolName] = storagePoolAttrs
 	}
 
-	bootstrapConfigAttrs := make(map[string]interface{})
-	controllerConfigAttrs := make(map[string]interface{})
+	bootstrapConfigAttrs := make(map[string]any)
+	controllerConfigAttrs := make(map[string]any)
 	// Based on the attribute names in clouds.yaml, create
 	// a map of shared config for all models on this cloud.
-	inheritedControllerAttrs := make(map[string]interface{})
+	inheritedControllerAttrs := make(map[string]any)
 	for k, v := range cloud.Config {
 		switch {
 		case bootstrap.IsBootstrapAttribute(k):
@@ -1498,25 +1467,17 @@ func (c *bootstrapCommand) bootstrapConfigs(
 	}
 
 	// Start with the model defaults, then add in user config attributes.
-	for k, v := range modelDefaultConfigAttrs {
-		combinedConfig[k] = v
-	}
+	maps.Copy(combinedConfig, modelDefaultConfigAttrs)
 
 	// Store specific attributes are either already specified in model
 	// config (but may have been coerced), or were not present. Either way,
 	// copy them in.
 	logger.Debugf(context.TODO(), "provider attrs: %v", providerAttrs)
-	for k, v := range providerAttrs {
-		combinedConfig[k] = v
-	}
+	maps.Copy(combinedConfig, providerAttrs)
 
-	for k, v := range inheritedControllerAttrs {
-		combinedConfig[k] = v
-	}
+	maps.Copy(combinedConfig, inheritedControllerAttrs)
 
-	for k, v := range userConfigAttrs {
-		combinedConfig[k] = v
-	}
+	maps.Copy(combinedConfig, userConfigAttrs)
 
 	// Add in any default attribute values if not already
 	// specified, making the recorded bootstrap config
@@ -1527,7 +1488,7 @@ func (c *bootstrapCommand) bootstrapConfigs(
 		}
 	}
 
-	bootstrapModelConfig := make(map[string]interface{})
+	bootstrapModelConfig := make(map[string]any)
 	for k, v := range combinedConfig {
 		switch {
 		case bootstrap.IsBootstrapAttribute(k):
@@ -1688,10 +1649,6 @@ func handleChooseCloudRegionError(ctx *cmd.Context, err error) error {
 		err, "juju update-public-clouds",
 	)
 	return cmd.ErrSilent
-}
-
-func newInt(i int) *int {
-	return &i
 }
 
 func newStringIfNonEmpty(s string) *string {

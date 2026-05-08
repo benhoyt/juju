@@ -18,7 +18,6 @@ import (
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/core/semversion"
-	"github.com/juju/juju/internal/mongo"
 	k8sconstants "github.com/juju/juju/internal/provider/kubernetes/constants"
 )
 
@@ -84,10 +83,6 @@ func (c *configFromEnv) APIInfo() (*api.Info, bool) {
 	}, true
 }
 
-func (c *configFromEnv) MongoInfo() (*mongo.MongoInfo, bool) {
-	panic("not implemented")
-}
-
 func (c *configFromEnv) OldPassword() string {
 	return os.Getenv("JUJU_K8S_APPLICATION_PASSWORD")
 }
@@ -137,6 +132,10 @@ func (c *configFromEnv) QueryTracingThreshold() time.Duration {
 }
 
 func (c *configFromEnv) OpenTelemetryEnabled() bool {
+	panic("not implemented")
+}
+
+func (c *configFromEnv) DqliteBusyTimeout() time.Duration {
 	panic("not implemented")
 }
 

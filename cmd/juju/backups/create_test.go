@@ -13,9 +13,9 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/tc"
 
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/backups"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 )
 
 type createSuite struct {
@@ -48,7 +48,7 @@ func (s *createSuite) TearDownTest(c *tc.C) {
 	// However, in situations where s.command.Filename is defined, we want to remove it as well.
 	if s.command.Filename != backups.NotSet && s.command.Filename != s.filename {
 		err := os.Remove(s.command.Filename)
-		c.Assert(err, tc.ErrorIsNil)
+		c.Assert(err, tc.Or(tc.ErrorIsNil, tc.ErrorIs), os.ErrNotExist)
 	}
 	s.BaseBackupsSuite.TearDownTest(c)
 }
@@ -84,6 +84,9 @@ func (s *createSuite) checkDownloadStd(c *tc.C, ctx *cmd.Context) {
 	c.Assert(parts, tc.HasLen, 2)
 	c.Assert(parts[0], tc.Equals, "")
 	s.filename = parts[1][:len(parts[1])]
+	c.Cleanup(func() {
+		s.filename = ""
+	})
 }
 
 func (s *createSuite) checkDownload(c *tc.C, ctx *cmd.Context) {

@@ -25,10 +25,10 @@ import (
 	coretesting "github.com/juju/juju/core/testing"
 	coreunit "github.com/juju/juju/core/unit"
 	coreunittesting "github.com/juju/juju/core/unit/testing"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	domainresource "github.com/juju/juju/domain/resource"
 	resourceerrors "github.com/juju/juju/domain/resource/errors"
-	internalcharm "github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	"github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/resource/charmhub"
 )
@@ -58,8 +58,63 @@ func TestOpenerSuite(t *stdtesting.T) {
 	tc.Run(t, &OpenerSuite{})
 }
 
-func (s *OpenerSuite) TestOpenResource(c *tc.C) {
-	defer s.setupMocks(c, true).Finish()
+// TestOpenUnitResource is a happy path test for opening a unit resource that
+// exists in the controllers object store. This is a regression test where we
+// were not correctly passing back the resource information including the
+// resource uuid.
+func (s *OpenerSuite) TestOpenUnitResourceEmptyResource(c *tc.C) {
+	defer s.setupMocks(c, false).Finish()
+
+	appName := "postgresql"
+	unitName := tc.Must1(c, coreunit.NewName, "postgresql/0")
+	appUUID := tc.Must(c, coreapplication.NewUUID)
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+
+	charmOrigin := charm.Origin{
+		Source: charm.CharmHub,
+	}
+
+	appSvcExp := s.applicationService.EXPECT()
+	appSvcExp.GetApplicationUUIDByUnitName(c.Context(), unitName).Return(
+		appUUID, nil,
+	)
+	appSvcExp.GetUnitUUID(gomock.Any(), unitName).Return(unitUUID, nil)
+	appSvcExp.GetApplicationCharmOrigin(
+		gomock.Any(),
+		appName,
+	).Return(charmOrigin, nil)
+
+	opener, err := NewResourceOpenerForUnit(
+		c.Context(),
+		ResourceOpenerArgs{
+			ResourceService:      s.resourceService,
+			ApplicationService:   s.applicationService,
+			CharmhubClientGetter: s.resourceClientGetter,
+		},
+		func() ResourceDownloadLock {
+			return noopDownloadResourceLocker{}
+		},
+		unitName,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = opener.OpenResource(c.Context(), "")
+	c.Assert(err, tc.ErrorMatches, "resource name cannot be empty")
+}
+
+// TestOpenUnitResource is a happy path test for opening a unit resource that
+// exists in the controllers object store. This is a regression test where we
+// were not correctly passing back the resource information including the
+// resource uuid.
+func (s *OpenerSuite) TestOpenUnitResource(c *tc.C) {
+	defer s.setupMocks(c, false).Finish()
+
+	resourceUUID := tc.Must(c, coreresource.NewUUID)
+	appName := "postgresql"
+	appUUID := tc.Must(c, coreapplication.NewUUID)
+	unitName := tc.Must1(c, coreunit.NewName, "postgresql/0")
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+
 	res := coreresource.Resource{
 		Resource: charmresource.Resource{
 			Meta: charmresource.Meta{
@@ -71,31 +126,214 @@ func (s *OpenerSuite) TestOpenResource(c *tc.C) {
 			Fingerprint: s.resourceFingerprint,
 			Size:        s.resourceSize,
 		},
-		ApplicationName: "postgreql",
+		ApplicationName: "postgresql",
+		RetrievedBy:     unitName.String(),
+		ID:              resourceUUID.String(),
 	}
-	s.expectServiceMethods(res, 1)
-	s.resourceClientGetter.EXPECT().GetResourceClient(
-		gomock.Any(), gomock.Any(),
-	).Return(
-		newResourceRetryClientForTest(c, s.resourceClient),
+
+	charmOrigin := charm.Origin{
+		Source: charm.CharmHub,
+	}
+
+	appSvcExp := s.applicationService.EXPECT()
+	appSvcExp.GetApplicationUUIDByUnitName(c.Context(), unitName).Return(
+		appUUID, nil,
+	)
+	appSvcExp.GetUnitUUID(gomock.Any(), unitName).Return(unitUUID, nil)
+	appSvcExp.GetApplicationCharmOrigin(
+		gomock.Any(),
+		appName,
+	).Return(charmOrigin, nil)
+
+	resourceSvcExp := s.resourceService.EXPECT()
+	resourceSvcExp.GetApplicationResourceID(
+		gomock.Any(), domainresource.GetApplicationResourceIDArgs{
+			ApplicationUUID: appUUID,
+			Name:            "oci-image",
+		},
+	).Return(resourceUUID, nil).AnyTimes()
+
+	resourceSvcExp.OpenResource(
+		gomock.Any(),
+		resourceUUID,
+	).Return(res, io.NopCloser(bytes.NewBuffer([]byte("test"))), nil)
+
+	opener, err := NewResourceOpenerForUnit(
+		c.Context(),
+		ResourceOpenerArgs{
+			ResourceService:      s.resourceService,
+			ApplicationService:   s.applicationService,
+			CharmhubClientGetter: s.resourceClientGetter,
+		},
+		func() ResourceDownloadLock {
+			return noopDownloadResourceLocker{}
+		},
+		unitName,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	opened, err := opener.OpenResource(c.Context(), "oci-image")
+	c.Assert(err, tc.ErrorIsNil)
+	mc := tc.NewMultiChecker()
+	mc.AddExpr("_.ReadCloser", tc.Ignore)
+
+	c.Check(opened, mc, coreresource.Opened{
+		Resource: coreresource.Resource{
+			ApplicationName: appName,
+			RetrievedBy:     unitName.String(),
+			Resource: charmresource.Resource{
+				Meta: charmresource.Meta{
+					Name: "wal-e",
+					Type: 1,
+				},
+				Origin:      charmresource.OriginStore,
+				Revision:    s.resourceRevision,
+				Fingerprint: s.resourceFingerprint,
+				Size:        s.resourceSize,
+			},
+			ID: resourceUUID.String(),
+		},
+	})
+}
+
+// TestOpenUnitResourceCacheMiss tests that when a unit requests a resource and
+// it is not available from the local controller cache (cache miss) it is
+// downloaded from charmhub.
+//
+// This also acts as a regression test to show that the resource uuid is
+// correctly returned as in the original implementation it was not.
+func (s *OpenerSuite) TestOpenUnitResourceCacheMiss(c *tc.C) {
+	defer s.setupMocks(c, false).Finish()
+
+	resourceUUID := tc.Must(c, coreresource.NewUUID)
+	appName := "postgresql"
+	appUUID := tc.Must(c, coreapplication.NewUUID)
+	unitName := tc.Must1(c, coreunit.NewName, "postgresql/0")
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+
+	res := coreresource.Resource{
+		Resource: charmresource.Resource{
+			Meta: charmresource.Meta{
+				Name: "wal-e",
+				Type: 1,
+			},
+			Origin:      charmresource.OriginStore,
+			Revision:    10,
+			Fingerprint: s.resourceFingerprint,
+			Size:        s.resourceSize,
+		},
+		ApplicationName: "postgresql",
+		RetrievedBy:     unitName.String(),
+		ID:              resourceUUID.String(),
+	}
+
+	charmOrigin := charm.Origin{
+		Source: charm.CharmHub,
+	}
+
+	charmHubRequest := charmhub.ResourceRequest{
+		CharmID: charmhub.CharmID{
+			Origin: charmOrigin,
+		},
+		Name:     "wal-e",
+		Revision: 10,
+	}
+
+	charmHubResourceData := charmhub.ResourceData{
+		ReadCloser: io.NopCloser(bytes.NewBuffer([]byte("test"))),
+		Resource:   res.Resource,
+	}
+
+	storeResourceArgs := domainresource.StoreResourceArgs{
+		Fingerprint:     s.resourceFingerprint,
+		ResourceUUID:    resourceUUID,
+		RetrievedBy:     unitName.String(),
+		RetrievedByType: coreresource.Unit,
+		Size:            s.resourceSize,
+	}
+
+	appSvcExp := s.applicationService.EXPECT()
+	appSvcExp.GetApplicationUUIDByUnitName(c.Context(), unitName).Return(
+		appUUID, nil,
+	)
+	appSvcExp.GetUnitUUID(gomock.Any(), unitName).Return(unitUUID, nil)
+	appSvcExp.GetApplicationCharmOrigin(
+		gomock.Any(),
+		appName,
+	).Return(charmOrigin, nil)
+
+	resourceSvcExp := s.resourceService.EXPECT()
+	resourceSvcExp.GetResource(gomock.Any(), resourceUUID).Return(res, nil)
+	resourceSvcExp.GetApplicationResourceID(
+		gomock.Any(), domainresource.GetApplicationResourceIDArgs{
+			ApplicationUUID: appUUID,
+			Name:            "oci-image",
+		},
+	).Return(resourceUUID, nil).AnyTimes()
+
+	// Store resource expectations. We use a tc bind here to assert the arg.
+	storeResourceMC := tc.NewMultiChecker()
+	storeResourceMC.AddExpr("_.Reader", tc.Ignore)
+	resourceSvcExp.StoreResource(gomock.Any(), tc.Bind(storeResourceMC, storeResourceArgs))
+
+	// Cache miss for resource.
+	resourceSvcExp.OpenResource(
+		gomock.Any(),
+		resourceUUID,
+	).Return(coreresource.Resource{}, nil, resourceerrors.StoredResourceNotFound)
+	// Cache hit once downloaded from Charmhub.
+	resourceSvcExp.OpenResource(
+		gomock.Any(),
+		resourceUUID,
+	).Return(res, io.NopCloser(bytes.NewBuffer([]byte("test"))), nil)
+
+	resourceClientGetExp := s.resourceClientGetter.EXPECT()
+	resourceClientGetExp.GetResourceClient(gomock.Any(), gomock.Any()).Return(
+		s.resourceClient,
 		nil,
 	)
-	s.resourceClient.EXPECT().GetResource(gomock.Any(), gomock.Any()).Return(
-		charmhub.ResourceData{
-			ReadCloser: s.resourceReader,
-			Resource:   res.Resource,
-		}, nil,
+
+	resourceClientExp := s.resourceClient.EXPECT()
+	resourceClientExp.GetResource(gomock.Any(), charmHubRequest).Return(
+		charmHubResourceData, nil,
 	)
 
-	s.expectNewUnitResourceOpener(c)
-	opened, err := s.newUnitResourceOpener(
-		c,
-		0,
-	).OpenResource(c.Context(), "wal-e")
+	opener, err := NewResourceOpenerForUnit(
+		c.Context(),
+		ResourceOpenerArgs{
+			ResourceService:      s.resourceService,
+			ApplicationService:   s.applicationService,
+			CharmhubClientGetter: s.resourceClientGetter,
+		},
+		func() ResourceDownloadLock {
+			return noopDownloadResourceLocker{}
+		},
+		unitName,
+	)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(opened.Size, tc.Equals, res.Size)
-	c.Check(opened.Fingerprint.String(), tc.Equals, res.Fingerprint.String())
-	c.Assert(opened.Close(), tc.ErrorIsNil)
+
+	opened, err := opener.OpenResource(c.Context(), "oci-image")
+	c.Assert(err, tc.ErrorIsNil)
+	mc := tc.NewMultiChecker()
+	mc.AddExpr("_.ReadCloser", tc.Ignore)
+
+	c.Check(opened, mc, coreresource.Opened{
+		Resource: coreresource.Resource{
+			ApplicationName: appName,
+			RetrievedBy:     unitName.String(),
+			Resource: charmresource.Resource{
+				Meta: charmresource.Meta{
+					Name: "wal-e",
+					Type: 1,
+				},
+				Origin:      charmresource.OriginStore,
+				Revision:    10,
+				Fingerprint: s.resourceFingerprint,
+				Size:        s.resourceSize,
+			},
+			ID: resourceUUID.String(),
+		},
+	})
 }
 
 func (s *OpenerSuite) TestOpenResourceThrottle(c *tc.C) {
@@ -134,7 +372,7 @@ func (s *OpenerSuite) TestOpenResourceThrottle(c *tc.C) {
 	s.unleash.Lock()
 	start := sync.WaitGroup{}
 	finished := sync.WaitGroup{}
-	for i := 0; i < numConcurrentRequests; i++ {
+	for range numConcurrentRequests {
 		start.Add(1)
 		finished.Add(1)
 		s.expectNewUnitResourceOpener(c)

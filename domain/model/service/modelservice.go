@@ -122,8 +122,9 @@ type ModelState interface {
 	// Create creates a new model with all of its associated metadata.
 	Create(context.Context, model.ModelDetailArgs) error
 
-	// Delete deletes a model.
-	Delete(context.Context, coremodel.UUID) error
+	// CreateImportingModel creates a new model during import with all of its
+	// associated metadata and marks it as importing in a single transaction.
+	CreateImportingModel(context.Context, model.ModelDetailArgs) error
 
 	// GetControllerUUID returns the controller uuid for the model.
 	// It is expected that CreateModel has been called before reading this value
@@ -197,6 +198,9 @@ type ModelState interface {
 	// The following errors may be returned:
 	// - [modelerrors.NotFound] when the model does not exist.
 	IsControllerModel(context.Context) (bool, error)
+
+	// IsImportingModel returns true if this model is being imported.
+	IsImportingModel(ctx context.Context) (bool, error)
 }
 
 // RegionProvider instances provide a means to get the CloudSpec for this
@@ -505,6 +509,63 @@ func (s *ModelService) CreateModelWithAgentVersionStream(
 	return s.modelSt.Create(ctx, args)
 }
 
+// CreateImportingModelWithAgentVersionStream is responsible for creating a new
+// model within the model database during model import, using the input agent
+// version and agent stream. This method creates the model and marks it as
+// importing in a single atomic transaction.
+//
+// The following error types can be expected to be returned:
+// - [modelerrors.AlreadyExists] when the model uuid is already in use.
+// - [coreerrors.NotValid] when the agent stream is not valid.
+// - [modelerrors.AgentVersionNotSupported] when the agent version is not
+// supported.
+func (s *ModelService) CreateImportingModelWithAgentVersionStream(
+	ctx context.Context,
+	agentVersion semversion.Number,
+	agentStream agentbinary.AgentStream,
+) error {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	m, err := s.controllerSt.GetModelSeedInformation(ctx, s.modelUUID)
+	if err != nil {
+		return err
+	}
+
+	argAgentStream, err := domainagentbinary.StreamFromCoreAgentBinaryStream(agentStream)
+	if errors.Is(err, coreerrors.NotValid) {
+		return errors.New(
+			"agent stream %q is not a valid agent stream identifier for a model",
+		).Add(modelerrors.AgentStreamNotValid)
+	} else if err != nil {
+		return errors.Errorf(
+			"converting agent stream core type to domain type: %w", err,
+		)
+	}
+
+	if err := validateAgentVersion(agentVersion, s.agentBinaryFinder); err != nil {
+		return errors.Errorf("creating importing model %q with agent version %q: %w", m.Name, agentVersion, err)
+	}
+
+	args := model.ModelDetailArgs{
+		UUID:            m.UUID,
+		ControllerUUID:  m.ControllerUUID,
+		Name:            m.Name,
+		Qualifier:       m.Qualifier,
+		Type:            m.Type,
+		Cloud:           m.Cloud,
+		CloudType:       m.CloudType,
+		CloudRegion:     m.CloudRegion,
+		CredentialOwner: m.CredentialOwner,
+		CredentialName:  m.CredentialName,
+
+		AgentStream:        argAgentStream,
+		AgentVersion:       agentVersion,
+		LatestAgentVersion: agentVersion,
+	}
+	return s.modelSt.CreateImportingModel(ctx, args)
+}
+
 // getRecommendedStoragePools returns the recommended storage pools to use for
 // the model as suggested by the registry. Returned is a slice of storage pools
 // that are to be created in the model, the second slice returns is a mapping
@@ -711,18 +772,6 @@ func transformStoragePoolAttributes(attr map[string]any) map[string]string {
 	return rval
 }
 
-// DeleteModel is responsible for removing a model from the system.
-//
-// The following error types can be expected to be returned:
-// - [modelerrors.NotFound]: When the model does not exist.
-func (s *ModelService) DeleteModel(
-	ctx context.Context,
-) error {
-	ctx, span := trace.Start(ctx, trace.NameFromFunc())
-	defer span.End()
-	return s.modelSt.Delete(ctx, s.modelUUID)
-}
-
 // statusFromModelState is responsible for converting the a [model.ModelState]
 // into a model status representation.
 func (s *ModelService) statusFromModelState(
@@ -790,6 +839,14 @@ func (s *ModelService) IsControllerModel(ctx context.Context) (bool, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 	return s.modelSt.IsControllerModel(ctx)
+}
+
+// IsImportingModel returns true if this model is being imported.
+func (s *ModelService) IsImportingModel(ctx context.Context) (bool, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	return s.modelSt.IsImportingModel(ctx)
 }
 
 // HasValidCredential returns true if the model has a valid credential.

@@ -5,7 +5,6 @@ package state
 
 import (
 	"github.com/juju/juju/core/application"
-	"github.com/juju/juju/core/machine"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/port"
@@ -15,22 +14,6 @@ import (
 type protocol struct {
 	ID   int    `db:"id"`
 	Name string `db:"protocol"`
-}
-
-// portRange represents a range of ports for a given protocol.
-type portRange struct {
-	Protocol string `db:"protocol"`
-	FromPort int    `db:"from_port"`
-	ToPort   int    `db:"to_port"`
-}
-
-// decode returns the network.PortRange representation of the portRange.
-func (pr portRange) decode() network.PortRange {
-	return network.PortRange{
-		Protocol: pr.Protocol,
-		FromPort: pr.FromPort,
-		ToPort:   pr.ToPort,
-	}
 }
 
 // unitNamePortRange represents a range of ports for a given protocol for a
@@ -69,23 +52,6 @@ func (epr endpointPortRange) decode() network.PortRange {
 	}
 }
 
-type endpointPortRangeUUID struct {
-	UUID     string `db:"uuid"`
-	Protocol string `db:"protocol"`
-	FromPort int    `db:"from_port"`
-	ToPort   int    `db:"to_port"`
-	Endpoint string `db:"endpoint"`
-}
-
-// decode returns the network.PortRange representation of the endpointPortRangeUUID.
-func (p endpointPortRangeUUID) decode() network.PortRange {
-	return network.PortRange{
-		Protocol: p.Protocol,
-		FromPort: p.FromPort,
-		ToPort:   p.ToPort,
-	}
-}
-
 // unitEndpointPortRange represents a range of ports for a given protocol for
 // a given unit's endpoint, and unit UUID.
 type unitEndpointPortRange struct {
@@ -112,8 +78,6 @@ func (p unitEndpointPortRange) decodeToPortRange() network.PortRange {
 	}
 }
 
-type portRangeUUIDs []string
-
 // unitPortRange represents a range of ports for a given protocol by id for a
 // given unit's endpoint by uuid.
 type unitPortRange struct {
@@ -131,11 +95,6 @@ type endpoint struct {
 	Endpoint string `db:"endpoint"`
 }
 
-// endpointName represents a network endpoint's name.
-type endpointName struct {
-	Endpoint string `db:"endpoint"`
-}
-
 // endpoints represents a list of network endpoints.
 type endpoints []string
 
@@ -149,11 +108,6 @@ type unitUUID struct {
 // machineUUID represents a machine's UUID.
 type machineUUID struct {
 	UUID string `db:"machine_uuid"`
-}
-
-// machineName represents a machine's name.
-type machineName struct {
-	Name machine.Name `db:"name"`
 }
 
 // applicationUUID represents an application's UUID.

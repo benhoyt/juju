@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Configure Google Compute Engine (GCE) cloud with Juju, including IAM permissions, service account setup, and authentication types."
+---
+
 (cloud-gce)=
 # The Google GCE cloud and Juju
 

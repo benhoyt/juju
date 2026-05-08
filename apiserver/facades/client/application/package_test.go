@@ -14,7 +14,6 @@ import (
 
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/permission"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/testhelpers"
@@ -25,7 +24,7 @@ import (
 //go:generate go run go.uber.org/mock/mockgen -typed -package application -destination legacy_mock_test.go github.com/juju/juju/apiserver/facades/client/application CaasBrokerInterface
 //go:generate go run go.uber.org/mock/mockgen -typed -package application -destination objectstore_mock_test.go github.com/juju/juju/core/objectstore ObjectStore
 //go:generate go run go.uber.org/mock/mockgen -typed -package application -destination facade_mock_test.go github.com/juju/juju/apiserver/facade Authorizer
-//go:generate go run go.uber.org/mock/mockgen -typed -package application -destination charm_mock_test.go github.com/juju/juju/internal/charm Charm,CharmMeta
+//go:generate go run go.uber.org/mock/mockgen -typed -package application -destination charm_mock_test.go github.com/juju/juju/domain/deployment/charm Charm,CharmMeta
 //go:generate go run go.uber.org/mock/mockgen -typed -package application -destination core_charm_mock_test.go github.com/juju/juju/core/charm Repository,RepositoryFactory
 
 type baseSuite struct {
@@ -43,7 +42,6 @@ type baseSuite struct {
 	machineService            *MockMachineService
 	modelConfigService        *MockModelConfigService
 	networkService            *MockNetworkService
-	objectStore               *MockObjectStore
 	portService               *MockPortService
 	relationService           *MockRelationService
 	removalService            *MockRemovalService
@@ -60,8 +58,8 @@ type baseSuite struct {
 	modelType      model.ModelType
 
 	// Legacy types that we're transitioning away from.
-	deployApplication DeployApplicationFunc
-	caasBroker        *MockCaasBrokerInterface
+	deployApplicationLocalRepo DeployApplicationLocalRepo
+	caasBroker                 *MockCaasBrokerInterface
 }
 
 func (s *baseSuite) setupMocks(c *tc.C) *gomock.Controller {
@@ -90,7 +88,7 @@ func (s *baseSuite) setupMocks(c *tc.C) *gomock.Controller {
 	s.charmRepositoryFactory = NewMockRepositoryFactory(ctrl)
 
 	s.controllerUUID = tc.Must(c, uuid.NewUUID).String()
-	s.modelUUID = modeltesting.GenModelUUID(c)
+	s.modelUUID = tc.Must0(c, model.NewUUID)
 
 	return ctrl
 }
@@ -133,7 +131,14 @@ func (s *baseSuite) newCAASAPI(c *tc.C) {
 }
 
 func (s *baseSuite) newAPI(c *tc.C, modelType model.ModelType) {
-	s.deployApplication = DeployApplication
+	s.deployApplicationLocalRepo = deployApplicationLocalRepo{
+		applicationService: s.applicationService,
+		clock:              clock.WallClock,
+		logger:             loggertesting.WrapCheckLog(c),
+		modelType:          modelType,
+
+		storageService: s.storageService,
+	}
 	s.modelType = modelType
 	var err error
 	s.api, err = NewAPIBase(
@@ -159,9 +164,8 @@ func (s *baseSuite) newAPI(c *tc.C, modelType model.ModelType) {
 		s.modelType,
 		s.leadershipReader,
 		s.deployFromRepo,
-		s.deployApplication,
+		s.deployApplicationLocalRepo,
 		s.caasBroker,
-		s.objectStore,
 		loggertesting.WrapCheckLog(c),
 		clock.WallClock,
 	)

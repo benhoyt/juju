@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Explore the evolution of Juju charm frameworks from 2009 to present: Services Framework, Reactive Framework, and Operator Framework."
+---
+
 (charming-history)=
 # About charming history
 

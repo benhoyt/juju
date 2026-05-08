@@ -9,7 +9,6 @@ import (
 	corebase "github.com/juju/juju/core/base"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/instance"
-	"github.com/juju/juju/core/lxdprofile"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/instances"
 	"github.com/juju/juju/internal/cloudconfig/instancecfg"
@@ -78,19 +77,6 @@ func (m ManagerConfig) WarnAboutUnused() {
 	for key, value := range m {
 		logger.Infof(context.TODO(), "unused config option: %q -> %q", key, value)
 	}
-}
-
-// LXDProfileManager defines an interface for dealing with lxd profiles used to
-// deploy juju containers.
-type LXDProfileManager interface {
-	// AssignLXDProfiles assigns the given profile names to the lxd instance
-	// provided.  The slice of ProfilePosts provides details for adding to
-	// and removing profiles from the lxd server.
-	AssignLXDProfiles(instID string, profilesNames []string, profilePosts []lxdprofile.ProfilePost) ([]string, error)
-
-	// MaybeWriteLXDProfile, write given LXDProfile to machine if not already
-	// there.
-	MaybeWriteLXDProfile(pName string, put lxdprofile.Profile) error
 }
 
 // LXDProfileNameRetriever defines an interface for dealing with lxd profile

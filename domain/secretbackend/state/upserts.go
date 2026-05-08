@@ -16,7 +16,7 @@ import (
 func (s *State) upsertBackend(ctx context.Context, tx *sqlair.TX, sb SecretBackend) error {
 	upsertBackendStmt, err := s.Prepare(`
 INSERT INTO secret_backend
-    (uuid, name, backend_type_id, token_rotate_interval)
+    (uuid, name, backend_type_id, token_rotate_interval, origin_id)
 VALUES ($SecretBackend.*)
 ON CONFLICT (uuid) DO UPDATE SET
     name=EXCLUDED.name,
@@ -27,9 +27,6 @@ ON CONFLICT (uuid) DO UPDATE SET
 	err = tx.Query(ctx, upsertBackendStmt, sb).Run()
 	if database.IsErrConstraintUnique(err) {
 		return errors.Errorf("%w: name %q", backenderrors.AlreadyExists, sb.Name)
-	}
-	if database.IsErrConstraintTrigger(err) {
-		return errors.Errorf("%w: %q is immutable", backenderrors.Forbidden, sb.ID)
 	}
 	if err != nil {
 		return errors.Errorf("cannot upsert secret backend %q: %w", sb.Name, err)
@@ -54,7 +51,7 @@ ON CONFLICT (backend_uuid) DO UPDATE SET
 	return nil
 }
 
-func (s *State) upsertBackendConfig(ctx context.Context, tx *sqlair.TX, id string, cfg map[string]string) error {
+func (s *State) upsertBackendConfig(ctx context.Context, tx *sqlair.TX, id string, cfg map[string]any) error {
 	clearConfigStmt, err := s.Prepare(`
 DELETE FROM secret_backend_config
 WHERE backend_uuid = $M.uuid AND name NOT IN ($S[:]);`,
@@ -82,16 +79,19 @@ ON CONFLICT (backend_uuid, name) DO UPDATE SET
 		return errors.Errorf("cannot clear secret backend config for %q: %w", id, err)
 	}
 	for k, v := range cfg {
+		encoded, err := encodeConfigValue(v)
+		if err != nil {
+			return errors.Errorf("cannot encode secret backend config value for %q: %s", k, err)
+		}
 		// TODO: this needs to be fixed once the sqlair supports bulk insert.
 		err = tx.Query(ctx, upsertConfigStmt, SecretBackendConfig{
 			ID:      id,
 			Name:    k,
-			Content: v,
+			Content: encoded,
 		}).Run()
 		if err != nil {
 			return errors.Errorf("cannot upsert secret backend config for %q: %w", id, err)
 		}
 	}
 	return nil
-
 }

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Follow conventional commit standards for Juju contributions, including commit types, scopes, and proper formatting guidelines."
+---
+
 (conventional-commits)=
 # Conventional commits
 

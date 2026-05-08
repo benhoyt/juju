@@ -187,6 +187,15 @@ type FilesystemSource interface {
 	DetachFilesystems(ctx context.Context, params []FilesystemAttachmentParams) ([]error, error)
 }
 
+// FilesystemModelMigration provides an interface for retrieving data
+// necessary for model migration of filesystems.
+type FilesystemModelMigration interface {
+	// GetPersistentVolumeClaimIdentifiers returns a list of paired identifiers
+	// representing Kubernetes persistent volume claims.
+	GetPersistentVolumeClaimIdentifiers(ctx context.Context) (
+		[]PersistentVolumeClaimIdentifiers, error)
+}
+
 // FilesystemImporter provides an interface for importing filesystems
 // into the controller/model.
 //
@@ -204,7 +213,9 @@ type FilesystemImporter interface {
 	ImportFilesystem(
 		ctx context.Context,
 		filesystemId string,
+		storageName string,
 		resourceTags map[string]string,
+		force bool,
 	) (FilesystemInfo, error)
 }
 
@@ -248,7 +259,7 @@ type VolumeParams struct {
 	// Attributes is the set of provider-specific attributes to pass to
 	// the storage provider when creating the volume. Attributes is derived
 	// from the storage pool configuration.
-	Attributes map[string]interface{}
+	Attributes map[string]any
 
 	// ResourceTags is a set of tags to set on the created volume, if the
 	// storage provider supports tags.
@@ -288,6 +299,11 @@ type AttachmentParams struct {
 	// create the attachment.
 	Provider ProviderType
 
+	// ProviderId is the provider's identifier for this filesystem attachment.
+	// It may be set if the filesystem attachment already exists but needs to be
+	// finalised.
+	ProviderId *string
+
 	// Machine is the tag of the Juju machine that the storage should be
 	// attached to. Storage providers may use this to perform machine-
 	// specific operations, such as configuring access controls for the
@@ -322,9 +338,13 @@ type FilesystemParams struct {
 	// The provider type for this filesystem.
 	Provider ProviderType
 
+	// ProviderId is the provider's identifier for this filesystem. It may be
+	// set if the filesystem already exists but needs to be finalised.
+	ProviderId *string
+
 	// Attributes is a set of provider-specific options for storage creation,
 	// as defined in a storage pool.
-	Attributes map[string]interface{}
+	Attributes map[string]any
 
 	// ResourceTags is a set of tags to set on the created filesystem, if the
 	// storage provider supports tags.
@@ -345,9 +365,9 @@ type FilesystemAttachmentParams struct {
 	// should be attached/detached.
 	Filesystem names.FilesystemTag
 
-	// ProviderId is the unique provider-supplied ID for the filesystem that
+	// FilesystemProviderId is the unique provider-supplied ID for the filesystem that
 	// should be attached/detached.
-	ProviderId string
+	FilesystemProviderId string
 
 	// Path is the path at which the filesystem is to be mounted on the machine that
 	// this attachment corresponds to.
@@ -395,4 +415,11 @@ type AttachFilesystemsResult struct {
 // the [fmt.Stringer] interface.
 func (p ProviderType) String() string {
 	return string(p)
+}
+
+// PersistentVolumeClaimIdentifiers contains pairs of identifiers for kubernetes
+// volume claims. Used by storage filesystems.
+type PersistentVolumeClaimIdentifiers struct {
+	UID  string // FileSystemProviderID
+	Name string // FileSystemAttachmentProviderID
 }

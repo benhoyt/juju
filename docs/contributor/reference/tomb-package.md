@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Implement the tomb package's Kill and Wait methods for managing worker goroutine lifecycles in Juju development."
+---
+
 (tomb-package)=
 # Tomb package
 

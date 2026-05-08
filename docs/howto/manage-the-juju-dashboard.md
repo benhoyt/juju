@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Set up and use the Juju Dashboard for managing controllers, models, and applications through a graphical web interface."
+---
+
 (manage-the-juju-dashboard)=
 # How to manage the Juju dashboard
 

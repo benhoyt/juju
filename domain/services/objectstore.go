@@ -4,6 +4,8 @@
 package services
 
 import (
+	"github.com/juju/clock"
+
 	"github.com/juju/juju/core/changestream"
 	"github.com/juju/juju/core/logger"
 	controllerservice "github.com/juju/juju/domain/controller/service"
@@ -12,7 +14,7 @@ import (
 	controllerconfigstate "github.com/juju/juju/domain/controllerconfig/state"
 	controllernodeservice "github.com/juju/juju/domain/controllernode/service"
 	controllernodestate "github.com/juju/juju/domain/controllernode/state"
-	modelservice "github.com/juju/juju/domain/model/service"
+	modelobjectstoreservice "github.com/juju/juju/domain/model/service/objectstore"
 	statemodel "github.com/juju/juju/domain/model/state/model"
 	objectstoreservice "github.com/juju/juju/domain/objectstore/service"
 	objectstorestate "github.com/juju/juju/domain/objectstore/state"
@@ -22,6 +24,8 @@ import (
 // apiserver.
 type ObjectStoreServices struct {
 	modelServiceFactoryBase
+
+	clock clock.Clock
 }
 
 // NewObjectStoreServices returns a new set of services for the usage of the
@@ -29,6 +33,7 @@ type ObjectStoreServices struct {
 func NewObjectStoreServices(
 	controllerDB changestream.WatchableDBFactory,
 	modelDB changestream.WatchableDBFactory,
+	clock clock.Clock,
 	logger logger.Logger,
 ) *ObjectStoreServices {
 	return &ObjectStoreServices{
@@ -39,6 +44,7 @@ func NewObjectStoreServices(
 			},
 			modelDB: modelDB,
 		},
+		clock: clock,
 	}
 }
 
@@ -69,7 +75,7 @@ func (s *ObjectStoreServices) ControllerNode() *controllernodeservice.WatchableS
 // AgentObjectStore returns the object store service.
 func (s *ObjectStoreServices) AgentObjectStore() *objectstoreservice.WatchableDrainingService {
 	return objectstoreservice.NewWatchableDrainingService(
-		objectstorestate.NewState(changestream.NewTxnRunnerFactory(s.controllerDB)),
+		objectstorestate.NewState(changestream.NewTxnRunnerFactory(s.controllerDB), s.clock),
 		s.controllerWatcherFactory("objectstore"),
 	)
 }
@@ -77,14 +83,14 @@ func (s *ObjectStoreServices) AgentObjectStore() *objectstoreservice.WatchableDr
 // ObjectStore returns the model's object store service.
 func (s *ObjectStoreServices) ObjectStore() *objectstoreservice.WatchableService {
 	return objectstoreservice.NewWatchableService(
-		objectstorestate.NewState(changestream.NewTxnRunnerFactory(s.modelDB)),
+		objectstorestate.NewState(changestream.NewTxnRunnerFactory(s.modelDB), s.clock),
 		s.modelWatcherFactory("objectstore"),
 	)
 }
 
 // Model returns the provider model service.
-func (s *ObjectStoreServices) Model() *modelservice.ObjectStoreService {
-	return modelservice.NewObjectStoreService(
+func (s *ObjectStoreServices) Model() *modelobjectstoreservice.ObjectStoreService {
+	return modelobjectstoreservice.NewObjectStoreService(
 		statemodel.NewState(
 			changestream.NewTxnRunnerFactory(s.modelDB),
 			s.logger.Child("modelinfo"),

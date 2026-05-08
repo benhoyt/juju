@@ -16,8 +16,8 @@ import (
 	"github.com/juju/juju/api/types"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/model"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/charm/hooks"
+	"github.com/juju/juju/domain/deployment/charm"
+	"github.com/juju/juju/domain/deployment/charm/hooks"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/storage"
 	coretesting "github.com/juju/juju/internal/testing"
@@ -59,11 +59,12 @@ func (s *ContextFactorySuite) setupContextFactory(c *tc.C, ctrl *gomock.Controll
 		UUID:      coretesting.ModelTag.Id(),
 		ModelType: s.modelType,
 	}, nil)
-	s.uniter.EXPECT().APIAddresses(gomock.Any()).Return([]string{"10.6.6.6"}, nil).AnyTimes()
-	s.uniter.EXPECT().CloudAPIVersion(gomock.Any()).Return("6.6.6", nil).AnyTimes()
-
-	cfg := coretesting.ModelConfig(c)
-	s.uniter.EXPECT().ModelConfig(gomock.Any()).Return(cfg, nil).AnyTimes()
+	privateAddress := "u-0.testing.invalid"
+	s.uniter.EXPECT().GetUnitContext(gomock.Any(), s.unit.Tag()).Return(apiuniter.UnitContext{
+		APIAddresses:    []string{"10.6.6.6"},
+		CloudAPIVersion: "6.6.6",
+		PrivateAddress:  &privateAddress,
+	}, nil).AnyTimes()
 
 	contextFactory, err := context.NewContextFactory(c.Context(), context.FactoryConfig{
 		Uniter:           s.uniter,
@@ -262,7 +263,7 @@ func (s *ContextFactorySuite) TestActionContext(c *tc.C) {
 		Name:       action.Name(),
 		Tag:        names.NewActionTag(action.ID()),
 		Params:     action.Params(),
-		ResultsMap: map[string]interface{}{},
+		ResultsMap: map[string]any{},
 	}
 
 	ctx, err := s.factory.ActionContext(c.Context(), actionData)

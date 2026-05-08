@@ -1982,7 +1982,7 @@
     {
         "Name": "DiskManager",
         "Description": "",
-        "Version": 2,
+        "Version": 3,
         "Schema": {
             "type": "object",
             "properties": {
@@ -2039,6 +2039,9 @@
                             "type": "string"
                         },
                         "WWN": {
+                            "type": "string"
+                        },
+                        "provenance": {
                             "type": "string"
                         }
                     },
@@ -4545,7 +4548,7 @@
     {
         "Name": "Provisioner",
         "Description": "",
-        "Version": 11,
+        "Version": 12,
         "Schema": {
             "type": "object",
             "properties": {
@@ -4677,17 +4680,6 @@
                         }
                     }
                 },
-                "GetContainerProfileInfo": {
-                    "type": "object",
-                    "properties": {
-                        "Params": {
-                            "$ref": "#/definitions/Entities"
-                        },
-                        "Result": {
-                            "$ref": "#/definitions/ContainerProfileResults"
-                        }
-                    }
-                },
                 "HostChangesForContainers": {
                     "type": "object",
                     "properties": {
@@ -4811,28 +4803,6 @@
                         }
                     }
                 },
-                "Remove": {
-                    "type": "object",
-                    "properties": {
-                        "Params": {
-                            "$ref": "#/definitions/Entities"
-                        },
-                        "Result": {
-                            "$ref": "#/definitions/ErrorResults"
-                        }
-                    }
-                },
-                "SetCharmProfiles": {
-                    "type": "object",
-                    "properties": {
-                        "Params": {
-                            "$ref": "#/definitions/SetProfileArgs"
-                        },
-                        "Result": {
-                            "$ref": "#/definitions/ErrorResults"
-                        }
-                    }
-                },
                 "SetHostMachineNetworkConfig": {
                     "type": "object",
                     "properties": {
@@ -4853,17 +4823,6 @@
                     }
                 },
                 "SetInstanceStatus": {
-                    "type": "object",
-                    "properties": {
-                        "Params": {
-                            "$ref": "#/definitions/SetStatus"
-                        },
-                        "Result": {
-                            "$ref": "#/definitions/ErrorResults"
-                        }
-                    }
-                },
-                "SetModificationStatus": {
                     "type": "object",
                     "properties": {
                         "Params": {
@@ -5158,41 +5117,6 @@
                         "result"
                     ]
                 },
-                "CharmLXDProfile": {
-                    "type": "object",
-                    "properties": {
-                        "config": {
-                            "type": "object",
-                            "patternProperties": {
-                                ".*": {
-                                    "type": "string"
-                                }
-                            }
-                        },
-                        "description": {
-                            "type": "string"
-                        },
-                        "devices": {
-                            "type": "object",
-                            "patternProperties": {
-                                ".*": {
-                                    "type": "object",
-                                    "patternProperties": {
-                                        ".*": {
-                                            "type": "string"
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "additionalProperties": false,
-                    "required": [
-                        "config",
-                        "description",
-                        "devices"
-                    ]
-                },
                 "CloudImageMetadata": {
                     "type": "object",
                     "properties": {
@@ -5334,22 +5258,6 @@
                         "UpdateBehavior"
                     ]
                 },
-                "ContainerLXDProfile": {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string"
-                        },
-                        "profile": {
-                            "$ref": "#/definitions/CharmLXDProfile"
-                        }
-                    },
-                    "additionalProperties": false,
-                    "required": [
-                        "profile",
-                        "name"
-                    ]
-                },
                 "ContainerManagerConfig": {
                     "type": "object",
                     "properties": {
@@ -5377,36 +5285,6 @@
                     "additionalProperties": false,
                     "required": [
                         "type"
-                    ]
-                },
-                "ContainerProfileResult": {
-                    "type": "object",
-                    "properties": {
-                        "error": {
-                            "$ref": "#/definitions/Error"
-                        },
-                        "lxd-profiles": {
-                            "type": "array",
-                            "items": {
-                                "$ref": "#/definitions/ContainerLXDProfile"
-                            }
-                        }
-                    },
-                    "additionalProperties": false
-                },
-                "ContainerProfileResults": {
-                    "type": "object",
-                    "properties": {
-                        "results": {
-                            "type": "array",
-                            "items": {
-                                "$ref": "#/definitions/ContainerProfileResult"
-                            }
-                        }
-                    },
-                    "additionalProperties": false,
-                    "required": [
-                        "results"
                     ]
                 },
                 "ControllerAPIInfoResult": {
@@ -6405,40 +6283,6 @@
                     "required": [
                         "tag",
                         "config"
-                    ]
-                },
-                "SetProfileArg": {
-                    "type": "object",
-                    "properties": {
-                        "entity": {
-                            "$ref": "#/definitions/Entity"
-                        },
-                        "profiles": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            }
-                        }
-                    },
-                    "additionalProperties": false,
-                    "required": [
-                        "entity",
-                        "profiles"
-                    ]
-                },
-                "SetProfileArgs": {
-                    "type": "object",
-                    "properties": {
-                        "args": {
-                            "type": "array",
-                            "items": {
-                                "$ref": "#/definitions/SetProfileArg"
-                            }
-                        }
-                    },
-                    "additionalProperties": false,
-                    "required": [
-                        "args"
                     ]
                 },
                 "SetStatus": {
@@ -8548,7 +8392,7 @@
     {
         "Name": "StorageProvisioner",
         "Description": "",
-        "Version": 4,
+        "Version": 7,
         "Schema": {
             "type": "object",
             "properties": {
@@ -8592,7 +8436,7 @@
                             "$ref": "#/definitions/MachineStorageIds"
                         },
                         "Result": {
-                            "$ref": "#/definitions/FilesystemAttachmentParamsResults"
+                            "$ref": "#/definitions/FilesystemAttachmentParamsResultsV6"
                         }
                     }
                 },
@@ -8614,7 +8458,7 @@
                             "$ref": "#/definitions/Entities"
                         },
                         "Result": {
-                            "$ref": "#/definitions/FilesystemParamsResults"
+                            "$ref": "#/definitions/FilesystemParamsResultsV5"
                         }
                     }
                 },
@@ -8958,6 +8802,9 @@
                         },
                         "WWN": {
                             "type": "string"
+                        },
+                        "provenance": {
+                            "type": "string"
                         }
                     },
                     "additionalProperties": false,
@@ -9160,10 +9007,40 @@
                     },
                     "additionalProperties": false
                 },
-                "FilesystemAttachmentParams": {
+                "FilesystemAttachmentParamsResultV6": {
                     "type": "object",
                     "properties": {
-                        "filesystem-id": {
+                        "error": {
+                            "$ref": "#/definitions/Error"
+                        },
+                        "result": {
+                            "$ref": "#/definitions/FilesystemAttachmentParamsV6"
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                        "result"
+                    ]
+                },
+                "FilesystemAttachmentParamsResultsV6": {
+                    "type": "object",
+                    "properties": {
+                        "results": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/FilesystemAttachmentParamsResultV6"
+                            }
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "FilesystemAttachmentParamsV5": {
+                    "type": "object",
+                    "properties": {
+                        "attachment-provider-id": {
+                            "type": "string"
+                        },
+                        "filesystem-provider-id": {
                             "type": "string"
                         },
                         "filesystem-tag": {
@@ -9192,32 +9069,40 @@
                         "provider"
                     ]
                 },
-                "FilesystemAttachmentParamsResult": {
+                "FilesystemAttachmentParamsV6": {
                     "type": "object",
                     "properties": {
-                        "error": {
-                            "$ref": "#/definitions/Error"
+                        "attachment-provider-id": {
+                            "type": "string"
                         },
-                        "result": {
-                            "$ref": "#/definitions/FilesystemAttachmentParams"
+                        "filesystem-provider-id": {
+                            "type": "string"
+                        },
+                        "filesystem-tag": {
+                            "type": "string"
+                        },
+                        "instance-id": {
+                            "type": "string"
+                        },
+                        "machine-tag": {
+                            "type": "string"
+                        },
+                        "mount-point": {
+                            "type": "string"
+                        },
+                        "provider": {
+                            "type": "string"
+                        },
+                        "read-only": {
+                            "type": "boolean"
                         }
                     },
                     "additionalProperties": false,
                     "required": [
-                        "result"
+                        "filesystem-tag",
+                        "machine-tag",
+                        "provider"
                     ]
-                },
-                "FilesystemAttachmentParamsResults": {
-                    "type": "object",
-                    "properties": {
-                        "results": {
-                            "type": "array",
-                            "items": {
-                                "$ref": "#/definitions/FilesystemAttachmentParamsResult"
-                            }
-                        }
-                    },
-                    "additionalProperties": false
                 },
                 "FilesystemAttachmentResult": {
                     "type": "object",
@@ -9281,11 +9166,38 @@
                         "size"
                     ]
                 },
-                "FilesystemParams": {
+                "FilesystemParamsResultV5": {
+                    "type": "object",
+                    "properties": {
+                        "error": {
+                            "$ref": "#/definitions/Error"
+                        },
+                        "result": {
+                            "$ref": "#/definitions/FilesystemParamsV5"
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                        "result"
+                    ]
+                },
+                "FilesystemParamsResultsV5": {
+                    "type": "object",
+                    "properties": {
+                        "results": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/FilesystemParamsResultV5"
+                            }
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "FilesystemParamsV5": {
                     "type": "object",
                     "properties": {
                         "attachment": {
-                            "$ref": "#/definitions/FilesystemAttachmentParams"
+                            "$ref": "#/definitions/FilesystemAttachmentParamsV5"
                         },
                         "attributes": {
                             "type": "object",
@@ -9300,6 +9212,9 @@
                             "type": "string"
                         },
                         "provider": {
+                            "type": "string"
+                        },
+                        "provider-id": {
                             "type": "string"
                         },
                         "size": {
@@ -9323,33 +9238,6 @@
                         "size",
                         "provider"
                     ]
-                },
-                "FilesystemParamsResult": {
-                    "type": "object",
-                    "properties": {
-                        "error": {
-                            "$ref": "#/definitions/Error"
-                        },
-                        "result": {
-                            "$ref": "#/definitions/FilesystemParams"
-                        }
-                    },
-                    "additionalProperties": false,
-                    "required": [
-                        "result"
-                    ]
-                },
-                "FilesystemParamsResults": {
-                    "type": "object",
-                    "properties": {
-                        "results": {
-                            "type": "array",
-                            "items": {
-                                "$ref": "#/definitions/FilesystemParamsResult"
-                            }
-                        }
-                    },
-                    "additionalProperties": false
                 },
                 "FilesystemResult": {
                     "type": "object",
@@ -10078,7 +9966,7 @@
     {
         "Name": "Uniter",
         "Description": "",
-        "Version": 21,
+        "Version": 22,
         "Schema": {
             "type": "object",
             "properties": {
@@ -10339,6 +10227,17 @@
                         },
                         "Result": {
                             "$ref": "#/definitions/StringBoolResults"
+                        }
+                    }
+                },
+                "GetUnitContext": {
+                    "type": "object",
+                    "properties": {
+                        "Params": {
+                            "$ref": "#/definitions/Entity"
+                        },
+                        "Result": {
+                            "$ref": "#/definitions/UnitContext"
                         }
                     }
                 },
@@ -10737,17 +10636,6 @@
                         },
                         "Result": {
                             "$ref": "#/definitions/StorageAttachmentIdsResults"
-                        }
-                    }
-                },
-                "UpdateNetworkInfo": {
-                    "type": "object",
-                    "properties": {
-                        "Params": {
-                            "$ref": "#/definitions/Entities"
-                        },
-                        "Result": {
-                            "$ref": "#/definitions/ErrorResults"
                         }
                     }
                 },
@@ -11229,6 +11117,21 @@
                         "limit",
                         "scope"
                     ]
+                },
+                "CharmTracingConfig": {
+                    "type": "object",
+                    "properties": {
+                        "ca-certificate": {
+                            "type": "string"
+                        },
+                        "grpc-endpoint": {
+                            "type": "string"
+                        },
+                        "http-endpoint": {
+                            "type": "string"
+                        }
+                    },
+                    "additionalProperties": false
                 },
                 "CharmURL": {
                     "type": "object",
@@ -12228,6 +12131,24 @@
                         "protocol"
                     ]
                 },
+                "ProxySettings": {
+                    "type": "object",
+                    "properties": {
+                        "ftp-proxy": {
+                            "type": "string"
+                        },
+                        "http-proxy": {
+                            "type": "string"
+                        },
+                        "https-proxy": {
+                            "type": "string"
+                        },
+                        "no-proxy": {
+                            "type": "string"
+                        }
+                    },
+                    "additionalProperties": false
+                },
                 "RelatedApplicationDetails": {
                     "type": "object",
                     "properties": {
@@ -13054,6 +12975,71 @@
                     "additionalProperties": false,
                     "required": [
                         "results"
+                    ]
+                },
+                "UnitContext": {
+                    "type": "object",
+                    "properties": {
+                        "api-addresses": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "charm-tracing-config": {
+                            "$ref": "#/definitions/CharmTracingConfig"
+                        },
+                        "cloud-api-version": {
+                            "type": "string"
+                        },
+                        "juju-proxy-settings": {
+                            "$ref": "#/definitions/ProxySettings"
+                        },
+                        "legacy-proxy-settings": {
+                            "$ref": "#/definitions/ProxySettings"
+                        },
+                        "opened-machine-port-ranges-by-endpoint": {
+                            "type": "object",
+                            "patternProperties": {
+                                ".*": {
+                                    "type": "object",
+                                    "patternProperties": {
+                                        ".*": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/definitions/PortRange"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "opened-port-ranges-by-endpoint": {
+                            "type": "object",
+                            "patternProperties": {
+                                ".*": {
+                                    "type": "object",
+                                    "patternProperties": {
+                                        ".*": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/definitions/PortRange"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "private-address": {
+                            "type": "string"
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                        "api-addresses",
+                        "cloud-api-version",
+                        "legacy-proxy-settings",
+                        "juju-proxy-settings"
                     ]
                 },
                 "UnitRefreshResult": {

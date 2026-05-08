@@ -15,7 +15,7 @@ import (
 	facademocks "github.com/juju/juju/apiserver/facade/mocks"
 	apiservertesting "github.com/juju/juju/apiserver/testing"
 	"github.com/juju/juju/core/life"
-	modeltesting "github.com/juju/juju/core/model/testing"
+	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/testing"
@@ -87,7 +87,7 @@ func (s *SubnetsSuite) setUpMocks(c *tc.C) *gomock.Controller {
 
 	s.mockNetworkService = NewMockNetworkService(ctrl)
 
-	tag := names.NewModelTag(modeltesting.GenModelUUID(c).String())
+	tag := names.NewModelTag(tc.Must0(c, coremodel.NewUUID).String())
 	s.facade = newAPIWithBacking(
 		tag,
 		s.mockAuthorizer,

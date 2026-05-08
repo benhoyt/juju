@@ -8,7 +8,7 @@ import (
 
 	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/modelmigration"
-	"github.com/juju/juju/core/objectstore"
+	"github.com/juju/juju/core/providertracker"
 	corestorage "github.com/juju/juju/core/storage"
 	access "github.com/juju/juju/domain/access/modelmigration"
 	agentpassword "github.com/juju/juju/domain/agentpassword/modelmigration"
@@ -51,7 +51,7 @@ func ImportOperations(
 	coordinator Coordinator,
 	modelDefaultsProvider modelconfigservice.ModelDefaultsProvider,
 	storageRegistryGetter corestorage.ModelStorageRegistryGetter,
-	objectStoreGetter objectstore.ModelObjectStoreGetter,
+	configGetter providertracker.EphemeralProviderConfigGetter,
 	clock clock.Clock,
 	logger logger.Logger,
 ) {
@@ -65,34 +65,43 @@ func ImportOperations(
 
 	lease.RegisterImport(coordinator, logger.Child("lease"))
 	externalcontroller.RegisterImport(coordinator)
+	// External users must be imported before credentials since an external
+	// user may be the model owner referenced during credential import.
+	access.RegisterExternalUsersImport(coordinator, clock, logger.Child("access"))
 	credential.RegisterImport(coordinator, logger.Child("credential"))
-	model.RegisterImport(coordinator, logger.Child("model"))
+	model.RegisterModelImport(coordinator, clock, logger.Child("model"))
 
 	// Domain services is available for all the following services, but only
 	// after the model has been imported and activated.
 
 	sequence.RegisterImport(coordinator)
-	keymanager.RegisterImport(coordinator, logger.Child("keymanager"))
+	keymanager.RegisterImport(coordinator, clock, logger.Child("keymanager"))
 	modelconfig.RegisterImport(coordinator, modelDefaultsProvider, logger.Child("modelconfig"))
-	access.RegisterImport(coordinator, logger.Child("access"))
+	access.RegisterImport(coordinator, clock, logger.Child("access"))
+	network.RegisterImportSubnets(coordinator, logger.Child("subnets"))
 	machine.RegisterImport(coordinator, clock, logger.Child("machine"))
-	network.RegisterImport(coordinator, logger.Child("network"))
+	network.RegisterLinkLayerDevicesImport(coordinator, logger.Child("linklayerdevices"))
 	application.RegisterImport(coordinator, clock, logger.Child("application"))
-	network.RegisterImportCloudService(coordinator, logger.Child("cloudservice"))
+	// BlockDevice requires machines to be imported first.
+	blockdevice.RegisterImport(coordinator, logger.Child("blockdevice"))
+	// Storage requires the following domains be imported first:
+	// block devices, machines, application (for units), and model config.
+	storage.RegisterImport(
+		coordinator, storageRegistryGetter, configGetter, logger.Child("storage"),
+	)
+	network.RegisterImportK8sService(coordinator, logger.Child("k8sservice"))
 	agentpassword.RegisterImport(coordinator)
-	relation.RegisterImport(coordinator, clock, logger.Child("relation"))
 	crossmodelrelation.RegisterImport(coordinator, clock, logger.Child("crossmodelrelation"))
-	access.RegisterOfferAccessImport(coordinator, logger.Child("offeraccess"))
+	relation.RegisterImport(coordinator, clock, logger.Child("relation"))
+	access.RegisterOfferAccessImport(coordinator, clock, logger.Child("offeraccess"))
 	status.RegisterImport(coordinator, clock, logger.Child("status"))
 	resource.RegisterImport(coordinator, clock, logger.Child("resource"))
 	port.RegisterImport(coordinator, logger.Child("port"))
-	blockdevice.RegisterImport(coordinator, logger.Child("blockdevice"))
-	// TODO(storage) - we need to break out storage pools and import BEFORE applications.
-	storage.RegisterImport(coordinator, storageRegistryGetter, logger.Child("storage"))
 	secret.RegisterImport(coordinator, logger.Child("secret"))
+	crossmodelrelation.RegisterImportSecret(coordinator, clock, logger.Child("remotesecret"))
 	cloudimagemetadata.RegisterImport(coordinator, logger.Child("cloudimagemetadata"), clock)
-	unitstate.RegisterImport(coordinator)
-	operation.RegisterImport(coordinator, objectStoreGetter, clock, logger.Child("operation"))
+	unitstate.RegisterImport(coordinator, logger.Child("unitstate"))
+	operation.RegisterImport(coordinator, clock, logger.Child("operation"))
 
 	// model agent must come after machine and unit
 	modelagent.RegisterImport(coordinator, logger.Child("modelagent"))
@@ -101,4 +110,8 @@ func ImportOperations(
 	// any block commands from being executed before all the other operations
 	// have been completed.
 	blockcommand.RegisterImport(coordinator, logger.Child("blockcommand"))
+
+	// Finally, we need to activate the model after all other operations
+	// have been completed.
+	model.RegisterModelActivationImport(coordinator, logger.Child("model"))
 }

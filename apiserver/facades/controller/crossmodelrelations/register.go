@@ -19,7 +19,7 @@ func Register(registry facade.FacadeRegistry) {
 			return nil, fmt.Errorf("creating CrossModelRelations facade: %w", err)
 		}
 		return api, nil
-	}, reflect.TypeOf((*CrossModelRelationsAPIv3)(nil)))
+	}, reflect.TypeFor[*CrossModelRelationsAPIv3]())
 }
 
 // newCrossModelRelationsAPI creates a new server-side CrossModelRelations API facade
@@ -37,6 +37,6 @@ func newCrossModelRelationsAPI(ctx facade.ModelContext) (*CrossModelRelationsAPI
 		domainServices.Removal(),
 		domainServices.Secret(),
 		domainServices.Status(),
-		ctx.Logger().Child("caasapplication"),
+		ctx.Logger().Child("crossmodelrelations"),
 	)
 }

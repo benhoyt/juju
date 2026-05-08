@@ -5,6 +5,7 @@ package lxd
 
 import (
 	"context"
+	"maps"
 	"net"
 	"os"
 	"strconv"
@@ -241,7 +242,7 @@ func (s *BaseSuiteUnpatched) NewConfig(c *tc.C, updates testing.Attrs) *config.C
 	return cfg
 }
 
-func (s *BaseSuiteUnpatched) UpdateConfig(c *tc.C, attrs map[string]interface{}) {
+func (s *BaseSuiteUnpatched) UpdateConfig(c *tc.C, attrs map[string]any) {
 	cfg, err := s.Config.Apply(attrs)
 	c.Assert(err, tc.ErrorIsNil)
 	s.setConfig(c, cfg)
@@ -249,9 +250,7 @@ func (s *BaseSuiteUnpatched) UpdateConfig(c *tc.C, attrs map[string]interface{})
 
 func (s *BaseSuiteUnpatched) NewContainer(c *tc.C, name string) *lxd.Container {
 	metadata := make(map[string]string)
-	for k, v := range s.Metadata {
-		metadata[k] = v
-	}
+	maps.Copy(metadata, s.Metadata)
 
 	return &lxd.Container{
 		Instance: api.Instance{
@@ -294,9 +293,6 @@ func (s *BaseSuite) SetupMocks(c *tc.C) *gomock.Controller {
 		Stub:               s.Stub,
 		StorageIsSupported: true,
 		Server: &api.Server{
-			ServerPut: api.ServerPut{
-				Config: map[string]interface{}{},
-			},
 			Environment: api.ServerEnvironment{
 				Certificate: "server-cert",
 			},
@@ -348,11 +344,11 @@ func NewConfig(cfg *config.Config) *Config {
 	return &Config{ecfg}
 }
 
-func (ecfg *Config) Values(c *tc.C) (ConfigValues, map[string]interface{}) {
+func (ecfg *Config) Values(c *tc.C) (ConfigValues, map[string]any) {
 	c.Assert(ecfg.attrs, tc.DeepEquals, ecfg.UnknownAttrs())
 
 	var values ConfigValues
-	extras := make(map[string]interface{})
+	extras := make(map[string]any)
 	for k, v := range ecfg.attrs {
 		switch k {
 		default:
@@ -362,7 +358,7 @@ func (ecfg *Config) Values(c *tc.C) (ConfigValues, map[string]interface{}) {
 	return values, extras
 }
 
-func (ecfg *Config) Apply(c *tc.C, updates map[string]interface{}) *Config {
+func (ecfg *Config) Apply(c *tc.C, updates map[string]any) *Config {
 	cfg, err := ecfg.Config.Apply(updates)
 	c.Assert(err, tc.ErrorIsNil)
 	return NewConfig(cfg)
@@ -583,9 +579,17 @@ func (conn *StubClient) CreateVolume(pool, volume string, config map[string]stri
 	return conn.NextErr()
 }
 
-func (conn *StubClient) DeleteStoragePoolVolume(pool, volType, volume string) error {
+type stubOperation struct {
+	lxdclient.Operation
+}
+
+func (stubOperation) Wait() error {
+	return nil
+}
+
+func (conn *StubClient) DeleteStoragePoolVolume(pool, volType, volume string) (lxdclient.Operation, error) {
 	conn.AddCall("DeleteStoragePoolVolume", pool, volType, volume)
-	return conn.NextErr()
+	return stubOperation{}, conn.NextErr()
 }
 
 func (conn *StubClient) GetStoragePoolVolume(
@@ -613,9 +617,9 @@ func (conn *StubClient) GetStoragePoolVolumes(pool string) ([]api.StorageVolume,
 
 func (conn *StubClient) UpdateStoragePoolVolume(
 	pool string, volType string, name string, volume api.StorageVolumePut, etag string,
-) error {
+) (lxdclient.Operation, error) {
 	conn.AddCall("UpdateStoragePoolVolume", pool, volType, name, volume, etag)
-	return conn.NextErr()
+	return stubOperation{}, conn.NextErr()
 }
 
 func (conn *StubClient) AliveContainers(prefix string) ([]lxd.Container, error) {
@@ -757,7 +761,7 @@ type EnvironSuite struct {
 
 func (s *EnvironSuite) NewEnviron(c *tc.C,
 	srv Server,
-	cfgEdit map[string]interface{},
+	cfgEdit map[string]any,
 	cloudSpec environscloudspec.CloudSpec,
 	invalidator environs.CredentialInvalidator,
 ) environs.Environ {
@@ -789,7 +793,7 @@ func (s *EnvironSuite) NewEnviron(c *tc.C,
 
 func (s *EnvironSuite) NewEnvironWithServerFactory(c *tc.C,
 	srv ServerFactory,
-	cfgEdit map[string]interface{},
+	cfgEdit map[string]any,
 	invalidator environs.CredentialInvalidator,
 ) environs.Environ {
 	cfg, err := testing.ModelConfig(c).Apply(ConfigAttrs)

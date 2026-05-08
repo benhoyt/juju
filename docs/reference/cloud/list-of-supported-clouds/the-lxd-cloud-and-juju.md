@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Use LXD cloud with Juju for local development, rapid prototyping, and testing. Learn localhost cloud setup, configuration, and use cases."
+---
+
 (cloud-lxd)=
 # The LXD cloud and Juju
 
@@ -70,9 +76,10 @@ Attributes:
 <br>(Added in Juju 3.6.4)
 - `trust-password`: the LXD server trust password (optional, required if trust-token is not set)
 
-<!--
+
 ## Notes on `juju bootstrap`
--->
+
+If `juju bootstrap` hangs, it could be due to a firewall issue. See more: [LXD | UFW: Add rules for the bridge](https://documentation.ubuntu.com/lxd/latest/howto/network_bridge_firewalld/#ufw-add-rules-for-the-bridge).
 
 ## Cloud-specific model configuration keys
 
@@ -92,24 +99,24 @@ The LXD project name to use for Juju's resources.
 With LXD system containers, constraints are interpreted as resource *maximums* (as opposed to *minimums*). <p> There is a 1:1 correspondence between a Juju machine and a LXD container. Compare `juju machines` and `lxc list`.
 ```
 
-| {ref}`CONSTRAINT <constraint>`         |                                                     |
-|----------------------------------------|-----------------------------------------------------|
-| conflicting:                           | `instance-type` vs. `[arch, cores, cpu-power, mem]` |
-| supported?                             |                                                     |
-| - {ref}`constraint-allocate-public-ip` | &#10005;                                            |
-| - {ref}`constraint-arch`               | &#10003;  <br> Valid values: `[host arch]`          |
-| - {ref}`constraint-cores`              | &#10003;                                            |
-| - {ref}`constraint-cpu-power`          | &#10005;                                            |
-| - {ref}`constraint-image-id`           | &#10005;                                            |
-| - {ref}`constraint-instance-role`      | &#10005;                                            |
-| - {ref}`constraint-instance-type`      | TBA                                                 |
-| - {ref}`constraint-mem`                | &#10003; <br> The maximum amount of memory that a machine/container will have.|
-| - {ref}`constraint-root-disk`          | &#10003;                                            |
+| {ref}`CONSTRAINT <constraint>`         |                                                                                                                                    |
+|----------------------------------------|------------------------------------------------------------------------------------------------------------------------------------|
+| conflicting:                           | `instance-type` vs. `[arch, cores, cpu-power, mem]`                                                                                |
+| supported?                             |                                                                                                                                    |
+| - {ref}`constraint-allocate-public-ip` | &#10005;                                                                                                                           |
+| - {ref}`constraint-arch`               | &#10003;  <br> Valid values: `[host arch]`                                                                                         |
+| - {ref}`constraint-cores`              | &#10003;                                                                                                                           |
+| - {ref}`constraint-cpu-power`          | &#10005;                                                                                                                           |
+| - {ref}`constraint-image-id`           | &#10005;                                                                                                                           |
+| - {ref}`constraint-instance-role`      | &#10005;                                                                                                                           |
+| - {ref}`constraint-instance-type`      | TBA                                                                                                                                |
+| - {ref}`constraint-mem`                | &#10003; <br> The maximum amount of memory that a machine/container will have.                                                     |
+| - {ref}`constraint-root-disk`          | &#10003;                                                                                                                           |
 | - {ref}`constraint-root-disk-source`   | &#10003; <br> The LXD storage pool for the root disk. The default LXD storage pool is used if `root-disk-source` is not specified. |
-| - {ref}`constraint-spaces`             | &#10005;                                            |
-| - {ref}`constraint-tags`               | &#10005;                                            |
-| - {ref}`constraint-virt-type`          | &#10005;                                            |
-| - {ref}`constraint-zones`              | &#10003; <br> The LXD node name(s).                 |
+| - {ref}`constraint-spaces`             | &#10005;                                                                                                                           |
+| - {ref}`constraint-tags`               | &#10005;                                                                                                                           |
+| - {ref}`constraint-virt-type`          | &#10003; <br> Valid values: `[container, virtual-machine]`. <br> Default value: `container`.                                       |
+| - {ref}`constraint-zones`              | &#10003; <br> The LXD node name(s).                                                                                                |
 
 ## Supported placement directives
 
@@ -127,7 +134,7 @@ With LXD system containers, constraints are interpreted as resource *maximums* (
 
 LXD (localhost) does not officially support attaching loopback devices for storage out of the box. However, with some configuration you can make this work.
 
-Each container uses the 'default' LXD profile, but also uses a model-specific profile with the name `juju-<model-name>`. Editing a profile will affect all of the containers using it, so you can add loop devices to all LXD containers by editing the 'default' profile, or you can scope it to a model.
+Each container uses the 'default' LXD profile, but also uses a model-specific profile with the name `juju-<model-name>-<model-short-UUID>` where `<model-short-UUID>` is the first 6 characters of the model UUID. Editing a profile will affect all of the containers using it, so you can add loop devices to all LXD containers by editing the 'default' profile, or you can scope it to a model.
 
 To add loop devices to your container, add entries to the 'default', or model-specific, profile, with `lxc profile edit <profile>`:
 
@@ -179,7 +186,7 @@ Configuration options:
 
 - `lxd-pool`:  The name to give to the corresponding storage pool in LXD.
 
-Any other parameters will be passed to LXD (e.g. zfs.pool_name). See upstream [LXD storage configuration](https://github.com/lxc/lxd/blob/master/doc/storage.md) for LXD storage parameters.
+Any other parameters will be passed to LXD (e.g. `zfs.pool_name`). See upstream [LXD storage configuration](https://documentation.ubuntu.com/lxd/latest/reference/storage_drivers/) for LXD storage parameters.
 
 Every LXD-based model comes with a minimum of one LXD-specific Juju storage pool called 'lxd'. If ZFS and/or BTRFS are present when the controller is created then pools 'lxd-zfs' and/or 'lxd-btrfs' will also be available. The following output to the `juju storage-pools` command shows all three Juju LXD-specific pools:
 

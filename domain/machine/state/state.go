@@ -6,7 +6,6 @@ package state
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"maps"
 	"slices"
 
@@ -64,7 +63,6 @@ func (st *State) AddMachine(ctx context.Context, args domainmachine.AddMachineAr
 		return "", nil, errors.Capture(err)
 	}
 
-	var machineNames []machine.Name
 	machineUUID, err := machine.NewUUID()
 	if err != nil {
 		return "", nil, errors.Errorf(
@@ -85,8 +83,12 @@ func (st *State) AddMachine(ctx context.Context, args domainmachine.AddMachineAr
 		MachineUUID:             machineUUID,
 		NetNodeUUID:             netNodeUUID,
 		Nonce:                   args.Nonce,
+		InstanceID:              args.InstanceID,
 		HardwareCharacteristics: args.HardwareCharacteristics,
 	}
+	st.logger.Debugf(ctx, "adding machine %q with args: %#v", machineUUID, placeArgs)
+
+	var machineNames []machine.Name
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
 		machineNames, err = PlaceMachine(ctx, tx, st, st.clock, placeArgs)
 		return err
@@ -636,137 +638,6 @@ ORDER BY array_index ASC`, lxdProfileQuery)
 	return lxdProfiles, nil
 }
 
-// SetAppliedLXDProfileNames sets the list of LXD profile names to the
-// lxd_profile table for the given machine. This method will overwrite the list
-// of profiles for the given machine without any checks.
-// [machineerrors.MachineNotFound] will be returned if the machine does not
-// exist.
-func (st *State) SetAppliedLXDProfileNames(ctx context.Context, mUUID string, profileNames []string) error {
-	if len(profileNames) == 0 {
-		return nil
-	}
-
-	db, err := st.DB(ctx)
-	if err != nil {
-		return errors.Errorf("cannot get database to set lxd profiles %v for machine %q: %w", profileNames, mUUID, err)
-	}
-
-	queryMachineUUID := entityUUID{UUID: mUUID}
-	checkMachineExistsStmt, err := st.Prepare(`
-SELECT &entityUUID.uuid
-FROM   machine
-WHERE  machine.uuid = $entityUUID.uuid`, queryMachineUUID)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	instanceDataQuery := instanceData{MachineUUID: mUUID}
-	isProvisionedStmt, err := st.Prepare(`
-SELECT   &instanceData.instance_id
-FROM     machine_cloud_instance
-WHERE    machine_uuid = $instanceData.machine_uuid`, instanceDataQuery)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	queryLXDProfile := lxdProfile{MachineUUID: mUUID}
-	retrievePreviousProfilesStmt, err := st.Prepare(`
-SELECT   name AS &lxdProfile.name
-FROM     machine_lxd_profile
-WHERE    machine_uuid = $lxdProfile.machine_uuid
-ORDER BY array_index ASC`, queryLXDProfile)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	removePreviousProfilesStmt, err := st.Prepare(
-		`DELETE FROM machine_lxd_profile WHERE machine_uuid = $entityUUID.uuid`,
-		entityUUID{},
-	)
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	setLXDProfileStmt, err := st.Prepare(`
-INSERT INTO machine_lxd_profile (*)
-VALUES      ($lxdProfile.*)`, lxdProfile{})
-	if err != nil {
-		return errors.Capture(err)
-	}
-
-	return db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		var machineExists entityUUID
-		err = tx.Query(ctx, checkMachineExistsStmt, queryMachineUUID).Get(&machineExists)
-		if errors.Is(err, sqlair.ErrNoRows) {
-			return machineerrors.MachineNotFound
-		} else if err != nil {
-			return errors.Errorf("checking if machine %q exists: %w", mUUID, err)
-		}
-
-		// Check if the machine is provisioned
-		var instanceData instanceData
-		err = tx.Query(ctx, isProvisionedStmt, instanceDataQuery).Get(&instanceData)
-		if errors.Is(err, sqlair.ErrNoRows) {
-			return errors.Errorf("machine %q: %w", mUUID, machineerrors.NotProvisioned)
-		} else if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
-			return errors.Errorf("checking machine cloud instance for machine %q: %w", mUUID, err)
-		}
-
-		// If the machine is not provisioned, return an error.
-		instanceID := instanceData.InstanceID
-		if !instanceID.Valid || instanceID.V == "" {
-			return errors.Errorf("machine %q: %w", mUUID, machineerrors.NotProvisioned)
-		}
-
-		// Retrieve the existing profiles to check if the input is the exactly
-		// the same as the existing ones and in that case no insert is needed.
-		var existingProfiles []lxdProfile
-		err = tx.Query(ctx, retrievePreviousProfilesStmt, queryLXDProfile).GetAll(&existingProfiles)
-		if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
-			return errors.Errorf("retrieving previous profiles for machine %q: %w", mUUID, err)
-		}
-		// Compare the input with the existing profiles.
-		somethingToInsert := len(existingProfiles) != len(profileNames)
-		// Only compare the order of the profiles if the input size is the same
-		// as the existing profiles.
-		if !somethingToInsert {
-			for i, profile := range existingProfiles {
-				if profileNames[i] != profile.Name {
-					somethingToInsert = true
-					fmt.Printf("breaking, profile: %v\n", profile)
-					break
-				}
-			}
-		}
-		// No error to return and nothing to insert.
-		if !somethingToInsert {
-			fmt.Printf("existing profiles: %v\n", existingProfiles)
-			return nil
-		}
-
-		// Make sure to clean up any existing profiles on the given machine.
-		if err := tx.Query(ctx, removePreviousProfilesStmt, queryMachineUUID).Run(); err != nil {
-			return errors.Errorf("remove previous profiles for machine %q: %w", mUUID, err)
-		}
-
-		profilesToInsert := make([]lxdProfile, 0, len(profileNames))
-		// Insert the profiles in the order they are provided.
-		for index, profileName := range profileNames {
-			profilesToInsert = append(profilesToInsert,
-				lxdProfile{
-					Name:        profileName,
-					MachineUUID: mUUID,
-					Index:       index,
-				},
-			)
-		}
-		if err := tx.Query(ctx, setLXDProfileStmt, profilesToInsert).Run(); err != nil {
-			return errors.Errorf("setting lxd profiles %v for machine %q: %w", profileNames, mUUID, err)
-		}
-		return nil
-	})
-}
-
 // GetNamesForUUIDs returns a map of machine UUIDs to machine Names based
 // on the given machine UUIDs.
 // [machineerrors.MachineNotFound] will be returned if the machine does not
@@ -805,7 +676,7 @@ WHERE  machine.uuid IN ($mUUIDs[:])`, nameAndUUID{}, uuids)
 	}), err
 }
 
-// GetMachineArchesForApplication returns a map of machine names to their
+// GetAllProvisionedMachineInstanceID returns a map of machine names to their
 // instance IDs. This will ignore non-provisioned machines or container
 // machines.
 func (st *State) GetAllProvisionedMachineInstanceID(ctx context.Context) (map[machine.Name]string, error) {
@@ -879,7 +750,7 @@ func (st *State) SetMachineHostname(ctx context.Context, mUUID string, hostname 
 
 	currentMachineHostName := machineHostName{
 		Hostname:       nullableHostname,
-		AgentStartedAt: st.clock.Now(),
+		AgentStartedAt: st.clock.Now().UTC(),
 	}
 	updateQuery := `
 UPDATE machine
@@ -943,9 +814,14 @@ WHERE uuid = $entityUUID.uuid
 		return nil, errors.Errorf("getting supported container types %q: %w", mUUID, err)
 	}
 
-	result := make([]string, len(containerTypes))
-	for i, ct := range containerTypes {
-		result[i] = ct.ContainerType
+	unique := make(map[string]struct{})
+	for _, ct := range containerTypes {
+		unique[ct.ContainerType] = struct{}{}
+	}
+
+	result := make([]string, 0, len(unique))
+	for k := range unique {
+		result = append(result, k)
 	}
 	return result, nil
 }
@@ -1431,12 +1307,6 @@ func (*State) NamespaceForWatchMachineCloudInstance() string {
 	return "machine_cloud_instance"
 }
 
-// NamespaceForWatchMachineLXDProfiles returns the namespace for watching
-// machine LXD profile changes.
-func (*State) NamespaceForWatchMachineLXDProfiles() string {
-	return "machine_lxd_profile"
-}
-
 // NamespaceForWatchMachineReboot returns the namespace string used for
 // tracking machine reboot events in the model.
 func (*State) NamespaceForWatchMachineReboot() string {
@@ -1449,11 +1319,10 @@ func (*State) NamespaceForMachineLife() string {
 	return "custom_machine_name_lifecycle"
 }
 
-// NamespaceForMachineAndMachineUnitLife returns the namespace string used
-// for tracking machine and machine unit lifecycle events in the model.
-func (*State) NamespaceForMachineAndMachineUnitLife() (string, string) {
-	return "custom_machine_name_lifecycle",
-		"custom_machine_unit_name_lifecycle"
+// NamespaceForMachineLifeAndDependants returns the namespace string used
+// for tracking machine lifecycle events and dependants in the model.
+func (*State) NamespaceForMachineLifeAndDependants() string {
+	return "custom_machine_uuid_lifecycle_with_dependants"
 }
 
 // InitialWatchModelMachinesStatement returns the table and the initial watch
@@ -1578,7 +1447,7 @@ func decodeConstraints(cons machineConstraints) constraints.Constraints {
 
 	// Add the unique spaces, tags and zones to the result:
 	if len(spaces) > 0 {
-		res.Spaces = ptr(slices.Collect(maps.Values(spaces)))
+		res.Spaces = new(slices.Collect(maps.Values(spaces)))
 	}
 	if len(tags) > 0 {
 		tagsSlice := tags.SortedValues()
@@ -1590,8 +1459,4 @@ func decodeConstraints(cons machineConstraints) constraints.Constraints {
 	}
 
 	return res
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }

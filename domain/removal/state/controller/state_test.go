@@ -4,15 +4,17 @@
 package controller
 
 import (
+	"context"
 	"testing"
 
+	"github.com/canonical/sqlair"
+	"github.com/juju/clock"
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/cloud"
 	cloudtesting "github.com/juju/juju/core/cloud/testing"
 	corecredential "github.com/juju/juju/core/credential"
 	coremodel "github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
@@ -49,9 +51,9 @@ func (m *baseSuite) SetUpTest(c *tc.C) {
 
 	// We need to generate a user in the database so that we can set the model
 	// owner.
-	m.uuid = modeltesting.GenModelUUID(c)
+	m.uuid = tc.Must0(c, coremodel.NewUUID)
 	userName := usertesting.GenNewName(c, "test-user")
-	accessState := accessstate.NewState(m.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+	accessState := accessstate.NewState(m.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	adminUserUUID := usertesting.GenUserUUID(c)
 	err := accessState.AddUser(
@@ -149,28 +151,34 @@ func (m *baseSuite) SetUpTest(c *tc.C) {
 	err = bootstrap.CreateDefaultBackends(coremodel.IAAS)(c.Context(), m.ControllerTxnRunner(), m.TxnRunner())
 	c.Assert(err, tc.ErrorIsNil)
 
-	modelSt := statecontroller.NewState(m.TxnRunnerFactory())
-	err = modelSt.Create(
-		c.Context(),
-		m.uuid,
-		coremodel.IAAS,
-		model.GlobalModelCreationArgs{
-			Cloud:       "my-cloud",
-			CloudRegion: "my-region",
-			Credential: corecredential.Key{
-				Cloud: "my-cloud",
-				Owner: usertesting.GenNewName(c, "test-user"),
-				Name:  "foobar",
+	err = m.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		err := statecontroller.Create(
+			ctx,
+			preparer{},
+			tx,
+			m.uuid,
+			coremodel.IAAS,
+			model.GlobalModelCreationArgs{
+				Cloud:       "my-cloud",
+				CloudRegion: "my-region",
+				Credential: corecredential.Key{
+					Cloud: "my-cloud",
+					Owner: usertesting.GenNewName(c, "test-user"),
+					Name:  "foobar",
+				},
+				Name:          "my-test-model",
+				Qualifier:     "prod",
+				AdminUsers:    []user.UUID{userUUID},
+				SecretBackend: juju.BackendName,
 			},
-			Name:          "my-test-model",
-			Qualifier:     "prod",
-			AdminUsers:    []user.UUID{userUUID},
-			SecretBackend: juju.BackendName,
-		},
-	)
-	c.Assert(err, tc.ErrorIsNil)
+		)
+		if err != nil {
+			return err
+		}
 
-	err = modelSt.Activate(c.Context(), m.uuid)
+		activator := statecontroller.GetActivator()
+		return activator(ctx, preparer{}, tx, m.uuid)
+	})
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -185,4 +193,10 @@ func (s *baseSuite) checkModelLife(c *tc.C, modelUUID string, expectedLife life.
 	err := row.Scan(&lifeID)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(lifeID, tc.Equals, int(expectedLife))
+}
+
+type preparer struct{}
+
+func (p preparer) Prepare(query string, args ...any) (*sqlair.Statement, error) {
+	return sqlair.Prepare(query, args...)
 }

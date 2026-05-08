@@ -10,10 +10,10 @@ import (
 	"go.uber.org/mock/gomock"
 
 	coreapplication "github.com/juju/juju/core/application"
+	coremachine "github.com/juju/juju/core/machine"
 	"github.com/juju/juju/core/network"
 	coreunit "github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/port"
-	porterrors "github.com/juju/juju/domain/port/errors"
 )
 
 type serviceSuite struct {
@@ -27,7 +27,7 @@ func TestServiceSuite(t *testing.T) {
 
 const (
 	unitUUID    coreunit.UUID        = "unit-uuid"
-	machineUUID string               = "machine-uuid"
+	machineUUID coremachine.UUID     = "machine-uuid"
 	appUUID     coreapplication.UUID = "app-uuid"
 )
 
@@ -36,6 +36,11 @@ func (s *serviceSuite) setupMocks(c *tc.C) *gomock.Controller {
 
 	s.st = NewMockState(ctrl)
 	s.srv = &Service{st: s.st}
+
+	c.Cleanup(func() {
+		s.st = nil
+		s.srv = nil
+	})
 
 	return ctrl
 }
@@ -95,7 +100,7 @@ func (s *serviceSuite) TestGetAllOpenedPorts(c *tc.C) {
 func (s *serviceSuite) TestGetMachineOpenedPorts(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	s.st.EXPECT().GetMachineOpenedPorts(gomock.Any(), machineUUID).Return(map[coreunit.Name]network.GroupedPortRanges{
+	s.st.EXPECT().GetMachineOpenedPorts(gomock.Any(), machineUUID.String()).Return(map[coreunit.Name]network.GroupedPortRanges{
 		"unit/1": {
 			"ep1": {
 				network.MustParsePortRange("80/tcp"),
@@ -228,112 +233,30 @@ func (s *serviceSuite) TestGetApplicationOpenedPortsByEndpointOverlap(c *tc.C) {
 	c.Check(res, tc.DeepEquals, expected)
 }
 
-func (s *serviceSuite) TestUpdateUnitPorts(c *tc.C) {
+func (s *serviceSuite) TestImportOpenUnitPorts(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	s.st.EXPECT().UpdateUnitPorts(
+	s.st.EXPECT().ImportOpenUnitPorts(
 		gomock.Any(), unitUUID,
 		network.GroupedPortRanges{
 			"ep1": {network.MustParsePortRange("80/tcp"), network.MustParsePortRange("443/tcp")},
 			"ep2": {network.MustParsePortRange("8000-9000/tcp")},
 		},
-		network.GroupedPortRanges{
-			"ep1": {network.MustParsePortRange("22/tcp")},
-		},
 	).Return(nil)
 
-	err := s.srv.UpdateUnitPorts(
+	err := s.srv.ImportOpenUnitPorts(
 		c.Context(), unitUUID,
 		network.GroupedPortRanges{
 			"ep1": {network.MustParsePortRange("80/tcp"), network.MustParsePortRange("443/tcp")},
 			"ep2": {network.MustParsePortRange("8000-9000/tcp")},
 		},
-		network.GroupedPortRanges{
-			"ep1": {network.MustParsePortRange("22/tcp")},
-		},
 	)
 	c.Assert(err, tc.ErrorIsNil)
 }
 
-func (s *serviceSuite) TestUpdateUnitPortsNoChanges(c *tc.C) {
-	err := s.srv.UpdateUnitPorts(c.Context(), unitUUID, network.GroupedPortRanges{"ep1": {}}, network.GroupedPortRanges{})
+func (s *serviceSuite) TestImportOpenUnitPortsNoChanges(c *tc.C) {
+	err := s.srv.ImportOpenUnitPorts(c.Context(), unitUUID, network.GroupedPortRanges{"ep1": {}})
 	c.Assert(err, tc.ErrorIsNil)
-}
-
-func (s *serviceSuite) TestUpdateUnitPortsNilOpenPorts(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	s.st.EXPECT().UpdateUnitPorts(
-		gomock.Any(), unitUUID, nil,
-		network.GroupedPortRanges{
-			"ep1": {network.MustParsePortRange("22/tcp")},
-		},
-	).Return(nil)
-
-	err := s.srv.UpdateUnitPorts(
-		c.Context(), unitUUID, nil,
-		network.GroupedPortRanges{
-			"ep1": {network.MustParsePortRange("22/tcp")},
-		},
-	)
-	c.Assert(err, tc.ErrorIsNil)
-}
-
-func (s *serviceSuite) TestUpdateUnitPortsNilClosePorts(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	s.st.EXPECT().UpdateUnitPorts(
-		gomock.Any(), unitUUID,
-		network.GroupedPortRanges{
-			"ep1": {network.MustParsePortRange("80/tcp"), network.MustParsePortRange("443/tcp")},
-		},
-		nil,
-	).Return(nil)
-
-	err := s.srv.UpdateUnitPorts(
-		c.Context(), unitUUID,
-		network.GroupedPortRanges{
-			"ep1": {network.MustParsePortRange("80/tcp"), network.MustParsePortRange("443/tcp")},
-		},
-		nil,
-	)
-	c.Assert(err, tc.ErrorIsNil)
-}
-
-func (s *serviceSuite) TestUpdateUnitPortsNilPortMaps(c *tc.C) {
-	err := s.srv.UpdateUnitPorts(c.Context(), unitUUID, nil, nil)
-	c.Assert(err, tc.ErrorIsNil)
-}
-
-func (s *serviceSuite) TestUpdateUnitPortsConflict(c *tc.C) {
-	err := s.srv.UpdateUnitPorts(c.Context(), unitUUID, network.GroupedPortRanges{
-		"ep1": {
-			network.MustParsePortRange("100-200/tcp"),
-		},
-		"ep2": {
-			network.MustParsePortRange("150-250/tcp"),
-		},
-	}, network.GroupedPortRanges{})
-	c.Assert(err, tc.ErrorIs, porterrors.PortRangeConflict)
-
-	err = s.srv.UpdateUnitPorts(c.Context(), unitUUID, network.GroupedPortRanges{
-		"ep1": {
-			network.MustParsePortRange("100-200/tcp"),
-		},
-	}, network.GroupedPortRanges{
-		"ep2": {
-			network.MustParsePortRange("150-250/tcp"),
-		},
-	})
-	c.Assert(err, tc.ErrorIs, porterrors.PortRangeConflict)
-
-	err = s.srv.UpdateUnitPorts(c.Context(), unitUUID, network.GroupedPortRanges{
-		"ep1": {
-			network.MustParsePortRange("100-200/tcp"),
-			network.MustParsePortRange("200/tcp"),
-		},
-	}, network.GroupedPortRanges{})
-	c.Assert(err, tc.ErrorIs, porterrors.PortRangeConflict)
 }
 
 func (s *serviceSuite) TestGetUnitUUID(c *tc.C) {

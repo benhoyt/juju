@@ -15,6 +15,7 @@ import (
 
 	semversion "github.com/juju/juju/core/semversion"
 	agentbinary "github.com/juju/juju/domain/agentbinary"
+	internal "github.com/juju/juju/domain/controllerupgrader/internal"
 	environs "github.com/juju/juju/environs"
 	tools "github.com/juju/juju/environs/tools"
 	tools0 "github.com/juju/juju/internal/tools"
@@ -223,41 +224,41 @@ func (m *MockControllerState) EXPECT() *MockControllerStateMockRecorder {
 	return m.recorder
 }
 
-// GetControllerNodeVersions mocks base method.
-func (m *MockControllerState) GetControllerNodeVersions(arg0 context.Context) (map[string]semversion.Number, error) {
+// GetControllerNodes mocks base method.
+func (m *MockControllerState) GetControllerNodes(arg0 context.Context) ([]internal.ControllerNode, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetControllerNodeVersions", arg0)
-	ret0, _ := ret[0].(map[string]semversion.Number)
+	ret := m.ctrl.Call(m, "GetControllerNodes", arg0)
+	ret0, _ := ret[0].([]internal.ControllerNode)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// GetControllerNodeVersions indicates an expected call of GetControllerNodeVersions.
-func (mr *MockControllerStateMockRecorder) GetControllerNodeVersions(arg0 any) *MockControllerStateGetControllerNodeVersionsCall {
+// GetControllerNodes indicates an expected call of GetControllerNodes.
+func (mr *MockControllerStateMockRecorder) GetControllerNodes(arg0 any) *MockControllerStateGetControllerNodesCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetControllerNodeVersions", reflect.TypeOf((*MockControllerState)(nil).GetControllerNodeVersions), arg0)
-	return &MockControllerStateGetControllerNodeVersionsCall{Call: call}
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetControllerNodes", reflect.TypeOf((*MockControllerState)(nil).GetControllerNodes), arg0)
+	return &MockControllerStateGetControllerNodesCall{Call: call}
 }
 
-// MockControllerStateGetControllerNodeVersionsCall wrap *gomock.Call
-type MockControllerStateGetControllerNodeVersionsCall struct {
+// MockControllerStateGetControllerNodesCall wrap *gomock.Call
+type MockControllerStateGetControllerNodesCall struct {
 	*gomock.Call
 }
 
 // Return rewrite *gomock.Call.Return
-func (c *MockControllerStateGetControllerNodeVersionsCall) Return(arg0 map[string]semversion.Number, arg1 error) *MockControllerStateGetControllerNodeVersionsCall {
+func (c *MockControllerStateGetControllerNodesCall) Return(arg0 []internal.ControllerNode, arg1 error) *MockControllerStateGetControllerNodesCall {
 	c.Call = c.Call.Return(arg0, arg1)
 	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockControllerStateGetControllerNodeVersionsCall) Do(f func(context.Context) (map[string]semversion.Number, error)) *MockControllerStateGetControllerNodeVersionsCall {
+func (c *MockControllerStateGetControllerNodesCall) Do(f func(context.Context) ([]internal.ControllerNode, error)) *MockControllerStateGetControllerNodesCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockControllerStateGetControllerNodeVersionsCall) DoAndReturn(f func(context.Context) (map[string]semversion.Number, error)) *MockControllerStateGetControllerNodeVersionsCall {
+func (c *MockControllerStateGetControllerNodesCall) DoAndReturn(f func(context.Context) ([]internal.ControllerNode, error)) *MockControllerStateGetControllerNodesCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -539,44 +540,6 @@ func (c *MockSimpleStreamsAgentFinderAgentBinaryFilterCall) DoAndReturn(f func(c
 	return c
 }
 
-// GetPreferredSimpleStreams mocks base method.
-func (m *MockSimpleStreamsAgentFinder) GetPreferredSimpleStreams(arg0 *semversion.Number, arg1 bool, arg2 string) []string {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetPreferredSimpleStreams", arg0, arg1, arg2)
-	ret0, _ := ret[0].([]string)
-	return ret0
-}
-
-// GetPreferredSimpleStreams indicates an expected call of GetPreferredSimpleStreams.
-func (mr *MockSimpleStreamsAgentFinderMockRecorder) GetPreferredSimpleStreams(arg0, arg1, arg2 any) *MockSimpleStreamsAgentFinderGetPreferredSimpleStreamsCall {
-	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPreferredSimpleStreams", reflect.TypeOf((*MockSimpleStreamsAgentFinder)(nil).GetPreferredSimpleStreams), arg0, arg1, arg2)
-	return &MockSimpleStreamsAgentFinderGetPreferredSimpleStreamsCall{Call: call}
-}
-
-// MockSimpleStreamsAgentFinderGetPreferredSimpleStreamsCall wrap *gomock.Call
-type MockSimpleStreamsAgentFinderGetPreferredSimpleStreamsCall struct {
-	*gomock.Call
-}
-
-// Return rewrite *gomock.Call.Return
-func (c *MockSimpleStreamsAgentFinderGetPreferredSimpleStreamsCall) Return(arg0 []string) *MockSimpleStreamsAgentFinderGetPreferredSimpleStreamsCall {
-	c.Call = c.Call.Return(arg0)
-	return c
-}
-
-// Do rewrite *gomock.Call.Do
-func (c *MockSimpleStreamsAgentFinderGetPreferredSimpleStreamsCall) Do(f func(*semversion.Number, bool, string) []string) *MockSimpleStreamsAgentFinderGetPreferredSimpleStreamsCall {
-	c.Call = c.Call.Do(f)
-	return c
-}
-
-// DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockSimpleStreamsAgentFinderGetPreferredSimpleStreamsCall) DoAndReturn(f func(*semversion.Number, bool, string) []string) *MockSimpleStreamsAgentFinderGetPreferredSimpleStreamsCall {
-	c.Call = c.Call.DoAndReturn(f)
-	return c
-}
-
 // GetProvider mocks base method.
 func (m *MockSimpleStreamsAgentFinder) GetProvider(arg0 context.Context) (environs.BootstrapEnviron, error) {
 	m.ctrl.T.Helper()
@@ -639,6 +602,45 @@ func (m *MockAgentFinderControllerState) EXPECT() *MockAgentFinderControllerStat
 	return m.recorder
 }
 
+// GetAllAgentStoreBinariesForStream mocks base method.
+func (m *MockAgentFinderControllerState) GetAllAgentStoreBinariesForStream(arg0 context.Context, arg1 agentbinary.Stream) ([]agentbinary.AgentBinary, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetAllAgentStoreBinariesForStream", arg0, arg1)
+	ret0, _ := ret[0].([]agentbinary.AgentBinary)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetAllAgentStoreBinariesForStream indicates an expected call of GetAllAgentStoreBinariesForStream.
+func (mr *MockAgentFinderControllerStateMockRecorder) GetAllAgentStoreBinariesForStream(arg0, arg1 any) *MockAgentFinderControllerStateGetAllAgentStoreBinariesForStreamCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllAgentStoreBinariesForStream", reflect.TypeOf((*MockAgentFinderControllerState)(nil).GetAllAgentStoreBinariesForStream), arg0, arg1)
+	return &MockAgentFinderControllerStateGetAllAgentStoreBinariesForStreamCall{Call: call}
+}
+
+// MockAgentFinderControllerStateGetAllAgentStoreBinariesForStreamCall wrap *gomock.Call
+type MockAgentFinderControllerStateGetAllAgentStoreBinariesForStreamCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockAgentFinderControllerStateGetAllAgentStoreBinariesForStreamCall) Return(arg0 []agentbinary.AgentBinary, arg1 error) *MockAgentFinderControllerStateGetAllAgentStoreBinariesForStreamCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockAgentFinderControllerStateGetAllAgentStoreBinariesForStreamCall) Do(f func(context.Context, agentbinary.Stream) ([]agentbinary.AgentBinary, error)) *MockAgentFinderControllerStateGetAllAgentStoreBinariesForStreamCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockAgentFinderControllerStateGetAllAgentStoreBinariesForStreamCall) DoAndReturn(f func(context.Context, agentbinary.Stream) ([]agentbinary.AgentBinary, error)) *MockAgentFinderControllerStateGetAllAgentStoreBinariesForStreamCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // GetControllerTargetVersion mocks base method.
 func (m *MockAgentFinderControllerState) GetControllerTargetVersion(arg0 context.Context) (semversion.Number, error) {
 	m.ctrl.T.Helper()
@@ -678,45 +680,6 @@ func (c *MockAgentFinderControllerStateGetControllerTargetVersionCall) DoAndRetu
 	return c
 }
 
-// HasAgentBinariesForVersionArchitecturesAndStream mocks base method.
-func (m *MockAgentFinderControllerState) HasAgentBinariesForVersionArchitecturesAndStream(arg0 context.Context, arg1 semversion.Number, arg2 []agentbinary.Architecture, arg3 agentbinary.Stream) (map[agentbinary.Architecture]bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "HasAgentBinariesForVersionArchitecturesAndStream", arg0, arg1, arg2, arg3)
-	ret0, _ := ret[0].(map[agentbinary.Architecture]bool)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// HasAgentBinariesForVersionArchitecturesAndStream indicates an expected call of HasAgentBinariesForVersionArchitecturesAndStream.
-func (mr *MockAgentFinderControllerStateMockRecorder) HasAgentBinariesForVersionArchitecturesAndStream(arg0, arg1, arg2, arg3 any) *MockAgentFinderControllerStateHasAgentBinariesForVersionArchitecturesAndStreamCall {
-	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HasAgentBinariesForVersionArchitecturesAndStream", reflect.TypeOf((*MockAgentFinderControllerState)(nil).HasAgentBinariesForVersionArchitecturesAndStream), arg0, arg1, arg2, arg3)
-	return &MockAgentFinderControllerStateHasAgentBinariesForVersionArchitecturesAndStreamCall{Call: call}
-}
-
-// MockAgentFinderControllerStateHasAgentBinariesForVersionArchitecturesAndStreamCall wrap *gomock.Call
-type MockAgentFinderControllerStateHasAgentBinariesForVersionArchitecturesAndStreamCall struct {
-	*gomock.Call
-}
-
-// Return rewrite *gomock.Call.Return
-func (c *MockAgentFinderControllerStateHasAgentBinariesForVersionArchitecturesAndStreamCall) Return(arg0 map[agentbinary.Architecture]bool, arg1 error) *MockAgentFinderControllerStateHasAgentBinariesForVersionArchitecturesAndStreamCall {
-	c.Call = c.Call.Return(arg0, arg1)
-	return c
-}
-
-// Do rewrite *gomock.Call.Do
-func (c *MockAgentFinderControllerStateHasAgentBinariesForVersionArchitecturesAndStreamCall) Do(f func(context.Context, semversion.Number, []agentbinary.Architecture, agentbinary.Stream) (map[agentbinary.Architecture]bool, error)) *MockAgentFinderControllerStateHasAgentBinariesForVersionArchitecturesAndStreamCall {
-	c.Call = c.Call.Do(f)
-	return c
-}
-
-// DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockAgentFinderControllerStateHasAgentBinariesForVersionArchitecturesAndStreamCall) DoAndReturn(f func(context.Context, semversion.Number, []agentbinary.Architecture, agentbinary.Stream) (map[agentbinary.Architecture]bool, error)) *MockAgentFinderControllerStateHasAgentBinariesForVersionArchitecturesAndStreamCall {
-	c.Call = c.Call.DoAndReturn(f)
-	return c
-}
-
 // MockAgentFinderControllerModelState is a mock of AgentFinderControllerModelState interface.
 type MockAgentFinderControllerModelState struct {
 	ctrl     *gomock.Controller
@@ -738,6 +701,45 @@ func NewMockAgentFinderControllerModelState(ctrl *gomock.Controller) *MockAgentF
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockAgentFinderControllerModelState) EXPECT() *MockAgentFinderControllerModelStateMockRecorder {
 	return m.recorder
+}
+
+// GetAllAgentStoreBinariesForStream mocks base method.
+func (m *MockAgentFinderControllerModelState) GetAllAgentStoreBinariesForStream(arg0 context.Context, arg1 agentbinary.Stream) ([]agentbinary.AgentBinary, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetAllAgentStoreBinariesForStream", arg0, arg1)
+	ret0, _ := ret[0].([]agentbinary.AgentBinary)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetAllAgentStoreBinariesForStream indicates an expected call of GetAllAgentStoreBinariesForStream.
+func (mr *MockAgentFinderControllerModelStateMockRecorder) GetAllAgentStoreBinariesForStream(arg0, arg1 any) *MockAgentFinderControllerModelStateGetAllAgentStoreBinariesForStreamCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllAgentStoreBinariesForStream", reflect.TypeOf((*MockAgentFinderControllerModelState)(nil).GetAllAgentStoreBinariesForStream), arg0, arg1)
+	return &MockAgentFinderControllerModelStateGetAllAgentStoreBinariesForStreamCall{Call: call}
+}
+
+// MockAgentFinderControllerModelStateGetAllAgentStoreBinariesForStreamCall wrap *gomock.Call
+type MockAgentFinderControllerModelStateGetAllAgentStoreBinariesForStreamCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockAgentFinderControllerModelStateGetAllAgentStoreBinariesForStreamCall) Return(arg0 []agentbinary.AgentBinary, arg1 error) *MockAgentFinderControllerModelStateGetAllAgentStoreBinariesForStreamCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockAgentFinderControllerModelStateGetAllAgentStoreBinariesForStreamCall) Do(f func(context.Context, agentbinary.Stream) ([]agentbinary.AgentBinary, error)) *MockAgentFinderControllerModelStateGetAllAgentStoreBinariesForStreamCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockAgentFinderControllerModelStateGetAllAgentStoreBinariesForStreamCall) DoAndReturn(f func(context.Context, agentbinary.Stream) ([]agentbinary.AgentBinary, error)) *MockAgentFinderControllerModelStateGetAllAgentStoreBinariesForStreamCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
 }
 
 // GetModelAgentStream mocks base method.
@@ -775,45 +777,6 @@ func (c *MockAgentFinderControllerModelStateGetModelAgentStreamCall) Do(f func(c
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockAgentFinderControllerModelStateGetModelAgentStreamCall) DoAndReturn(f func(context.Context) (agentbinary.Stream, error)) *MockAgentFinderControllerModelStateGetModelAgentStreamCall {
-	c.Call = c.Call.DoAndReturn(f)
-	return c
-}
-
-// HasAgentBinariesForVersionAndArchitectures mocks base method.
-func (m *MockAgentFinderControllerModelState) HasAgentBinariesForVersionAndArchitectures(arg0 context.Context, arg1 semversion.Number, arg2 []agentbinary.Architecture) (map[agentbinary.Architecture]bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "HasAgentBinariesForVersionAndArchitectures", arg0, arg1, arg2)
-	ret0, _ := ret[0].(map[agentbinary.Architecture]bool)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// HasAgentBinariesForVersionAndArchitectures indicates an expected call of HasAgentBinariesForVersionAndArchitectures.
-func (mr *MockAgentFinderControllerModelStateMockRecorder) HasAgentBinariesForVersionAndArchitectures(arg0, arg1, arg2 any) *MockAgentFinderControllerModelStateHasAgentBinariesForVersionAndArchitecturesCall {
-	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HasAgentBinariesForVersionAndArchitectures", reflect.TypeOf((*MockAgentFinderControllerModelState)(nil).HasAgentBinariesForVersionAndArchitectures), arg0, arg1, arg2)
-	return &MockAgentFinderControllerModelStateHasAgentBinariesForVersionAndArchitecturesCall{Call: call}
-}
-
-// MockAgentFinderControllerModelStateHasAgentBinariesForVersionAndArchitecturesCall wrap *gomock.Call
-type MockAgentFinderControllerModelStateHasAgentBinariesForVersionAndArchitecturesCall struct {
-	*gomock.Call
-}
-
-// Return rewrite *gomock.Call.Return
-func (c *MockAgentFinderControllerModelStateHasAgentBinariesForVersionAndArchitecturesCall) Return(arg0 map[agentbinary.Architecture]bool, arg1 error) *MockAgentFinderControllerModelStateHasAgentBinariesForVersionAndArchitecturesCall {
-	c.Call = c.Call.Return(arg0, arg1)
-	return c
-}
-
-// Do rewrite *gomock.Call.Do
-func (c *MockAgentFinderControllerModelStateHasAgentBinariesForVersionAndArchitecturesCall) Do(f func(context.Context, semversion.Number, []agentbinary.Architecture) (map[agentbinary.Architecture]bool, error)) *MockAgentFinderControllerModelStateHasAgentBinariesForVersionAndArchitecturesCall {
-	c.Call = c.Call.Do(f)
-	return c
-}
-
-// DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockAgentFinderControllerModelStateHasAgentBinariesForVersionAndArchitecturesCall) DoAndReturn(f func(context.Context, semversion.Number, []agentbinary.Architecture) (map[agentbinary.Architecture]bool, error)) *MockAgentFinderControllerModelStateHasAgentBinariesForVersionAndArchitecturesCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

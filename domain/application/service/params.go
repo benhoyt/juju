@@ -4,6 +4,7 @@
 package service
 
 import (
+	coreapplication "github.com/juju/juju/core/application"
 	corecharm "github.com/juju/juju/core/charm"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/devices"
@@ -18,8 +19,9 @@ import (
 	domaincharm "github.com/juju/juju/domain/application/charm"
 	apperrors "github.com/juju/juju/domain/application/errors"
 	"github.com/juju/juju/domain/application/service/storage"
-	internalcharm "github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
+	domainstorage "github.com/juju/juju/domain/storage"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -102,9 +104,12 @@ type AddressParams struct {
 
 // AddUnitArg contains parameters for adding a unit to the model.
 type AddUnitArg struct {
+	// Placement is the placement of the unit.
 	Placement *instance.Placement
 
-	// Storage params go here.
+	// StorageInstancesToAttach contains the list of existing Storage instance
+	// UUIDs to be attached to this unit.
+	StorageInstancesToAttach []domainstorage.StorageInstanceUUID
 }
 
 // AddIAASUnitArg contains parameters for adding a IAAS unit to the model.
@@ -116,13 +121,24 @@ type AddIAASUnitArg struct {
 // ImportUnitArg contains parameters for inserting a fully
 // populated unit into the model, eg during migration.
 type ImportUnitArg struct {
-	UnitName       coreunit.Name
-	PasswordHash   *string
-	CloudContainer *application.CloudContainerParams
-	Machine        machine.Name
+	UnitName        coreunit.Name
+	PasswordHash    *string
+	WorkloadVersion string
 	// Principal contains the name of the units principal unit. If the unit is
 	// not a subordinate, this field is empty.
 	Principal coreunit.Name
+}
+
+// ImportIAASUnitArg contains parameters for importing an IAAS unit.
+type ImportIAASUnitArg struct {
+	ImportUnitArg
+	Machine machine.Name
+}
+
+// ImportCAASUnitArg contains parameters for importing a CAAS unit.
+type ImportCAASUnitArg struct {
+	ImportUnitArg
+	CloudContainer *application.CloudContainerParams
 }
 
 // UpdateCAASUnitParams contains parameters for updating a CAAS unit.
@@ -188,6 +204,9 @@ func (r ResolvedResources) Validate() error {
 // ImportApplicationArgs contains arguments for importing an application to the
 // model.
 type ImportApplicationArgs struct {
+	// UUID is the application UUID to import.
+	UUID coreapplication.UUID
+
 	// Charm is the charm to import.
 	Charm internalcharm.Charm
 
@@ -217,9 +236,6 @@ type ImportApplicationArgs struct {
 	// TODO (stickupkid): This isn't currently wired up.
 	ResolvedResources ResolvedResources
 
-	// Units contains the units to import.
-	Units []ImportUnitArg
-
 	// ApplicationConstraints contains the application constraints.
 	ApplicationConstraints constraints.Value
 
@@ -227,18 +243,33 @@ type ImportApplicationArgs struct {
 	// even when on error.
 	CharmUpgradeOnError bool
 
-	// ScaleState is the scale state (including scaling, scale and scale
-	// target) of the application.
-	ScaleState application.ScaleState
-
 	// EndpointBindings are the endpoint bindings for the charm
 	EndpointBindings map[string]network.SpaceName
 
 	// ExposedEndpoints is the exposed endpoints for the application.
 	ExposedEndpoints map[string]application.ExposedEndpoint
+}
 
-	// PeerRelations is a map of peer relation endpoint to relation id.
-	PeerRelations map[string]int
+// ImportIAASApplicationArgs contains arguments for importing an IAAS
+// application to the model.
+type ImportIAASApplicationArgs struct {
+	ImportApplicationArgs
+
+	// Units contains the IAAS units to import.
+	Units []ImportIAASUnitArg
+}
+
+// ImportCAASApplicationArgs contains arguments for importing a CAAS
+// application to the model.
+type ImportCAASApplicationArgs struct {
+	ImportApplicationArgs
+
+	// Units contains the CAAS units to import.
+	Units []ImportCAASUnitArg
+
+	// ScaleState is the scale state (including scaling, scale and scale
+	// target) of the application.
+	ScaleState application.ScaleState
 }
 
 // ApplicationConfig represents the application config for the specified

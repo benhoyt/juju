@@ -6,7 +6,7 @@ package modelmigration
 import (
 	"testing"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
@@ -98,11 +98,159 @@ func (s *importSuite) TestImport(c *tc.C) {
 		FilesystemType:  "ext4",
 		InUse:           true,
 		MountPoint:      "/path/to/here",
+		Provenance:      blockdevice.MachineProvenance,
 	}}
 	s.service.EXPECT().SetBlockDevicesForMachineByName(
 		gomock.Any(), machine.Name("666"), expectedBlockDevices).Return(nil)
 
 	op := s.newImportOperation()
+	err = op.Execute(c.Context(), model)
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *importSuite) TestImportVolumeAttachmentPlan(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// Arrange: Add machines
+	model := description.NewModel(description.ModelArgs{})
+	model.AddMachine(description.MachineArgs{
+		Id: "666",
+	})
+	model.AddMachine(description.MachineArgs{
+		Id: "667",
+	})
+
+	// Arrange: Add a block device to one.
+	err := model.AddBlockDevice("666", description.BlockDeviceArgs{
+		Name:           "foo",
+		Links:          []string{"/dev/disk/by-id/a-link"},
+		Label:          "label",
+		UUID:           "device-uuid",
+		HardwareID:     "hardware-id",
+		WWN:            "wwn",
+		BusAddress:     "bus-address",
+		SerialID:       "serial-id",
+		Size:           100,
+		FilesystemType: "ext4",
+		InUse:          true,
+		MountPoint:     "/path/to/here",
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Arrange: Add a volume with an attachment block device matching
+	// the machine's above, and with a attachment plan which does not.
+	vol := model.AddVolume(description.VolumeArgs{})
+	vol.AddAttachment(description.VolumeAttachmentArgs{
+		HostMachine: "666",
+		BusAddress:  "bus-address",
+		DeviceLink:  "/dev/disk/by-id/a-link",
+		DeviceName:  "foo",
+	})
+	vol.AddAttachmentPlan(description.VolumeAttachmentPlanArgs{
+		Machine:     "666",
+		DeviceName:  "baz",
+		DeviceLinks: []string{"/dev/disk/by-id/d-link"},
+	})
+
+	// Arrange: expected mock call. Where a block device is found in all
+	// three locations, the order of preference is: the machine's block
+	// device, the volume attachment plan's block device, lastly the
+	// volume attachment's block device.
+	expectedBlockDevices := []blockdevice.BlockDevice{{
+		DeviceName:      "foo",
+		DeviceLinks:     []string{"/dev/disk/by-id/a-link"},
+		FilesystemLabel: "label",
+		FilesystemUUID:  "device-uuid",
+		HardwareId:      "hardware-id",
+		WWN:             "wwn",
+		BusAddress:      "bus-address",
+		SerialId:        "serial-id",
+		SizeMiB:         100,
+		FilesystemType:  "ext4",
+		InUse:           true,
+		MountPoint:      "/path/to/here",
+		Provenance:      blockdevice.MachineProvenance,
+	}, {
+		DeviceName:  "baz",
+		DeviceLinks: []string{"/dev/disk/by-id/d-link"},
+		Provenance:  blockdevice.MachineProvenance,
+	}}
+	s.service.EXPECT().SetBlockDevicesForMachineByName(
+		gomock.Any(), machine.Name("666"), expectedBlockDevices).Return(nil)
+
+	// Act
+	op := s.newImportOperation()
+
+	// Assert
+	err = op.Execute(c.Context(), model)
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *importSuite) TestImportVolumeAttachment(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// Arrange: Add machine
+	model := description.NewModel(description.ModelArgs{})
+	model.AddMachine(description.MachineArgs{
+		Id: "666",
+	})
+
+	// Arrange: Add a block device to one.
+	err := model.AddBlockDevice("666", description.BlockDeviceArgs{
+		Name:           "foo",
+		Links:          []string{"/dev/disk/by-id/a-link"},
+		Label:          "label",
+		UUID:           "device-uuid",
+		HardwareID:     "hardware-id",
+		WWN:            "wwn",
+		BusAddress:     "bus-address",
+		SerialID:       "serial-id",
+		Size:           100,
+		FilesystemType: "ext4",
+		InUse:          true,
+		MountPoint:     "/path/to/here",
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Arrange: Add a volume with an attachment block device not matching
+	// the machine's above.
+	vol := model.AddVolume(description.VolumeArgs{})
+	vol.AddAttachment(description.VolumeAttachmentArgs{
+		HostMachine: "666",
+		DeviceLink:  "/dev/disk/by-id/d-link",
+		DeviceName:  "baz",
+	})
+
+	// Arrange: expected mock call. Where a block device is found in all
+	// three locations, the order of preference is: the machine's block
+	// device, the volume attachment plan's block device, lastly the
+	// volume attachment's block device.
+	expectedBlockDevices := []blockdevice.BlockDevice{{
+		DeviceName:      "foo",
+		DeviceLinks:     []string{"/dev/disk/by-id/a-link"},
+		FilesystemLabel: "label",
+		FilesystemUUID:  "device-uuid",
+		HardwareId:      "hardware-id",
+		WWN:             "wwn",
+		BusAddress:      "bus-address",
+		SerialId:        "serial-id",
+		SizeMiB:         100,
+		FilesystemType:  "ext4",
+		InUse:           true,
+		MountPoint:      "/path/to/here",
+		Provenance:      blockdevice.MachineProvenance,
+	}, {
+		DeviceName:  "baz",
+		DeviceLinks: []string{"/dev/disk/by-id/d-link"},
+		Provenance:  blockdevice.ProviderProvenance,
+	}}
+	s.service.EXPECT().SetBlockDevicesForMachineByName(
+		gomock.Any(), machine.Name("666"), expectedBlockDevices).Return(nil)
+
+	// Act
+	op := s.newImportOperation()
+
+	// Assert
 	err = op.Execute(c.Context(), model)
 	c.Assert(err, tc.ErrorIsNil)
 }

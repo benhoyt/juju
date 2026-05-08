@@ -10,8 +10,8 @@ import (
 
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 
 	"github.com/juju/juju/agent"
 	apiprovisioner "github.com/juju/juju/api/agent/provisioner"
@@ -290,9 +290,13 @@ func (p *containerProvisioner) getStartTask(ctx context.Context, workerCount int
 // provisioner is used on the agents where we cannot use domain services.
 func machineInstanceInfoSetter(machineProvisionerAPI apiprovisioner.MachineProvisioner) func(
 	ctx context.Context,
-	id instance.Id, displayName string, nonce string, characteristics *instance.HardwareCharacteristics,
-	networkConfig []params.NetworkConfig, volumes []params.Volume,
-	volumeAttachments map[string]params.VolumeAttachmentInfo, charmProfiles []string,
+	id instance.Id,
+	displayName string,
+	nonce string,
+	characteristics *instance.HardwareCharacteristics,
+	networkConfig []params.NetworkConfig,
+	volumes []params.Volume,
+	volumeAttachments map[string]params.VolumeAttachmentInfo,
 ) error {
 	return machineProvisionerAPI.SetInstanceInfo
 }

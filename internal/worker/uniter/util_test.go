@@ -26,7 +26,7 @@ import (
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
 	"github.com/juju/utils/v4"
-	"github.com/juju/worker/v4"
+	"github.com/juju/worker/v5"
 	"go.uber.org/mock/gomock"
 	"gopkg.in/yaml.v2"
 
@@ -41,8 +41,8 @@ import (
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/core/watcher/watchertest"
-	jujucharm "github.com/juju/juju/internal/charm"
-	charmtesting "github.com/juju/juju/internal/charm/testing"
+	jujucharm "github.com/juju/juju/domain/deployment/charm"
+	charmtesting "github.com/juju/juju/domain/deployment/charm/testing"
 	"github.com/juju/juju/internal/downloader"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/testhelpers/filetesting"
@@ -124,11 +124,10 @@ type testContext struct {
 	// Data model aka "state".
 	stateMu sync.Mutex
 
-	machineProfiles []string
-	storage         map[string]*storageAttachment
-	relationUnits   map[int]relationUnitSettings
-	actionCounter   atomic.Int32
-	pendingActions  []*apiuniter.Action
+	storage        map[string]*storageAttachment
+	relationUnits  map[int]relationUnitSettings
+	actionCounter  atomic.Int32
+	pendingActions []*apiuniter.Action
 
 	createdSecretURI *secrets.URI
 	secretsRotateCh  chan []string
@@ -252,14 +251,11 @@ func (ctx *testContext) sendRelationUnitChange(c tc.LikeC, msg string, ruc watch
 }
 
 func (ctx *testContext) expectHookContext(c tc.LikeC) {
-	ctx.api.EXPECT().APIAddresses(gomock.Any()).Return([]string{"10.6.6.6"}, nil).AnyTimes()
-	ctx.api.EXPECT().CloudAPIVersion(gomock.Any()).Return("6.6.6", nil).AnyTimes()
+	ctx.api.EXPECT().GetUnitContext(gomock.Any(), gomock.Any()).Return(apiuniter.UnitContext{
+		APIAddresses:    []string{"10.6.6.6"},
+		CloudAPIVersion: "6.6.6",
+	}, nil).AnyTimes()
 
-	cfg := coretesting.ModelConfig(c)
-	ctx.api.EXPECT().ModelConfig(gomock.Any()).Return(cfg, nil).AnyTimes()
-	m, err := ctx.unit.AssignedMachine(c.Context())
-	c.Assert(err, tc.ErrorIsNil)
-	ctx.api.EXPECT().OpenedMachinePortRangesByEndpoint(gomock.Any(), m).Return(nil, nil).AnyTimes()
 	ctx.secretsClient.EXPECT().SecretMetadata(gomock.Any()).Return(nil, nil).AnyTimes()
 }
 
@@ -382,7 +378,6 @@ func (s addCharm) step(c tc.LikeC, ctx *testContext) {
 	ctx.charm.EXPECT().URL().Return(s.curl).AnyTimes()
 	ctx.charm.EXPECT().ArchiveSha256(gomock.Any()).Return(hash, nil).AnyTimes()
 	ctx.api.EXPECT().Charm(s.curl).Return(ctx.charm, nil).AnyTimes()
-	ctx.charm.EXPECT().LXDProfileRequired(gomock.Any()).Return(s.dir.LXDProfile() != nil, nil).AnyTimes()
 }
 
 type serveCharm struct{}
@@ -392,16 +387,6 @@ func (s serveCharm) step(c tc.LikeC, ctx *testContext) {
 		ctx.servedCharms[storagePath] = data
 		delete(ctx.charms, storagePath)
 	}
-}
-
-type addCharmProfileToMachine struct {
-	profiles []string
-}
-
-func (acpm addCharmProfileToMachine) step(c tc.LikeC, ctx *testContext) {
-	ctx.stateMu.Lock()
-	ctx.machineProfiles = acpm.profiles
-	ctx.stateMu.Unlock()
 }
 
 type createApplicationAndUnit struct {
@@ -422,7 +407,7 @@ func (csau createApplicationAndUnit) step(c tc.LikeC, ctx *testContext) {
 
 	ctx.storage = make(map[string]*storageAttachment)
 	for si, count := range csau.storage {
-		for n := 0; n < count; n++ {
+		for n := range count {
 			tag := names.NewStorageTag(fmt.Sprintf("%s/%d", si, n))
 			ctx.storage[tag.Id()] = &storageAttachment{
 				eventCh: make(chan struct{}, 2),
@@ -530,7 +515,7 @@ type unitStateMatcher struct {
 	expected string
 }
 
-func (m unitStateMatcher) Matches(x interface{}) bool {
+func (m unitStateMatcher) Matches(x any) bool {
 	obtained, ok := x.(params.SetUnitStateArg)
 	if !ok || obtained.UniterState == nil {
 		return false
@@ -551,7 +536,7 @@ func (m unitStateMatcher) String() string {
 type uniterCharmUpgradeStateMatcher struct {
 }
 
-func (m uniterCharmUpgradeStateMatcher) Matches(x interface{}) bool {
+func (m uniterCharmUpgradeStateMatcher) Matches(x any) bool {
 	obtained, ok := x.(params.SetUnitStateArg)
 	if !ok || obtained.UniterState == nil {
 		return false
@@ -566,7 +551,7 @@ func (m uniterCharmUpgradeStateMatcher) String() string {
 type uniterRunHookStateMatcher struct {
 }
 
-func (m uniterRunHookStateMatcher) Matches(x interface{}) bool {
+func (m uniterRunHookStateMatcher) Matches(x any) bool {
 	obtained, ok := x.(params.SetUnitStateArg)
 	if !ok || obtained.UniterState == nil {
 		return false
@@ -581,7 +566,7 @@ func (m uniterRunHookStateMatcher) String() string {
 type uniterRunActionStateMatcher struct {
 }
 
-func (m uniterRunActionStateMatcher) Matches(x interface{}) bool {
+func (m uniterRunActionStateMatcher) Matches(x any) bool {
 	obtained, ok := x.(params.SetUnitStateArg)
 	if !ok || obtained.UniterState == nil {
 		return false
@@ -596,7 +581,7 @@ func (m uniterRunActionStateMatcher) String() string {
 type uniterContinueStateMatcher struct {
 }
 
-func (m uniterContinueStateMatcher) Matches(x interface{}) bool {
+func (m uniterContinueStateMatcher) Matches(x any) bool {
 	obtained, ok := x.(params.SetUnitStateArg)
 	if !ok || obtained.UniterState == nil {
 		return false
@@ -611,7 +596,7 @@ func (m uniterContinueStateMatcher) String() string {
 type uniterSecretsStateMatcher struct {
 }
 
-func (m uniterSecretsStateMatcher) Matches(x interface{}) bool {
+func (m uniterSecretsStateMatcher) Matches(x any) bool {
 	obtained, ok := x.(params.SetUnitStateArg)
 	if !ok || obtained.SecretState == nil {
 		return false
@@ -628,7 +613,7 @@ func (m uniterSecretsStateMatcher) String() string {
 type uniterStorageStateMatcher struct {
 }
 
-func (m uniterStorageStateMatcher) Matches(x interface{}) bool {
+func (m uniterStorageStateMatcher) Matches(x any) bool {
 	obtained, ok := x.(params.SetUnitStateArg)
 	if !ok || obtained.StorageState == nil {
 		return false
@@ -645,7 +630,7 @@ func (m uniterStorageStateMatcher) String() string {
 type uniterRelationStateMatcher struct {
 }
 
-func (m uniterRelationStateMatcher) Matches(x interface{}) bool {
+func (m uniterRelationStateMatcher) Matches(x any) bool {
 	obtained, ok := x.(params.SetUnitStateArg)
 	if !ok || obtained.RelationState == nil {
 		return false
@@ -1236,7 +1221,7 @@ type waitUnitAgent struct {
 	statusGetter func(ctx *testContext) statusfunc
 	status       status.Status
 	info         string
-	data         map[string]interface{}
+	data         map[string]any
 	charm        int
 	resolved     params.ResolvedMode
 }
@@ -1256,7 +1241,7 @@ func (s waitUnitAgent) step(c tc.LikeC, ctx *testContext) {
 			)
 			ctx.unit.mu.Lock()
 			resolved = ctx.unit.resolved
-			urlStr = ptr(ctx.unit.charmURL)
+			urlStr = new(ctx.unit.charmURL)
 			ctx.unit.mu.Unlock()
 
 			if resolved != s.resolved {
@@ -1434,7 +1419,7 @@ func (s updateStatusHookTick) step(c tc.LikeC, ctx *testContext) {
 	c.Assert(err, tc.ErrorIsNil)
 }
 
-type changeConfig map[string]interface{}
+type changeConfig map[string]any
 
 func (s changeConfig) step(c tc.LikeC, ctx *testContext) {
 	ctx.sendStrings(c, ctx.configCh, "config change event", ctx.app.configHash(s))
@@ -1442,7 +1427,7 @@ func (s changeConfig) step(c tc.LikeC, ctx *testContext) {
 
 type addAction struct {
 	name   string
-	params map[string]interface{}
+	params map[string]any
 }
 
 func (s addAction) step(c tc.LikeC, ctx *testContext) {
@@ -1483,10 +1468,7 @@ type verifyCharm struct {
 
 func (s verifyCharm) step(c tc.LikeC, ctx *testContext) {
 	s.checkFiles.Check(c, filepath.Join(ctx.path, "charm"))
-	checkRevision := s.revision
-	if s.attemptedRevision > checkRevision {
-		checkRevision = s.attemptedRevision
-	}
+	checkRevision := max(s.attemptedRevision, s.revision)
 	ctx.unit.mu.Lock()
 	defer ctx.unit.mu.Unlock()
 	urlStr := ctx.unit.charmURL
@@ -2080,10 +2062,6 @@ func (s verifyStorageDetached) step(c tc.LikeC, ctx *testContext) {
 	ctx.stateMu.Lock()
 	defer ctx.stateMu.Unlock()
 	c.Assert(ctx.storage, tc.HasLen, 0)
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }
 
 type createSecret struct{}

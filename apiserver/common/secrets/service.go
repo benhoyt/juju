@@ -9,6 +9,7 @@ import (
 	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/secrets"
 	"github.com/juju/juju/core/watcher"
+	"github.com/juju/juju/domain/secret"
 	secretservice "github.com/juju/juju/domain/secret/service"
 	backendservice "github.com/juju/juju/domain/secretbackend/service"
 )
@@ -16,7 +17,7 @@ import (
 // SecretService instances provide secret service apis.
 type SecretService interface {
 	ListCharmSecretsToDrain(
-		ctx context.Context, owners ...secretservice.CharmSecretOwner,
+		ctx context.Context, owners ...secret.CharmSecretOwner,
 	) ([]*secrets.SecretMetadataForDrain, error)
 	ListUserSecretsToDrain(ctx context.Context) ([]*secrets.SecretMetadataForDrain, error)
 	ChangeSecretBackend(ctx context.Context, uri *secrets.URI, revision int, params secretservice.ChangeSecretBackendParams) error

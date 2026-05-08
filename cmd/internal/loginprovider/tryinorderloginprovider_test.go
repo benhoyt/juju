@@ -15,6 +15,7 @@ import (
 	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/cmd/internal/loginprovider"
 	internallogger "github.com/juju/juju/internal/logger"
+	"github.com/juju/juju/rpc/params"
 )
 
 type tryInOrderLoginProviderSuite struct{}
@@ -44,10 +45,25 @@ func (s *tryInOrderLoginProviderSuite) TestInOrderLoginProvider(c *tc.C) {
 	c.Check(got, tc.DeepEquals, header)
 }
 
+func (s *tryInOrderLoginProviderSuite) TestInOrderLoginProviderFatalError(c *tc.C) {
+	p1 := &mockLoginProvider{err: errors.New("provider 1 error")}
+	p2 := &mockLoginProvider{err: params.Error{Code: params.CodeFatalLoginError, Message: "fatal login failure message"}}
+	p3 := &mockLoginProvider{err: errors.New("provider 3 error")}
+
+	logger := internallogger.GetLogger("juju.cmd.loginprovider")
+	lp := loginprovider.NewTryInOrderLoginProvider(logger, p1, p2, p3)
+	_, err := lp.Login(context.Background(), nil)
+	c.Assert(err, tc.ErrorMatches, "fatal login failure message")
+}
+
 type mockLoginProvider struct {
 	err    error
 	token  string
 	header http.Header
+}
+
+func (p *mockLoginProvider) String() string {
+	return "MockLoginProvider"
 }
 
 func (p *mockLoginProvider) AuthHeader() (http.Header, error) {

@@ -6,6 +6,8 @@ package remotestate
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,8 +16,8 @@ import (
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 
 	"github.com/juju/juju/core/leadership"
 	"github.com/juju/juju/core/life"
@@ -51,7 +53,6 @@ type RemoteStateWatcher struct {
 	updateStatusChannel       UpdateStatusTimerFunc
 	commandChannel            <-chan string
 	retryHookChannel          watcher.NotifyChannel
-	canApplyCharmProfile      bool
 	workloadEventChannel      <-chan string
 	shutdownChannel           <-chan bool
 
@@ -94,7 +95,6 @@ type WatcherConfig struct {
 	Sidecar                      bool
 	EnforcedCharmModifiedVersion int
 	Logger                       logger.Logger
-	CanApplyCharmProfile         bool
 	WorkloadEventChannel         <-chan string
 	InitialWorkloadEventIDs      []string
 	ShutdownChannel              <-chan bool
@@ -131,7 +131,6 @@ func NewWatcher(config WatcherConfig) (*RemoteStateWatcher, error) {
 		retryHookChannel:          config.RetryHookChannel,
 		modelType:                 config.ModelType,
 		logger:                    config.Logger,
-		canApplyCharmProfile:      config.CanApplyCharmProfile,
 		// Note: it is important that the out channel be buffered!
 		// The remote state watcher will perform a non-blocking send
 		// on the channel to wake up the observer. It is non-blocking
@@ -190,18 +189,12 @@ func (w *RemoteStateWatcher) Snapshot() Snapshot {
 			Members:            make(map[string]int64),
 			ApplicationMembers: make(map[string]int64),
 		}
-		for name, version := range relationSnapshot.Members {
-			relationSnapshotCopy.Members[name] = version
-		}
-		for name, version := range relationSnapshot.ApplicationMembers {
-			relationSnapshotCopy.ApplicationMembers[name] = version
-		}
+		maps.Copy(relationSnapshotCopy.Members, relationSnapshot.Members)
+		maps.Copy(relationSnapshotCopy.ApplicationMembers, relationSnapshot.ApplicationMembers)
 		snapshot.Relations[id] = relationSnapshotCopy
 	}
 	snapshot.Storage = make(map[names.StorageTag]StorageSnapshot)
-	for tag, storageSnapshot := range w.current.Storage {
-		snapshot.Storage[tag] = storageSnapshot
-	}
+	maps.Copy(snapshot.Storage, w.current.Storage)
 	snapshot.ActionsPending = make([]string, len(w.current.ActionsPending))
 	copy(snapshot.ActionsPending, w.current.ActionsPending)
 	snapshot.Commands = make([]string, len(w.current.Commands))
@@ -209,15 +202,11 @@ func (w *RemoteStateWatcher) Snapshot() Snapshot {
 	snapshot.WorkloadEvents = make([]string, len(w.current.WorkloadEvents))
 	copy(snapshot.WorkloadEvents, w.current.WorkloadEvents)
 	snapshot.ActionChanged = make(map[string]int)
-	for k, v := range w.current.ActionChanged {
-		snapshot.ActionChanged[k] = v
-	}
+	maps.Copy(snapshot.ActionChanged, w.current.ActionChanged)
 	snapshot.SecretRotations = make([]string, len(w.current.SecretRotations))
 	copy(snapshot.SecretRotations, w.current.SecretRotations)
 	snapshot.ConsumedSecretInfo = make(map[string]secrets.SecretRevisionInfo)
-	for u, r := range w.current.ConsumedSecretInfo {
-		snapshot.ConsumedSecretInfo[u] = r
-	}
+	maps.Copy(snapshot.ConsumedSecretInfo, w.current.ConsumedSecretInfo)
 	snapshot.ObsoleteSecretRevisions = make(map[string][]int)
 	for u, r := range w.current.ObsoleteSecretRevisions {
 		rCopy := make([]int, len(r))
@@ -439,11 +428,7 @@ func (w *RemoteStateWatcher) loop(unitTag names.UnitTag) (err error) {
 	}
 	requiredEvents++
 
-	var (
-		seenApplicationChange  bool
-		seenInstanceDataChange bool
-		instanceDataChannel    watcher.NotifyChannel
-	)
+	var seenApplicationChange bool
 
 	applicationw, err := w.application.Watch(ctx)
 	if err != nil {
@@ -453,19 +438,6 @@ func (w *RemoteStateWatcher) loop(unitTag names.UnitTag) (err error) {
 		return errors.Trace(err)
 	}
 	requiredEvents++
-
-	if w.canApplyCharmProfile {
-		// Note: canApplyCharmProfile will be false for a CAAS model.
-		instanceDataW, err := w.unit.WatchInstanceData(ctx)
-		if err != nil {
-			return errors.Trace(err)
-		}
-		if err := w.catacomb.Add(instanceDataW); err != nil {
-			return errors.Trace(err)
-		}
-		instanceDataChannel = instanceDataW.Changes()
-		requiredEvents++
-	}
 
 	var seenStorageChange bool
 	storagew, err := w.unit.WatchStorage(ctx)
@@ -592,16 +564,6 @@ func (w *RemoteStateWatcher) loop(unitTag names.UnitTag) (err error) {
 				return errors.Trace(err)
 			}
 			observedEvent(&seenSecretsChange)
-
-		case _, ok := <-instanceDataChannel:
-			w.logger.Debugf(ctx, "got instance data change for %s", w.unit.Tag().Id())
-			if !ok {
-				return errors.New("instance data watcher closed")
-			}
-			if err := w.instanceDataChanged(ctx); err != nil {
-				return errors.Trace(err)
-			}
-			observedEvent(&seenInstanceDataChange)
 
 		case hashes, ok := <-charmConfigw.Changes():
 			w.logger.Debugf(ctx, "got config change for %s: ok=%t, hashes=%v", w.unit.Tag().Id(), ok, hashes)
@@ -802,10 +764,8 @@ func (w *RemoteStateWatcher) workloadEventsChanged(id string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	// Ensure we don't add the same ID twice.
-	for _, otherId := range w.current.WorkloadEvents {
-		if otherId == id {
-			return
-		}
+	if slices.Contains(w.current.WorkloadEvents, id) {
+		return
 	}
 	w.current.WorkloadEvents = append(w.current.WorkloadEvents, id)
 }
@@ -847,36 +807,29 @@ func (w *RemoteStateWatcher) applicationChanged(ctx context.Context) error {
 	if err := w.application.Refresh(ctx); err != nil {
 		return errors.Trace(err)
 	}
+
 	url, force, err := w.application.CharmURL(ctx)
 	if err != nil {
 		return errors.Trace(err)
 	}
-	required := false
-	if w.canApplyCharmProfile {
-		ch, err := w.client.Charm(url)
-		if err != nil {
-			return errors.Trace(err)
-		}
-		required, err = ch.LXDProfileRequired(ctx)
-		if err != nil {
-			return errors.Trace(err)
-		}
-	}
+
 	ver, err := w.application.CharmModifiedVersion(ctx)
 	if err != nil {
 		return errors.Trace(err)
 	}
+
 	// CAAS sidecar charms will wait for the provider to restart/recreate
 	// the unit before performing an upgrade.
 	if w.sidecar && ver != w.enforcedCharmModifiedVersion {
 		return nil
 	}
+
 	w.mu.Lock()
 	w.current.CharmURL = url
 	w.current.ForceCharmUpgrade = force
 	w.current.CharmModifiedVersion = ver
-	w.current.CharmProfileRequired = required
 	w.mu.Unlock()
+
 	return nil
 }
 
@@ -960,18 +913,6 @@ func (w *RemoteStateWatcher) secretDeletedRevisions(ctx context.Context, deleted
 	}
 	w.logger.Debugf(ctx, "deleted secret revisions: %v", w.current.DeletedSecretRevisions)
 	w.logger.Debugf(ctx, "obsolete secret revisions: %v", w.current.ObsoleteSecretRevisions)
-	return nil
-}
-
-func (w *RemoteStateWatcher) instanceDataChanged(ctx context.Context) error {
-	name, err := w.unit.LXDProfileName(ctx)
-	if err != nil {
-		return errors.Trace(err)
-	}
-	w.mu.Lock()
-	w.current.LXDProfileName = name
-	w.mu.Unlock()
-	w.logger.Debugf(ctx, "LXDProfileName changed to %q", name)
 	return nil
 }
 
@@ -1209,9 +1150,7 @@ func (w *RemoteStateWatcher) watchRelationUnits(ctx context.Context, rel api.Rel
 		for unit, settings := range change.Changed {
 			relationSnapshot.Members[unit] = settings.Version
 		}
-		for app, settingsVersion := range change.AppChanged {
-			relationSnapshot.ApplicationMembers[app] = settingsVersion
-		}
+		maps.Copy(relationSnapshot.ApplicationMembers, change.AppChanged)
 	}
 	// Wrap the Changes() with the relationId so we can process all changes
 	// via the same channel.
@@ -1238,9 +1177,7 @@ func (w *RemoteStateWatcher) relationUnitsChanged(change relationUnitsChange) er
 	for unit, settings := range change.Changed {
 		snapshot.Members[unit] = settings.Version
 	}
-	for app, settingsVersion := range change.AppChanged {
-		snapshot.ApplicationMembers[app] = settingsVersion
-	}
+	maps.Copy(snapshot.ApplicationMembers, change.AppChanged)
 	for _, unit := range change.Departed {
 		delete(snapshot.Members, unit)
 	}

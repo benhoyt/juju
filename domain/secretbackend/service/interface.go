@@ -9,6 +9,7 @@ import (
 
 	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/watcher"
+	"github.com/juju/juju/domain/secret"
 	secretservice "github.com/juju/juju/domain/secret/service"
 	"github.com/juju/juju/domain/secretbackend"
 	"github.com/juju/juju/internal/secrets/provider"
@@ -49,10 +50,10 @@ func AdminBackendConfigGetterFunc(
 // UserSecretBackendConfigGetterFunc returns a function that gets the
 // config for a given model's current secret backend for creating or updating user secrets.
 func UserSecretBackendConfigGetterFunc(backendService *WatchableService, modelUUID coremodel.UUID) func(
-	stdCtx context.Context, gsg secretservice.GrantedSecretsGetter, accessor secretservice.SecretAccessor,
+	stdCtx context.Context, gsg secretservice.GrantedSecretsGetter, accessor secret.SecretAccessor,
 ) (*provider.ModelBackendConfigInfo, error) {
 	return func(
-		stdCtx context.Context, gsg secretservice.GrantedSecretsGetter, accessor secretservice.SecretAccessor,
+		stdCtx context.Context, gsg secretservice.GrantedSecretsGetter, accessor secret.SecretAccessor,
 	) (*provider.ModelBackendConfigInfo, error) {
 		return backendService.BackendConfigInfo(stdCtx, BackendConfigParams{
 			GrantedSecretsGetter: gsg,

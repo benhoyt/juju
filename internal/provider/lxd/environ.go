@@ -18,7 +18,6 @@ import (
 	"github.com/juju/juju/core/arch"
 	"github.com/juju/juju/core/base"
 	"github.com/juju/juju/core/instance"
-	"github.com/juju/juju/core/lxdprofile"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/environs"
@@ -64,9 +63,6 @@ type environ struct {
 	lock           sync.Mutex
 	ecfgUnlocked   *environConfig
 	serverUnlocked Server
-
-	// profileMutex is used when writing profiles via the server.
-	profileMutex sync.Mutex
 }
 
 func newEnviron(
@@ -435,101 +431,6 @@ func (env *environ) deriveAvailabilityZone(
 		return args.AvailabilityZone, nil
 	}
 	return "", errors.NotValidf("availability zone %q", args.AvailabilityZone)
-}
-
-// TODO: HML 2-apr-2019
-// When provisioner_task processProfileChanges() is
-// removed, maybe change to take an lxdprofile.ProfilePost as
-// an arg.
-// MaybeWriteLXDProfile implements environs.LXDProfiler.
-func (env *environ) MaybeWriteLXDProfile(pName string, put lxdprofile.Profile) error {
-	env.profileMutex.Lock()
-	defer env.profileMutex.Unlock()
-	server := env.server()
-	hasProfile, err := server.HasProfile(pName)
-	if err != nil {
-		return errors.Trace(err)
-	}
-	if hasProfile {
-		logger.Debugf(context.TODO(), "lxd profile %q already exists, not written again", pName)
-		return nil
-	}
-	logger.Debugf(context.TODO(), "attempting to write lxd profile %q %+v", pName, put)
-	post := api.ProfilesPost{
-		Name: pName,
-		ProfilePut: api.ProfilePut{
-			Description: put.Description,
-			Config:      put.Config,
-			Devices:     put.Devices,
-		},
-	}
-	if err = server.CreateProfile(post); err != nil {
-		return errors.Trace(err)
-	}
-	logger.Debugf(context.TODO(), "wrote lxd profile %q", pName)
-	if err := env.verifyProfile(context.TODO(), pName); err != nil {
-		return errors.Trace(err)
-	}
-	return nil
-}
-
-// verifyProfile gets the actual profile from lxd for the name provided
-// and logs the result. For informational purposes only. Returns an error
-// if the call to GetProfile fails.
-func (env *environ) verifyProfile(ctx context.Context, pName string) error {
-	// As there are configs where we do not have the option of looking at
-	// the profile on the machine to verify, verify here that what we thought
-	// was written, is what was written.
-	profile, _, err := env.server().GetProfile(pName)
-	if err != nil {
-		return err
-	}
-	logger.Debugf(ctx, "lxd profile %q: received %+v ", pName, profile)
-	return nil
-}
-
-// LXDProfileNames implements environs.LXDProfiler.
-func (env *environ) LXDProfileNames(containerName string) ([]string, error) {
-	return env.server().GetContainerProfiles(containerName)
-}
-
-// AssignLXDProfiles implements environs.LXDProfiler.
-func (env *environ) AssignLXDProfiles(instID string, profilesNames []string, profilePosts []lxdprofile.ProfilePost) (current []string, err error) {
-	report := func(err error) ([]string, error) {
-		// Always return the current profiles assigned to the instance.
-		currentProfiles, err2 := env.LXDProfileNames(instID)
-		if err != nil && err2 != nil {
-			logger.Errorf(context.TODO(), "retrieving profile names for %q: %s", instID, err2)
-		}
-		return currentProfiles, err
-	}
-
-	// Write any new profilePosts and gather a slice of profile
-	// names to be deleted, after removal.
-	var deleteProfiles []string
-	for _, p := range profilePosts {
-		if p.Profile != nil {
-			if err := env.MaybeWriteLXDProfile(p.Name, *p.Profile); err != nil {
-				return report(err)
-			}
-		} else {
-			deleteProfiles = append(deleteProfiles, p.Name)
-		}
-	}
-
-	server := env.server()
-	if err := server.UpdateContainerProfiles(instID, profilesNames); err != nil {
-		return report(errors.Trace(err))
-	}
-
-	logger.Debugf(context.TODO(), "profiles to delete  %+v", deleteProfiles)
-	for _, name := range deleteProfiles {
-		if err := server.DeleteProfile(name); err != nil {
-			// most likely the failure is because the profile is already in use
-			logger.Debugf(context.TODO(), "failed to delete profile %q: %s", name, err)
-		}
-	}
-	return report(nil)
 }
 
 // DetectBase is a no-op for lxd, must return an empty string.

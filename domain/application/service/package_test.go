@@ -13,15 +13,15 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/core/changestream"
-	coreerrors "github.com/juju/juju/core/errors"
+	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/domain"
 	"github.com/juju/juju/domain/application/charm"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/testhelpers"
 )
 
-//go:generate go run go.uber.org/mock/mockgen -typed -package service -destination package_mock_test.go github.com/juju/juju/domain/application/service AgentVersionGetter,CAASProvider,CharmStore,Provider,State,StatusHistory,WatcherFactory
-//go:generate go run go.uber.org/mock/mockgen -typed -package service -destination internal_charm_mock_test.go github.com/juju/juju/internal/charm Charm
+//go:generate go run go.uber.org/mock/mockgen -typed -package service -destination package_mock_test.go github.com/juju/juju/domain/application/service AgentVersionGetter,CAASProvider,CharmStore,Provider,CloudInfoProvider,State,StatusHistory,WatcherFactory
+//go:generate go run go.uber.org/mock/mockgen -typed -package service -destination internal_charm_mock_test.go github.com/juju/juju/domain/deployment/charm Charm
 //go:generate go run go.uber.org/mock/mockgen -typed -package service -destination constraints_mock_test.go github.com/juju/juju/core/constraints Validator
 //go:generate go run go.uber.org/mock/mockgen -typed -package service -destination leader_mock_test.go github.com/juju/juju/core/leadership Ensurer
 //go:generate go run go.uber.org/mock/mockgen -typed -package service -destination caas_mock_test.go github.com/juju/juju/caas Application
@@ -37,6 +37,7 @@ type baseSuite struct {
 	agentVersionGetter *MockAgentVersionGetter
 	provider           *MockProvider
 	caasProvider       *MockCAASProvider
+	cloudInfoProvider  *MockCloudInfoProvider
 	leadership         *MockEnsurer
 	validator          *MockValidator
 
@@ -51,76 +52,13 @@ type baseSuite struct {
 //
 // This checker will:
 // - Deep equals check all values in the slice.
-// - It will not deep equals check unit NetNodeUUID values, instead they will be
-// checked to make sure they're a non zero uuid value.
+// - It will not deep equals check unit UnitUUID or NetNodeUUID values,
+// instead they will be checked to make sure they're a non zero uuid value.
 func createAddCAASUnitArgsChecker() *tc.MultiChecker {
 	mc := tc.NewMultiChecker()
+	mc.AddExpr(`_[_].AddUnitArg.UnitUUID`, tc.IsNonZeroUUID)
 	mc.AddExpr(`_[_].AddUnitArg.NetNodeUUID`, tc.IsNonZeroUUID)
 	return mc
-}
-
-func noProviderError() error {
-	return nil
-}
-
-func providerNotSupported() error {
-	return coreerrors.NotSupported
-}
-
-func (s *baseSuite) setupMocksWithProvider(
-	c *tc.C,
-	providerGetterError func() error,
-	caasProviderGetterError func() error,
-) *gomock.Controller {
-	ctrl := gomock.NewController(c)
-
-	s.agentVersionGetter = NewMockAgentVersionGetter(ctrl)
-	s.provider = NewMockProvider(ctrl)
-	s.caasProvider = NewMockCAASProvider(ctrl)
-	s.leadership = NewMockEnsurer(ctrl)
-	s.state = NewMockState(ctrl)
-	s.storageService = NewMockStorageService(ctrl)
-	s.charm = NewMockCharm(ctrl)
-	s.charmStore = NewMockCharmStore(ctrl)
-	s.validator = NewMockValidator(ctrl)
-
-	s.clock = testclock.NewClock(time.Time{})
-	s.service = NewProviderService(
-		s.state,
-		s.storageService,
-		s.leadership,
-		s.agentVersionGetter,
-		func(ctx context.Context) (Provider, error) {
-			if err := providerGetterError(); err != nil {
-				return nil, err
-			}
-			return s.provider, nil
-		},
-		func(ctx context.Context) (CAASProvider, error) {
-			if err := caasProviderGetterError(); err != nil {
-				return nil, err
-			}
-			return s.caasProvider, nil
-		},
-		s.charmStore,
-		domain.NewStatusHistory(loggertesting.WrapCheckLog(c), clock.WallClock),
-		s.clock,
-		loggertesting.WrapCheckLog(c),
-	)
-
-	c.Cleanup(func() {
-		s.state = nil
-		s.storageService = nil
-		s.charm = nil
-		s.charmStore = nil
-		s.agentVersionGetter = nil
-		s.provider = nil
-		s.caasProvider = nil
-		s.leadership = nil
-		s.validator = nil
-	})
-
-	return ctrl
 }
 
 func (s *baseSuite) setupMocks(c *tc.C) *gomock.Controller {
@@ -135,6 +73,7 @@ func (s *baseSuite) setupMocksWithStatusHistory(c *tc.C, fn func(*gomock.Control
 	s.agentVersionGetter = NewMockAgentVersionGetter(ctrl)
 	s.provider = NewMockProvider(ctrl)
 	s.caasProvider = NewMockCAASProvider(ctrl)
+	s.cloudInfoProvider = NewMockCloudInfoProvider(ctrl)
 	s.leadership = NewMockEnsurer(ctrl)
 
 	s.state = NewMockState(ctrl)
@@ -142,6 +81,8 @@ func (s *baseSuite) setupMocksWithStatusHistory(c *tc.C, fn func(*gomock.Control
 	s.charm = NewMockCharm(ctrl)
 	s.charmStore = NewMockCharmStore(ctrl)
 	s.validator = NewMockValidator(ctrl)
+
+	modelUUID := tc.Must(c, model.NewUUID)
 
 	s.clock = testclock.NewClock(time.Time{})
 	s.service = NewProviderService(
@@ -155,8 +96,12 @@ func (s *baseSuite) setupMocksWithStatusHistory(c *tc.C, fn func(*gomock.Control
 		func(ctx context.Context) (CAASProvider, error) {
 			return s.caasProvider, nil
 		},
+		func(ctx context.Context) (CloudInfoProvider, error) {
+			return s.cloudInfoProvider, nil
+		},
 		s.charmStore,
 		fn(ctrl),
+		modelUUID,
 		s.clock,
 		loggertesting.WrapCheckLog(c),
 	)

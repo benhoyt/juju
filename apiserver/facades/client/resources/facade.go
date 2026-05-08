@@ -22,19 +22,20 @@ import (
 	coreresource "github.com/juju/juju/core/resource"
 	applicationcharm "github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
+	"github.com/juju/juju/domain/deployment/charm"
+	"github.com/juju/juju/domain/deployment/charm/repository"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/domain/resource"
 	resourceerrors "github.com/juju/juju/domain/resource/errors"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/charm/repository"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	internalerrors "github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/rpc/params"
 )
 
 // API is the public API facade for resources.
 type API struct {
-	applicationService ApplicationService
-	resourceService    ResourceService
+	applicationService        ApplicationService
+	resourceService           ResourceService
+	crossModelRelationService CrossModelRelationService
 
 	factory func(context.Context, *charm.URL) (NewCharmRepository, error)
 	logger  corelogger.Logger
@@ -84,7 +85,13 @@ func NewFacade(ctx facade.ModelContext) (*API, error) {
 		}
 	}
 
-	f, err := NewResourcesAPI(ctx.DomainServices().Application(), ctx.DomainServices().Resource(), factory, logger)
+	f, err := NewResourcesAPI(
+		ctx.DomainServices().Application(),
+		ctx.DomainServices().Resource(),
+		ctx.DomainServices().CrossModelRelation(),
+		factory,
+		logger,
+	)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -95,6 +102,7 @@ func NewFacade(ctx facade.ModelContext) (*API, error) {
 func NewResourcesAPI(
 	applicationService ApplicationService,
 	resourceService ResourceService,
+	crossModelRelationService CrossModelRelationService,
 	factory func(context.Context, *charm.URL) (NewCharmRepository, error),
 	logger corelogger.Logger,
 ) (*API, error) {
@@ -103,6 +111,9 @@ func NewResourcesAPI(
 	}
 	if resourceService == nil {
 		return nil, errors.Errorf("missing resource service")
+	}
+	if crossModelRelationService == nil {
+		return nil, errors.Errorf("missing cross model relation service")
 	}
 	if factory == nil {
 		// Technically this only matters for one code path through
@@ -113,10 +124,11 @@ func NewResourcesAPI(
 	}
 
 	f := &API{
-		applicationService: applicationService,
-		resourceService:    resourceService,
-		factory:            factory,
-		logger:             logger,
+		applicationService:        applicationService,
+		resourceService:           resourceService,
+		crossModelRelationService: crossModelRelationService,
+		factory:                   factory,
+		logger:                    logger,
 	}
 	return f, nil
 }
@@ -138,13 +150,19 @@ func (a *API) ListResources(ctx context.Context, args params.ListResourcesArgs) 
 			continue
 		}
 
-		appID, err := a.applicationService.GetApplicationUUIDByName(ctx, tag.Id())
+		appDetails, err := a.applicationService.GetApplicationDetailsByName(ctx, tag.Id())
 		if err != nil {
 			r.Results[i] = errorResult(err)
 			continue
 		}
 
-		svcRes, err := a.resourceService.ListResources(ctx, appID)
+		// Reject synthetic (SAAS) applications - they don't support resource operations
+		if appDetails.IsApplicationSynthetic {
+			r.Results[i] = errorResult(errors.NotFoundf("application %s", tag.Id()))
+			continue
+		}
+
+		svcRes, err := a.resourceService.ListResources(ctx, appDetails.UUID)
 		if err != nil {
 			r.Results[i] = errorResult(err)
 			continue
@@ -176,6 +194,18 @@ func (a *API) AddPendingResources(
 	}
 	appName := tag.Id()
 
+	appDetails, err := a.applicationService.GetApplicationDetailsByName(ctx, appName)
+	if err != nil && !errors.Is(err, applicationerrors.ApplicationNotFound) {
+		result.Error = apiservererrors.ServerError(err)
+		return result, nil
+	} else if appDetails.IsApplicationSynthetic {
+		// Reject synthetic (SAAS) applications - they don't support resource
+		// operations
+		result.Error = apiservererrors.ServerError(errors.NotFoundf("application %s", appName))
+		return result, nil
+	}
+	applicationExists := err == nil
+
 	requestedOrigin, err := charms.ConvertParamsOrigin(args.CharmOrigin)
 	if err != nil {
 		result.Error = apiservererrors.ServerError(err)
@@ -205,16 +235,14 @@ func (a *API) AddPendingResources(
 		return result, nil
 	}
 
-	applicationID, err := a.applicationService.GetApplicationUUIDByName(ctx, appName)
-	if err == nil {
-		// The application does exist, therefore the intent is to
-		// update a resource.
-		newUUIDs, err := a.updateResources(ctx, applicationID, resolvedResources)
-		result.Error = apiservererrors.ServerError(err)
+	if applicationExists {
+		newUUIDs, err := a.updateResources(ctx, appDetails.UUID, resolvedResources)
+		if err != nil {
+			result.Error = apiservererrors.ServerError(err)
+			return result, nil
+		}
 		result.PendingIDs = newUUIDs
 		return result, nil
-	} else if !errors.Is(err, applicationerrors.ApplicationNotFound) {
-		return result, internalerrors.Capture(err)
 	}
 
 	ids, err := a.addPendingResources(ctx, appName, charmLocator, resolvedResources)

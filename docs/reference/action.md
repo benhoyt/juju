@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju actions reference: charm-defined operations for application-specific tasks like backups, user management, and debugging."
+---
+
 (action)=
 # Action
 

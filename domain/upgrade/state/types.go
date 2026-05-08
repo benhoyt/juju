@@ -10,6 +10,11 @@ import (
 	"github.com/juju/juju/internal/errors"
 )
 
+// entityUUID represents a single uuid column from an entity in the DDL.
+type entityUUID struct {
+	UUID string `db:"uuid"`
+}
+
 // Info holds the information about database upgrade
 type Info struct {
 	// UUID holds the upgrader's ID
@@ -26,7 +31,7 @@ type Info struct {
 func (i Info) ToUpgradeInfo() (upgrade.Info, error) {
 	state := upgrade.State(i.StateIDType)
 	if _, ok := upgrade.States[state]; !ok {
-		return upgrade.Info{}, errors.Errorf("unknown state id %q", i)
+		return upgrade.Info{}, errors.Errorf("unknown state id %v", state)
 	}
 	result := upgrade.Info{
 		UUID:            i.UUID,

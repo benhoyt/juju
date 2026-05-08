@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Access current Juju agent metrics using juju_metrics introspect tool for monitoring and debugging deployed systems."
+---
+
 (juju_metrics)=
 # `juju_metrics`
 

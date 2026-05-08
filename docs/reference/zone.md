@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Availability zone reference: constraint and placement directive for distributing resources across cloud zones for redundancy."
+---
+
 (zone)=
 # Zone
 

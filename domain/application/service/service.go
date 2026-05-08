@@ -19,6 +19,7 @@ import (
 	"github.com/juju/juju/core/leadership"
 	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/machine"
+	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/os/ostype"
 	"github.com/juju/juju/core/providertracker"
 	"github.com/juju/juju/core/semversion"
@@ -33,9 +34,9 @@ import (
 	"github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	"github.com/juju/juju/domain/deployment"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/domain/life"
 	"github.com/juju/juju/domain/status"
-	internalcharm "github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -60,6 +61,7 @@ type State interface {
 type Service struct {
 	st            State
 	leaderEnsurer leadership.Ensurer
+	modelUUID     model.UUID
 	logger        logger.Logger
 	clock         clock.Clock
 
@@ -73,12 +75,14 @@ func NewService(
 	leaderEnsurer leadership.Ensurer,
 	charmStore CharmStore,
 	statusHistory StatusHistory,
+	modelUUID model.UUID,
 	clock clock.Clock,
 	logger logger.Logger,
 ) *Service {
 	return &Service{
 		st:            st,
 		leaderEnsurer: leaderEnsurer,
+		modelUUID:     modelUUID,
 		logger:        logger,
 		clock:         clock,
 		charmStore:    charmStore,
@@ -132,7 +136,7 @@ func (s *Service) recordInitMachinesStatusHistory(
 	// Record the status history for the machines created for the application.
 	machineStatusInfo := corestatus.StatusInfo{
 		Status: corestatus.Pending,
-		Since:  ptr(s.clock.Now()),
+		Since:  new(s.clock.Now().UTC()),
 	}
 	for _, machineName := range machineNames {
 		if err := s.statusHistory.RecordStatus(ctx, status.MachineNamespace.WithID(machineName.String()), machineStatusInfo); err != nil {
@@ -227,8 +231,10 @@ func NewWatchableService(
 	agentVersionGetter AgentVersionGetter,
 	provider providertracker.ProviderGetter[Provider],
 	caasProvider providertracker.ProviderGetter[CAASProvider],
+	cloudInfoGetter providertracker.ProviderGetter[CloudInfoProvider],
 	charmStore CharmStore,
 	statusHistory StatusHistory,
+	modelUUID model.UUID,
 	clock clock.Clock,
 	logger logger.Logger,
 ) *WatchableService {
@@ -240,8 +246,10 @@ func NewWatchableService(
 			agentVersionGetter,
 			provider,
 			caasProvider,
+			cloudInfoGetter,
 			charmStore,
 			statusHistory,
+			modelUUID,
 			clock,
 			logger,
 		),
@@ -720,7 +728,7 @@ func (s *WatchableService) WatchUnitAddRemoveOnMachine(ctx context.Context, mach
 	)
 }
 
-// WatchApplication returns a watcher that emits application uuids when
+// WatchApplications returns a watcher that emits application uuids when
 // applications are added or removed.
 func (s *WatchableService) WatchApplications(ctx context.Context) (watcher.StringsWatcher, error) {
 	applicationNamespace, query := s.st.InitialWatchStatementApplications()
@@ -800,8 +808,8 @@ func (s *WatchableService) WatchUnitAddresses(ctx context.Context, unitName core
 // TODO(jack-w-shaw): This watcher only exists to maintain backwards
 // compatibility with the uniter agent facade. Specifically, version 20 of the
 // facade implements a Watch endpoint, which can watches for _any_ change to the
-// unit doc in Mongo. Once we no longer need to support facade 20, we can drop
-// this method.
+// unit doc in 3.6 or earlier. Once we no longer need to support facade 20, we
+// can drop this method.
 func (s *WatchableService) WatchUnitForLegacyUniter(ctx context.Context, unitName coreunit.Name) (watcher.NotifyWatcher, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
@@ -935,8 +943,4 @@ func encodeArchitecture(a string) architecture.Architecture {
 	default:
 		return architecture.Unknown
 	}
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }

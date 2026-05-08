@@ -196,6 +196,44 @@ func (c *MockMigrationStateInsertMigratingMachineCall) DoAndReturn(f func(contex
 	return c
 }
 
+// InsertMigratingSubordinateMachine mocks base method.
+func (m *MockMigrationState) InsertMigratingSubordinateMachine(ctx context.Context, machineName, parentUUID string, args machine.CreateMachineArgs) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "InsertMigratingSubordinateMachine", ctx, machineName, parentUUID, args)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// InsertMigratingSubordinateMachine indicates an expected call of InsertMigratingSubordinateMachine.
+func (mr *MockMigrationStateMockRecorder) InsertMigratingSubordinateMachine(ctx, machineName, parentUUID, args any) *MockMigrationStateInsertMigratingSubordinateMachineCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertMigratingSubordinateMachine", reflect.TypeOf((*MockMigrationState)(nil).InsertMigratingSubordinateMachine), ctx, machineName, parentUUID, args)
+	return &MockMigrationStateInsertMigratingSubordinateMachineCall{Call: call}
+}
+
+// MockMigrationStateInsertMigratingSubordinateMachineCall wrap *gomock.Call
+type MockMigrationStateInsertMigratingSubordinateMachineCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockMigrationStateInsertMigratingSubordinateMachineCall) Return(arg0 error) *MockMigrationStateInsertMigratingSubordinateMachineCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockMigrationStateInsertMigratingSubordinateMachineCall) Do(f func(context.Context, string, string, machine.CreateMachineArgs) error) *MockMigrationStateInsertMigratingSubordinateMachineCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockMigrationStateInsertMigratingSubordinateMachineCall) DoAndReturn(f func(context.Context, string, string, machine.CreateMachineArgs) error) *MockMigrationStateInsertMigratingSubordinateMachineCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // SetMachineCloudInstance mocks base method.
 func (m *MockMigrationState) SetMachineCloudInstance(arg0 context.Context, arg1 string, arg2 instance.Id, arg3, arg4 string, arg5 *instance.HardwareCharacteristics) error {
 	m.ctrl.T.Helper()

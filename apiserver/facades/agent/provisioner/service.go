@@ -6,13 +6,11 @@ package provisioner
 import (
 	"context"
 
-	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/controller"
 	"github.com/juju/juju/core/base"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/container"
 	"github.com/juju/juju/core/containermanager"
-	"github.com/juju/juju/core/credential"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/life"
 	coremachine "github.com/juju/juju/core/machine"
@@ -21,14 +19,13 @@ import (
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/core/unit"
 	"github.com/juju/juju/core/watcher"
-	"github.com/juju/juju/domain/application/charm"
 	"github.com/juju/juju/domain/cloudimagemetadata"
 	domainnetwork "github.com/juju/juju/domain/network"
 	domainstorage "github.com/juju/juju/domain/storage"
+	domainstorageprovisioning "github.com/juju/juju/domain/storageprovisioning"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/environs/simplestreams"
-	internalcharm "github.com/juju/juju/internal/charm"
 )
 
 // AgentProvisionerService provides access to container config.
@@ -102,11 +99,6 @@ type MachineService interface {
 	// AllMachineNames returns the names of all machines in the model.
 	AllMachineNames(context.Context) ([]coremachine.Name, error)
 
-	// SetAppliedLXDProfileNames sets the list of LXD profile names to the
-	// lxd_profile table for the given machine. This method will overwrite the
-	// list of profiles for the given machine without any checks.
-	SetAppliedLXDProfileNames(ctx context.Context, mUUID coremachine.UUID, profileNames []string) error
-
 	// AvailabilityZone returns the availability zone for the specified machine.
 	//
 	// The following errors may be returned:
@@ -147,12 +139,6 @@ type MachineService interface {
 	// GetMachineBase returns the base for the given machine.
 	GetMachineBase(ctx context.Context, mName coremachine.Name) (base.Base, error)
 
-	// UpdateLXDProfiles writes LXD Profiles to LXC for applications on the
-	// given machine if the providers supports it. A slice of profile names
-	// is returned. If the provider does not support LXDProfiles, no error
-	// is returned.
-	UpdateLXDProfiles(ctx context.Context, modelName string, modelUUID model.UUID, machineID string) ([]string, error)
-
 	// GetBootstrapEnviron returns the bootstrap environ.
 	GetBootstrapEnviron(ctx context.Context) (environs.BootstrapEnviron, error)
 }
@@ -178,6 +164,18 @@ type StatusService interface {
 type StoragePoolGetter interface {
 	// GetStoragePoolByName returns the storage pool with the specified name.
 	GetStoragePoolByName(ctx context.Context, name string) (domainstorage.StoragePool, error)
+}
+
+// StoageProvisioningService provides the needed functionality for determining
+// a machines volume storage provisioning information.
+type StoageProvisioningService interface {
+	GetMachineProvisioningVolumeParams(
+		ctx context.Context, uuid coremachine.UUID,
+	) (
+		[]domainstorageprovisioning.MachineVolumeProvisioningParams,
+		[]domainstorageprovisioning.MachineVolumeAttachmentProvisioningParams,
+		error,
+	)
 }
 
 // NetworkService provides functionality for working with the network topology,
@@ -235,16 +233,6 @@ type KeyUpdaterService interface {
 
 // ApplicationService instances implement an application service.
 type ApplicationService interface {
-	// GetCharmLocatorByApplicationName returns a CharmLocator by application name.
-	// It returns an error if the charm can not be found by the name. This can also
-	// be used as a cheap way to see if a charm exists without needing to load the
-	// charm metadata.
-	GetCharmLocatorByApplicationName(ctx context.Context, name string) (charm.CharmLocator, error)
-
-	// GetCharmLXDProfile returns the LXD profile along with the revision of the
-	// charm using the charm name, source and revision.
-	GetCharmLXDProfile(context.Context, charm.CharmLocator) (internalcharm.LXDProfile, charm.Revision, error)
-
 	// GetUnitNamesOnMachine returns a slice of the unit names on the given machine.
 	GetUnitNamesOnMachine(context.Context, coremachine.Name) ([]unit.Name, error)
 
@@ -271,9 +259,6 @@ type RemovalService interface {
 	// Returns an error if the machine does not exist.
 	MarkMachineAsDead(context.Context, coremachine.UUID) error
 
-	// DeleteMachine attempts to delete the specified machine from state entirely.
-	DeleteMachine(context.Context, coremachine.UUID) error
-
 	// MarkInstanceAsDead marks the machine's cloud instance as dead. It will not
 	// remove the instance as that is a separate operation. This will advance the
 	// instance's life to dead and will not allow it to be transitioned back to
@@ -290,16 +275,4 @@ type CloudImageMetadataService interface {
 	// FindMetadata searches for cloud image metadata based on the given filter criteria in a specific context.
 	// It returns a set of image metadata grouped by region
 	FindMetadata(ctx context.Context, criteria cloudimagemetadata.MetadataFilter) (map[string][]cloudimagemetadata.Metadata, error)
-}
-
-// CloudService provides access to clouds.
-type CloudService interface {
-	// Cloud returns the named cloud.
-	Cloud(ctx context.Context, name string) (*cloud.Cloud, error)
-}
-
-// CredentialService provides access to credentials.
-type CredentialService interface {
-	// CloudCredential returns the cloud credential for the given tag.
-	CloudCredential(ctx context.Context, key credential.Key) (cloud.Credential, error)
 }

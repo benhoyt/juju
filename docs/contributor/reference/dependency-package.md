@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Manage worker dependencies and shared resources using the dependency package's engine and manifold constructs in Juju architecture."
+---
+
 (dependency-package)=
 # Dependency package
 

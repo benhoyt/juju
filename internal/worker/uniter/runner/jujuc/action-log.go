@@ -9,7 +9,7 @@ import (
 	"github.com/juju/errors"
 
 	jujucmd "github.com/juju/juju/cmd"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/cmd/cmd"
 )
 
 // ActionLogCommand implements the action-log command.
@@ -27,7 +27,7 @@ func (c *ActionLogCommand) Info() *cmd.Info {
 	return jujucmd.Info(&cmd.Info{
 		Name:    "action-log",
 		Args:    "<message>",
-		Purpose: "Record a progress message for the current action.",
+		Purpose: "Records a progress message for the current action.",
 	})
 }
 

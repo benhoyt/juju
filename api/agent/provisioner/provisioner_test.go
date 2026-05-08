@@ -52,7 +52,7 @@ func (s *provisionerSuite) TestNew(c *tc.C) {
 	c.Assert(client.ControllerConfigAPI, tc.NotNil)
 }
 
-func (s *provisionerSuite) expectCall(caller *mocks.MockAPICaller, method, args, results interface{}) {
+func (s *provisionerSuite) expectCall(caller *mocks.MockAPICaller, method, args, results any) {
 	caller.EXPECT().APICall(gomock.Any(), "Provisioner", 666, "", method, args, gomock.Any()).SetArg(6, results).Return(nil)
 }
 
@@ -97,7 +97,7 @@ func (s *provisionerSuite) TestMachinesWithTransientErrors(c *tc.C) {
 			Life:   "alive",
 			Status: "error",
 			Info:   "provisioning error",
-			Data:   map[string]interface{}{"transient": true},
+			Data:   map[string]any{"transient": true},
 		}},
 	}
 
@@ -117,7 +117,7 @@ func (s *provisionerSuite) TestMachinesWithTransientErrors(c *tc.C) {
 		Life:   "alive",
 		Status: "error",
 		Info:   "provisioning error",
-		Data:   map[string]interface{}{"transient": true},
+		Data:   map[string]any{"transient": true},
 	})
 }
 
@@ -313,7 +313,7 @@ func (s *provisionerSuite) TestSetStatus(c *tc.C) {
 			Tag:    "machine-666",
 			Status: "error",
 			Info:   "failed",
-			Data:   map[string]interface{}{"foo": "bar"},
+			Data:   map[string]any{"foo": "bar"},
 		}},
 	}
 	results := params.ErrorResults{
@@ -321,7 +321,7 @@ func (s *provisionerSuite) TestSetStatus(c *tc.C) {
 	}
 	s.expectCall(caller, "SetStatus", args, results)
 
-	err := machine.SetStatus(c.Context(), status.Error, "failed", map[string]interface{}{"foo": "bar"})
+	err := machine.SetStatus(c.Context(), status.Error, "failed", map[string]any{"foo": "bar"})
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -360,7 +360,7 @@ func (s *provisionerSuite) TestSetInstanceStatus(c *tc.C) {
 			Tag:    "machine-666",
 			Status: "error",
 			Info:   "failed",
-			Data:   map[string]interface{}{"foo": "bar"},
+			Data:   map[string]any{"foo": "bar"},
 		}},
 	}
 	results := params.ErrorResults{
@@ -368,7 +368,7 @@ func (s *provisionerSuite) TestSetInstanceStatus(c *tc.C) {
 	}
 	s.expectCall(caller, "SetInstanceStatus", args, results)
 
-	err := machine.SetInstanceStatus(c.Context(), status.Error, "failed", map[string]interface{}{"foo": "bar"})
+	err := machine.SetInstanceStatus(c.Context(), status.Error, "failed", map[string]any{"foo": "bar"})
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -412,25 +412,6 @@ func (s *provisionerSuite) TestEnsureDead(c *tc.C) {
 	s.expectCall(caller, "EnsureDead", args, results)
 
 	err := machine.EnsureDead(c.Context())
-	c.Assert(err, tc.ErrorIsNil)
-}
-
-func (s *provisionerSuite) TestRemove(c *tc.C) {
-	ctrl := gomock.NewController(c)
-	defer ctrl.Finish()
-
-	caller, machine := s.setupMachines(c, ctrl)
-
-	args := params.Entities{
-		Entities: []params.Entity{{Tag: "machine-666"}},
-	}
-	results := params.ErrorResults{
-		Results: []params.ErrorResult{{}},
-	}
-
-	s.expectCall(caller, "Remove", args, results)
-
-	err := machine.Remove(c.Context())
 	c.Assert(err, tc.ErrorIsNil)
 }
 
@@ -523,7 +504,6 @@ func (s *provisionerSuite) TestSetInstanceInfo(c *tc.C) {
 			Characteristics:   &hwChars,
 			Volumes:           volumes,
 			VolumeAttachments: volumeAttachments,
-			CharmProfiles:     []string{"profile1"},
 		}},
 	}
 	results := params.ErrorResults{
@@ -534,7 +514,7 @@ func (s *provisionerSuite) TestSetInstanceInfo(c *tc.C) {
 
 	err := machine.SetInstanceInfo(
 		c.Context(),
-		"i-will", "my machine", "fake_nonce", &hwChars, nil, volumes, volumeAttachments, []string{"profile1"},
+		"i-will", "my machine", "fake_nonce", &hwChars, nil, volumes, volumeAttachments,
 	)
 	c.Assert(err, tc.ErrorIsNil)
 }
@@ -559,28 +539,6 @@ func (s *provisionerSuite) TestAvailabilityZone(c *tc.C) {
 	zone, err := machine.AvailabilityZone(c.Context())
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(zone, tc.Equals, "az-666")
-}
-
-func (s *provisionerSuite) TestSetCharmProfiles(c *tc.C) {
-	ctrl := gomock.NewController(c)
-	defer ctrl.Finish()
-
-	caller, machine := s.setupMachines(c, ctrl)
-
-	args := params.SetProfileArgs{
-		Args: []params.SetProfileArg{{
-			Entity:   params.Entity{Tag: "machine-666"},
-			Profiles: []string{"profile"},
-		}},
-	}
-	results := params.ErrorResults{
-		Results: []params.ErrorResult{{}},
-	}
-
-	s.expectCall(caller, "SetCharmProfiles", args, results)
-
-	err := machine.SetCharmProfiles(c.Context(), []string{"profile"})
-	c.Assert(err, tc.ErrorIsNil)
 }
 
 func (s *provisionerSuite) TestKeepInstance(c *tc.C) {
@@ -717,7 +675,7 @@ func (s *provisionerContainerSuite) setupCaller(ctrl *gomock.Controller) *mocks.
 	return caller
 }
 
-func (s *provisionerContainerSuite) expectCall(caller *mocks.MockAPICaller, method, args, results interface{}) {
+func (s *provisionerContainerSuite) expectCall(caller *mocks.MockAPICaller, method, args, results any) {
 	caller.EXPECT().APICall(gomock.Any(), "Provisioner", 666, "", method, args, gomock.Any()).SetArg(6, results).Return(nil)
 }
 

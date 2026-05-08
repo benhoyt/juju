@@ -17,7 +17,7 @@ import (
 	"github.com/juju/clock"
 	"github.com/juju/errors"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 
@@ -199,10 +199,14 @@ func (s *s3ObjectStoreSuite) TestGetMetadataAndFileNotFoundThenFound(c *tc.C) {
 	// Ensure we've started up before we start the test.
 	s.expectStartup(c)
 
-	file, fileSize, err := store.Get(c.Context(), fileName)
+	file, digest, err := store.Get(c.Context(), fileName)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(size, tc.Equals, fileSize)
-	c.Assert(s.readFile(c, file), tc.Equals, "hello")
+	c.Check(digest, tc.DeepEquals, objectstore.Digest{
+		SHA256: hash256,
+		SHA384: hash384,
+		Size:   size,
+	})
+	c.Check(s.readFile(c, file), tc.Equals, "hello")
 
 	workertest.CleanKill(c, store)
 }
@@ -240,10 +244,14 @@ func (s *s3ObjectStoreSuite) TestGetMetadataBySHA256AndFileNotFoundThenFound(c *
 	// Ensure we've started up before we start the test.
 	s.expectStartup(c)
 
-	file, fileSize, err := store.GetBySHA256(c.Context(), hash256)
+	file, digest, err := store.GetBySHA256(c.Context(), hash256)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(size, tc.Equals, fileSize)
-	c.Assert(s.readFile(c, file), tc.Equals, "hello")
+	c.Check(digest, tc.DeepEquals, objectstore.Digest{
+		SHA256: hash256,
+		SHA384: hash384,
+		Size:   size,
+	})
+	c.Check(s.readFile(c, file), tc.Equals, "hello")
 
 	workertest.CleanKill(c, store)
 }
@@ -282,10 +290,14 @@ func (s *s3ObjectStoreSuite) TestGetMetadataBySHA256PrefixAndFileNotFoundThenFou
 	// Ensure we've started up before we start the test.
 	s.expectStartup(c)
 
-	file, fileSize, err := store.GetBySHA256Prefix(c.Context(), hashPrefix)
+	file, digest, err := store.GetBySHA256Prefix(c.Context(), hashPrefix)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(size, tc.Equals, fileSize)
-	c.Assert(s.readFile(c, file), tc.Equals, "hello")
+	c.Check(digest, tc.DeepEquals, objectstore.Digest{
+		SHA256: hash256,
+		SHA384: hash384,
+		Size:   size,
+	})
+	c.Check(s.readFile(c, file), tc.Equals, "hello")
 
 	workertest.CleanKill(c, store)
 }
@@ -618,6 +630,7 @@ func (s *s3ObjectStoreSuite) TestRemoveFileNotFound(c *tc.C) {
 	}, nil)
 
 	s.service.EXPECT().RemoveMetadata(gomock.Any(), "foo").Return(nil)
+	s.service.EXPECT().GetMetadataBySHA256(gomock.Any(), hexSHA256).Return(objectstore.Metadata{}, domainobjectstoreerrors.ErrNotFound)
 	s.session.EXPECT().DeleteObject(gomock.Any(), defaultBucketName, filePath(hexSHA384)).Return(errors.NotFoundf("foo"))
 
 	store := s.newS3ObjectStore(c)
@@ -651,7 +664,45 @@ func (s *s3ObjectStoreSuite) TestRemove(c *tc.C) {
 	}, nil)
 
 	s.service.EXPECT().RemoveMetadata(gomock.Any(), "foo").Return(nil)
+	s.service.EXPECT().GetMetadataBySHA256(gomock.Any(), hexSHA256).Return(objectstore.Metadata{}, domainobjectstoreerrors.ErrNotFound)
 	s.session.EXPECT().DeleteObject(gomock.Any(), defaultBucketName, filePath(hexSHA384)).Return(nil)
+
+	store := s.newS3ObjectStore(c)
+	defer workertest.DirtyKill(c, store)
+
+	// Ensure we've started up before we start the test.
+	s.expectStartup(c)
+
+	err := store.Remove(c.Context(), "foo")
+	c.Assert(err, tc.ErrorIsNil)
+
+	workertest.CleanKill(c, store)
+}
+
+func (s *s3ObjectStoreSuite) TestRemoveDoesNotDeleteSharedHash(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	content := "some content"
+	hexSHA384 := s.calculateHexSHA384(c, content)
+	hexSHA256 := s.calculateHexSHA256(c, content)
+
+	s.expectClaim(hexSHA384, 1)
+	s.expectRelease(hexSHA384, 1)
+
+	s.session.EXPECT().CreateBucket(gomock.Any(), defaultBucketName).Return(nil)
+	s.service.EXPECT().GetMetadata(gomock.Any(), "foo").Return(objectstore.Metadata{
+		SHA384: hexSHA384,
+		SHA256: hexSHA256,
+		Path:   "foo",
+		Size:   12,
+	}, nil)
+	s.service.EXPECT().RemoveMetadata(gomock.Any(), "foo").Return(nil)
+	s.service.EXPECT().GetMetadataBySHA256(gomock.Any(), hexSHA256).Return(objectstore.Metadata{
+		SHA384: hexSHA384,
+		SHA256: hexSHA256,
+		Path:   "bar",
+		Size:   12,
+	}, nil)
 
 	store := s.newS3ObjectStore(c)
 	defer workertest.DirtyKill(c, store)

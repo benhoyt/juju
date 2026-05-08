@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn how to view, deploy, and update charm resources in Juju, including custom resources from local files or non-Charmhub sources."
+---
+
 (manage-charm-resources)=
 # How to manage charm resources
 

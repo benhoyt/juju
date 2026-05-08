@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Pebble reference: lightweight process supervisor for Kubernetes workload containers in Juju, with notices and service management."
+---
+
 (pebble)=
 # Pebble
 

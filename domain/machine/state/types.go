@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"time"
 
+	"github.com/juju/collections/transform"
+
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/machine"
 	"github.com/juju/juju/domain/constraints"
@@ -22,7 +24,12 @@ type CreateMachineArgs struct {
 	MachineUUID string
 	NetNodeUUID string
 	Platform    deployment.Platform
+	Hostname    string
 	Nonce       *string
+
+	// InstanceID is the provider instance ID for the machine being created.
+	InstanceID *instance.Id
+
 	// HardwareCharacteristics contains the hardware characteristics for a
 	// manually provisioned machine.
 	HardwareCharacteristics instance.HardwareCharacteristics
@@ -67,6 +74,10 @@ type instanceTag struct {
 	Tag         string `db:"tag"`
 }
 
+type tag struct {
+	Tag string `db:"tag"`
+}
+
 func tagsFromHardwareCharacteristics(machineUUID string, hc *instance.HardwareCharacteristics) []instanceTag {
 	if hc == nil || hc.Tags == nil {
 		return nil
@@ -81,8 +92,8 @@ func tagsFromHardwareCharacteristics(machineUUID string, hc *instance.HardwareCh
 	return res
 }
 
-func (d *instanceDataResult) toHardwareCharacteristics() instance.HardwareCharacteristics {
-	return instance.HardwareCharacteristics{
+func (d *instanceDataResult) toHardwareCharacteristics(tags []tag) instance.HardwareCharacteristics {
+	ret := instance.HardwareCharacteristics{
 		Arch:             d.Arch,
 		Mem:              d.Mem,
 		RootDisk:         d.RootDisk,
@@ -92,6 +103,10 @@ func (d *instanceDataResult) toHardwareCharacteristics() instance.HardwareCharac
 		AvailabilityZone: d.AvailabilityZone,
 		VirtType:         d.VirtType,
 	}
+	if len(tags) > 0 {
+		ret.Tags = new(transform.Slice(tags, func(t tag) string { return t.Tag }))
+	}
+	return ret
 }
 
 // machineLife represents the struct to be used for the life_id column within
@@ -136,6 +151,10 @@ type availabilityZoneName struct {
 
 type machineName struct {
 	Name string `db:"name"`
+}
+
+type machineUUID struct {
+	UUID string `db:"machine_uuid"`
 }
 
 type count struct {
@@ -184,6 +203,7 @@ type insertMachine struct {
 	UUID        string           `db:"uuid"`
 	Nonce       sql.Null[string] `db:"nonce"`
 	LifeID      int64            `db:"life_id"`
+	Hostname    string           `db:"hostname"`
 }
 
 type machinePlatformUUID struct {
@@ -352,16 +372,16 @@ func (c dbConstraint) toValue(
 		rval.Arch = &c.Arch.String
 	}
 	if c.CPUCores.Valid {
-		rval.CpuCores = ptr(uint64(c.CPUCores.V))
+		rval.CpuCores = new(uint64(c.CPUCores.V))
 	}
 	if c.CPUPower.Valid {
-		rval.CpuPower = ptr(uint64(c.CPUPower.V))
+		rval.CpuPower = new(uint64(c.CPUPower.V))
 	}
 	if c.Mem.Valid {
-		rval.Mem = ptr(uint64(c.Mem.V))
+		rval.Mem = new(uint64(c.Mem.V))
 	}
 	if c.RootDisk.Valid {
-		rval.RootDisk = ptr(uint64(c.RootDisk.V))
+		rval.RootDisk = new(uint64(c.RootDisk.V))
 	}
 	if c.RootDiskSource.Valid {
 		rval.RootDiskSource = &c.RootDiskSource.String

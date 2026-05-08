@@ -33,7 +33,7 @@ func (s *modelmanagerCompatSuite) TestListModelSummariesWithOlderFacadeVersion(c
 	defer ctrl.Finish()
 
 	userTag := names.NewUserTag("alice@canonical.com")
-	expectedQualifier := string(model.QualifierFromUserTag(userTag))
+	expectedQualifier := userTag.Id()
 	testModelInfo := createModelSummaryLegacy()
 
 	args := params.ModelSummariesRequest{
@@ -67,7 +67,7 @@ func (s *modelmanagerCompatSuite) TestListModelSummariesWithOlderFacadeVersion(c
 				Life:            "alive",
 				Status: base.Status{
 					Status: status.Active,
-					Data:   map[string]interface{}{},
+					Data:   map[string]any{},
 				},
 				ModelUserAccess: "admin",
 				Counts:          []base.EntityCount{},

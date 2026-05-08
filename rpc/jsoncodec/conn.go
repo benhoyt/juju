@@ -6,7 +6,6 @@ package jsoncodec
 import (
 	"context"
 	"encoding/json"
-	stderrors "errors"
 	"io"
 	"net"
 	"os"
@@ -15,7 +14,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/juju/errors"
+
+	"github.com/juju/juju/internal/errors"
 )
 
 // NewWebsocket returns an rpc codec that uses the given websocket
@@ -38,13 +38,13 @@ func NewWebsocketConn(conn *websocket.Conn) JSONConn {
 	return &wsJSONConn{conn: conn}
 }
 
-func (conn *wsJSONConn) Send(msg interface{}) error {
+func (conn *wsJSONConn) Send(msg any) error {
 	conn.writeMutex.Lock()
 	defer conn.writeMutex.Unlock()
 	return conn.conn.WriteJSON(msg)
 }
 
-func (conn *wsJSONConn) Receive(msg interface{}) error {
+func (conn *wsJSONConn) Receive(msg any) error {
 	conn.readMutex.Lock()
 	defer conn.readMutex.Unlock()
 	// When receiving a message, if error has been closed from the other
@@ -56,7 +56,9 @@ func (conn *wsJSONConn) Receive(msg interface{}) error {
 			websocket.CloseGoingAway,
 			websocket.CloseNoStatusReceived,
 			websocket.CloseAbnormalClosure) {
-			err = errors.Wrap(err, io.EOF)
+			err = errors.Errorf(
+				"reading json message: %w", err,
+			).Add(io.EOF)
 		}
 	}
 	return err
@@ -93,7 +95,7 @@ func (conn *wsJSONConn) Close() error {
 	if cl, ok := c.(closer); ok {
 		err := cl.CloseWrite()
 		if err != nil {
-			closeErr = stderrors.Join(closeErr, err)
+			closeErr = errors.Join(closeErr, err)
 		}
 	}
 
@@ -117,7 +119,7 @@ func (conn *wsJSONConn) Close() error {
 		// See net.TCPConn.CloseWrite.
 		// See tls.Conn.Close.
 	} else if err != nil {
-		closeErr = stderrors.Join(closeErr, err)
+		closeErr = errors.Join(closeErr, err)
 	}
 
 	if !closedNormally {
@@ -202,11 +204,11 @@ type netConn struct {
 	conn io.ReadWriteCloser
 }
 
-func (conn *netConn) Send(msg interface{}) error {
+func (conn *netConn) Send(msg any) error {
 	return conn.enc.Encode(msg)
 }
 
-func (conn *netConn) Receive(msg interface{}) error {
+func (conn *netConn) Receive(msg any) error {
 	return conn.dec.Decode(msg)
 }
 

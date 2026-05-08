@@ -5,13 +5,14 @@ package jujuc
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/domain/deployment/charm"
 )
 
 var keyRule = charm.GetActionNameRule()
@@ -35,18 +36,27 @@ func NewActionSetCommand(ctx Context) (cmd.Command, error) {
 func (c *ActionSetCommand) Info() *cmd.Info {
 	reservedText := `"` + strings.Join(reservedKeys, `", "`) + `"`
 	doc := fmt.Sprintf(`
-action-set adds the given values to the results map of the action. This map
-is returned to the user after the completion of the action.
+`+"`action-set`"+` adds the given values to the results map of the action.
+
+This map is returned to the user after the completion of the action.
+
 Keys must be given as a flat period-separated path of keys.
 Each key must start and end with lowercase alphanumeric,
 and contain only lowercase alphanumeric and hyphens.
+
 Examples of valid key paths:
-["foo", "500", "5-o-0", "foo.bar", "foo.bar.baz", "foo-bar.baz"]
+
+    ["foo", "500", "5-o-0", "foo.bar", "foo.bar.baz", "foo-bar.baz"]
+
 Examples of invalid key paths:
-["-foo", "foo-", "foo-.bar", "foo!bar", "foo..bar", ".foo", "foo.", ".", ""]
+
+    ["-foo", "foo-", "foo-.bar", "foo!bar", "foo..bar", ".foo", "foo.", ".", ""]
+
 The following special keys are reserved for internal use, and thus not allowed:
 %s.
+
 Values are always interpreted as strings.
+
 The final result will be a nested object containing the merged results,
 with any conflicting values overwriting previous values.
 
@@ -69,8 +79,8 @@ will yield:
 `
 	return jujucmd.Info(&cmd.Info{
 		Name:     "action-set",
-		Args:     "<key-path>=<value> [<key-path>=<value> ...]",
-		Purpose:  "Set action results.",
+		Args:     "<key>=<value> [<key>=<value> ...]",
+		Purpose:  "Sets action results.",
 		Doc:      doc,
 		Examples: examples,
 	})
@@ -96,10 +106,8 @@ func (c *ActionSetCommand) Init(args []string) error {
 				return fmt.Errorf("key %q must start and end with lowercase alphanumeric, and contain only lowercase alphanumeric and hyphens", key)
 			}
 
-			for _, reserved := range reservedKeys {
-				if reserved == key {
-					return fmt.Errorf(`cannot set reserved action key "%s"`, key)
-				}
+			if slices.Contains(reservedKeys, key) {
+				return fmt.Errorf(`cannot set reserved action key "%s"`, key)
 			}
 		}
 		// [key, key, key, key, value]

@@ -5,12 +5,12 @@ package status
 
 import (
 	"github.com/juju/juju/api/jujuclient"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/modelcmd"
-	"github.com/juju/juju/internal/cmd"
 )
 
-func NewStatusHistoryCommandForTest(api HistoryAPI) cmd.Command {
-	return &statusHistoryCommand{api: api}
+func NewStatusHistoryCommandForTest(clients []HistoryAPI) cmd.Command {
+	return &statusHistoryCommand{clients: clients}
 }
 
 func NewStatusCommandForTest(store jujuclient.ClientStore, statusapi statusAPI, clock Clock) cmd.Command {

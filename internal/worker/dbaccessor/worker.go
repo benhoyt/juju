@@ -5,16 +5,15 @@ package dbaccessor
 
 import (
 	"context"
-	"database/sql"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
-	"github.com/juju/worker/v4/dependency"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
+	"github.com/juju/worker/v5/dependency"
 
 	"github.com/juju/juju/core/database"
 	"github.com/juju/juju/core/logger"
@@ -23,7 +22,6 @@ import (
 	internaldatabase "github.com/juju/juju/internal/database"
 	"github.com/juju/juju/internal/database/app"
 	"github.com/juju/juju/internal/database/dqlite"
-	"github.com/juju/juju/internal/database/pragma"
 	internalerrors "github.com/juju/juju/internal/errors"
 	internalworker "github.com/juju/juju/internal/worker"
 	"github.com/juju/juju/internal/worker/controlleragentconfig"
@@ -88,6 +86,10 @@ type NodeManager interface {
 	// WithTracingOption returns a Dqlite application Option
 	// that will enable tracing of Dqlite operations.
 	WithTracingOption() app.Option
+
+	// WithBusyTimeoutOption returns a Dqlite application Option
+	// that will set the busy timeout for database connections.
+	WithBusyTimeoutOption() app.Option
 
 	// WithAddressOption returns a Dqlite application Option
 	// for specifying the local address:port to use.
@@ -310,7 +312,7 @@ func (w *dbWorker) loop() (err error) {
 
 	// Always check for actionable config on start-up in case
 	// it was written to disk while we couldn't be notified.
-	if err := w.handleClusterConfigChange(false); err != nil {
+	if err := w.handleClusterConfigChange(ctx, false); err != nil {
 		return errors.Trace(err)
 	}
 
@@ -350,7 +352,7 @@ func (w *dbWorker) loop() (err error) {
 				}
 			} else {
 				select {
-				case req.done <- errors.Errorf("unknown op %q", req.op):
+				case req.done <- errors.Errorf("unknown op %v", req.op):
 				case <-w.catacomb.Dying():
 					return w.catacomb.ErrDying()
 				}
@@ -361,7 +363,7 @@ func (w *dbWorker) loop() (err error) {
 
 		case <-w.cfg.ControllerConfigWatcher.Changes():
 			w.cfg.Logger.Infof(ctx, "controller configuration changed on disk")
-			if err := w.handleClusterConfigChange(true); err != nil {
+			if err := w.handleClusterConfigChange(ctx, true); err != nil {
 				return errors.Trace(err)
 			}
 
@@ -382,13 +384,15 @@ func (w *dbWorker) Wait() error {
 }
 
 // Report provides information for the engine report.
-func (w *dbWorker) Report() map[string]any {
+func (w *dbWorker) Report(ctx context.Context) map[string]any {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
+	ctx = w.catacomb.Context(ctx)
+
 	// We need to guard against attempting to report when setting up or dying,
 	// so we don't end up panicking with missing information.
-	result := w.dbRunner.Report()
+	result := w.dbRunner.Report(ctx)
 
 	if w.dbApp == nil {
 		result["leader"] = ""
@@ -396,9 +400,6 @@ func (w *dbWorker) Report() map[string]any {
 		result["leader-role"] = ""
 		return result
 	}
-
-	ctx, cancel := w.scopedContext()
-	defer cancel()
 
 	var (
 		leader     string
@@ -480,7 +481,10 @@ func (w *dbWorker) GetDB(ctx context.Context, namespace string) (database.TxnRun
 
 func (w *dbWorker) workerFromCache(ctx context.Context, namespace string) (database.TxnRunner, error) {
 	// If the worker already exists, return the existing worker early.
-	if tracked, err := w.dbRunner.Worker(namespace, firstClosed(ctx.Done(), w.catacomb.Dying())); err == nil {
+	merged, cancel := firstClosed(ctx.Done(), w.catacomb.Dying())
+	defer cancel()
+
+	if tracked, err := w.dbRunner.Worker(namespace, merged); err == nil {
 		return tracked.(database.TxnRunner), nil
 	} else if errors.Is(errors.Cause(err), worker.ErrDead) {
 		// Handle the case where the DB runner is dead due to this worker dying.
@@ -504,22 +508,29 @@ func (w *dbWorker) workerFromCache(ctx context.Context, namespace string) (datab
 // channel that closes will close the output channel.
 // It is expected that no channel will emit any value only that they will
 // close.
-func firstClosed(cs ...<-chan struct{}) <-chan struct{} {
+func firstClosed(cs ...<-chan struct{}) (<-chan struct{}, func()) {
 	out := make(chan struct{})
+	stop := make(chan struct{})
 	once := sync.OnceFunc(func() {
 		close(out)
 	})
 
 	for _, c := range cs {
-		go func() {
+		go func(ch <-chan struct{}) {
 			select {
+			case <-stop:
 			case <-out:
-			case <-c:
+			case <-ch:
 				once()
 			}
-		}()
+		}(c)
 	}
-	return out
+
+	cancel := func() {
+		close(stop)
+	}
+
+	return out, cancel
 }
 
 // DeleteDB deletes the dqlite-backed database that contains the data for
@@ -647,6 +658,7 @@ func (w *dbWorker) startDqliteNode(ctx context.Context, options ...app.Option) e
 	dqliteOptions := append(options,
 		mgr.WithLogFuncOption(),
 		mgr.WithTracingOption(),
+		mgr.WithBusyTimeoutOption(),
 	)
 	if w.dbApp, err = w.cfg.NewApp(dataDir, dqliteOptions...); err != nil {
 		return errors.Trace(err)
@@ -758,30 +770,18 @@ func (w *dbWorker) deleteDatabase(ctx context.Context, namespace string) error {
 		return errors.Annotatef(err, "waiting for worker to die")
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, dbOpenTimeout)
+	openCtx, cancel := context.WithTimeout(ctx, dbOpenTimeout)
 	defer cancel()
 
 	// Open the database directly as we can't use the worker to do it for us.
-	db, err := w.dbApp.Open(ctx, namespace)
+	db, err := w.dbApp.Open(openCtx, namespace)
 	if err != nil {
 		return errors.Annotatef(err, "opening database for deletion")
 	}
 	defer func() { _ = db.Close() }()
 
-	// We need to ensure that foreign keys are disabled before we can blanket
-	// delete the database.
-	if err := pragma.SetPragma(ctx, db, pragma.ForeignKeysPragma, false); err != nil {
-		return errors.Annotate(err, "setting foreign keys pragma")
-	}
-
-	// Now attempt to delete the database and all of it's contents.
-	// This can be replaced with DROP DB once it's supported by dqlite.
-	if err := internaldatabase.Retry(ctx, func() error {
-		return internaldatabase.StdTxn(ctx, db, func(ctx context.Context, tx *sql.Tx) error {
-			return deleteDBContents(ctx, tx, w.cfg.Logger)
-		})
-	}); err != nil {
-		return errors.Annotatef(err, "deleting database contents")
+	if err := internaldatabase.DeleteDB(ctx, db); err != nil {
+		return errors.Annotatef(err, "deleting database %q", namespace)
 	}
 
 	return nil
@@ -791,8 +791,8 @@ func (w *dbWorker) deleteDatabase(ctx context.Context, namespace string) error {
 // the current running state of this node, and takes action as appropriate.
 // The input argument determines whether the inability to read the config
 // should be considered an error condition.
-func (w *dbWorker) handleClusterConfigChange(noConfigIsFatal bool) error {
-	ctx, cancel := w.scopedContext()
+func (w *dbWorker) handleClusterConfigChange(ctx context.Context, noConfigIsFatal bool) error {
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	log := w.cfg.Logger

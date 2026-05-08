@@ -13,8 +13,8 @@ import (
 	"github.com/juju/tc"
 
 	apiservererrors "github.com/juju/juju/apiserver/errors"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/model"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc/params"
 )
@@ -38,7 +38,7 @@ type fakeRetryProvisioningClient struct {
 
 type fakeMachine struct {
 	info string
-	data map[string]interface{}
+	data map[string]any
 }
 
 func (f *fakeRetryProvisioningClient) Close() error {
@@ -88,9 +88,9 @@ func (s *retryProvisioningSuite) SetUpTest(c *tc.C) {
 	s.fake = &fakeRetryProvisioningClient{
 		m: map[string]fakeMachine{
 			"0": {info: "broken",
-				data: make(map[string]interface{})},
+				data: make(map[string]any)},
 			"1": {info: "",
-				data: make(map[string]interface{})},
+				data: make(map[string]any)},
 		},
 	}
 }

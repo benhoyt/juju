@@ -8,8 +8,8 @@ import (
 	"sync"
 
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
 	"gopkg.in/tomb.v2"
 )
 
@@ -26,9 +26,6 @@ func Manifold() dependency.Manifold {
 // Lock which used to wait on or unlock the gate. This
 // allows code running outside of a dependency engine managed worker
 // to monitor or unlock the gate.
-//
-// TODO(mjs) - this can likely go away once all machine agent workers
-// are running inside the dependency engine.
 func ManifoldEx(lock Lock) dependency.Manifold {
 	return dependency.Manifold{
 		Start: func(_ context.Context, _ dependency.Getter) (worker.Worker, error) {
@@ -46,7 +43,7 @@ func ManifoldEx(lock Lock) dependency.Manifold {
 			})
 			return w, nil
 		},
-		Output: func(in worker.Worker, out interface{}) error {
+		Output: func(in worker.Worker, out any) error {
 			inWorker, _ := in.(*gate)
 			if inWorker == nil {
 				return errors.Errorf("in should be a *gate; is %#v", in)

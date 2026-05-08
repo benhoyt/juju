@@ -7,6 +7,7 @@ import (
 	"context"
 
 	"github.com/canonical/sqlair"
+	"github.com/juju/collections/transform"
 
 	"github.com/juju/juju/core/database"
 	"github.com/juju/juju/core/semversion"
@@ -70,4 +71,52 @@ GROUP  BY version
 	}
 
 	return versions, nil
+}
+
+// GetAllMachineTargetAgentVersionByArches returns all the given machine
+// architectures for a given agent version that have an associated agent binary
+// in the agent binary store.
+func (st *State) GetAllMachineTargetAgentVersionByArches(
+	ctx context.Context,
+	version string,
+) ([]string, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	key := agentBinaryStore{
+		Version: version,
+	}
+
+	stmt, err := st.Prepare(`
+SELECT DISTINCT a.name AS &agentBinaryStore.architecture_name
+FROM   agent_binary_store AS abs
+JOIN   architecture AS a ON abs.architecture_id = a.id
+WHERE  version = $agentBinaryStore.version 
+`, key)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	var found []agentBinaryStore
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err := tx.Query(ctx, stmt, key).GetAll(&found)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return nil
+		} else if err != nil {
+			return errors.Errorf(
+				"getting existing agent binaries for version %q: %w",
+				version, err,
+			)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	return transform.Slice(found, func(a agentBinaryStore) string {
+		return a.ArchitectureName
+	}), nil
 }

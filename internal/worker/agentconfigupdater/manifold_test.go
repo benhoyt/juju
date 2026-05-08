@@ -10,10 +10,10 @@ import (
 
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
-	dt "github.com/juju/worker/v4/dependency/testing"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
+	dt "github.com/juju/worker/v5/dependency/testing"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 
@@ -21,7 +21,6 @@ import (
 	basetesting "github.com/juju/juju/api/base/testing"
 	"github.com/juju/juju/controller"
 	"github.com/juju/juju/core/model"
-	"github.com/juju/juju/core/objectstore"
 	coretrace "github.com/juju/juju/core/trace"
 	"github.com/juju/juju/core/watcher/watchertest"
 	"github.com/juju/juju/internal/errors"
@@ -66,7 +65,7 @@ func (s *AgentConfigUpdaterSuite) TestStartAgentMissing(c *tc.C) {
 		return true, nil
 	})
 
-	getter := dt.StubGetter(map[string]interface{}{
+	getter := dt.StubGetter(map[string]any{
 		"agent": dependency.ErrMissing,
 	})
 	worker, err := s.manifold.Start(c.Context(), getter)
@@ -80,7 +79,7 @@ func (s *AgentConfigUpdaterSuite) TestStartAPICallerMissing(c *tc.C) {
 		return true, nil
 	})
 
-	getter := dt.StubGetter(map[string]interface{}{
+	getter := dt.StubGetter(map[string]any{
 		"agent":           &mockAgent{},
 		"domain-services": s.controllerDomainServices,
 		"api-caller":      dependency.ErrMissing,
@@ -99,14 +98,14 @@ func (s *AgentConfigUpdaterSuite) TestIsControllerFailure(c *tc.C) {
 	// Set up a fake Agent and APICaller
 	a := &mockAgent{}
 	apiCaller := basetesting.APICallerFunc(
-		func(objType string, version int, id, request string, args, response interface{}) error {
+		func(objType string, version int, id, request string, args, response any) error {
 			return nil
 		},
 	)
 
 	// Call the manifold's start func with a fake resource getter that
 	// returns the fake Agent and APICaller
-	getter := dt.StubGetter(map[string]interface{}{
+	getter := dt.StubGetter(map[string]any{
 		"agent":           a,
 		"api-caller":      apiCaller,
 		"domain-services": s.controllerDomainServices,
@@ -119,7 +118,7 @@ func (s *AgentConfigUpdaterSuite) TestIsControllerFailure(c *tc.C) {
 
 func (s *AgentConfigUpdaterSuite) startManifold(c *tc.C, a agent.Agent, mockAPIPort int) (worker.Worker, error) {
 	apiCaller := basetesting.APICallerFunc(
-		func(objType string, version int, id, request string, args, response interface{}) error {
+		func(objType string, version int, id, request string, args, response any) error {
 			c.Assert(objType, tc.Equals, "Agent")
 			switch request {
 			case "StateServingInfo":
@@ -135,7 +134,7 @@ func (s *AgentConfigUpdaterSuite) startManifold(c *tc.C, a agent.Agent, mockAPIP
 			return nil
 		},
 	)
-	getter := dt.StubGetter(map[string]interface{}{
+	getter := dt.StubGetter(map[string]any{
 		"agent":           a,
 		"api-caller":      apiCaller,
 		"domain-services": s.controllerDomainServices,
@@ -152,7 +151,7 @@ func (s *AgentConfigUpdaterSuite) TestControllerAgentInfo(c *tc.C) {
 
 	wc := watchertest.NewMockStringsWatcher(nil)
 	s.controllerConfigService.EXPECT().ControllerConfig(gomock.Any()).Return(controller.Config{
-		controller.ObjectStoreType: objectstore.FileBackend.String(),
+		controller.DqliteBusyTimeout: "1s",
 	}, nil)
 	s.controllerConfigService.EXPECT().WatchControllerConfig(gomock.Any()).Return(wc, nil)
 
@@ -179,7 +178,7 @@ func (s *AgentConfigUpdaterSuite) TestControllerAgentInfoNotOverwriteCert(c *tc.
 
 	wc := watchertest.NewMockStringsWatcher(nil)
 	s.controllerConfigService.EXPECT().ControllerConfig(gomock.Any()).Return(controller.Config{
-		controller.ObjectStoreType: objectstore.FileBackend.String(),
+		controller.DqliteBusyTimeout: "1s",
 	}, nil)
 	s.controllerConfigService.EXPECT().WatchControllerConfig(gomock.Any()).Return(wc, nil)
 
@@ -218,7 +217,7 @@ func (s *AgentConfigUpdaterSuite) TestJobHostUnits(c *tc.C) {
 func (s *AgentConfigUpdaterSuite) checkNotController(c *tc.C, job model.MachineJob) {
 	a := &mockAgent{}
 	apiCaller := basetesting.APICallerFunc(
-		func(objType string, version int, id, request string, args, response interface{}) error {
+		func(objType string, version int, id, request string, args, response any) error {
 			c.Assert(objType, tc.Equals, "Agent")
 			switch request {
 			case "GetEntities":
@@ -233,7 +232,7 @@ func (s *AgentConfigUpdaterSuite) checkNotController(c *tc.C, job model.MachineJ
 			return nil
 		},
 	)
-	w, err := s.manifold.Start(c.Context(), dt.StubGetter(map[string]interface{}{
+	w, err := s.manifold.Start(c.Context(), dt.StubGetter(map[string]any{
 		"agent":      a,
 		"api-caller": apiCaller,
 	}))
@@ -295,29 +294,15 @@ type mockConfig struct {
 	caiSet bool
 	cai    controller.ControllerAgentInfo
 
-	queryTracingEnabled    bool
-	queryTracingEnabledSet bool
-
-	queryTracingThreshold    time.Duration
-	queryTracingThresholdSet bool
-
-	openTelemetryEnabled    bool
-	openTelemetryEnabledSet bool
-
-	openTelemetryEndpoint    string
-	openTelemetryEndpointSet bool
-
-	openTelemetryInsecure    bool
-	openTelemetryInsecureSet bool
-
-	openTelemetryStackTraces    bool
-	openTelemetryStackTracesSet bool
-
-	openTelemetrySampleRatio    float64
-	openTelemetrySampleRatioSet bool
-
-	openTelemetryTailSamplingThreshold    time.Duration
-	openTelemetryTailSamplingThresholdSet bool
+	queryTracingEnabled                bool
+	queryTracingThreshold              time.Duration
+	dqliteBusyTimeout                  time.Duration
+	openTelemetryEnabled               bool
+	openTelemetryEndpoint              string
+	openTelemetryInsecure              bool
+	openTelemetryStackTraces           bool
+	openTelemetrySampleRatio           float64
+	openTelemetryTailSamplingThreshold time.Duration
 }
 
 func (mc *mockConfig) Tag() names.Tag {
@@ -350,7 +335,6 @@ func (mc *mockConfig) QueryTracingEnabled() bool {
 
 func (mc *mockConfig) SetQueryTracingEnabled(enabled bool) {
 	mc.queryTracingEnabled = enabled
-	mc.queryTracingEnabledSet = true
 }
 
 func (mc *mockConfig) QueryTracingThreshold() time.Duration {
@@ -362,7 +346,17 @@ func (mc *mockConfig) QueryTracingThreshold() time.Duration {
 
 func (mc *mockConfig) SetQueryTracingThreshold(threshold time.Duration) {
 	mc.queryTracingThreshold = threshold
-	mc.queryTracingThresholdSet = true
+}
+
+func (mc *mockConfig) DqliteBusyTimeout() time.Duration {
+	if mc.dqliteBusyTimeout == 0 {
+		return controller.DefaultDqliteBusyTimeout
+	}
+	return mc.dqliteBusyTimeout
+}
+
+func (mc *mockConfig) SetDqliteBusyTimeout(timeout time.Duration) {
+	mc.dqliteBusyTimeout = timeout
 }
 
 func (mc *mockConfig) OpenTelemetryEnabled() bool {
@@ -371,7 +365,6 @@ func (mc *mockConfig) OpenTelemetryEnabled() bool {
 
 func (mc *mockConfig) SetOpenTelemetryEnabled(enabled bool) {
 	mc.openTelemetryEnabled = enabled
-	mc.openTelemetryEnabledSet = true
 }
 
 func (mc *mockConfig) OpenTelemetryEndpoint() string {
@@ -380,7 +373,6 @@ func (mc *mockConfig) OpenTelemetryEndpoint() string {
 
 func (mc *mockConfig) SetOpenTelemetryEndpoint(endpoint string) {
 	mc.openTelemetryEndpoint = endpoint
-	mc.openTelemetryEndpointSet = true
 }
 
 func (mc *mockConfig) OpenTelemetryInsecure() bool {
@@ -389,7 +381,6 @@ func (mc *mockConfig) OpenTelemetryInsecure() bool {
 
 func (mc *mockConfig) SetOpenTelemetryInsecure(enabled bool) {
 	mc.openTelemetryInsecure = enabled
-	mc.openTelemetryInsecureSet = true
 }
 
 func (mc *mockConfig) OpenTelemetryStackTraces() bool {
@@ -398,7 +389,6 @@ func (mc *mockConfig) OpenTelemetryStackTraces() bool {
 
 func (mc *mockConfig) SetOpenTelemetryStackTraces(enabled bool) {
 	mc.openTelemetryStackTraces = enabled
-	mc.openTelemetryStackTracesSet = true
 }
 
 func (mc *mockConfig) OpenTelemetrySampleRatio() float64 {
@@ -410,7 +400,6 @@ func (mc *mockConfig) OpenTelemetrySampleRatio() float64 {
 
 func (mc *mockConfig) SetOpenTelemetrySampleRatio(ratio float64) {
 	mc.openTelemetrySampleRatio = ratio
-	mc.openTelemetrySampleRatioSet = true
 }
 
 func (mc *mockConfig) OpenTelemetryTailSamplingThreshold() time.Duration {
@@ -422,7 +411,6 @@ func (mc *mockConfig) OpenTelemetryTailSamplingThreshold() time.Duration {
 
 func (mc *mockConfig) SetOpenTelemetryTailSamplingThreshold(dur time.Duration) {
 	mc.openTelemetryTailSamplingThreshold = dur
-	mc.openTelemetryTailSamplingThresholdSet = true
 }
 
 func (mc *mockConfig) LogDir() string {

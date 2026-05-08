@@ -9,14 +9,13 @@ import (
 
 	jujuerrors "github.com/juju/errors"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/dependency"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/dependency"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/model"
-	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/core/watcher/watchertest"
 	modelerrors "github.com/juju/juju/domain/model/errors"
@@ -267,7 +266,7 @@ func (s *workerSuite) newWorker(c *tc.C) *Worker {
 func (s *workerSuite) setupMocks(c *tc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 
-	s.modelUUID = modeltesting.GenModelUUID(c)
+	s.modelUUID = tc.Must0(c, model.NewUUID)
 
 	s.modelService = NewMockModelService(ctrl)
 

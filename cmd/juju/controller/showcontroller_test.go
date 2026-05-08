@@ -16,11 +16,11 @@ import (
 	apicontroller "github.com/juju/juju/api/controller/controller"
 	"github.com/juju/juju/api/jujuclient"
 	"github.com/juju/juju/api/jujuclient/jujuclienttesting"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/controller"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/permission"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 )
 
 type ShowControllerSuite struct {
@@ -191,7 +191,7 @@ func (s *ShowControllerSuite) TestShowControllerWithBootstrapConfig(c *tc.C) {
 `
 	store := s.createTestClientStore(c)
 	store.BootstrapConfig["mallards"] = jujuclient.BootstrapConfig{
-		Config: map[string]interface{}{
+		Config: map[string]any{
 			"name":  "controller",
 			"type":  "maas",
 			"extra": "value",
@@ -634,10 +634,6 @@ func (c *fakeController) ModelStatus(_ context.Context, models ...names.ModelTag
 	return result, nil
 }
 
-func (c *fakeController) MongoVersion(ctx context.Context) (string, error) {
-	return "3.5.12", nil
-}
-
 func (c *fakeController) AllModels(ctx context.Context) (result []base.UserModel, _ error) {
 	models := map[string][]base.UserModel{
 		"aws-test": {
@@ -673,8 +669,8 @@ func (*fakeController) Close() error {
 
 type fakeModelConfig struct{}
 
-func (*fakeModelConfig) ModelGet(ctx context.Context) (map[string]interface{}, error) {
-	return map[string]interface{}{"agent-version": "999.99.99"}, nil
+func (*fakeModelConfig) ModelGet(ctx context.Context) (map[string]any, error) {
+	return map[string]any{"agent-version": "999.99.99"}, nil
 }
 
 func (*fakeModelConfig) Close() error {

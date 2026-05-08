@@ -8,8 +8,8 @@ import (
 
 	"github.com/juju/clock"
 	jujuerrors "github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 	"gopkg.in/tomb.v2"
 
 	coredatabase "github.com/juju/juju/core/database"
@@ -89,8 +89,8 @@ func (w *Worker) Wait() error {
 }
 
 // Report reports the internal state of the worker.
-func (w *Worker) Report() map[string]any {
-	return w.runner.Report()
+func (w *Worker) Report(ctx context.Context) map[string]any {
+	return w.runner.Report(ctx)
 }
 
 func (w *Worker) loop() error {
@@ -193,7 +193,10 @@ func (w *modelWorker) loop() error {
 }
 
 func (w *modelWorker) deleteModel(ctx context.Context) error {
-	if err := w.removalService.DeleteModel(ctx); err != nil && !errors.Is(err, modelerrors.NotFound) {
+	if err := w.removalService.DeleteModel(ctx); err != nil && !errors.IsOneOf(err,
+		coredatabase.ErrDBNotFound,
+		modelerrors.NotFound,
+	) {
 		return errors.Errorf("deleting model: %w", err)
 	}
 

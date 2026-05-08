@@ -8,7 +8,7 @@ import (
 
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5/catacomb"
 
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/api/controller/caasmodeloperator"
@@ -230,6 +230,13 @@ func (m *ModelOperatorManager) updateAgentConf(
 			// UpgradedToVersion is mandatory but not used by
 			// caas operator agents as they are not upgraded insitu.
 			UpgradedToVersion: ver,
+
+			OpenTelemetryEnabled:               m.agentConfig.OpenTelemetryEnabled(),
+			OpenTelemetryEndpoint:              m.agentConfig.OpenTelemetryEndpoint(),
+			OpenTelemetryInsecure:              m.agentConfig.OpenTelemetryInsecure(),
+			OpenTelemetryStackTraces:           m.agentConfig.OpenTelemetryStackTraces(),
+			OpenTelemetrySampleRatio:           m.agentConfig.OpenTelemetrySampleRatio(),
+			OpenTelemetryTailSamplingThreshold: m.agentConfig.OpenTelemetryTailSamplingThreshold(),
 		},
 	)
 	if err != nil {

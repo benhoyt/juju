@@ -16,7 +16,6 @@ import (
 	"github.com/juju/juju/api"
 	corebase "github.com/juju/juju/core/base"
 	"github.com/juju/juju/core/constraints"
-	"github.com/juju/juju/core/lxdprofile"
 	corenetwork "github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/core/status"
@@ -559,78 +558,6 @@ func (s *managerSuite) TestGetImageSourcesImageMetadataURLDailyStream(c *tc.C) {
 	c.Check(sources, tc.DeepEquals, expectedSources)
 }
 
-func (s *managerSuite) TestMaybeWriteLXDProfile(c *tc.C) {
-	defer s.setup(c).Finish()
-
-	s.makeManager(c)
-	proMgr, ok := s.manager.(container.LXDProfileManager)
-	c.Assert(ok, tc.IsTrue)
-
-	put := lxdprofile.Profile{
-		Config: map[string]string{
-			"security.nesting":    "true",
-			"security.privileged": "true",
-		},
-		Description: "lxd profile for testing",
-		Devices: map[string]map[string]string{
-			"tun": {
-				"path": "/dev/net/tun",
-				"type": "unix-char",
-			},
-		},
-	}
-	post := lxdapi.ProfilesPost{
-		ProfilePut: lxdapi.ProfilePut(put),
-		Name:       "juju-default-lxd-0",
-	}
-	s.cSvr.EXPECT().CreateProfile(post).Return(nil)
-	s.cSvr.EXPECT().GetProfileNames().Return([]string{"default", "custom"}, nil)
-	expProfile := lxdapi.Profile{
-		Name:        post.Name,
-		Config:      post.Config,
-		Description: post.Description,
-		Devices:     post.Devices,
-	}
-	s.cSvr.EXPECT().GetProfile(post.Name).Return(&expProfile, "etag", nil)
-
-	err := proMgr.MaybeWriteLXDProfile("juju-default-lxd-0", put)
-	c.Assert(err, tc.ErrorIsNil)
-}
-
-func (s *managerSuite) TestAssignLXDProfiles(c *tc.C) {
-	ctrl := s.setup(c)
-	defer ctrl.Finish()
-	s.expectUpdateOp(ctrl, "Updating container", nil)
-
-	old := "old-profile"
-	new := "new-profile"
-	newProfiles := []string{"default", "juju-default", new}
-	put := lxdprofile.Profile{
-		Config: map[string]string{
-			"security.nesting": "true",
-		},
-		Description: "test profile",
-	}
-	s.expectUpdateContainerProfiles(old, new, newProfiles, lxdapi.ProfilePut(put))
-	profilePosts := []lxdprofile.ProfilePost{
-		{
-			Name:    old,
-			Profile: nil,
-		}, {
-			Name:    new,
-			Profile: &put,
-		},
-	}
-
-	s.makeManager(c)
-	proMgr, ok := s.manager.(container.LXDProfileManager)
-	c.Assert(ok, tc.IsTrue)
-
-	obtained, err := proMgr.AssignLXDProfiles("testme", newProfiles, profilePosts)
-	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(obtained, tc.DeepEquals, newProfiles)
-}
-
 func (s *managerSuite) setup(c *tc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 	s.cSvr = s.NewMockServer(ctrl)
@@ -707,35 +634,4 @@ func (s *managerSuite) expectUpdateOp(ctrl *gomock.Controller, description strin
 		return
 	}
 	s.updateOp.EXPECT().Get().Return(lxdapi.Operation{Description: description})
-}
-
-func (s *managerSuite) expectUpdateContainerProfiles(old, new string, newProfiles []string, put lxdapi.ProfilePut) {
-	instId := "testme"
-	oldProfiles := []string{"default", "juju-default", old}
-	post := lxdapi.ProfilesPost{
-		ProfilePut: put,
-		Name:       new,
-	}
-	expProfile := lxdapi.Profile{
-		Name:        post.Name,
-		Description: post.Description,
-		Config:      post.Config,
-		Devices:     post.Devices,
-	}
-	cExp := s.cSvr.EXPECT()
-	gomock.InOrder(
-		cExp.GetProfileNames().Return(oldProfiles, nil),
-		cExp.CreateProfile(post).Return(nil),
-		cExp.GetProfile(post.Name).Return(&expProfile, "etag", nil),
-		cExp.GetInstance(instId).Return(
-			&lxdapi.Instance{
-				Profiles: oldProfiles,
-			}, "", nil),
-		cExp.UpdateInstance(instId, gomock.Any(), gomock.Any()).Return(s.updateOp, nil),
-		cExp.DeleteProfile(old).Return(nil),
-		cExp.GetInstance(instId).Return(
-			&lxdapi.Instance{
-				Profiles: newProfiles,
-			}, "", nil),
-	)
 }

@@ -41,6 +41,29 @@ func NewState(
 	}
 }
 
+// checkMachineExists checks if the supplied machine uuid exists within the
+// model.
+func (st *State) checkMachineExists(
+	ctx context.Context, tx *sqlair.TX, uuid coremachine.UUID,
+) (bool, error) {
+	input := machineUUID{UUID: uuid.String()}
+	stmt, err := st.Prepare(
+		"SELECT &machineUUID.* FROM machine WHERE uuid = $machineUUID.uuid",
+		input,
+	)
+	if err != nil {
+		return false, errors.Errorf("preparing machine exists statement: %w", err)
+	}
+
+	err = tx.Query(ctx, stmt, input).Get(&input)
+	if errors.Is(err, sqlair.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, errors.Capture(err)
+	}
+	return true, nil
+}
+
 // CheckMachineIsDead checks to see if a machine is not dead returning
 // true when the life of the machine is dead.
 //
@@ -606,7 +629,7 @@ WHERE  storage_id = $storageID.storage_id`, input, dbVal)
 // - [storageprovisioningerrors.StorageAttachmentNotFound] when the storage
 // attachment does not exist.
 func (st *State) GetStorageAttachmentInfo(
-	ctx context.Context, uuid storageprovisioning.StorageAttachmentUUID,
+	ctx context.Context, uuid storage.StorageAttachmentUUID,
 ) (storageprovisioning.StorageAttachmentInfo, error) {
 	db, err := st.DB(ctx)
 	if err != nil {
@@ -749,7 +772,7 @@ func (st *State) GetStorageAttachmentUUIDForUnit(
 	ctx context.Context,
 	storageInstanceID string,
 	unitUUID coreunit.UUID,
-) (storageprovisioning.StorageAttachmentUUID, error) {
+) (storage.StorageAttachmentUUID, error) {
 	db, err := st.DB(ctx)
 	if err != nil {
 		return "", errors.Capture(err)
@@ -806,7 +829,7 @@ WHERE  si.storage_id = $storageID.storage_id AND sa.unit_uuid = $unitUUIDRef.uni
 			storageIDInput.ID, unitUUIDInput.UUID, err,
 		)
 	}
-	return storageprovisioning.StorageAttachmentUUID(dbVal.UUID), nil
+	return storage.StorageAttachmentUUID(dbVal.UUID), nil
 }
 
 // NamespaceForStorageAttachment returns the change stream namespace

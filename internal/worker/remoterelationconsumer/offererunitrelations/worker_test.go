@@ -10,7 +10,7 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 	"gopkg.in/macaroon.v2"
@@ -28,8 +28,9 @@ import (
 type offererUnitRelationsWorker struct {
 	client *MockRemoteModelRelationsClient
 
-	consumerRelationUUID   corerelation.UUID
-	offererApplicationUUID coreapplication.UUID
+	consumerRelationUUID    corerelation.UUID
+	consumerApplicationUUID coreapplication.UUID
+	offererApplicationUUID  coreapplication.UUID
 
 	macaroon *macaroon.Macaroon
 
@@ -43,6 +44,7 @@ func TestOffererUnitRelationsWorker(t *testing.T) {
 
 func (s *offererUnitRelationsWorker) SetUpTest(c *tc.C) {
 	s.consumerRelationUUID = tc.Must(c, corerelation.NewUUID)
+	s.consumerApplicationUUID = tc.Must(c, coreapplication.NewUUID)
 	s.offererApplicationUUID = tc.Must(c, coreapplication.NewUUID)
 
 	s.macaroon = newMacaroon(c, "test")
@@ -59,6 +61,11 @@ func (s *offererUnitRelationsWorker) TestValidate(c *tc.C) {
 
 	cfg = s.newConfig(c)
 	cfg.Client = nil
+	err = cfg.Validate()
+	c.Check(err, tc.ErrorIs, errors.NotValid)
+
+	cfg = s.newConfig(c)
+	cfg.ConsumerApplicationUUID = ""
 	err = cfg.Validate()
 	c.Check(err, tc.ErrorIs, errors.NotValid)
 
@@ -147,7 +154,7 @@ func (s *offererUnitRelationsWorker) TestChangeEvent(c *tc.C) {
 		},
 		UnitCount:       3,
 		Life:            "alive",
-		Suspended:       ptr(true),
+		Suspended:       new(true),
 		SuspendedReason: "because",
 		DepartedUnits: []int{
 			4,
@@ -246,7 +253,7 @@ func (s *offererUnitRelationsWorker) TestReport(c *tc.C) {
 		c.Fatalf("timed out waiting for WatchRelationUnits to be called")
 	}
 
-	c.Assert(w.Report(), tc.DeepEquals, map[string]any{
+	c.Assert(w.Report(c.Context()), tc.DeepEquals, map[string]any{
 		"offerer-application-uuid": s.offererApplicationUUID.String(),
 		"consumer-relation-uuid":   s.consumerRelationUUID.String(),
 		"changed-units":            []map[string]any(nil),
@@ -271,7 +278,7 @@ func (s *offererUnitRelationsWorker) TestReport(c *tc.C) {
 		},
 		UnitCount:       3,
 		Life:            "alive",
-		Suspended:       ptr(true),
+		Suspended:       new(true),
 		SuspendedReason: "because",
 		DepartedUnits: []int{
 			4,
@@ -281,7 +288,7 @@ func (s *offererUnitRelationsWorker) TestReport(c *tc.C) {
 		c.Fatalf("timed out waiting to send change event")
 	}
 
-	c.Assert(w.Report(), tc.DeepEquals, map[string]any{
+	c.Assert(w.Report(c.Context()), tc.DeepEquals, map[string]any{
 		"offerer-application-uuid": s.offererApplicationUUID.String(),
 		"consumer-relation-uuid":   s.consumerRelationUUID.String(),
 		"changed-units": []map[string]any{{
@@ -306,13 +313,14 @@ func (s *offererUnitRelationsWorker) TestReport(c *tc.C) {
 
 func (s *offererUnitRelationsWorker) newConfig(c *tc.C) Config {
 	return Config{
-		Client:                 s.client,
-		OffererApplicationUUID: s.offererApplicationUUID,
-		ConsumerRelationUUID:   s.consumerRelationUUID,
-		Macaroon:               s.macaroon,
-		Changes:                s.changes,
-		Clock:                  clock.WallClock,
-		Logger:                 loggertesting.WrapCheckLog(c),
+		Client:                  s.client,
+		OffererApplicationUUID:  s.offererApplicationUUID,
+		ConsumerApplicationUUID: s.consumerApplicationUUID,
+		ConsumerRelationUUID:    s.consumerRelationUUID,
+		Macaroon:                s.macaroon,
+		Changes:                 s.changes,
+		Clock:                   clock.WallClock,
+		Logger:                  loggertesting.WrapCheckLog(c),
 	}
 }
 

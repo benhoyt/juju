@@ -21,9 +21,9 @@ import (
 	"github.com/juju/juju/core/logger"
 	coreresource "github.com/juju/juju/core/resource"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/domain/resource"
 	resourceerrors "github.com/juju/juju/domain/resource/errors"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	"github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/rpc/params"
 )
@@ -45,11 +45,12 @@ type Downloader interface {
 // ResourceHandler is the HTTP handler for client downloads and
 // uploads of resources.
 type ResourceHandler struct {
-	authFunc              func(*http.Request, ...string) (names.Tag, error)
-	changeAllowedFunc     func(context.Context) error
-	resourceServiceGetter ResourceServiceGetter
-	downloader            Downloader
-	logger                logger.Logger
+	authFunc                 func(*http.Request, ...string) (names.Tag, error)
+	changeAllowedFunc        func(context.Context) error
+	resourceServiceGetter    ResourceServiceGetter
+	applicationServiceGetter ApplicationServiceGetter
+	downloader               Downloader
+	logger                   logger.Logger
 }
 
 // NewResourceHandler returns a new HTTP client resource handler.
@@ -57,15 +58,17 @@ func NewResourceHandler(
 	authFunc func(*http.Request, ...string) (names.Tag, error),
 	changeAllowedFunc func(context.Context) error,
 	resourceServiceGetter ResourceServiceGetter,
+	applicationServiceGetter ApplicationServiceGetter,
 	downloader Downloader,
 	logger logger.Logger,
 ) *ResourceHandler {
 	return &ResourceHandler{
-		authFunc:              authFunc,
-		changeAllowedFunc:     changeAllowedFunc,
-		resourceServiceGetter: resourceServiceGetter,
-		downloader:            downloader,
-		logger:                logger,
+		authFunc:                 authFunc,
+		changeAllowedFunc:        changeAllowedFunc,
+		resourceServiceGetter:    resourceServiceGetter,
+		applicationServiceGetter: applicationServiceGetter,
+		downloader:               downloader,
+		logger:                   logger,
 	}
 }
 
@@ -133,6 +136,19 @@ func (h *ResourceHandler) download(service ResourceService, req *http.Request) (
 	application := query.Get(":application")
 	name := query.Get(":resource")
 
+	appService, err := h.applicationServiceGetter.Application(req)
+	if err != nil {
+		return nil, 0, jujuerrors.Trace(err)
+	}
+
+	appDetails, err := appService.GetApplicationDetailsByName(req.Context(), application)
+	if err != nil && !errors.Is(err, applicationerrors.ApplicationNotFound) {
+		return nil, 0, jujuerrors.Trace(err)
+	} else if appDetails.IsApplicationSynthetic {
+		// Reject synthetic (SAAS) applications - they don't support resource operations
+		return nil, 0, jujuerrors.NotFoundf("application %s", application)
+	}
+
 	uuid, err := service.GetResourceUUIDByApplicationAndResourceName(req.Context(), application, name)
 	if errors.Is(err, resourceerrors.ResourceNotFound) {
 		return nil, 0, jujuerrors.NotFoundf("resource %s of application %s", name, application)
@@ -154,6 +170,27 @@ func (h *ResourceHandler) download(service ResourceService, req *http.Request) (
 }
 
 func (h *ResourceHandler) upload(service ResourceService, req *http.Request, username string) (*params.UploadResult, error) {
+	// Extract application name early to check if it's synthetic.
+	query := req.URL.Query()
+	application := query.Get(":application")
+	ctx := req.Context()
+
+	appService, err := h.applicationServiceGetter.Application(req)
+	if err != nil {
+		return nil, jujuerrors.Trace(err)
+	}
+
+	// When uploading a resource during deployment, an application
+	// may not exist yet. The check for synthetic application is
+	// only valid when an application exists.
+	appDetails, err := appService.GetApplicationDetailsByName(ctx, application)
+	if err != nil && !errors.Is(err, applicationerrors.ApplicationNotFound) {
+		return nil, jujuerrors.Trace(err)
+	} else if appDetails.IsApplicationSynthetic {
+		// Reject synthetic (SAAS) applications - they don't support resource operations
+		return nil, jujuerrors.NotFoundf("application %q", application)
+	}
+
 	reader, uploaded, err := h.getUploadedResource(service, req)
 	if err != nil {
 		return nil, errors.Capture(err)
@@ -167,23 +204,19 @@ func (h *ResourceHandler) upload(service ResourceService, req *http.Request, use
 		Size:            uploaded.size,
 		Fingerprint:     uploaded.fingerprint,
 	}
+	var res coreresource.Resource
 	if uploaded.pending {
-		err = service.StoreResource(req.Context(), args)
+		res, err = service.StoreResource(ctx, args)
 	} else {
 		// If the resource is pending this call will fail. The charm
 		// modified version exists on applications only. A pending
 		// resources indicates the application does not yet exist.
 		// The charm modified version is used to upgrade a resource
 		// independently of a charm.
-		err = service.StoreResourceAndIncrementCharmModifiedVersion(req.Context(), args)
+		res, err = service.StoreResourceAndIncrementCharmModifiedVersion(ctx, args)
 	}
 	if err != nil {
 		return nil, errors.Errorf("storing resource %s of application %s: %w", uploaded.resourceName, uploaded.applicationName, err)
-	}
-
-	res, err := service.GetResource(req.Context(), uploaded.uuid)
-	if err != nil {
-		return nil, errors.Errorf("getting uploaded resource details: %w", err)
 	}
 
 	return &params.UploadResult{
@@ -196,7 +229,7 @@ func (h *ResourceHandler) upload(service ResourceService, req *http.Request, use
 func encodeResource(res coreresource.Resource) params.Resource {
 	return params.Resource{
 		CharmResource:   api.CharmResource2API(res.Resource),
-		UUID:            res.UUID.String(),
+		ID:              res.ID,
 		ApplicationName: res.ApplicationName,
 		Username:        res.RetrievedBy,
 		Timestamp:       res.Timestamp,
@@ -242,18 +275,18 @@ func (h *ResourceHandler) getUploadedResource(
 		return nil, nil, errors.Errorf("getting resource uuid: %w", err)
 	}
 
-	res, err := resourceService.GetResource(req.Context(), resUUID)
+	// Resources can be uploaded without the application existing.
+	// This happens when deploying local charms with local resources.
+	res, err := resourceService.GetResourceWithoutApplication(req.Context(), resUUID)
 	if errors.Is(err, resourceerrors.ResourceNotFound) {
 		return nil, nil, jujuerrors.NotFoundf("resource %s of application %s", uReq.Name, uReq.Application)
-	} else if errors.Is(err, applicationerrors.ApplicationNotFound) {
-		return nil, nil, jujuerrors.NotFoundf("application %s", uReq.Application)
 	} else if err != nil {
 		return nil, nil, errors.Errorf("getting resource details: %w", err)
 	}
 
 	// Only attach a blob to a resource configured to be uploaded.
 	if res.Origin != charmresource.OriginUpload {
-		return nil, nil, errors.Errorf("resource %q is not of type upload", res.UUID)
+		return nil, nil, errors.Errorf("resource %q is not of type upload", res.ID)
 	}
 
 	switch res.Type {
@@ -267,11 +300,11 @@ func (h *ResourceHandler) getUploadedResource(
 
 	reader, err := h.downloader.Download(req.Context(), req.Body, uReq.Fingerprint.String(), uReq.Size)
 	if err != nil {
-		return nil, nil, errors.Errorf("downloading reosurce body: %w", err)
+		return nil, nil, errors.Errorf("downloading resource body: %w", err)
 	}
 
 	return reader, &uploadedResource{
-		uuid:            res.UUID,
+		uuid:            coreresource.UUID(res.ID),
 		applicationName: uReq.Application,
 		resourceName:    res.Resource.Name,
 		size:            uReq.Size,
@@ -397,11 +430,9 @@ func extractFilename(req *http.Request) (string, error) {
 func extractSize(req *http.Request) (int64, error) {
 	var size int64
 	if req.Header.Get(api.HeaderContentLength) == "" {
-		size = req.ContentLength
-		// size will be negative if there is no content.
-		if size < 0 {
-			size = 0
-		}
+		size = max(
+			// size will be negative if there is no content.
+			req.ContentLength, 0)
 		return size, nil
 	}
 

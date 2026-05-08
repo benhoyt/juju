@@ -10,6 +10,7 @@ import (
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
+	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/core/semversion"
 	coreunit "github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/modelmigration"
@@ -17,10 +18,11 @@ import (
 	"github.com/juju/juju/internal/testing"
 )
 
-//go:generate go run go.uber.org/mock/mockgen -typed -package migration_test -destination migration_mock_test.go github.com/juju/juju/internal/migration AgentBinaryStore,ControllerConfigService,UpgradeService,ApplicationService,CredentialService,RelationService,StatusService,OperationExporter,Coordinator,ModelAgentService,CharmService,ModelService,ModelMigrationService,MachineService
+//go:generate go run go.uber.org/mock/mockgen -typed -package migration_test -destination migration_mock_test.go github.com/juju/juju/internal/migration AgentBinaryStore,ControllerConfigService,UpgradeService,ApplicationService,CredentialService,RelationService,StatusService,OperationExporter,Coordinator,ModelAgentService,CharmService,ModelService,ModelMigrationService,MachineService,CloudService
 //go:generate go run go.uber.org/mock/mockgen -typed -package migration_test -destination domainservices_mock_test.go github.com/juju/juju/internal/services DomainServicesGetter,DomainServices
+//go:generate go run go.uber.org/mock/mockgen -typed -package migration -destination services_mock_test.go github.com/juju/juju/internal/migration ProviderConfigServicesGetter,ProviderConfigServices,CloudService
 //go:generate go run go.uber.org/mock/mockgen -typed -package migration_test -destination storage_mock_test.go github.com/juju/juju/core/storage ModelStorageRegistryGetter
-//go:generate go run go.uber.org/mock/mockgen -typed -package migration_test -destination description_mock_test.go github.com/juju/description/v10 Model
+//go:generate go run go.uber.org/mock/mockgen -typed -package migration_test -destination description_mock_test.go github.com/juju/description/v12 Model
 //go:generate go run go.uber.org/mock/mockgen -typed -package migration_test -destination objectstore_mock_test.go github.com/juju/juju/core/objectstore ModelObjectStoreGetter
 
 type precheckBaseSuite struct {
@@ -29,6 +31,7 @@ type precheckBaseSuite struct {
 	modelService          *MockModelService
 	modelMigrationService *MockModelMigrationService
 	machineService        *MockMachineService
+	cloudService          *MockCloudService
 	upgradeService        *MockUpgradeService
 	applicationService    *MockApplicationService
 	relationService       *MockRelationService
@@ -54,6 +57,7 @@ func (s *precheckBaseSuite) setupMocks(c *tc.C) *gomock.Controller {
 	s.modelMigrationService = NewMockModelMigrationService(ctrl)
 	s.modelService = NewMockModelService(ctrl)
 	s.machineService = NewMockMachineService(ctrl)
+	s.cloudService = NewMockCloudService(ctrl)
 
 	c.Cleanup(func() {
 		s.upgradeService = nil
@@ -65,9 +69,18 @@ func (s *precheckBaseSuite) setupMocks(c *tc.C) *gomock.Controller {
 		s.modelMigrationService = nil
 		s.modelService = nil
 		s.machineService = nil
+		s.cloudService = nil
 	})
 
 	return ctrl
+}
+
+func (s *precheckBaseSuite) expectMatchingCloud() {
+	s.cloudService.EXPECT().ListAll(gomock.Any()).Return([]cloud.Cloud{{
+		Name: "my-cloud",
+	}, {
+		Name: "other-cloud",
+	}}, nil)
 }
 
 func (s *precheckBaseSuite) expectMigrationModeNone() {
@@ -79,15 +92,15 @@ func (s *precheckBaseSuite) expectNoMachines() {
 }
 
 func (s *precheckBaseSuite) expectNoModels() {
-	s.modelService.EXPECT().ListAllModels(gomock.Any()).Return(nil, nil)
+	s.modelService.EXPECT().GetAllModels(gomock.Any()).Return(nil, nil)
 }
 
 func (s *precheckBaseSuite) expectAllAppsAndUnitsAlive() {
-	s.applicationService.EXPECT().CheckAllApplicationsAndUnitsAreAlive(gomock.Any()).Return(nil)
+	s.applicationService.EXPECT().CheckApplicationsForMigration(gomock.Any()).Return(nil)
 }
 
 func (s *precheckBaseSuite) expectDeadAppsOrUnits(err error) {
-	s.applicationService.EXPECT().CheckAllApplicationsAndUnitsAreAlive(gomock.Any()).Return(err)
+	s.applicationService.EXPECT().CheckApplicationsForMigration(gomock.Any()).Return(err)
 }
 
 func (s *precheckBaseSuite) expectCheckRelation(rel fakeRelation) {

@@ -6,10 +6,12 @@ package kubernetes
 import (
 	"context"
 	"fmt"
-	"sync"
+	"slices"
 
+	"github.com/juju/collections/transform"
 	core "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	coreerrors "github.com/juju/juju/core/errors"
@@ -19,7 +21,7 @@ import (
 	jujustorage "github.com/juju/juju/internal/storage"
 )
 
-func validateStorageAttributes(attributes map[string]interface{}) error {
+func validateStorageAttributes(attributes map[string]any) error {
 	if _, err := storage.ParseStorageConfig(attributes); err != nil {
 		return errors.Capture(err)
 	}
@@ -131,18 +133,52 @@ func (k *kubernetesClient) StorageProvider(t jujustorage.ProviderType) (jujustor
 //
 // Implements the [jujustorage.FilesystemSource] interface.
 func (*noopFSSource) AttachFilesystems(
-	_ context.Context, _ []jujustorage.FilesystemAttachmentParams,
+	_ context.Context, params []jujustorage.FilesystemAttachmentParams,
 ) ([]jujustorage.AttachFilesystemsResult, error) {
-	return nil, nil
+	// This is a no-op, but we must reflect the input back to the storage
+	// provisioner so that it can set the provisioned state.
+	results := make([]jujustorage.AttachFilesystemsResult, 0, len(params))
+	for _, v := range params {
+		result := jujustorage.AttachFilesystemsResult{
+			FilesystemAttachment: &jujustorage.FilesystemAttachment{
+				Filesystem: v.Filesystem,
+				Machine:    v.Machine,
+				FilesystemAttachmentInfo: jujustorage.FilesystemAttachmentInfo{
+					Path:     v.Path,
+					ReadOnly: v.ReadOnly,
+				},
+			},
+		}
+		results = append(results, result)
+	}
+	return results, nil
 }
 
-// CreateFilesystem is a noop operation for creating filesystems in this source.
+// CreateFilesystems is a noop operation for creating filesystems in this source.
 //
 // Implements the [jujustorage.FilesystemSource] interface.
 func (*noopFSSource) CreateFilesystems(
-	_ context.Context, _ []jujustorage.FilesystemParams,
+	_ context.Context, params []jujustorage.FilesystemParams,
 ) ([]jujustorage.CreateFilesystemsResult, error) {
-	return nil, nil
+	// This is a no-op, but we must reflect the input back to the storage
+	// provisioner so that it can set the provisioned state.
+	results := make([]jujustorage.CreateFilesystemsResult, 0, len(params))
+	for _, v := range params {
+		result := jujustorage.CreateFilesystemsResult{
+			Filesystem: &jujustorage.Filesystem{
+				Tag: v.Tag,
+				FilesystemInfo: jujustorage.FilesystemInfo{
+					// ProviderId must be set for the filesystem attachment to
+					// progress. Since this is a no-op fs, the filesystem tag is
+					// sufficient.
+					ProviderId: v.Tag.Id(),
+					Size:       v.Size,
+				},
+			},
+		}
+		results = append(results, result)
+	}
+	return results, nil
 }
 
 // DefaultPools returns the default storage pools for [rootfsStorageProvider].
@@ -186,9 +222,9 @@ func (*tmpfsStorageProvider) DefaultPools() []*jujustorage.Config {
 //
 // Implements the [jujustorage.FilesystemSource] interface.
 func (*noopFSSource) DestroyFilesystems(
-	_ context.Context, _ []string,
+	_ context.Context, providerIDs []string,
 ) ([]error, error) {
-	return nil, nil
+	return make([]error, len(providerIDs)), nil
 }
 
 // DetatchFilesystems is a noop operation for detaching filesystems in this
@@ -196,9 +232,9 @@ func (*noopFSSource) DestroyFilesystems(
 //
 // Implements the [jujustorage.FilesystemSource] interface.
 func (*noopFSSource) DetachFilesystems(
-	_ context.Context, _ []jujustorage.FilesystemAttachmentParams,
+	_ context.Context, params []jujustorage.FilesystemAttachmentParams,
 ) ([]error, error) {
-	return nil, nil
+	return make([]error, len(params)), nil
 }
 
 // Dynamic informs the caller if this provider supports creating storage after
@@ -431,7 +467,14 @@ type filesystemSource struct {
 var _ jujustorage.FilesystemSource = (*filesystemSource)(nil)
 
 // ValidateFilesystemParams is specified on the jujustorage.FilesystemSource interface.
-func (v *filesystemSource) ValidateFilesystemParams(params jujustorage.FilesystemParams) error {
+func (v *filesystemSource) ValidateFilesystemParams(
+	params jujustorage.FilesystemParams,
+) error {
+	if params.ProviderId == nil {
+		return errors.Errorf(
+			"kubernetes filesystem %q missing provider id", params.Tag.Id(),
+		).Add(jujustorage.FilesystemCreateParamsIncomplete)
+	}
 	return nil
 }
 
@@ -439,43 +482,99 @@ func (v *filesystemSource) ValidateFilesystemParams(params jujustorage.Filesyste
 func (v *filesystemSource) CreateFilesystems(
 	ctx context.Context,
 	params []jujustorage.FilesystemParams,
-) (_ []jujustorage.CreateFilesystemsResult, err error) {
-	// noop
-	return nil, nil
+) ([]jujustorage.CreateFilesystemsResult, error) {
+	results := make([]jujustorage.CreateFilesystemsResult, 0, len(params))
+	for _, param := range params {
+		var result jujustorage.CreateFilesystemsResult
+		if param.ProviderId == nil {
+			result.Error = errors.Errorf(
+				"creating kubernetes filesystem %q with missing provider id",
+				param.Tag.Id(),
+			).Add(coreerrors.NotValid)
+			results = append(results, result)
+			continue
+		}
+		// Kubernetes filesystems are PersistentVolumes that are provisioned
+		// by Kubernetes, not by the storage provider. Instead we check that
+		// it exists and source any filesystem required information.
+		fsInfo, err := v.getPersistentVolume(ctx, *param.ProviderId)
+		if err != nil {
+			result.Error = errors.Errorf(
+				"finalising kubernetes filesystem %q with PersistentVolume %q: %w",
+				param.Tag.Id(), *param.ProviderId, err,
+			)
+		} else {
+			result.Filesystem = &jujustorage.Filesystem{
+				Tag:            param.Tag,
+				FilesystemInfo: fsInfo,
+			}
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func (v *filesystemSource) getPersistentVolume(
+	ctx context.Context, pvName string,
+) (jujustorage.FilesystemInfo, error) {
+	pvAPI := v.client.client().CoreV1().PersistentVolumes()
+	pv, err := pvAPI.Get(ctx, pvName, v1.GetOptions{})
+	if k8serrors.IsNotFound(err) {
+		return jujustorage.FilesystemInfo{}, errors.New(
+			"kubernetes PersistentVolume not found",
+		).Add(coreerrors.NotFound)
+	} else if err != nil {
+		return jujustorage.FilesystemInfo{}, errors.Errorf(
+			"getting kubernetes PersistentVolume: %w", err,
+		)
+	}
+	sizeMiB := uint64(0)
+	if pv.Spec.Capacity != nil {
+		storageCapacity := pv.Spec.Capacity.Storage()
+		if storageCapacity != nil {
+			sizeMiB = quantityAsMibiBytes(*storageCapacity)
+		}
+	}
+	fs := jujustorage.FilesystemInfo{
+		ProviderId: pvName,
+		Size:       sizeMiB,
+	}
+	return fs, nil
+}
+
+func quantityAsMibiBytes(q resource.Quantity) uint64 {
+	return uint64(q.MilliValue()) / 1000 / 1024 / 1024
 }
 
 // DestroyFilesystems is specified on the jujustorage.FilesystemSource interface.
-func (v *filesystemSource) DestroyFilesystems(ctx context.Context, filesystemIds []string) ([]error, error) {
-	logger.Debugf(ctx, "destroy k8s filesystems: %v", filesystemIds)
+func (v *filesystemSource) DestroyFilesystems(ctx context.Context, pvNames []string) ([]error, error) {
+	logger.Infof(ctx, "destroying kubernetes PersistentVolume(s): %v", pvNames)
+	errs := make([]error, 0, len(pvNames))
+	for _, pvName := range pvNames {
+		err := v.deletePersistentVolume(ctx, pvName)
+		if err != nil {
+			err = errors.Errorf(
+				"destroying kubernetes PersistentVolume %q: %w", pvName, err,
+			)
+		}
+		errs = append(errs, err)
+	}
+	return errs, nil
+}
+
+func (v *filesystemSource) deletePersistentVolume(
+	ctx context.Context, pvName string,
+) error {
 	pvAPI := v.client.client().CoreV1().PersistentVolumes()
-	return foreachFilesystem(filesystemIds, func(filesystemId string) error {
-		vol, err := pvAPI.Get(ctx, filesystemId, v1.GetOptions{})
-		if err != nil && !k8serrors.IsNotFound(err) {
-			return errors.Errorf("getting filesystem %v to delete: %w", filesystemId, err)
-		}
-		if err == nil && vol.Spec.ClaimRef != nil {
-			claimRef := vol.Spec.ClaimRef
-			pvcAPI := v.client.client().CoreV1().PersistentVolumeClaims(claimRef.Namespace)
-			logger.Infof(
-				context.TODO(), "deleting PVC %s due to call to filesystemSource.DestroyVolumes(%q)",
-				claimRef.Name, filesystemId,
-			)
-			err := pvcAPI.Delete(
-				ctx, claimRef.Name,
-				v1.DeleteOptions{PropagationPolicy: constants.DefaultPropagationPolicy()},
-			)
-			if err != nil && !k8serrors.IsNotFound(err) {
-				return errors.Errorf("destroying volume claim %v: %w", claimRef.Name, err)
-			}
-		}
-		if err := pvAPI.Delete(ctx,
-			filesystemId,
-			v1.DeleteOptions{PropagationPolicy: constants.DefaultPropagationPolicy()},
-		); err != nil && !k8serrors.IsNotFound(err) {
-			return errors.Errorf("destroying k8s filesystem %q: %w", filesystemId, err)
-		}
+	err := pvAPI.Delete(ctx, pvName, v1.DeleteOptions{
+		PropagationPolicy: constants.DefaultPropagationPolicy(),
+	})
+	if k8serrors.IsNotFound(err) {
 		return nil
-	}), nil
+	} else if err != nil {
+		return errors.Errorf("deleting PersistentVolume: %w", err)
+	}
+	return nil
 }
 
 // ReleaseFilesystems is specified on the jujustorage.FilesystemSource interface.
@@ -489,8 +588,121 @@ func (v *filesystemSource) AttachFilesystems(
 	ctx context.Context,
 	params []jujustorage.FilesystemAttachmentParams,
 ) ([]jujustorage.AttachFilesystemsResult, error) {
-	// noop
-	return nil, nil
+	results := make([]jujustorage.AttachFilesystemsResult, 0, len(params))
+	for _, param := range params {
+		var result jujustorage.AttachFilesystemsResult
+		if param.AttachmentParams.ProviderId == nil {
+			result.Error = errors.Errorf(
+				"kubernetes filesystem %q attachment to %q missing provider id",
+				param.Filesystem.Id(), param.Machine.Id(),
+			).Add(jujustorage.FilesystemAttachParamsIncomplete)
+			results = append(results, result)
+			continue
+		}
+		if param.InstanceId == "" {
+			result.Error = errors.Errorf(
+				"kubernetes filesystem %q attachment to %q missing instance id",
+				param.Filesystem.Id(), param.Machine.Id(),
+			).Add(jujustorage.FilesystemAttachParamsIncomplete)
+			results = append(results, result)
+			continue
+		}
+		// Kubernetes filesystems attachments are PersistentVolumeClaims
+		// that are provisioned by the StatefulSet, not by the storage
+		// provider. Instead we check that it exists and source any
+		// filesystem attachment required information.
+		info, err := v.getPersistentVolumeClaim(
+			ctx,
+			*param.AttachmentParams.ProviderId,
+			param.ReadOnly,
+			param.InstanceId.String(),
+		)
+		if err != nil {
+			result.Error = errors.Errorf(
+				"finalising kubernetes filesystem %q attachment to %q with PersistentVolumeClaim %q: %w",
+				param.Filesystem.Id(),
+				param.Machine.Id(),
+				*param.AttachmentParams.ProviderId,
+				err,
+			)
+		} else {
+			result.FilesystemAttachment = &jujustorage.FilesystemAttachment{
+				Filesystem:               param.Filesystem,
+				Machine:                  param.Machine,
+				FilesystemAttachmentInfo: info,
+			}
+		}
+
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func (v *filesystemSource) getPersistentVolumeClaim(
+	ctx context.Context, pvcName string, readOnly bool, podName string,
+) (jujustorage.FilesystemAttachmentInfo, error) {
+	client := v.client.client()
+	pvcAPI := client.CoreV1().PersistentVolumeClaims(v.client.namespace)
+	_, err := pvcAPI.Get(ctx, pvcName, v1.GetOptions{})
+	if k8serrors.IsNotFound(err) {
+		return jujustorage.FilesystemAttachmentInfo{}, errors.New(
+			"kubernetes PersistentVolumeClaim not found",
+		).Add(coreerrors.NotFound)
+	} else if err != nil {
+		return jujustorage.FilesystemAttachmentInfo{}, errors.Errorf(
+			"getting kubernetes PersistentVolumeClaim: %w", err,
+		)
+	}
+
+	// We attempt to find the mount path in the charm container by going through
+	// the pod -> container -> volume mount.
+	// If any of the lookup fails, stop the search and return an error.
+	pod, err := client.CoreV1().Pods(v.client.namespace).Get(ctx, podName, v1.GetOptions{})
+	if k8serrors.IsNotFound(err) {
+		return jujustorage.FilesystemAttachmentInfo{}, errors.Errorf(
+			"kubernetes Pod %q not found",
+			podName,
+		).Add(coreerrors.NotFound)
+	} else if err != nil {
+		return jujustorage.FilesystemAttachmentInfo{}, errors.Errorf(
+			"getting kubernetes Pod %q: %w", podName, err,
+		)
+	}
+
+	containerIdx := slices.IndexFunc(pod.Spec.Containers, func(container core.Container) bool {
+		return container.Name == constants.ApplicationCharmContainer
+	})
+	if containerIdx == -1 {
+		return jujustorage.FilesystemAttachmentInfo{}, errors.New(
+			"missing charm container").Add(coreerrors.NotProvisioned)
+	}
+
+	charmContainer := pod.Spec.Containers[containerIdx]
+	volIdx := slices.IndexFunc(pod.Spec.Volumes, func(volume core.Volume) bool {
+		return volume.PersistentVolumeClaim.ClaimName == pvcName
+	})
+	if volIdx == -1 {
+		return jujustorage.FilesystemAttachmentInfo{}, errors.Errorf(
+			"missing pod volume which references claim %q", pvcName,
+		).Add(coreerrors.NotProvisioned)
+	}
+
+	volumeName := pod.Spec.Volumes[volIdx].Name
+	volumeMountIdx := slices.IndexFunc(charmContainer.VolumeMounts, func(mount core.VolumeMount) bool {
+		return mount.Name == volumeName
+	})
+	if volumeMountIdx == -1 {
+		return jujustorage.FilesystemAttachmentInfo{}, errors.Errorf(
+			"missing pod volume mount %q", volumeName,
+		).Add(coreerrors.NotProvisioned)
+	}
+	volumeMount := charmContainer.VolumeMounts[volumeMountIdx]
+
+	fsAttachment := jujustorage.FilesystemAttachmentInfo{
+		Path:     volumeMount.MountPath,
+		ReadOnly: readOnly,
+	}
+	return fsAttachment, nil
 }
 
 // DetachFilesystems is specified on the jujustorage.FilesystemSource interface.
@@ -498,65 +710,145 @@ func (v *filesystemSource) DetachFilesystems(
 	ctx context.Context,
 	params []jujustorage.FilesystemAttachmentParams,
 ) ([]error, error) {
-	// noop
-	return make([]error, len(params)), nil
+	pvcNamesInformational := make([]string, 0, len(params))
+	for _, param := range params {
+		if param.AttachmentParams.ProviderId != nil {
+			pvcNamesInformational = append(
+				pvcNamesInformational, *param.AttachmentParams.ProviderId)
+		}
+	}
+	logger.Infof(
+		ctx, "destroying kubernetes PersistentVolumeClaim(s): %v",
+		pvcNamesInformational,
+	)
+	errs := make([]error, 0, len(params))
+	for _, param := range params {
+		if param.AttachmentParams.ProviderId == nil {
+			err := errors.Errorf(
+				"kubernetes filesystem %q attachment to %q missing provider id",
+				param.Filesystem.Id(), param.Machine.Id(),
+			)
+			errs = append(errs, err)
+			continue
+		}
+		pvcName := *param.AttachmentParams.ProviderId
+		err := v.deletePersistentVolumeClaim(ctx, pvcName)
+		if err != nil {
+			err = errors.Errorf(
+				"destroying kubernetes PersistentVolumeClaim %q: %w",
+				pvcName, err,
+			)
+		}
+		errs = append(errs, err)
+	}
+	return errs, nil
+}
+
+func (v *filesystemSource) deletePersistentVolumeClaim(
+	ctx context.Context, pvcName string,
+) error {
+	client := v.client.client()
+	pvcAPI := client.CoreV1().PersistentVolumeClaims(v.client.namespace)
+	pvc, err := pvcAPI.Get(ctx, pvcName, v1.GetOptions{})
+	if k8serrors.IsNotFound(err) {
+		return nil
+	} else if err != nil {
+		return errors.Errorf(
+			"getting kubernetes PersistentVolumeClaim: %w", err,
+		)
+	}
+	if pvc.Spec.VolumeName != "" {
+		err := v.ensurePersistentVolumeWillRetain(ctx, pvc.Spec.VolumeName)
+		if err != nil {
+			return errors.Errorf(
+				"updating kubernetes PersistentVolume %q ReclaimPolicy to Retain",
+				pvc.Spec.VolumeName,
+			)
+		}
+	}
+	err = pvcAPI.Delete(ctx, pvcName, v1.DeleteOptions{
+		PropagationPolicy: constants.DefaultPropagationPolicy(),
+	})
+	if k8serrors.IsNotFound(err) {
+		return nil
+	} else if err != nil {
+		return errors.Errorf(
+			"deleting kubernetes PersistentVolumeClaim: %w", err,
+		)
+	}
+	return nil
+}
+
+func (v *filesystemSource) ensurePersistentVolumeWillRetain(
+	ctx context.Context, pvName string,
+) error {
+	pvAPI := v.client.client().CoreV1().PersistentVolumes()
+	pv, err := pvAPI.Get(ctx, pvName, v1.GetOptions{})
+	if k8serrors.IsNotFound(err) {
+		logger.Warningf(
+			ctx, "kubernetes PersistentVolume %q missing during PersistentVolumeClaim delete",
+			pvName,
+		)
+		return nil
+	} else if err != nil {
+		return errors.Errorf("getting kubernetes PersistentVolume: %w", err)
+	}
+	if pv.Spec.PersistentVolumeReclaimPolicy == core.PersistentVolumeReclaimRetain {
+		return nil
+	}
+	pv.Spec.PersistentVolumeReclaimPolicy = core.PersistentVolumeReclaimRetain
+	pv, err = pvAPI.Update(ctx, pv, v1.UpdateOptions{
+		FieldManager: "juju",
+	})
+	if k8serrors.IsNotFound(err) {
+		logger.Warningf(
+			ctx, "kubernetes PersistentVolume %q missing during Retain update",
+			pvName,
+		)
+		return nil
+	} else if err != nil {
+		return errors.Errorf("updating kubernetes PersistentVolume: %w", err)
+	}
+	if pv.Spec.PersistentVolumeReclaimPolicy != core.PersistentVolumeReclaimRetain {
+		return errors.Errorf(
+			"kubernetes PersistentVolume %q ReclaimPolicy unable to be set to Retain",
+			pvName,
+		)
+	}
+	return nil
 }
 
 // ImportFilesystem is specified on the jujustorage.FilesystemImporter interface.
 func (v *filesystemSource) ImportFilesystem(
 	ctx context.Context,
 	filesystemId string,
+	storageName string,
 	resourceTags map[string]string,
+	force bool,
 ) (jujustorage.FilesystemInfo, error) {
-	pv, err := v.client.client().CoreV1().PersistentVolumes().Get(ctx, filesystemId, v1.GetOptions{})
+	return jujustorage.FilesystemInfo{}, errors.New("import filesystem not implemented")
+}
+
+// GetPersistentVolumeClaimIdentifiers returns a list of paired identifiers
+// representing Kubernetes persistent volume claims. Specified on the
+// jujustorage.FilesystemModelMigration interface.
+func (k *kubernetesClient) GetPersistentVolumeClaimIdentifiers(ctx context.Context) ([]jujustorage.PersistentVolumeClaimIdentifiers, error) {
+	pvcAPI := k.client().CoreV1().PersistentVolumeClaims(k.namespace)
+	pvcList, err := pvcAPI.List(ctx, v1.ListOptions{})
 	if k8serrors.IsNotFound(err) {
-		return jujustorage.FilesystemInfo{}, errors.Errorf(
-			"persistent volume %q not found", filesystemId,
+		return nil, errors.New(
+			"kubernetes PersistentVolume not found",
 		).Add(coreerrors.NotFound)
 	} else if err != nil {
-		return jujustorage.FilesystemInfo{}, errors.Capture(err)
+		return nil, errors.Errorf(
+			"getting kubernetes PersistentVolume: %w", err,
+		)
 	}
 
-	if err := v.validateImportPV(pv); err != nil {
-		return jujustorage.FilesystemInfo{}, errors.Capture(err)
-	}
-	return jujustorage.FilesystemInfo{
-		Size:       uint64(pv.Size()),
-		ProviderId: pv.Name,
-	}, nil
-}
-
-// validateImportPV verifies whether the given PersistentVolume is eligible for import.
-func (v *filesystemSource) validateImportPV(vol *core.PersistentVolume) error {
-	// The PersistentVolume's reclaim policy must be set to Retain.
-	if vol.Spec.PersistentVolumeReclaimPolicy != core.PersistentVolumeReclaimRetain {
-		return errors.Errorf(
-			"importing kubernetes persistent volume %q with reclaim policy %q is not supported (must be %q)",
-			vol.Name,
-			vol.Spec.PersistentVolumeReclaimPolicy,
-			core.PersistentVolumeReclaimRetain,
-		).Add(coreerrors.NotSupported)
-	}
-	// The PersistentVolume must not be bound to any PersistentVolumeClaim.
-	if vol.Spec.ClaimRef != nil {
-		return errors.Errorf(
-			"importing kubernetes persistent volume %q already bound to a claim is not supported",
-			vol.Name,
-		).Add(coreerrors.NotSupported)
-	}
-	return nil
-}
-
-func foreachFilesystem(ids []string, f func(string) error) []error {
-	results := make([]error, len(ids))
-	var wg sync.WaitGroup
-	for i, id := range ids {
-		wg.Add(1)
-		go func(i int, id string) {
-			defer wg.Done()
-			results[i] = f(id)
-		}(i, id)
-	}
-	wg.Wait()
-	return results
+	return transform.Slice(pvcList.Items, func(in core.PersistentVolumeClaim) jujustorage.PersistentVolumeClaimIdentifiers {
+		return jujustorage.PersistentVolumeClaimIdentifiers{
+			UID:  string(in.UID),
+			Name: in.Name,
+		}
+	}), nil
 }

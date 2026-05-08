@@ -26,10 +26,9 @@ import (
 
 //go:generate go run go.uber.org/mock/mockgen -typed -package uniter -destination clock_mock_test.go github.com/juju/clock Clock
 //go:generate go run go.uber.org/mock/mockgen -typed -package uniter -destination secret_mocks_test.go github.com/juju/juju/apiserver/facades/agent/uniter SecretService
-//go:generate go run go.uber.org/mock/mockgen -typed -package uniter -destination leadership_mocks_test.go github.com/juju/juju/core/leadership Checker,Token
 //go:generate go run go.uber.org/mock/mockgen -typed -package uniter_test -destination legacy_service_mock_test.go github.com/juju/juju/apiserver/facades/agent/uniter ModelConfigService,ModelInfoService,MachineService
 //go:generate go run go.uber.org/mock/mockgen -typed -package uniter_test -destination facade_mock_test.go github.com/juju/juju/internal/worker/watcherregistry WatcherRegistry
-//go:generate go run go.uber.org/mock/mockgen -typed -package uniter -destination service_mock_test.go github.com/juju/juju/apiserver/facades/agent/uniter ApplicationService,ResolveService,StatusService,RelationService,ModelInfoService,MachineService,NetworkService,OperationService,RemovalService,StorageProvisioningService,BlockDeviceService
+//go:generate go run go.uber.org/mock/mockgen -typed -package uniter -destination service_mock_test.go github.com/juju/juju/apiserver/facades/agent/uniter ApplicationService,ResolveService,StatusService,RelationService,ModelInfoService,MachineService,NetworkService,OperationService,PortService,RemovalService,StorageProvisioningService,BlockDeviceService,CrossModelRelationService,UnitStateService,ControllerNodeService,TracingService
 //go:generate go run go.uber.org/mock/mockgen -typed -package uniter -destination watcher_registry_mock_test.go github.com/juju/juju/internal/worker/watcherregistry WatcherRegistry
 //go:generate go run go.uber.org/mock/mockgen -typed -package uniter -destination apiserver_mock_test.go github.com/juju/juju/apiserver/common APIAddressAccessor
 //go:generate go run go.uber.org/mock/mockgen -typed -package uniter -destination relation_mock_test.go github.com/juju/juju/domain/relation RelationUnitsWatcher
@@ -41,6 +40,7 @@ import (
 //
 // Suites embedding this base are skipped.
 // Testing factory functionality is removed.
+//
 // Deprecated: Retained for test documentation purposes.
 type uniterSuiteBase struct {
 	testing.ApiServerSuite
@@ -64,7 +64,7 @@ func (s *uniterSuiteBase) setUpMocks(c *tc.C) *gomock.Controller {
 }
 
 func (s *uniterSuiteBase) SetUpTest(c *tc.C) {
-	s.ControllerConfigAttrs = map[string]interface{}{
+	s.ControllerConfigAttrs = map[string]any{
 		controller.Features: featureflag.RawK8sSpec,
 	}
 	s.WithLeaseManager = true

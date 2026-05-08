@@ -10,22 +10,21 @@ import (
 	"os"
 
 	"github.com/juju/clock"
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/errors"
 
 	corelogger "github.com/juju/juju/core/logger"
 	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/modelmigration"
-	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/core/resource"
 	"github.com/juju/juju/core/semversion"
 	corestorage "github.com/juju/juju/core/storage"
 	domaincharm "github.com/juju/juju/domain/application/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/domain/modeldefaults"
 	migrations "github.com/juju/juju/domain/modelmigration"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/config"
-	"github.com/juju/juju/internal/charm"
 	internalerrors "github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/internal/naturalsort"
 	"github.com/juju/juju/internal/services"
@@ -52,79 +51,19 @@ type Coordinator interface {
 	Perform(ctx context.Context, scope modelmigration.Scope, model description.Model) (err error)
 }
 
-// ModelExporter facilitates partial and full export of a model.
-type ModelExporter struct {
-	storageRegistryGetter corestorage.ModelStorageRegistryGetter
-	operationExporter     OperationExporter
-
-	scope       modelmigration.Scope
-	coordinator Coordinator
-	logger      corelogger.Logger
-
-	clock clock.Clock
-}
-
-// NewModelExporter returns a new ModelExporter that encapsulates the
-// legacyStateExporter. The legacyStateExporter is being deprecated, only
-// needed until the migration to dqlite is complete.
-func NewModelExporter(
-	operationExporter OperationExporter,
-	scope modelmigration.Scope,
-	storageRegistryGetter corestorage.ModelStorageRegistryGetter,
-	coordinator Coordinator,
-	logger corelogger.Logger,
-	clock clock.Clock,
-) *ModelExporter {
-	me := &ModelExporter{
-		operationExporter:     operationExporter,
-		scope:                 scope,
-		storageRegistryGetter: storageRegistryGetter,
-		coordinator:           coordinator,
-		logger:                logger,
-		clock:                 clock,
-	}
-	me.operationExporter.ExportOperations(me.storageRegistryGetter)
-	return me
-}
-
-// ExportModel serializes a model description from the database (legacy mongodb
-// plus dqlite) contents.
-func (e *ModelExporter) ExportModel(ctx context.Context, store objectstore.ObjectStore) (description.Model, error) {
-	var model description.Model
-	if model == nil {
-		return nil, errors.ConstError("model export not implemented")
-	}
-	return e.Export(ctx, model)
-}
-
-// Export serializes a model description from the database contents.
-func (e *ModelExporter) Export(ctx context.Context, model description.Model) (description.Model, error) {
-	if err := e.coordinator.Perform(ctx, e.scope, model); err != nil {
-		return nil, errors.Trace(err)
-	}
-	// The model now contains all the exported data from the legacy state along
-	// with the new domains' one. Time to validate.
-	if err := model.Validate(); err != nil {
-		return nil, errors.Trace(err)
-	}
-
-	return model, nil
-}
-
 // ConfigSchemaSourceProvider returns a config.ConfigSchemaSourceGetter based
 // on the given cloud service.
 type ConfigSchemaSourceProvider = func(environs.CloudService) config.ConfigSchemaSourceGetter
 
 // ModelImporter represents a model migration that implements Import.
 type ModelImporter struct {
-	controllerConfigService ControllerConfigService
-	domainServices          services.DomainServicesGetter
-	storageRegistryGetter   corestorage.ModelStorageRegistryGetter
-	objectStoreGetter       objectstore.ModelObjectStoreGetter
+	domainServices        services.DomainServicesGetter
+	storageRegistryGetter corestorage.ModelStorageRegistryGetter
 
-	scope  modelmigration.ScopeForModel
-	logger corelogger.Logger
-	clock  clock.Clock
+	controllerUUID string
+	scope          modelmigration.ScopeForModel
+	logger         corelogger.Logger
+	clock          clock.Clock
 }
 
 // NewModelImporter returns a new ModelImporter that encapsulates the
@@ -132,21 +71,19 @@ type ModelImporter struct {
 // needed until the migration to dqlite is complete.
 func NewModelImporter(
 	scope modelmigration.ScopeForModel,
-	controllerConfigService ControllerConfigService,
 	domainServices services.DomainServicesGetter,
 	storageRegistryGetter corestorage.ModelStorageRegistryGetter,
-	objectStoreGetter objectstore.ModelObjectStoreGetter,
+	controllerUUID string,
 	logger corelogger.Logger,
 	clock clock.Clock,
 ) *ModelImporter {
 	return &ModelImporter{
-		scope:                   scope,
-		controllerConfigService: controllerConfigService,
-		domainServices:          domainServices,
-		storageRegistryGetter:   storageRegistryGetter,
-		objectStoreGetter:       objectStoreGetter,
-		logger:                  logger,
-		clock:                   clock,
+		scope:                 scope,
+		controllerUUID:        controllerUUID,
+		domainServices:        domainServices,
+		storageRegistryGetter: storageRegistryGetter,
+		logger:                logger,
+		clock:                 clock,
 	}
 }
 
@@ -159,20 +96,30 @@ func (i *ModelImporter) ImportModel(ctx context.Context, bytes []byte) error {
 		return errors.Trace(err)
 	}
 
+	configGetter, err := newEphemeralProviderConfigGetter(i.controllerUUID, model, getterShim{servicesGetter: i.domainServices})
+	if err != nil {
+		return internalerrors.Errorf("creating ephemeral provider config getter: %w", err)
+	}
+
 	modelUUID := coremodel.UUID(model.UUID())
 
 	// The domain services are not available during the import, until the
 	// model is created and activated. The model defaults provider is used
 	// to provide the model defaults during the migration, so we allow access
 	// but in a lazy way.
-
 	modelDefaultsProvider := modelDefaultsProvider{
 		modelUUID:      modelUUID,
 		servicesGetter: i.domainServices,
 	}
 
 	coordinator := modelmigration.NewCoordinator(i.logger)
-	migrations.ImportOperations(coordinator, modelDefaultsProvider, i.storageRegistryGetter, i.objectStoreGetter, i.clock, i.logger)
+	migrations.ImportOperations(
+		coordinator,
+		modelDefaultsProvider,
+		i.storageRegistryGetter,
+		configGetter,
+		i.clock,
+		i.logger)
 	if err := coordinator.Perform(ctx, i.scope(modelUUID), model); err != nil {
 		return errors.Trace(err)
 	}
@@ -190,6 +137,7 @@ func (p modelDefaultsProvider) ModelDefaults(ctx context.Context) (modeldefaults
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
+
 	modelDefaults := domainServices.ModelDefaults()
 	fn := modelDefaults.ModelDefaultsProvider(p.modelUUID)
 	return fn(ctx)

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Integrate MAAS cloud with Juju for bare metal deployments, including version requirements, authentication, and cloud credential setup."
+---
+
 (cloud-maas)=
 # The MAAS cloud and Juju
 

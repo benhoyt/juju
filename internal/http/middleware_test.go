@@ -167,7 +167,7 @@ func (s *RetrySuite) TestRetryRequired(c *tc.C) {
 
 	retries := 3
 	go func() {
-		for i := 0; i < retries; i++ {
+		for range retries {
 			ch <- time.Now()
 		}
 	}()
@@ -210,8 +210,53 @@ func (s *RetrySuite) TestRetryRequiredUsingBackoff(c *tc.C) {
 
 	retries := 3
 	go func() {
-		for i := 0; i < retries; i++ {
+		for range retries {
 			ch <- time.Now()
+		}
+	}()
+
+	middleware := makeRetryMiddleware(transport, RetryPolicy{
+		Attempts: retries,
+		Delay:    time.Second,
+		MaxDelay: time.Minute,
+	}, clock, loggertesting.WrapCheckLog(c))
+
+	resp, err := middleware.RoundTrip(req) //nolint:bodyclose
+	c.Assert(err, tc.IsNil)
+	c.Assert(resp.StatusCode, tc.Equals, http.StatusOK)
+}
+
+func (s *RetrySuite) TestRetryRequiredUsingBackoffDate(c *tc.C) {
+	ctrl := gomock.NewController(c)
+	defer ctrl.Finish()
+
+	req, err := http.NewRequest("GET", "http://meshuggah.rocks", nil)
+	c.Assert(err, tc.IsNil)
+
+	header := make(http.Header)
+	header.Add("Retry-After", "Wed, 21 Oct 2015 07:28:00 UTC")
+
+	transport := NewMockRoundTripper(ctrl)
+	transport.EXPECT().RoundTrip(req).Return(&http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     header,
+	}, nil).Times(2)
+	transport.EXPECT().RoundTrip(req).Return(&http.Response{
+		StatusCode: http.StatusOK,
+	}, nil)
+
+	ch := make(chan time.Time)
+
+	clock := NewMockClock(ctrl)
+	now, err := time.Parse(time.RFC1123, "Wed, 21 Oct 2015 07:27:18 UTC")
+	c.Assert(err, tc.IsNil)
+	clock.EXPECT().Now().Return(now).AnyTimes()
+	clock.EXPECT().After(time.Second * 42).Return(ch).Times(2)
+
+	retries := 3
+	go func() {
+		for range retries {
+			ch <- now
 		}
 	}()
 
@@ -320,7 +365,7 @@ func (s *RetrySuite) TestRetryRequiredAndExceeded(c *tc.C) {
 
 	retries := 3
 	go func() {
-		for i := 0; i < retries; i++ {
+		for range retries {
 			ch <- time.Now()
 		}
 	}()

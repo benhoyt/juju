@@ -15,11 +15,11 @@ import (
 
 	"github.com/juju/juju/api/client/modelconfig"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/block"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/environs/config"
-	"github.com/juju/juju/internal/cmd"
 	coretools "github.com/juju/juju/internal/tools"
 	"github.com/juju/juju/rpc/params"
 )
@@ -128,7 +128,7 @@ const (
 
 // ModelConfigAPI defines the model config API methods.
 type ModelConfigAPI interface {
-	ModelGet(ctx context.Context) (map[string]interface{}, error)
+	ModelGet(ctx context.Context) (map[string]any, error)
 	Close() error
 }
 

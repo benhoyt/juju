@@ -11,8 +11,8 @@ import (
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	corelogger "github.com/juju/juju/core/logger"
-	"github.com/juju/juju/internal/cmd"
 )
 
 // JujuLogContext is the Context for the JujuLogCommand
@@ -45,16 +45,16 @@ func (c *JujuLogCommand) Info() *cmd.Info {
 	return jujucmd.Info(&cmd.Info{
 		Name:     "juju-log",
 		Args:     "<message>",
-		Purpose:  "Write a message to the juju log.",
+		Purpose:  "Writes a message to Juju logs.",
 		Examples: examples,
 	})
 }
 
 func (c *JujuLogCommand) SetFlags(f *gnuflag.FlagSet) {
-	f.BoolVar(&c.Debug, "debug", false, "log at debug level")
-	f.StringVar(&c.Level, "l", "INFO", "Send log message at the given level")
+	f.BoolVar(&c.Debug, "debug", false, "Sends message at debug level.")
+	f.StringVar(&c.Level, "l", "INFO", "Sends message at the given level.")
 	f.StringVar(&c.Level, "log-level", "INFO", "")
-	f.StringVar(&c.formatFlag, "format", "", "deprecated format flag")
+	f.StringVar(&c.formatFlag, "format", "", "(DEPRECATED) Specifies the message format.")
 }
 
 func (c *JujuLogCommand) Init(args []string) error {

@@ -4,7 +4,6 @@
 package relation
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -15,8 +14,8 @@ import (
 	corestatus "github.com/juju/juju/core/status"
 	"github.com/juju/juju/core/unit"
 	"github.com/juju/juju/core/watcher"
+	"github.com/juju/juju/domain/deployment/charm"
 	sequence "github.com/juju/juju/domain/sequence"
-	"github.com/juju/juju/internal/charm"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -274,13 +273,6 @@ type RelationUnitsChange struct {
 	Departed []unit.Name
 }
 
-// SubordinateCreator creates subordinate units in the database.
-type SubordinateCreator interface {
-	// CreateSubordinate is the signature of the function used to create units on a
-	// subordinate application.
-	CreateSubordinate(ctx context.Context, subordinateAppID application.UUID, principalUnitName unit.Name) error
-}
-
 // GoalStateRelationData contains the necessary data from the relation
 // domain to put together a unit's goal state.
 type GoalStateRelationData struct {
@@ -294,6 +286,7 @@ type ImportRelationsArgs []ImportRelationArg
 
 // ImportRelationArg is a single argument for the ImportRelation method.
 type ImportRelationArg struct {
+	UUID      corerelation.UUID
 	ID        int
 	Key       corerelation.Key
 	Endpoints []ImportEndpoint
@@ -308,10 +301,10 @@ type ImportEndpoint struct {
 	EndpointName string
 	// UnitSettings is a map by unit name containing a map of key value pairs
 	// comprising that unit's settings.
-	UnitSettings map[string]map[string]interface{}
+	UnitSettings map[string]map[string]any
 	// UnitSettings is a map of key value pairs comprising the
 	// application's settings.
-	ApplicationSettings map[string]interface{}
+	ApplicationSettings map[string]any
 }
 
 // ExportRelation holds information about a relation to use in export.
@@ -348,7 +341,7 @@ type GetRelationUUIDForRemovalArgs struct {
 // should be used.
 func (d GetRelationUUIDForRemovalArgs) Validate() error {
 	if len(d.Endpoints) == 1 {
-		return errors.Errorf("cannot remove a peer relation")
+		return errors.Errorf("removing a peer relation")
 	}
 	if len(d.Endpoints) > 2 {
 		return errors.Errorf("invalid endpoint length: %d, must be 2 or 0 with relation ID provided", len(d.Endpoints))

@@ -263,12 +263,18 @@ func (h *HandlerSuite) TestPatchLabelsAdd(c *tc.C) {
 }
 
 func (h *HandlerSuite) TestPatchLabelsReplace(c *tc.C) {
+	labels := providerutils.LabelsMerge(
+		providerutils.LabelForKeyValue(
+			constants.LabelJujuAppCreatedBy, "replace-app",
+		),
+		providerutils.LabelForKeyValue(
+			constants.LabelKubernetesAppManaged, "spark8t",
+		),
+	)
 	pod := core.Pod{
 		ObjectMeta: meta.ObjectMeta{
-			Name: "pod",
-			Labels: providerutils.LabelForKeyValue(
-				constants.LabelJujuAppCreatedBy, "replace-app",
-			),
+			Name:   "pod",
+			Labels: labels,
 		},
 	}
 	podBytes, err := json.Marshal(&pod)
@@ -314,10 +320,11 @@ func (h *HandlerSuite) TestPatchLabelsReplace(c *tc.C) {
 	patchOperations := []patchOperation{}
 	err = json.Unmarshal(outReview.Response.Patch, &patchOperations)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(len(patchOperations), tc.Equals, 4)
+	c.Assert(len(patchOperations), tc.Equals, 3)
 
 	expectedLabels := providerutils.LabelForKeyValue(
 		constants.LabelJujuAppCreatedBy, appName)
+
 	for k, v := range expectedLabels {
 		found := false
 		for _, patchOp := range patchOperations {
@@ -343,6 +350,80 @@ func (h *HandlerSuite) TestPatchLabelsReplace(c *tc.C) {
 		}
 		c.Assert(found, tc.IsTrue)
 	}
+
+	managedByPath := fmt.Sprintf("/metadata/labels/%s", patchEscape(constants.LabelKubernetesAppManaged))
+	for _, op := range patchOperations {
+		c.Check(op.Path, tc.Not(tc.Equals), managedByPath)
+	}
+}
+
+func (h *HandlerSuite) TestPatchForLabelsSkipManagedByLabelReplace(c *tc.C) {
+	labels := map[string]string{
+		constants.LabelJujuAppCreatedBy:     "spark",
+		constants.LabelKubernetesAppManaged: "spark8t",
+	}
+
+	patchOperations := patchForLabels(
+		c.Context(),
+		h.logger,
+		labels,
+		"test-app",
+		constants.LabelVersion2,
+		h.controllerUUID,
+		h.modelUUID,
+		h.modelName,
+	)
+
+	managedByPath := fmt.Sprintf("/metadata/labels/%s", patchEscape(constants.LabelKubernetesAppManaged))
+	createdByPath := fmt.Sprintf("/metadata/labels/%s", patchEscape(constants.LabelJujuAppCreatedBy))
+
+	var foundCreatedByAddLabelOp bool
+	for _, op := range patchOperations {
+		if op.Path == createdByPath {
+			c.Check(op.Op, tc.Equals, replaceOp)
+			foundCreatedByAddLabelOp = true
+		}
+		// Ensure no managed-by label ops are present for replace.
+		c.Check(op.Path, tc.Not(tc.Equals), managedByPath)
+	}
+
+	c.Check(foundCreatedByAddLabelOp, tc.IsTrue)
+}
+
+func (h *HandlerSuite) TestPatchForLabelsRetainsManagedByLabelAdd(c *tc.C) {
+	labels := map[string]string{
+		"not-a-defined-label": "spark8t",
+	}
+
+	patchOperations := patchForLabels(
+		c.Context(),
+		h.logger,
+		labels,
+		"test-app",
+		constants.LabelVersion2,
+		h.controllerUUID,
+		h.modelUUID,
+		h.modelName,
+	)
+
+	managedByPath := fmt.Sprintf("/metadata/labels/%s", patchEscape(constants.LabelKubernetesAppManaged))
+	createdByPath := fmt.Sprintf("/metadata/labels/%s", patchEscape(constants.LabelJujuAppCreatedBy))
+
+	var foundCreatedByAddLabelOp bool
+	var foundManagedByAddLabelOp bool
+	for _, op := range patchOperations {
+		switch op.Path {
+		case createdByPath:
+			c.Check(op.Op, tc.Equals, addOp)
+			foundCreatedByAddLabelOp = true
+		case managedByPath:
+			c.Check(op.Op, tc.Equals, addOp)
+			foundManagedByAddLabelOp = true
+		}
+	}
+
+	c.Check(foundCreatedByAddLabelOp, tc.IsTrue)
+	c.Check(foundManagedByAddLabelOp, tc.IsTrue)
 }
 
 func (h *HandlerSuite) TestSelfSubjectAccessReviewIgnore(c *tc.C) {

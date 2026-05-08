@@ -20,12 +20,11 @@ import (
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	machineerrors "github.com/juju/juju/domain/machine/errors"
 	domainnetwork "github.com/juju/juju/domain/network"
-	schematesting "github.com/juju/juju/domain/schema/testing"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 )
 
 type machinePlacementSuite struct {
-	schematesting.ModelSuite
+	baseSuite
 
 	state *State
 }
@@ -35,15 +34,15 @@ func TestMachinePlacementSuite(t *testing.T) {
 }
 
 func (s *machinePlacementSuite) SetUpTest(c *tc.C) {
-	s.ModelSuite.SetUpTest(c)
+	s.baseSuite.SetUpTest(c)
 
-	s.state = NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	s.state = NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 }
 
 func (s *machinePlacementSuite) TestIsMachineControllerApplicationController(c *tc.C) {
 	s.createApplication(c, true)
 
-	st := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	machineName := s.createMachine(c)
 
@@ -55,7 +54,7 @@ func (s *machinePlacementSuite) TestIsMachineControllerApplicationController(c *
 func (s *machinePlacementSuite) TestIsMachineControllerApplicationNonController(c *tc.C) {
 	s.createApplication(c, false)
 
-	st := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	machineName := s.createMachine(c)
 
@@ -67,7 +66,7 @@ func (s *machinePlacementSuite) TestIsMachineControllerApplicationNonController(
 func (s *machinePlacementSuite) TestIsMachineControllerFailure(c *tc.C) {
 	s.createApplication(c, false)
 
-	st := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	machineName := s.createMachine(c)
 
@@ -79,7 +78,7 @@ func (s *machinePlacementSuite) TestIsMachineControllerFailure(c *tc.C) {
 // TestIsMachineControllerNotFound asserts that a NotFound error is returned when the
 // machine is not found.
 func (s *machinePlacementSuite) TestIsMachineControllerNotFound(c *tc.C) {
-	st := NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
+	st := NewState(s.TxnRunnerFactory(), s.modelUUID, clock.WallClock, loggertesting.WrapCheckLog(c))
 
 	_, err := st.IsMachineController(c.Context(), "666")
 	c.Assert(err, tc.ErrorIs, machineerrors.MachineNotFound)
@@ -152,11 +151,12 @@ func (s *machinePlacementSuite) createUnit(c *tc.C) unit.Name {
 	netNodeUUID := tc.Must(c, domainnetwork.NewNetNodeUUID)
 	unitNames, _, err := s.state.AddIAASUnits(c.Context(), appID, application.AddIAASUnitArg{
 		AddUnitArg: application.AddUnitArg{
+			UnitUUID:    tc.Must(c, unit.NewUUID),
 			NetNodeUUID: netNodeUUID,
 		},
 		MachineNetNodeUUID: netNodeUUID,
 		MachineUUID:        machinetesting.GenUUID(c),
-		Nonce:              ptr("foo"),
+		Nonce:              new("foo"),
 	})
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(unitNames, tc.HasLen, 1)

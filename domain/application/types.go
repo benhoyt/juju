@@ -15,16 +15,16 @@ import (
 	"github.com/juju/juju/core/resource"
 	coreunit "github.com/juju/juju/core/unit"
 	domaincharm "github.com/juju/juju/domain/application/charm"
-	"github.com/juju/juju/domain/application/internal"
 	"github.com/juju/juju/domain/constraints"
 	"github.com/juju/juju/domain/deployment"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/domain/ipaddress"
 	"github.com/juju/juju/domain/life"
 	domainnetwork "github.com/juju/juju/domain/network"
 	"github.com/juju/juju/domain/status"
-	internalcharm "github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
-	"github.com/juju/juju/internal/storage"
+	domainstorage "github.com/juju/juju/domain/storage"
+	internalstorage "github.com/juju/juju/internal/storage"
 )
 
 // BaseAddApplicationArg contains parameters for saving an application to state
@@ -53,7 +53,7 @@ type BaseAddApplicationArg struct {
 	PendingResources []resource.UUID
 	// StorageDirectives defines the list of storage directives to add to an
 	// application. The Name values must match the storage defined in the Charm.
-	StorageDirectives []internal.CreateApplicationStorageDirectiveArg
+	StorageDirectives []domainstorage.DirectiveArg
 	// Config contains the configuration for the application, overlaid on top
 	// of the charm's default configuration.
 	Config map[string]AddApplicationConfig
@@ -116,8 +116,8 @@ type ScaleState struct {
 	ScaleTarget int
 }
 
-// CloudService contains parameters for an application's cloud service.
-type CloudService struct {
+// K8sService contains parameters for an application's cloud service.
+type K8sService struct {
 	ProviderID string
 	Address    *ServiceAddress
 }
@@ -125,7 +125,7 @@ type CloudService struct {
 // ServiceAddress contains parameters for a cloud service address.
 // This may be from a load balancer, or cluster service etc.
 type ServiceAddress struct {
-	Device      CloudServiceDevice
+	Device      K8sServiceDevice
 	Value       string
 	AddressType ipaddress.AddressType
 	Scope       ipaddress.Scope
@@ -133,9 +133,9 @@ type ServiceAddress struct {
 	ConfigType  ipaddress.ConfigType
 }
 
-// CloudServiceDevice is the placeholder link layer device
+// K8sServiceDevice is the placeholder link layer device
 // used to tie the cloud service IP address to the application.
-type CloudServiceDevice struct {
+type K8sServiceDevice struct {
 	Name              string
 	DeviceTypeID      domainnetwork.DeviceType
 	VirtualPortTypeID domainnetwork.VirtualPortType
@@ -197,18 +197,20 @@ type AddCAASUnitArg struct {
 
 // AddUnitArg contains parameters for adding a unit to state.
 type AddUnitArg struct {
-	internal.CreateUnitStorageArg
+	domainstorage.CreateUnitStorageArg
 	UnitStatusArg
 	Constraints constraints.Constraints
 	Placement   deployment.Placement
 
 	// NetNodeUUID is the new network node uuid to assign to this unit.
 	NetNodeUUID domainnetwork.NetNodeUUID
+	// UnitUUID is the new unit uuid to assign to this unit.
+	UnitUUID coreunit.UUID
 }
 
 // AddIAASUnitArg contains parameters for adding a IAAS unit to state.
 type AddIAASUnitArg struct {
-	internal.CreateIAASUnitStorageArg
+	domainstorage.CreateIAASUnitStorageArg
 	AddUnitArg
 	Platform deployment.Platform
 
@@ -240,6 +242,7 @@ type RegisterCAASUnitArg struct {
 	ProviderID   string
 	Address      *string
 	Ports        *[]string
+	UnitUUID     coreunit.UUID
 	NetNodeUUID  domainnetwork.NetNodeUUID
 	OrderedScale bool
 	OrderedId    int
@@ -248,7 +251,7 @@ type RegisterCAASUnitArg struct {
 	// attaching existing storage to the unit. Described as well is the set of
 	// storage directives the unit should use if it is being created for the
 	// first time.
-	internal.RegisterUnitStorageArg
+	domainstorage.RegisterUnitStorageArg
 }
 
 // UnitStatusArg contains parameters for updating a unit status in state.
@@ -258,7 +261,7 @@ type UnitStatusArg struct {
 }
 
 type SubordinateUnitArg struct {
-	internal.CreateUnitStorageArg
+	domainstorage.CreateUnitStorageArg
 	UnitStatusArg
 	SubordinateAppID application.UUID
 	// NetNodeUUID describes the network node uuid for this subordinate unit.
@@ -266,12 +269,12 @@ type SubordinateUnitArg struct {
 
 	// PrincipalUnitUUID describes the unique id of the principal unit for this
 	// subordinate.
-	PrincipalUnitUUID coreunit.UUID
+	PrincipalUnitUUID string
 }
 
 type SubordinateIAASUnitArg struct {
 	SubordinateUnitArg
-	internal.CreateIAASUnitStorageArg
+	domainstorage.CreateIAASUnitStorageArg
 }
 
 // UpdateCAASUnitParams contains parameters for updating a CAAS unit.
@@ -321,6 +324,7 @@ type ResolveControllerCharmDownload struct {
 // ResolvedCharmDownload contains parameters for a resolved charm download.
 type ResolvedCharmDownload struct {
 	// Actions is the actions that the charm supports.
+	//
 	// Deprecated: should be filled in by the charm store.
 	Actions         domaincharm.Actions
 	LXDProfile      []byte
@@ -390,39 +394,28 @@ type ExposedEndpoint struct {
 	ExposeToCIDRs set.Strings
 }
 
-// ExportApplication contains parameters for exporting an application.
-type ExportApplication struct {
-	UUID                 application.UUID
-	Name                 string
-	CharmUUID            charm.ID
-	Life                 life.Life
-	Subordinate          bool
-	CharmModifiedVersion int
-	CharmUpgradeOnError  bool
-	CharmLocator         domaincharm.CharmLocator
-	K8sServiceProviderID *string
-	EndpointBindings     map[string]string
-}
-
-// ExportUnit contains parameters for exporting a unit.
-type ExportUnit struct {
-	UUID      coreunit.UUID
-	Name      coreunit.Name
-	Machine   machine.Name
-	Principal coreunit.Name
-}
-
 // ImportUnitArg is used to import a unit.
 type ImportUnitArg struct {
-	UnitName       coreunit.Name
-	CloudContainer *CloudContainer
-	Password       *PasswordInfo
-	Constraints    constraints.Constraints
-	Machine        machine.Name
+	UnitStatusArg
+	UnitName        coreunit.Name
+	Password        *PasswordInfo
+	Constraints     constraints.Constraints
+	WorkloadVersion string
+}
+
+// ImportIAASUnitArg is used to import a IAAS unit.
+type ImportIAASUnitArg struct {
+	ImportUnitArg
+	Machine machine.Name
 	// Principal contains the name of the units principal unit. If the unit is
 	// not a subordinate, this field is empty.
 	Principal coreunit.Name
-	UnitStatusArg
+}
+
+// ImportCAASUnitArg is used to import a CAAS unit.
+type ImportCAASUnitArg struct {
+	ImportUnitArg
+	CloudContainer *CloudContainer
 }
 
 // UnitAttributes contains parameters for exporting a unit.
@@ -442,6 +435,8 @@ type K8sPodInfo struct {
 // InsertApplicationArgs contains arguments for importing an application to the
 // model.
 type InsertApplicationArgs struct {
+	// ApplicationUUID is the unique identifier for the application.
+	ApplicationUUID string
 	// Charm is the charm to add to the application. This is required to
 	// be able to add the application.
 	Charm domaincharm.Charm
@@ -464,12 +459,10 @@ type InsertApplicationArgs struct {
 	Scale int
 	// StoragePoolKind holds a mapping of the kind of storage supported
 	// by the named storage pool / provider type.
-	StoragePoolKind map[string]storage.StorageKind
+	StoragePoolKind map[string]internalstorage.StorageKind
 	// EndpointBindings is a map to bind application endpoint by name to a
 	// specific space. The default space is referenced by an empty key, if any.
 	EndpointBindings map[string]network.SpaceName
-	// PeerRelations is a map of peer relation endpoint to relation id.
-	PeerRelations map[string]int
 }
 
 // SetCharmParams contains the parameters for updating
@@ -477,21 +470,22 @@ type InsertApplicationArgs struct {
 type SetCharmParams struct {
 	// CharmOrigin contains the origin information for the new charm.
 	CharmOrigin charm.Origin
-	// Storage contains the storage directives to add or update when
-	// upgrading the charm.
-	//
-	// Any existing storage instances for the named stores will be
-	// unaffected; the storage directives will only be used for
-	// provisioning new storage instances.
-	Storage map[string]storage.Directive
 
 	// CharmUpgradeOnError indicates whether the charm must be upgraded
 	// even when on error.
 	CharmUpgradeOnError bool
 
+	// ForceBase allows a refresh to continue even if the requested base is
+	// incompatible with the currently deployed application base.
+	ForceBase bool
+
 	// EndpointBindings is an operator-defined map of endpoint names to
 	// space names that should be merged with any existing bindings.
 	EndpointBindings map[string]network.SpaceName
+
+	// StorageDirectiveOverrides is a map of storage names to storage directives to
+	// update during the upgrade.
+	StorageDirectiveOverrides map[string]ApplicationStorageDirectiveOverride
 }
 
 // SetCharmParams contains the parameters for updating
@@ -501,13 +495,56 @@ type SetCharmStateParams struct {
 	// risk and branch of the charm when it was downloaded from the charm store.
 	Channel *deployment.Channel
 
+	// Platform contains the platform information for the application. The
+	// operating system and architecture.
+	Platform *deployment.Platform
+
 	// EndpointBindings is an operator-defined map of endpoint names to
 	// space names that should be merged with any existing bindings.
 	EndpointBindings map[string]network.SpaceName
+
+	// StorageDirectivesToCreate contains storage directives that need to be
+	// created based on the new charm's storage requirements.
+	StorageDirectivesToCreate []domainstorage.DirectiveArg
+
+	// StorageDirectivesToUpdate contains storage directives that need to be
+	// applied based on the new charm's storage requirements.
+	StorageDirectivesToUpdate []domainstorage.DirectiveArg
 }
 
 // ApplicationDetails contains details about an application.
 type ApplicationDetails struct {
-	Life life.Life
-	Name string
+	UUID                   application.UUID
+	Life                   life.Life
+	Name                   string
+	IsApplicationSynthetic bool
+}
+
+// ApplicationStorageDirectiveOverride represents override instructions in the
+// application domain for application storage directives to alter the default
+// values a new application will receive.
+type ApplicationStorageDirectiveOverride struct {
+	// Count is the number of storage instances to create for each unit. This
+	// value must be greater or equal to the minimum defined by the charm. This
+	// value must also be less or equal to the maximum defined by the charm.
+	Count *uint32
+
+	// PoolUUID defines the storage pool to use when provisioning storage for
+	// this directive.
+	PoolUUID *domainstorage.StoragePoolUUID
+
+	// Size defines the size of the storage to provision as a minimum value in
+	// MiB. What gets provisioned by the provider for each unit may be larger
+	// then this value.
+	Size *uint64
+}
+
+// AddUnitStorageOverride represents override instructions in the application
+// domain for adding storage to a unit.
+type AddUnitStorageOverride struct {
+	// StoragePoolUUID is the storage pool UUID.
+	StoragePoolUUID *domainstorage.StoragePoolUUID
+
+	// SizeMiB is the size of the storage instance, in MiB.
+	SizeMiB *uint64
 }

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -21,11 +22,11 @@ import (
 	"github.com/juju/juju/api/jujuclient"
 	jujucloud "github.com/juju/juju/cloud"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/common"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/output"
 	"github.com/juju/juju/environs"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -58,6 +59,11 @@ type addModelCommand struct {
 	CloudRegion    string
 	Config         common.ConfigFlag
 	noSwitch       bool
+	// targetController holds a controller name when adding a model
+	// to a controller managed by JAAS.
+	// A non-empty value for this member causes an error to be returned
+	// to the user if the JAAS plugin is not installed.
+	targetController string
 }
 
 const addModelHelpDoc = `
@@ -124,9 +130,16 @@ func (c *addModelCommand) SetFlags(f *gnuflag.FlagSet) {
 	f.StringVar(&c.CredentialName, "credential", "", "Specify the credential to be used by the model")
 	f.Var(&c.Config, "config", "Specify the path to a YAML model configuration file or individual configuration options (`--config config.yaml [--config key=value ...]`)")
 	f.BoolVar(&c.noSwitch, "no-switch", false, "Choose not to switch to the newly created model")
+	f.StringVar(&c.targetController, "target-controller", "", "The name of a JAAS managed controller to add a model to")
 }
 
 func (c *addModelCommand) Init(args []string) error {
+	// If the JAAS plugin is installed, this error causes the plugin version
+	// of the command to be executed. Otherwise it is returned to the user.
+	if c.targetController != "" {
+		return cmd.ErrCommandMissing
+	}
+
 	if len(args) == 0 {
 		return common.MissingModelNameError("add-model")
 	}
@@ -154,7 +167,7 @@ type AddModelAPI interface {
 		modelCreator names.UserTag,
 		cloudName, cloudRegion string,
 		cloudCredential names.CloudCredentialTag,
-		config map[string]interface{},
+		config map[string]any,
 	) (base.ModelInfo, error)
 }
 
@@ -272,7 +285,7 @@ func (c *addModelCommand) Run(ctx *cmd.Context) error {
 	}
 
 	messageFormat := "Added '%s' model"
-	messageArgs := []interface{}{c.Name}
+	messageArgs := []any{c.Name}
 
 	details := jujuclient.ModelDetails{
 		ModelUUID: model.UUID,
@@ -494,10 +507,8 @@ func (c *addModelCommand) findUnspecifiedCredential(ctx *cmd.Context, cloudClien
 	}
 	// If the user has not specified a credential, and the cloud advertises
 	// itself as supporting the "empty" auth-type, then return immediately.
-	for _, authType := range p.cloud.AuthTypes {
-		if authType == jujucloud.EmptyAuthType {
-			return nil, names.CloudCredentialTag{}, p.cloudRegion, nil
-		}
+	if slices.Contains(p.cloud.AuthTypes, jujucloud.EmptyAuthType) {
+		return nil, names.CloudCredentialTag{}, p.cloudRegion, nil
 	}
 
 	// No credential has been specified, so see if there is one already on the controller we can use.
@@ -615,7 +626,7 @@ func (c *addModelCommand) findLocalCredential(ctx *cmd.Context, p *findCredentia
 	return fail(errors.Trace(err))
 }
 
-func (c *addModelCommand) getConfigValues(ctx *cmd.Context) (map[string]interface{}, error) {
+func (c *addModelCommand) getConfigValues(ctx *cmd.Context) (map[string]any, error) {
 	configValues, err := c.Config.ReadAttrs(ctx)
 	if err != nil {
 		return nil, errors.Annotate(err, "unable to parse config")
@@ -624,7 +635,7 @@ func (c *addModelCommand) getConfigValues(ctx *cmd.Context) (map[string]interfac
 	if err != nil {
 		return nil, errors.Annotatef(err, "unable to parse config")
 	}
-	attrs, ok := coercedValues.(map[string]interface{})
+	attrs, ok := coercedValues.(map[string]any)
 	if !ok {
 		return nil, errors.New("params must contain a YAML map with string keys")
 	}

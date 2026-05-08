@@ -1,7 +1,7 @@
 (hook-command-close-port)=
 # `close-port`
 ## Summary
-Register a request to close a port or port range.
+Registers a request to close a port or port range.
 
 ## Usage
 ``` close-port [options] <port>[/<protocol>] or <from>-<to>[/<protocol>] or icmp```
@@ -9,8 +9,8 @@ Register a request to close a port or port range.
 ### Options
 | Flag | Default | Usage |
 | --- | --- | --- |
-| `--endpoints` |  | a comma-delimited list of application endpoints to target with this operation |
-| `--format` |  | deprecated format flag |
+| `--endpoints` |  | Specifies a comma-delimited list of application endpoints to target with this operation. |
+| `--format` |  | (DEPRECATED) Specifies the format. |
 
 ## Examples
 
@@ -29,8 +29,8 @@ Register a request to close a port or port range.
 
 ## Details
 
-close-port registers a request to close the specified port or port range.
+`close-port` registers a request to close the specified port or port range.
 
 By default, the specified port or port range will be closed for all defined
-application endpoints. The --endpoints option can be used to constrain the
+application endpoints. The `--endpoints` option can be used to constrain the
 close request to a comma-delimited list of application endpoints.

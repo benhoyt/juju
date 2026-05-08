@@ -9,8 +9,8 @@ import (
 
 	"github.com/juju/errors"
 
+	"github.com/juju/juju/core/storage"
 	applicationservice "github.com/juju/juju/domain/application/service"
-	"github.com/juju/juju/internal/storage"
 )
 
 // storageDirectives validates storage directives to override an applications

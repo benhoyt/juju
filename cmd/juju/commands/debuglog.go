@@ -18,19 +18,21 @@ import (
 	"github.com/juju/collections/transform"
 	"github.com/juju/errors"
 	"github.com/juju/gnuflag"
-	"github.com/juju/loggo/v2"
-	"github.com/juju/loggo/v2/loggocolor"
+	"github.com/juju/loggo/v3"
+	"github.com/juju/loggo/v3/loggocolor"
 	"github.com/juju/names/v6"
 	"github.com/juju/retry"
 	"github.com/mattn/go-isatty"
 
-	apiclient "github.com/juju/juju/api/client/client"
+	"github.com/juju/juju/api"
+	debuglog "github.com/juju/juju/api/client/client"
+	"github.com/juju/juju/api/client/highavailability"
 	"github.com/juju/juju/api/common"
 	"github.com/juju/juju/api/jujuclient"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/modelcmd"
 	corelogger "github.com/juju/juju/core/logger"
-	"github.com/juju/juju/internal/cmd"
 )
 
 // defaultLineCount is the default number of lines to
@@ -377,19 +379,54 @@ func (c *debugLogCommand) parseEntity(entity string) string {
 
 // DebugLogAPI provides access to the client facade.
 type DebugLogAPI interface {
+	// WatchDebugLog streams debug log messages according to the specified
+	// parameters.
 	WatchDebugLog(ctx context.Context, params common.DebugLogParams) (<-chan common.LogMessage, error)
+	// Close closes the API client.
 	Close() error
 }
 
-var getDebugLogAPI = func(ctx context.Context, c *debugLogCommand, addr []string) (DebugLogAPI, error) {
-	root, err := c.NewAPIRootWithAddressOverride(ctx, addr)
+var getDebugLogClient = func(ctx context.Context, c *debugLogCommand) (DebugLogAPI, error) {
+	root, err := c.NewAPIRoot(ctx)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	return apiclient.NewClient(root, logger), nil
+	return debuglog.NewClient(root, logger), nil
 }
 
-func isTerminal(f interface{}) bool {
+var getDebugLogClientForAddresses = func(ctx context.Context, c *debugLogCommand, addresses []string) (DebugLogAPI, error) {
+	root, err := c.NewAPIRootWithDialOpts(ctx, &api.DialOpts{
+		DialTimeout: 5 * time.Second,
+		Timeout:     30 * time.Second,
+	}, addresses...)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return debuglog.NewClient(root, logger), nil
+}
+
+// ControllerDetailsAPI provides access to the high availability facade.
+type ControllerDetailsAPI interface {
+	// ControllerDetails returns details about all controllers known to the
+	// client.
+	ControllerDetails(ctx context.Context) (map[string]highavailability.ControllerDetails, error)
+
+	// BestAPIVersion returns the best API version supported by the server.
+	BestAPIVersion() int
+
+	// Close closes the API client.
+	Close() error
+}
+
+var getControllerDetailsClient = func(ctx context.Context, c *debugLogCommand) (ControllerDetailsAPI, error) {
+	root, err := c.NewAPIRoot(ctx)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return highavailability.NewClient(root), nil
+}
+
+func isTerminal(f any) bool {
 	file, ok := f.(*os.File)
 	if !ok {
 		return false
@@ -403,18 +440,53 @@ func (f logFunc) Log(r []corelogger.LogRecord) error {
 	return f(r)
 }
 
-func (c *debugLogCommand) getControllerAddresses(ctx context.Context) ([]string, error) {
-	controllerName, err := c.ClientStore().CurrentController()
+type warningLogger interface {
+	Warningf(format string, args ...any)
+}
+
+func (c *debugLogCommand) getDebugLogClients(ctx context.Context, warningLogger warningLogger) ([]DebugLogAPI, error) {
+	controllerClient, err := getControllerDetailsClient(ctx, c)
 	if err != nil {
+		return nil, errors.Annotatef(err, "getting controller addresses")
+	}
+	defer controllerClient.Close()
+
+	// If we're connected to a HA facade that is less that 3, that indicates
+	// that the controller details API is not supported, so we fall back to
+	// using the address of the connected controller only.
+	if controllerClient.BestAPIVersion() < 3 {
+		return c.getDebugLogClient(ctx)
+	}
+
+	// We're connected to a HA controller that supports the controller details
+	// API, so we can get the addresses of all controllers.
+	controllers, err := controllerClient.ControllerDetails(ctx)
+	if errors.Is(err, errors.NotSupported) {
+		return c.getDebugLogClient(ctx)
+	} else if err != nil {
 		return nil, errors.Annotatef(err, "getting controller details")
 	}
 
-	details, err := c.ClientStore().ControllerByName(controllerName)
-	if err != nil {
-		return nil, errors.Annotatef(err, "getting controller details")
+	var clients []DebugLogAPI
+	for _, details := range controllers {
+		client, err := getDebugLogClientForAddresses(ctx, c, details.APIEndpoints)
+		if len(controllers) > 1 && errors.Is(err, api.ConnectionFailure) {
+			warningLogger.Warningf("cannot connect to debug log client for controller %q at addresses %v: %v", details.ControllerID, details.APIEndpoints, err)
+			continue
+		} else if err != nil {
+			return nil, errors.Annotatef(err, "getting debug log client for controller %q", details.ControllerID)
+		}
+		clients = append(clients, client)
 	}
+	return clients, nil
+}
 
-	return details.APIEndpoints, nil
+func (c *debugLogCommand) getDebugLogClient(ctx context.Context) ([]DebugLogAPI, error) {
+	client, err := getDebugLogClient(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	return []DebugLogAPI{client}, nil
 }
 
 // Run retrieves the debug log via the API.
@@ -429,11 +501,18 @@ func (c *debugLogCommand) Run(ctx *cmd.Context) error {
 		c.params.NoTail = !isTerminal(ctx.Stdout)
 	}
 
-	// Get the controller addresses to connect to.
-	controllerAddrs, err := c.getControllerAddresses(ctx)
+	// Get the controller debug-log clients to connect to.
+	clients, err := c.getDebugLogClients(ctx, ctx)
 	if err != nil {
 		return err
+	} else if len(clients) == 0 {
+		return errors.New("no controller debug-log clients available; is bootstrap still in progress?")
 	}
+	defer func() {
+		for _, client := range clients {
+			_ = client.Close()
+		}
+	}()
 
 	// The default log buffer size is 1 for a single controller
 	// (stream log entries as they arrive).
@@ -446,7 +525,7 @@ func (c *debugLogCommand) Run(ctx *cmd.Context) error {
 	// printed out of order. Ideally we'd have a variable flush timeout
 	// depending on the rate of incoming messages but the buffered logger
 	// doesn't support that.
-	if len(controllerAddrs) > 1 {
+	if len(clients) > 1 {
 		if c.params.Replay || c.params.NoTail {
 			bufferSize = 500
 		} else {
@@ -454,6 +533,9 @@ func (c *debugLogCommand) Run(ctx *cmd.Context) error {
 		}
 	}
 
+	// Buffered log writer will batch log records and flush them either when the
+	// buffer is full or after the specified time interval. This also allows to
+	// remove duplicates when multiple controllers are streaming logs.
 	buf := corelogger.NewBufferedLogWriter(logFunc(func(recs []corelogger.LogRecord) error {
 		for _, r := range recs {
 			_ = c.out.Write(ctx, &r)
@@ -461,21 +543,19 @@ func (c *debugLogCommand) Run(ctx *cmd.Context) error {
 		return nil
 	}), bufferSize, time.Second, clock.WallClock)
 
-	// Start one log streamer per controller.
-	numStreams := len(controllerAddrs)
-	// Size of errors channel and wait group needs to match the number of debug log streams.
+	pollCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Size of errors channel and wait group needs to match the number of debug
+	// log streams.
 	var (
-		errs = make(chan error, numStreams)
+		errs = make(chan error, len(clients))
 		wg   sync.WaitGroup
 	)
-	wg.Add(numStreams)
-
-	pollCtx, cancel := context.WithCancel(ctx)
-	for _, addr := range controllerAddrs {
-		go func(addr string) {
-			c.streamLogs(pollCtx, []string{addr}, buf, errs)
-			wg.Done()
-		}(addr)
+	for _, client := range clients {
+		wg.Go(func() {
+			errs <- c.streamLogs(pollCtx, client, buf)
+		})
 	}
 
 	// Wait for the streams to exit.
@@ -484,12 +564,17 @@ loop:
 	for {
 		select {
 		case <-ctx.Done():
-			break loop
+			// If the context is done, flush the buffer and exit. We don't need
+			// to wait for the streamers to exit and stop.
+			_ = buf.Flush()
+			return nil
+
 		case pollErr = <-errs:
 			// Exit on the first error.
 			break loop
 		}
 	}
+
 	// Cancel the message polling before flushing the buffer.
 	cancel()
 	wg.Wait()
@@ -499,15 +584,9 @@ loop:
 
 // streamLogs watches debug logs from the specified controller and logs any results
 // into the supplied buffered logger. Any error is reported to the errors channel.
-func (c *debugLogCommand) streamLogs(ctx context.Context, controllerAddr []string, buf *corelogger.BufferedLogWriter, errs chan error) {
+func (c *debugLogCommand) streamLogs(ctx context.Context, client DebugLogAPI, buf *corelogger.BufferedLogWriter) error {
 	err := retry.Call(retry.CallArgs{
 		Func: func() error {
-			client, err := getDebugLogAPI(ctx, c, controllerAddr)
-			if err != nil {
-				return err
-			}
-			defer client.Close()
-
 			messages, err := client.WatchDebugLog(ctx, c.params)
 			if err != nil {
 				return err
@@ -544,7 +623,7 @@ func (c *debugLogCommand) streamLogs(ctx context.Context, controllerAddr []strin
 			return true
 		},
 		NotifyFunc: func(err error, attempt int) {
-			logger.Debugf(context.TODO(), "retrying to connect to debug log")
+			logger.Debugf(ctx, "retrying to connect to debug log")
 		},
 		Attempts: -1,
 		Clock:    clock.WallClock,
@@ -558,15 +637,17 @@ func (c *debugLogCommand) streamLogs(ctx context.Context, controllerAddr []strin
 	if errors.Is(err, ErrConnectionClosed) {
 		err = nil
 	}
+
 	// Unwrap the retry call error trace for all errors. We don't want to show
 	// that to the user as part of the error message.
-	errs <- errors.Cause(err)
+	return errors.Cause(err)
 }
 
 // ErrConnectionClosed is a sentinel error used to signal that the connection
 // is closed.
 var ErrConnectionClosed = errors.ConstError("connection closed")
 
+// SeverityColor maps log severity levels to ansiterm color contexts.
 var SeverityColor = map[corelogger.Level]*ansiterm.Context{
 	corelogger.TRACE:   ansiterm.Foreground(ansiterm.Default),
 	corelogger.DEBUG:   ansiterm.Foreground(ansiterm.Green),
@@ -579,7 +660,7 @@ var SeverityColor = map[corelogger.Level]*ansiterm.Context{
 	},
 }
 
-func (c *debugLogCommand) writeText(w io.Writer, v interface{}) error {
+func (c *debugLogCommand) writeText(w io.Writer, v any) error {
 	if c.tw == nil {
 		c.tw = ansiterm.NewWriter(w)
 		if c.color {

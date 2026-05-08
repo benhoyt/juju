@@ -4,6 +4,7 @@
 package unit_test
 
 import (
+	"slices"
 	stdtesting "testing"
 
 	"github.com/juju/collections/set"
@@ -66,7 +67,7 @@ func (s *ManifoldsSuite) TestManifoldNames(c *tc.C) {
 		"uniter",
 		"upgrade-steps-flag",
 		"upgrade-steps-gate",
-		"upgrade-steps-runner",
+		"upgrade-agent-steps-runner",
 		"upgrader",
 	}
 	keys := make([]string, 0, len(manifolds))
@@ -109,7 +110,7 @@ func (s *ManifoldsSuite) TestManifoldNamesColocatedController(c *tc.C) {
 		"uniter",
 		"upgrade-steps-flag",
 		"upgrade-steps-gate",
-		"upgrade-steps-runner",
+		"upgrade-agent-steps-runner",
 		"upgrader",
 	}
 	keys := make([]string, 0, len(manifolds))
@@ -135,7 +136,7 @@ func (*ManifoldsSuite) TestMigrationGuards(c *tc.C) {
 		"migration-minion",
 
 		"upgrader",
-		"upgrade-steps-runner",
+		"upgrade-agent-steps-runner",
 		"upgrade-steps-gate",
 
 		"upgrade-steps-flag",
@@ -169,10 +170,8 @@ func (s *ManifoldsSuite) TestManifoldsDependencies(c *tc.C) {
 }
 
 func checkContains(c *tc.C, names []string, seek string) {
-	for _, name := range names {
-		if name == seek {
-			return
-		}
+	if slices.Contains(names, seek) {
+		return
 	}
 	c.Errorf("%q not present in %v", seek, names)
 }
@@ -283,7 +282,7 @@ var expectedUnitManifoldsWithDependencies = map[string][]string{
 		"upgrade-steps-gate",
 	},
 	"upgrade-steps-gate": {},
-	"upgrade-steps-runner": {
+	"upgrade-agent-steps-runner": {
 		"agent",
 		"api-caller",
 		"api-config-watcher",

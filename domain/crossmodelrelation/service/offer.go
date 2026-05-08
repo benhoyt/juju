@@ -5,6 +5,8 @@ package service
 
 import (
 	"context"
+	"maps"
+	"slices"
 
 	"github.com/juju/collections/transform"
 
@@ -35,6 +37,13 @@ type ModelOfferState interface {
 		offer.UUID,
 	) error
 
+	// GetConsumeDetails returns the offer uuid and endpoints necessary to
+	// consume the offer.
+	GetConsumeDetails(
+		ctx context.Context,
+		offerName string,
+	) (crossmodelrelation.ConsumeDetails, error)
+
 	// GetOfferDetails returns the OfferDetail of every offer in the model.
 	// No error is returned if offers are found.
 	GetOfferDetails(context.Context, crossmodelrelation.OfferFilter) ([]*crossmodelrelation.OfferDetail, error)
@@ -47,13 +56,29 @@ type ModelOfferState interface {
 	// the cross model relation UUID, returning an error satisfying
 	// [crossmodelrelationerrors.OfferNotFound] if the relation is not found.
 	GetOfferUUIDByRelationUUID(ctx context.Context, relationUUID string) (string, error)
+
+	// GetOfferConnections returns the connection details for all offers
+	// with the given UUIDs. An empty result is returned if no connections
+	// are found.
+	GetOfferConnections(ctx context.Context, offerUUIDs []string) ([]crossmodelrelation.OfferConnectionDetail, error)
+
+	// ValidateApplicationAndEndpointsForOffer checks that the application
+	// exists and is not dead, and that the endpoints are valid.
+	ValidateApplicationAndEndpointsForOffer(ctx context.Context, applicationName string, endpoints []string) (string, error)
 }
 
 // GetOfferUUID returns the uuid for the provided offer URL.
-// Returns crossmodelrelationerrors.OfferNotFound of the offer is not found.
+// Returns crossmodelrelationerrors.OfferNotFound if the offer is not found.
+// Returns crossmodelrelationerrors.OfferURLNotValid if the offer URL has
+// no name.
 func (s *Service) GetOfferUUID(ctx context.Context, offerURL crossmodel.OfferURL) (offer.UUID, error) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
+
+	if offerURL.Name == "" {
+		return "", errors.Errorf("offer %q missing name: not valid", offerURL.String()).
+			Add(crossmodelrelationerrors.OfferURLNotValid)
+	}
 
 	offerUUID, err := s.modelState.GetOfferUUID(ctx, offerURL.Name)
 	if err != nil {
@@ -88,9 +113,9 @@ func (s *Service) GetOfferUUIDByRelationUUID(ctx context.Context, relationUUID c
 	return res, nil
 }
 
-// Offer updates an existing offer, or creates a new offer if it does not exist.
-// Permissions are created for a new offer only.
-func (s *Service) Offer(
+// CreateOffer updates an existing offer, or creates a new offer if it does not
+// exist. Permissions are created for a new offer only.
+func (s *Service) CreateOffer(
 	ctx context.Context,
 	args crossmodelrelation.ApplicationOfferArgs,
 ) error {
@@ -113,17 +138,26 @@ func (s *Service) Offer(
 	if err != nil {
 		return errors.Capture(err)
 	}
-	createArgs := crossmodelrelation.MakeCreateOfferArgs(args, offerUUID)
 
 	// Check if the offer already exists.
 	existingOfferUUID, err := s.modelState.GetOfferUUID(ctx, args.OfferName)
 	if err != nil && !errors.Is(err, crossmodelrelationerrors.OfferNotFound) {
-		return errors.Errorf("create offer: %w", err)
+		return errors.Errorf("creating offer: %w", err)
 	} else if err == nil {
 		// The offer exists, this means that we have to return an error since we
 		// don't support updating offers.
-		return errors.Errorf("create offer: offer %q already exists with UUID %q",
+		return errors.Errorf("creating offer: offer %q already exists with UUID %q",
 			args.OfferName, existingOfferUUID).Add(crossmodelrelationerrors.OfferAlreadyExists)
+	}
+
+	endpoints := slices.Collect(maps.Keys(args.Endpoints))
+
+	// Verify the application exists and is not dead before creating the offer,
+	// and that the application endpoints are valid.
+	// Return a valid application UUID for offer creation.
+	applicationUUID, err := s.modelState.ValidateApplicationAndEndpointsForOffer(ctx, args.ApplicationName, endpoints)
+	if err != nil {
+		return errors.Errorf("creating offer %q: %w", args.OfferName, err)
 	}
 
 	// Verify the owner exists, has not been removed, and
@@ -131,13 +165,18 @@ func (s *Service) Offer(
 	// update an offer, such an admin.
 	ownerUUID, err := s.controllerState.GetUserUUIDByName(ctx, args.OwnerName)
 	if err != nil {
-		return errors.Errorf("create offer: %w", err)
+		return errors.Errorf("creating offer: %w", err)
 	}
 
 	// The offer does not exist, create it.
-	err = s.modelState.CreateOffer(ctx, createArgs)
+	err = s.modelState.CreateOffer(ctx, crossmodelrelation.CreateOfferArgs{
+		UUID:            offerUUID,
+		ApplicationUUID: applicationUUID,
+		Endpoints:       endpoints,
+		OfferName:       args.OfferName,
+	})
 	if err != nil {
-		return errors.Errorf("create offer: %w", err)
+		return errors.Errorf("creating offer: %w", err)
 	}
 
 	err = s.controllerState.CreateOfferAccess(ctx, permissionUUID, offerUUID, ownerUUID)
@@ -152,6 +191,27 @@ func (s *Service) Offer(
 	}
 	err = errors.Errorf("creating access for offer %q: %w", args.OfferName, err)
 	return errors.Capture(err)
+}
+
+// GetConsumeDetails returns the offer uuid and endpoints necessary to
+// consume the offer.
+// Returns crossmodelrelationerrors.OfferNotFound if the offer is not found.
+// Returns crossmodelrelationerrors.OfferURLNotValid if the offer URL has
+// no name.
+func (s *Service) GetConsumeDetails(
+	ctx context.Context,
+	offerURL crossmodel.OfferURL,
+) (crossmodelrelation.ConsumeDetails, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	if offerURL.Name == "" {
+		return crossmodelrelation.ConsumeDetails{},
+			errors.Errorf("offer %q missing name: not valid", offerURL.String()).
+				Add(crossmodelrelationerrors.OfferURLNotValid)
+	}
+
+	return s.modelState.GetConsumeDetails(ctx, offerURL.Name)
 }
 
 // GetOffers returns offer details for all offers satisfying any of the
@@ -197,6 +257,51 @@ func (s *Service) GetOffers(
 	return details, nil
 }
 
+// GetOffersWithConnections returns offer details for all offers satisfying
+// any of the provided filters, including offer connections.
+func (s *Service) GetOffersWithConnections(
+	ctx context.Context,
+	filters []OfferFilter,
+) ([]*crossmodelrelation.OfferDetailWithConnections, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	details, err := s.GetOffers(ctx, filters)
+	if err != nil {
+		return nil, errors.Errorf("getting offer details: %w", err)
+	}
+
+	if len(details) == 0 {
+		return nil, nil
+	}
+
+	offerUUIDs := transform.Slice(
+		details,
+		func(d *crossmodelrelation.OfferDetail) string { return d.OfferUUID },
+	)
+
+	connections, err := s.modelState.GetOfferConnections(ctx, offerUUIDs)
+	if err != nil {
+		return nil, errors.Errorf("getting offer connections: %w", err)
+	}
+
+	// Index connections by offer UUID for efficient lookup.
+	connsByOffer := make(map[string][]crossmodelrelation.OfferConnectionDetail)
+	for _, conn := range connections {
+		connsByOffer[conn.OfferUUID] = append(connsByOffer[conn.OfferUUID], conn)
+	}
+
+	output := make([]*crossmodelrelation.OfferDetailWithConnections, len(details))
+	for i, detail := range details {
+		output[i] = &crossmodelrelation.OfferDetailWithConnections{
+			OfferDetail:      *detail,
+			OfferConnections: connsByOffer[detail.OfferUUID],
+		}
+	}
+
+	return output, nil
+}
+
 func (s *Service) addOfferUsers(
 	ctx context.Context,
 	input []*crossmodelrelation.OfferDetail,
@@ -232,6 +337,19 @@ func (s *Service) addOfferUsers(
 	}
 
 	return output, nil
+}
+
+// GetOfferConnections returns the connection details for all offers with the
+// given UUIDs. An empty result is returned if no connections are found.
+func (s *Service) GetOfferConnections(
+	ctx context.Context,
+	offerUUIDs []string,
+) ([]crossmodelrelation.OfferConnectionDetail, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	offerConnections, err := s.modelState.GetOfferConnections(ctx, offerUUIDs)
+	return offerConnections, errors.Capture(err)
 }
 
 func encodeInternalOfferFilter(

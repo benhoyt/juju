@@ -70,17 +70,16 @@ type request struct {
 
 type response struct {
 	reader io.ReadCloser
-	size   int64
+	digest objectstore.Digest
 	uuid   objectstore.UUID
 	err    error
 }
 
 type baseObjectStore struct {
-	path            string
-	metadataService objectstore.ObjectStoreMetadata
-	claimer         Claimer
-	logger          logger.Logger
-	clock           clock.Clock
+	path    string
+	claimer Claimer
+	logger  logger.Logger
+	clock   clock.Clock
 }
 
 func (t *baseObjectStore) writeToTmpFile(path string, r io.Reader, size int64) (string, func() error, error) {

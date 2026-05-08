@@ -8,6 +8,7 @@ import (
 	stdtesting "testing"
 
 	"github.com/canonical/sqlair"
+	"github.com/juju/clock"
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/cloud"
@@ -16,7 +17,7 @@ import (
 	"github.com/juju/juju/core/credential"
 	"github.com/juju/juju/core/database"
 	"github.com/juju/juju/core/instance"
-	modeltesting "github.com/juju/juju/core/model/testing"
+	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/permission"
 	coreuser "github.com/juju/juju/core/user"
 	jujuversion "github.com/juju/juju/core/version"
@@ -56,7 +57,7 @@ func (s *bootstrapSuite) SetUpTest(c *tc.C) {
 	var err error
 	s.adminUserUUID, err = coreuser.NewUUID()
 	c.Assert(err, tc.ErrorIsNil)
-	accessState := accessstate.NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+	accessState := accessstate.NewState(s.TxnRunnerFactory(), clock.WallClock, loggertesting.WrapCheckLog(c))
 	err = accessState.AddUserWithPermission(
 		c.Context(), s.adminUserUUID,
 		coreuser.AdminUserName,
@@ -103,7 +104,7 @@ func (s *bootstrapSuite) SetUpTest(c *tc.C) {
 
 func (s *bootstrapSuite) TestUUIDIsRespected(c *tc.C) {
 	fn := CreateGlobalModelRecord(
-		modeltesting.GenModelUUID(c),
+		tc.Must0(c, coremodel.NewUUID),
 		model.GlobalModelCreationArgs{
 			Cloud: s.cloudName,
 			Credential: credential.Key{
@@ -122,7 +123,7 @@ func (s *bootstrapSuite) TestUUIDIsRespected(c *tc.C) {
 
 func (s *bootstrapSuite) TestCreateModelDetails(c *tc.C) {
 	controllerUUID := uuid.MustNewUUID()
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 
 	args := model.GlobalModelCreationArgs{
 		Cloud: s.cloudName,
@@ -180,7 +181,7 @@ FROM agent_version`, v)
 // isn't supported by the cloud then an error satisfying
 // [modelerrors.CredentialNotValid] is returned.
 func (s *bootstrapSuite) TestCreateModelUnsupportedCredential(c *tc.C) {
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 
 	fn := cloudbootstrap.InsertCloud(coreuser.AdminUserName, cloud.Cloud{
 		Name:      "test-cloud",
@@ -208,7 +209,7 @@ func (s *bootstrapSuite) TestCreateModelUnsupportedCredential(c *tc.C) {
 // TestCreateModelWithEmptyCredential is asserting that we can create models
 // with empty cloud credentials when the cloud supports it.
 func (s *bootstrapSuite) TestCreateModelWithEmptyCredential(c *tc.C) {
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 
 	fn := cloudbootstrap.InsertCloud(coreuser.AdminUserName, cloud.Cloud{
 		Name:      "test-cloud",
@@ -247,7 +248,7 @@ type dbReadOnlyModel struct {
 
 func (s *bootstrapSuite) TestSetModelConstraints(c *tc.C) {
 	controllerUUID := uuid.MustNewUUID()
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 
 	args := model.GlobalModelCreationArgs{
 		Cloud: s.cloudName,
@@ -271,11 +272,11 @@ func (s *bootstrapSuite) TestSetModelConstraints(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 
 	cons := coreconstraints.Value{
-		Arch:      ptr("amd64"),
-		Container: ptr(instance.LXD),
-		CpuCores:  ptr(uint64(4)),
-		Mem:       ptr(uint64(1024)),
-		RootDisk:  ptr(uint64(1024)),
+		Arch:      new("amd64"),
+		Container: new(instance.LXD),
+		CpuCores:  new(uint64(4)),
+		Mem:       new(uint64(1024)),
+		RootDisk:  new(uint64(1024)),
 	}
 	fn = SetModelConstraints(cons)
 	err = fn(c.Context(), s.ControllerTxnRunner(), s.ModelTxnRunner(c, modelUUID.String()))
@@ -286,11 +287,11 @@ func (s *bootstrapSuite) TestSetModelConstraints(c *tc.C) {
 	}, loggertesting.WrapCheckLog(c))
 
 	expected := constraints.Constraints{
-		Arch:      ptr("amd64"),
-		Container: ptr(instance.LXD),
-		CpuCores:  ptr(uint64(4)),
-		Mem:       ptr(uint64(1024)),
-		RootDisk:  ptr(uint64(1024)),
+		Arch:      new("amd64"),
+		Container: new(instance.LXD),
+		CpuCores:  new(uint64(4)),
+		Mem:       new(uint64(1024)),
+		RootDisk:  new(uint64(1024)),
 	}
 
 	data, err := modelState.GetModelConstraints(c.Context())
@@ -303,12 +304,12 @@ func (s *bootstrapSuite) TestSetModelConstraints(c *tc.C) {
 // [modelerrors.NotFound].
 func (s *bootstrapSuite) TestSetModelConstraintFailedModelNotFound(c *tc.C) {
 	state := statemodel.NewState(func(ctx context.Context) (database.TxnRunner, error) {
-		return s.ModelTxnRunner(c, modeltesting.GenModelUUID(c).String()), nil
+		return s.ModelTxnRunner(c, tc.Must0(c, coremodel.NewUUID).String()), nil
 	}, loggertesting.WrapCheckLog(c))
 
 	err := state.SetModelConstraints(c.Context(), constraints.Constraints{
-		Arch:      ptr("amd64"),
-		Container: ptr(instance.NONE),
+		Arch:      new("amd64"),
+		Container: new(instance.NONE),
 	})
 	c.Assert(err, tc.ErrorIs, modelerrors.NotFound)
 }
@@ -319,7 +320,7 @@ func (s *bootstrapSuite) TestSetModelConstraintFailedModelNotFound(c *tc.C) {
 // the database.
 func (s *bootstrapSuite) TestSetModelConstraintsInvalidContainerType(c *tc.C) {
 	controllerUUID := uuid.MustNewUUID()
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 
 	args := model.GlobalModelCreationArgs{
 		Cloud: s.cloudName,
@@ -347,8 +348,8 @@ func (s *bootstrapSuite) TestSetModelConstraintsInvalidContainerType(c *tc.C) {
 	}, loggertesting.WrapCheckLog(c))
 
 	cons := constraints.Constraints{
-		Container: ptr(instance.ContainerType("noexist")),
-		ImageID:   ptr("image-id"),
+		Container: new(instance.ContainerType("noexist")),
+		ImageID:   new("image-id"),
 	}
 
 	err = state.SetModelConstraints(c.Context(), cons)
@@ -363,7 +364,7 @@ func (s *bootstrapSuite) TestSetModelConstraintsInvalidContainerType(c *tc.C) {
 // [networkerrors.SpaceNotFound] and that no changes are made to the database.
 func (s *bootstrapSuite) TestSetModelConstraintFailedSpaceDoesNotExist(c *tc.C) {
 	controllerUUID := uuid.MustNewUUID()
-	modelUUID := modeltesting.GenModelUUID(c)
+	modelUUID := tc.Must0(c, coremodel.NewUUID)
 
 	args := model.GlobalModelCreationArgs{
 		Cloud: s.cloudName,
@@ -391,20 +392,16 @@ func (s *bootstrapSuite) TestSetModelConstraintFailedSpaceDoesNotExist(c *tc.C) 
 	}, loggertesting.WrapCheckLog(c))
 
 	err = state.SetModelConstraints(c.Context(), constraints.Constraints{
-		Spaces: ptr([]constraints.SpaceConstraint{
+		Spaces: new([]constraints.SpaceConstraint{
 			{
 				SpaceName: "space1",
 				Exclude:   false,
 			},
 		}),
-		ImageID: ptr("image-id"),
+		ImageID: new("image-id"),
 	})
 	c.Check(err, tc.ErrorIs, networkerrors.SpaceNotFound)
 
 	_, err = state.GetModelConstraints(c.Context())
 	c.Check(err, tc.ErrorIs, modelerrors.ConstraintsNotFound)
-}
-
-func ptr[T any](s T) *T {
-	return &s
 }

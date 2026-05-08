@@ -17,11 +17,11 @@ import (
 	"github.com/juju/juju/api/controller/controller"
 	"github.com/juju/juju/api/jujuclient"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/environs/bootstrap"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/internal/pki"
 	"github.com/juju/juju/rpc/params"
 )
@@ -109,7 +109,7 @@ type ControllerAccessAPI interface {
 
 // ModelConfigAPI defines a subset of the model config API.
 type ModelConfigAPI interface {
-	ModelGet(ctx context.Context) (map[string]interface{}, error)
+	ModelGet(ctx context.Context) (map[string]any, error)
 	Close() error
 }
 
@@ -346,10 +346,6 @@ type ControllerDetails struct {
 
 	// ControllerModelVersion is the version in the controller model config state.
 	ControllerModelVersion string `yaml:"controller-model-version,omitempty" json:"controller-model-version,omitempty"`
-
-	// MongoVersion is the version of the mongo server running on this
-	// controller.
-	MongoVersion string `yaml:"mongo-version,omitempty" json:"mongo-version,omitempty"`
 
 	// IdentityURL contails the address of an external identity provider
 	// if one has been configured for this controller.

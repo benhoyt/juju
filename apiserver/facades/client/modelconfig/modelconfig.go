@@ -8,7 +8,7 @@ import (
 	"fmt"
 
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/names/v6"
 
 	"github.com/juju/juju/apiserver/authentication"
@@ -303,7 +303,7 @@ func (c *ModelConfigAPI) ModelUnset(ctx context.Context, args params.ModelUnset)
 		return errors.Trace(err)
 	}
 
-	var validationError config.ValidationError
+	var validationError *config.ValidationError
 	err := c.modelConfigService.UpdateModelConfig(ctx, nil, args.Keys)
 	if errors.As(err, &validationError) {
 		return fmt.Errorf("removing config key %q %w: %s",

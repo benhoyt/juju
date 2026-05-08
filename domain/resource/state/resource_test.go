@@ -27,13 +27,13 @@ import (
 	domainapplication "github.com/juju/juju/domain/application"
 	applicationcharm "github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/domain/life"
 	"github.com/juju/juju/domain/resource"
 	resourceerrors "github.com/juju/juju/domain/resource/errors"
 	schematesting "github.com/juju/juju/domain/schema/testing"
 	domainsequence "github.com/juju/juju/domain/sequence"
 	sequencestate "github.com/juju/juju/domain/sequence/state"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 )
@@ -608,7 +608,7 @@ func (s *resourceSuite) TestGetResourceUUIDByApplicationAndResourceNameCannotGet
 
 // TestGetResourceNotFound verifies that attempting to retrieve a non-existent
 // resource results in a ResourceNotFound error.
-func (s *resourceSuite) TestGetResourceNotFound(c *tc.C) {
+func (s *resourceSuite) TestApplicationGetResourceNotFound(c *tc.C) {
 	// Arrange : no resource
 	resID := coreresource.UUID("resource-id")
 
@@ -635,11 +635,8 @@ func (s *resourceSuite) TestGetResource(c *tc.C) {
 			},
 			Revision: 42,
 			Origin:   charmresource.OriginUpload,
-			// todo(gfouillet): handle size/fingerprint
-			//Fingerprint: charmresource.Fingerprint{},
-			//Size:        0,
 		},
-		UUID:            resID,
+		ID:              resID.String(),
 		ApplicationName: s.constants.fakeApplicationName1,
 		RetrievedBy:     "johnDoe",
 		Timestamp:       now,
@@ -671,10 +668,10 @@ func (s *resourceSuite) TestGetResource(c *tc.C) {
 	c.Assert(obtained, tc.DeepEquals, expected, tc.Commentf("(Assert) resource different than expected"))
 }
 
-// TestGetResourcePending verifies the successful retrieval of a resource
-// from the database by its ID, even if the application does not yet exist.
-// Required to add a pending resource.
-func (s *resourceSuite) TestGetResourcePending(c *tc.C) {
+// TestGetResourceWithoutApplication verifies the successful retrieval of a
+// resource from the database by its ID, even if the application does not yet
+// exist. Required when adding a pending resource.
+func (s *resourceSuite) TestGetResourceWithoutApplication(c *tc.C) {
 	// Arrange : a simple resource
 	resID := coreresource.UUID("resource-id")
 	now := time.Now().Truncate(time.Second).UTC()
@@ -689,7 +686,7 @@ func (s *resourceSuite) TestGetResourcePending(c *tc.C) {
 			Revision: 42,
 			Origin:   charmresource.OriginUpload,
 		},
-		UUID:      resID,
+		ID:        resID.String(),
 		Timestamp: now,
 	}
 	input := resourceData{
@@ -709,11 +706,22 @@ func (s *resourceSuite) TestGetResourcePending(c *tc.C) {
 	c.Assert(err, tc.ErrorIsNil)
 
 	// Act
-	obtained, err := s.state.GetResource(c.Context(), resID)
+	obtained, err := s.state.GetResourceWithoutApplication(c.Context(), resID)
 	c.Assert(err, tc.ErrorIsNil)
 
 	// Assert
 	c.Assert(obtained, tc.DeepEquals, expected)
+}
+
+func (s *resourceSuite) TestGetResourceWithoutApplicationNotFound(c *tc.C) {
+	// Arrange : a simple resource
+	resID := coreresource.UUID("resource-id")
+
+	// Act
+	_, err := s.state.GetResourceWithoutApplication(c.Context(), resID)
+
+	// Assert
+	c.Assert(err, tc.ErrorIs, resourceerrors.ResourceNotFound)
 }
 
 func (s *resourceSuite) TestGetResourceWithStoredFile(c *tc.C) {
@@ -731,7 +739,7 @@ func (s *resourceSuite) TestGetResourceWithStoredFile(c *tc.C) {
 			// origin is upload by default if not specified in test input value
 			Origin: charmresource.OriginUpload,
 		},
-		UUID:            resID,
+		ID:              resID.String(),
 		ApplicationName: s.constants.fakeApplicationName1,
 	}
 	input := resourceData{
@@ -771,7 +779,7 @@ func (s *resourceSuite) TestGetResourceWithStoredImage(c *tc.C) {
 			// origin is upload by default if not specified in test input value
 			Origin: charmresource.OriginUpload,
 		},
-		UUID:            resID,
+		ID:              resID.String(),
 		ApplicationName: s.constants.fakeApplicationName1,
 	}
 	input := resourceData{
@@ -1689,7 +1697,7 @@ func (s *resourceSuite) TestGetResourceTypeContainerImage(c *tc.C) {
 		coreresource.UUID(resID),
 	)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(resourceType, tc.Equals, charmresource.TypeContainerImage)
+	c.Check(resourceType, tc.Equals, charmresource.TypeContainerImage)
 }
 
 func (s *resourceSuite) TestGetResourceTypeFile(c *tc.C) {
@@ -1714,7 +1722,7 @@ func (s *resourceSuite) TestGetResourceTypeFile(c *tc.C) {
 		coreresource.UUID(resID),
 	)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(resourceType, tc.Equals, charmresource.TypeFile)
+	c.Check(resourceType, tc.Equals, charmresource.TypeFile)
 }
 
 func (s *resourceSuite) TestGetResourceTypeNotFound(c *tc.C) {
@@ -1726,6 +1734,121 @@ func (s *resourceSuite) TestGetResourceTypeNotFound(c *tc.C) {
 		c.Context(),
 		coreresource.UUID(resID),
 	)
+	c.Assert(err, tc.ErrorIs, resourceerrors.ResourceNotFound)
+}
+
+// TestVerifyApplicationExistsForResource verifies that no error is returned when
+// the resource is linked to an application.
+func (s *resourceSuite) TestVerifyApplicationExistsForResource(c *tc.C) {
+	// Arrange: insert a resource linked to an application.
+	input := resourceData{
+		UUID:            "resource-id",
+		ApplicationUUID: s.constants.fakeApplicationUUID1,
+		Name:            "resource-name",
+		Type:            charmresource.TypeFile,
+	}
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return errors.Capture(input.insert(ctx, tx))
+	})
+	c.Assert(err, tc.ErrorIsNil, tc.Commentf("(Arrange) failed to populate DB: %v", errors.ErrorStack(err)))
+
+	// Act.
+	err = s.state.VerifyApplicationExistsForResource(c.Context(), coreresource.UUID(input.UUID))
+
+	// Assert.
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+// TestVerifyApplicationExistsForResourceApplicationNotFound verifies that
+// ApplicationNotFound is returned when the resource is not linked to any
+// application.
+func (s *resourceSuite) TestVerifyApplicationExistsForResourceApplicationNotFound(c *tc.C) {
+	// Arrange: insert a resource without linking it to an application.
+	input := resourceData{
+		UUID: "resource-id",
+		Name: "resource-name",
+		Type: charmresource.TypeFile,
+	}
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return errors.Capture(input.insert(ctx, tx))
+	})
+	c.Assert(err, tc.ErrorIsNil, tc.Commentf("(Arrange) failed to populate DB: %v", errors.ErrorStack(err)))
+
+	// Act.
+	err = s.state.VerifyApplicationExistsForResource(c.Context(), coreresource.UUID(input.UUID))
+
+	// Assert.
+	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationNotFound)
+}
+
+// TestVerifyApplicationExistsForResourceMissingResource verifies that
+// ApplicationNotFound is returned when the resource does not exist at all.
+func (s *resourceSuite) TestVerifyApplicationExistsForResourceMissingResource(c *tc.C) {
+	// Act.
+	err := s.state.VerifyApplicationExistsForResource(c.Context(), coreresource.UUID("missing-resource-id"))
+
+	// Assert.
+	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationNotFound)
+}
+
+// TestGetResourceNameAndTypeFile verifies that the resource name and file type
+// are returned for a file resource.
+func (s *resourceSuite) TestGetResourceNameAndTypeFile(c *tc.C) {
+	// Arrange: insert a file resource.
+	resID := "resource-id"
+	input := resourceData{
+		UUID:            resID,
+		ApplicationUUID: s.constants.fakeApplicationUUID1,
+		Name:            "resource-name",
+		Type:            charmresource.TypeFile,
+	}
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return errors.Capture(input.insert(ctx, tx))
+	})
+	c.Assert(err, tc.ErrorIsNil, tc.Commentf("(Arrange) failed to populate DB: %v", errors.ErrorStack(err)))
+
+	// Act.
+	name, resourceType, err := s.state.GetResourceNameAndType(c.Context(), coreresource.UUID(resID))
+
+	// Assert.
+	c.Assert(err, tc.ErrorIsNil, tc.Commentf("(Act) failed to get resource name and type: %v", errors.ErrorStack(err)))
+	c.Check(name, tc.Equals, input.Name)
+	c.Check(resourceType, tc.Equals, charmresource.TypeFile.String())
+}
+
+// TestGetResourceNameAndTypeContainerImage verifies that the resource name and
+// container image type are returned for a container image resource.
+func (s *resourceSuite) TestGetResourceNameAndTypeContainerImage(c *tc.C) {
+	// Arrange: insert a container image resource.
+	resID := "resource-id"
+	input := resourceData{
+		UUID:            resID,
+		ApplicationUUID: s.constants.fakeApplicationUUID1,
+		Name:            "resource-name",
+		Type:            charmresource.TypeContainerImage,
+	}
+
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return input.insert(ctx, tx)
+	})
+	c.Assert(err, tc.ErrorIsNil, tc.Commentf("(Arrange) failed to populate DB: %v", errors.ErrorStack(err)))
+
+	// Act.
+	name, resourceType, err := s.state.GetResourceNameAndType(c.Context(), coreresource.UUID(resID))
+
+	// Assert.
+	c.Assert(err, tc.ErrorIsNil, tc.Commentf("(Act) failed to get resource name and type: %v", errors.ErrorStack(err)))
+	c.Check(name, tc.Equals, input.Name)
+	c.Check(resourceType, tc.Equals, charmresource.TypeContainerImage.String())
+}
+
+// TestGetResourceNameAndTypeNotFound verifies that requesting a missing
+// resource returns ResourceNotFound.
+func (s *resourceSuite) TestGetResourceNameAndTypeNotFound(c *tc.C) {
+	// Act.
+	_, _, err := s.state.GetResourceNameAndType(c.Context(), "missing-resource-id")
+
+	// Assert.
 	c.Assert(err, tc.ErrorIs, resourceerrors.ResourceNotFound)
 }
 
@@ -1905,7 +2028,7 @@ func (s *resourceSuite) TestGetResourcesByApplicationUUIDNoResources(c *tc.C) {
 	results, err := s.state.GetResourcesByApplicationUUID(c.Context(), application.UUID(s.constants.fakeApplicationUUID1))
 	// Assert
 	c.Assert(err, tc.ErrorIsNil, tc.Commentf("(Assert) failed to list resources: %v", errors.ErrorStack(err)))
-	c.Assert(results, tc.HasLen, 0)
+	c.Check(results, tc.HasLen, 0)
 }
 
 // TestGetResourcesByApplicationUUID tests the retrieval and organization of
@@ -1971,7 +2094,7 @@ func (s *resourceSuite) TestGetResourcesByApplicationUUID(c *tc.C) {
 
 	// Assert
 	c.Assert(err, tc.ErrorIsNil, tc.Commentf("(Assert) failed to list resources: %v", errors.ErrorStack(err)))
-	c.Assert(results, tc.DeepEquals, []coreresource.Resource{
+	c.Check(results, tc.DeepEquals, []coreresource.Resource{
 		simpleRes.toResource(s, c),
 		polledRes.toResource(s, c),
 		unitRes.toResource(s, c),
@@ -2020,7 +2143,7 @@ func (s *resourceSuite) TestGetResourcesByApplicationUUIDWithStatePotential(c *t
 
 	// Assert
 	c.Assert(err, tc.ErrorIsNil, tc.Commentf("(Assert) failed to list resources: %v", errors.ErrorStack(err)))
-	c.Assert(results, tc.DeepEquals, []coreresource.Resource{
+	c.Check(results, tc.DeepEquals, []coreresource.Resource{
 		availableRes.toResource(s, c),
 		// potential resources are not returned
 	})
@@ -2188,7 +2311,7 @@ func (s *resourceSuite) TestUpdateResourceRevisionAndDeletePriorVersionFile(c *t
 			// origin is upload by default if not specified in test input value
 			Origin: charmresource.OriginUpload,
 		},
-		UUID:            resID,
+		ID:              resID.String(),
 		ApplicationName: s.constants.fakeApplicationName1,
 	}
 	input := resourceData{
@@ -2255,7 +2378,7 @@ func (s *resourceSuite) TestUpdateResourceRevisionAndDeletePriorVersionImage(c *
 			// origin is upload by default if not specified in test input value
 			Origin: charmresource.OriginUpload,
 		},
-		UUID:            resID,
+		ID:              resID.String(),
 		ApplicationName: s.constants.fakeApplicationName1,
 	}
 	input := resourceData{
@@ -2963,79 +3086,6 @@ func (s *resourceSuite) TestExportResourcesApplicationNotFound(c *tc.C) {
 	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationNotFound)
 }
 
-// TestDeleteImportedApplicationResources checks the importing and then deleting
-// resources leaves the database in the same state it started.
-func (s *resourceSuite) TestDeleteImportedApplicationResources(c *tc.C) {
-	// Arrange: Add charm resources for the resources we are going to set.
-	app1Res1Name := "app-1-resource-1"
-	app1Res2Name := "app-1-resource-2"
-	app2ResName := "app-2-resource-1"
-	s.addCharmResource(c, fakeCharmUUID, charmresource.Meta{
-		Name: app1Res1Name,
-		Type: charmresource.TypeFile,
-	})
-	s.addCharmResource(c, fakeCharmUUID, charmresource.Meta{
-		Name: app1Res2Name,
-		Type: charmresource.TypeFile,
-	})
-	s.addCharmResource(c, fakeCharmUUID, charmresource.Meta{
-		Name: app2ResName,
-		Type: charmresource.TypeContainerImage,
-	})
-
-	// Arrange: Create arguments for ImportResources containing the resources we
-	// want to set.
-	app1Res1 := resource.ImportResourceInfo{
-		Name:      app1Res1Name,
-		Origin:    charmresource.OriginStore,
-		Revision:  3,
-		Timestamp: time.Now().Truncate(time.Second).UTC(),
-	}
-	app1Res1Unit := resource.ImportUnitResourceInfo{
-		UnitName:           s.constants.fakeUnitName1,
-		ImportResourceInfo: app1Res1,
-	}
-
-	app1Res2 := resource.ImportResourceInfo{
-		Name:      app1Res2Name,
-		Origin:    charmresource.OriginUpload,
-		Revision:  -1,
-		Timestamp: time.Now().Truncate(time.Second).UTC(),
-	}
-	app1Res2Unit := resource.ImportUnitResourceInfo{
-		UnitName:           s.constants.fakeUnitName1,
-		ImportResourceInfo: app1Res2,
-	}
-	app2Res := resource.ImportResourceInfo{
-		Name:      app2ResName,
-		Origin:    charmresource.OriginStore,
-		Revision:  2,
-		Timestamp: time.Now().Truncate(time.Second).UTC(),
-	}
-	args := []resource.ImportResourcesArg{{
-		ApplicationName: s.constants.fakeApplicationName1,
-		Resources:       []resource.ImportResourceInfo{app1Res1, app1Res2},
-		UnitResources:   []resource.ImportUnitResourceInfo{app1Res1Unit, app1Res2Unit},
-	}, {
-		ApplicationName: s.constants.fakeApplicationName2,
-		Resources:       []resource.ImportResourceInfo{app2Res},
-	}}
-
-	// Arrange: Import the resources.
-	err := s.state.ImportResources(c.Context(), args)
-	c.Assert(err, tc.ErrorIsNil)
-
-	// Act: Delete imported resources.
-	err = s.state.DeleteImportedResources(
-		c.Context(),
-		[]string{s.constants.fakeApplicationName1, s.constants.fakeApplicationName2},
-	)
-	c.Assert(err, tc.ErrorIsNil, tc.Commentf("(Act) failed to delete resources: %v", errors.ErrorStack(err)))
-
-	// Assert: Check that all the resources have been removed.
-	s.checkResourceTablesEmpty(c)
-}
-
 func (s *resourceSuite) addLocalCharmAndApp(c *tc.C, charmUUID, appName, appUUID string) {
 	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
@@ -3195,35 +3245,6 @@ AND    state_id = 1 -- "potential"
 `, res.Name, charmUUID).Scan(&repoResourceUUID)
 	})
 	c.Assert(err, tc.ErrorIs, sql.ErrNoRows)
-}
-
-func (s *resourceSuite) checkResourceTablesEmpty(
-	c *tc.C,
-) {
-	var uuid string
-	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		return tx.QueryRow(`
-SELECT uuid
-FROM   resource
-`).Scan(&uuid)
-	})
-	c.Check(err, tc.ErrorIs, sql.ErrNoRows)
-
-	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		return tx.QueryRow(`
-SELECT resource_uuid
-FROM   application_resource
-`).Scan(&uuid)
-	})
-	c.Check(err, tc.ErrorIs, sql.ErrNoRows)
-
-	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		return tx.QueryRow(`
-SELECT resource_uuid
-FROM   unit_resource
-`).Scan(&uuid)
-	})
-	c.Check(err, tc.ErrorIs, sql.ErrNoRows)
 }
 
 func (s *resourceSuite) addResource(c *tc.C, resType charmresource.Type) coreresource.UUID {
@@ -3501,7 +3522,7 @@ func (d resourceData) toCharmResource(c *tc.C) charmresource.Resource {
 func (d resourceData) toResource(s *resourceSuite, c *tc.C) coreresource.Resource {
 	return coreresource.Resource{
 		Resource:        d.toCharmResource(c),
-		UUID:            coreresource.UUID(d.UUID),
+		ID:              coreresource.UUID(d.UUID).String(),
 		ApplicationName: s.constants.applicationNameFromUUID[d.ApplicationUUID],
 		RetrievedBy:     d.RetrievedByName,
 		Timestamp:       d.CreatedAt,

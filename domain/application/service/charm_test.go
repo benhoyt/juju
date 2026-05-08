@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/core/arch"
@@ -19,14 +19,15 @@ import (
 	corecharm "github.com/juju/juju/core/charm"
 	charmtesting "github.com/juju/juju/core/charm/testing"
 	coreerrors "github.com/juju/juju/core/errors"
+	"github.com/juju/juju/core/objectstore"
 	objectstoretesting "github.com/juju/juju/core/objectstore/testing"
 	"github.com/juju/juju/core/watcher/watchertest"
 	"github.com/juju/juju/domain/application/architecture"
 	"github.com/juju/juju/domain/application/charm"
 	"github.com/juju/juju/domain/application/charm/store"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
-	internalcharm "github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/charm/resource"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
+	"github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/testcharms"
 )
@@ -54,7 +55,7 @@ func (s *charmServiceSuite) TestGetCharmIDWithoutSource(c *tc.C) {
 
 	_, err := s.service.getCharmID(c.Context(), charm.GetCharmArgs{
 		Name:     "foo",
-		Revision: ptr(42),
+		Revision: new(42),
 	})
 	c.Assert(err, tc.ErrorIs, applicationerrors.CharmSourceNotValid)
 }
@@ -73,7 +74,7 @@ func (s *charmServiceSuite) TestGetCharmIDInvalidSource(c *tc.C) {
 
 	_, err := s.service.getCharmID(c.Context(), charm.GetCharmArgs{
 		Name:     "foo",
-		Revision: ptr(42),
+		Revision: new(42),
 		Source:   "wrong-source",
 	})
 	c.Assert(err, tc.ErrorIs, applicationerrors.CharmSourceNotValid)
@@ -301,52 +302,6 @@ func (s *charmServiceSuite) TestGetCharmMetadataCharmNotFound(c *tc.C) {
 	s.state.EXPECT().GetCharmMetadata(gomock.Any(), id).Return(charm.Metadata{}, applicationerrors.CharmNotFound)
 
 	_, err := s.service.GetCharmMetadata(c.Context(), locator)
-	c.Assert(err, tc.ErrorIs, applicationerrors.CharmNotFound)
-}
-
-func (s *charmServiceSuite) TestGetCharmLXDProfile(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	id := charmtesting.GenCharmID(c)
-
-	locator := charm.CharmLocator{
-		Name:     "foo",
-		Revision: 42,
-		Source:   charm.CharmHubSource,
-	}
-	s.state.EXPECT().GetCharmID(gomock.Any(), locator.Name, locator.Revision, locator.Source).Return(id, nil)
-	s.state.EXPECT().GetCharmLXDProfile(gomock.Any(), id).Return([]byte(`{"config": {"foo":"bar"}, "description": "description", "devices": {"gpu":{"baz": "x"}}}`), 42, nil)
-
-	profile, revision, err := s.service.GetCharmLXDProfile(c.Context(), locator)
-	c.Assert(err, tc.ErrorIsNil)
-	c.Check(profile, tc.DeepEquals, internalcharm.LXDProfile{
-		Config: map[string]string{
-			"foo": "bar",
-		},
-		Description: "description",
-		Devices: map[string]map[string]string{
-			"gpu": {
-				"baz": "x",
-			},
-		},
-	})
-	c.Check(revision, tc.Equals, 42)
-}
-
-func (s *charmServiceSuite) TestGetCharmLXDProfileCharmNotFound(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	id := charmtesting.GenCharmID(c)
-
-	locator := charm.CharmLocator{
-		Name:     "foo",
-		Revision: 42,
-		Source:   charm.CharmHubSource,
-	}
-	s.state.EXPECT().GetCharmID(gomock.Any(), locator.Name, locator.Revision, locator.Source).Return(id, nil)
-	s.state.EXPECT().GetCharmLXDProfile(gomock.Any(), id).Return(nil, -1, applicationerrors.CharmNotFound)
-
-	_, _, err := s.service.GetCharmLXDProfile(c.Context(), locator)
 	c.Assert(err, tc.ErrorIs, applicationerrors.CharmNotFound)
 }
 
@@ -685,14 +640,23 @@ func (s *charmServiceSuite) TestGetCharmArchiveBySHA256Prefix(c *tc.C) {
 
 	archive := io.NopCloser(strings.NewReader("archive-content"))
 
-	s.charmStore.EXPECT().GetBySHA256Prefix(gomock.Any(), "prefix").Return(archive, nil)
+	hash := "fab5b76e7c234d9c929014d46ef0a5db9c8b6e9fd63bdc3ba9c2b903471bc77e"
 
-	reader, err := s.service.GetCharmArchiveBySHA256Prefix(c.Context(), "prefix")
+	s.charmStore.EXPECT().GetBySHA256Prefix(gomock.Any(), "prefix").Return(archive, objectstore.Digest{
+		SHA256: hash,
+		Size:   13,
+	}, nil)
+
+	reader, digest, err := s.service.GetCharmArchiveBySHA256Prefix(c.Context(), "prefix")
 	c.Assert(err, tc.ErrorIsNil)
 
 	content, err := io.ReadAll(reader)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(string(content), tc.Equals, "archive-content")
+	c.Check(digest, tc.DeepEquals, objectstore.Digest{
+		SHA256: hash,
+		Size:   13,
+	})
 }
 
 func (s *charmServiceSuite) TestGetCharmArchiveCharmNotFound(c *tc.C) {
@@ -1575,7 +1539,7 @@ func (s *charmServiceSuite) TestResolveUploadCharmLocalCharmImporting(c *tc.C) {
 	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
 
 	downloadInfo := &charm.DownloadInfo{
-		Provenance: charm.ProvenanceMigration,
+		Provenance: charm.ProvenanceLegacyMigration,
 	}
 
 	s.state.EXPECT().IsImportingModel(gomock.Any()).Return(true, nil)
@@ -1698,7 +1662,7 @@ func (s *charmServiceSuite) TestResolveUploadCharmLocalCharmImportingFailedResol
 	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
 
 	downloadInfo := &charm.DownloadInfo{
-		Provenance: charm.ProvenanceMigration,
+		Provenance: charm.ProvenanceLegacyMigration,
 	}
 
 	s.state.EXPECT().IsImportingModel(gomock.Any()).Return(true, nil)

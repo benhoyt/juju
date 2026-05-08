@@ -47,6 +47,7 @@ import (
 	"github.com/juju/juju/apiserver/facades/client/cloud"      // ModelUser Read
 	"github.com/juju/juju/apiserver/facades/client/controller" // ModelUser Admin (although some methods check for read only)
 	"github.com/juju/juju/apiserver/facades/client/credentialmanager"
+	"github.com/juju/juju/apiserver/facades/client/highavailability"
 	"github.com/juju/juju/apiserver/facades/client/imagemetadatamanager"
 	"github.com/juju/juju/apiserver/facades/client/keymanager"     // ModelUser Write
 	"github.com/juju/juju/apiserver/facades/client/machinemanager" // ModelUser Write
@@ -178,6 +179,7 @@ func AllFacades() *facade.Registry {
 	deployer.Register(registry)
 	diskmanager.Register(registry)
 	firewaller.Register(registry)
+	highavailability.Register(registry)
 	hostkeyreporter.Register(registry)
 	imagemetadata.Register(registry)
 	imagemetadatamanager.Register(registry)
@@ -249,15 +251,15 @@ func AdminFacadeDetails() []facade.Details {
 }
 
 func registerWatchers(registry *facade.Registry) {
-	registry.MustRegister("NotifyWatcher", 1, newNotifyWatcher, reflect.TypeOf((*srvNotifyWatcher)(nil)))
-	registry.MustRegister("StringsWatcher", 1, newStringsWatcher, reflect.TypeOf((*srvStringsWatcher)(nil)))
-	registry.MustRegister("OfferStatusWatcher", 1, newOfferStatusWatcher, reflect.TypeOf((*srvOfferStatusWatcher)(nil)))
-	registry.MustRegister("RelationStatusWatcher", 1, newRelationStatusWatcher, reflect.TypeOf((*srvRelationStatusWatcher)(nil)))
-	registry.MustRegister("RelationUnitsWatcher", 1, newRelationUnitsWatcher, reflect.TypeOf((*srvRelationUnitsWatcher)(nil)))
-	registry.MustRegister("RemoteRelationWatcher", 1, newRemoteRelationWatcher, reflect.TypeOf((*srvRemoteRelationWatcher)(nil)))
-	registry.MustRegister("EntityWatcher", 2, newEntitiesWatcher, reflect.TypeOf((*srvEntitiesWatcher)(nil)))
-	registry.MustRegister("ModelSummaryWatcher", 1, newModelSummaryWatcher, reflect.TypeOf((*SrvModelSummaryWatcher)(nil)))
-	registry.MustRegister("SecretsTriggerWatcher", 1, newSecretsTriggerWatcher, reflect.TypeOf((*srvSecretTriggerWatcher)(nil)))
-	registry.MustRegister("SecretBackendsRotateWatcher", 1, newSecretBackendsRotateWatcher, reflect.TypeOf((*srvSecretBackendsRotateWatcher)(nil)))
-	registry.MustRegister("SecretsRevisionWatcher", 1, newSecretsRevisionWatcher, reflect.TypeOf((*srvSecretsRevisionWatcher)(nil)))
+	registry.MustRegister("NotifyWatcher", 1, newNotifyWatcher, reflect.TypeFor[*srvNotifyWatcher]())
+	registry.MustRegister("StringsWatcher", 1, newStringsWatcher, reflect.TypeFor[*srvStringsWatcher]())
+	registry.MustRegister("OfferStatusWatcher", 1, newOfferStatusWatcher, reflect.TypeFor[*srvOfferStatusWatcher]())
+	registry.MustRegister("RelationStatusWatcher", 1, newRelationStatusWatcher, reflect.TypeFor[*srvRelationStatusWatcher]())
+	registry.MustRegister("RelationUnitsWatcher", 1, newRelationUnitsWatcher, reflect.TypeFor[*srvRelationUnitsWatcher]())
+	registry.MustRegister("RemoteRelationWatcher", 1, newRemoteRelationWatcher, reflect.TypeFor[*srvRemoteRelationWatcher]())
+	registry.MustRegister("EntityWatcher", 2, newEntitiesWatcher, reflect.TypeFor[*srvEntitiesWatcher]())
+	registry.MustRegister("ModelSummaryWatcher", 1, newModelSummaryWatcher, reflect.TypeFor[*SrvModelSummaryWatcher]())
+	registry.MustRegister("SecretsTriggerWatcher", 1, newSecretsTriggerWatcher, reflect.TypeFor[*srvSecretTriggerWatcher]())
+	registry.MustRegister("SecretBackendsRotateWatcher", 1, newSecretBackendsRotateWatcher, reflect.TypeFor[*srvSecretBackendsRotateWatcher]())
+	registry.MustRegister("SecretsRevisionWatcher", 1, newSecretsRevisionWatcher, reflect.TypeFor[*srvSecretsRevisionWatcher]())
 }

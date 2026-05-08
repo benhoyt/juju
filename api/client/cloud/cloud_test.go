@@ -215,6 +215,33 @@ func (s *cloudSuite) TestUserCredentials(c *tc.C) {
 	})
 }
 
+func (s *cloudSuite) TestCheckCredentialsModels(c *tc.C) {
+	ctrl := gomock.NewController(c)
+	defer ctrl.Finish()
+
+	args := params.TaggedCredentials{Credentials: []params.TaggedCredential{testTaggedCredential}}
+	res := new(params.UpdateCredentialResults)
+	resSuccess := new(params.UpdateCredentialResults)
+	results := params.UpdateCredentialResults{
+		Results: []params.UpdateCredentialResult{{}},
+	}
+
+	mockFacadeCaller := basemocks.NewMockFacadeCaller(ctrl)
+	gomock.InOrder(
+		mockFacadeCaller.EXPECT().FacadeCall(gomock.Any(), "CheckCredentialsModels", args, res).Return(errors.New("boom")),
+		mockFacadeCaller.EXPECT().FacadeCall(gomock.Any(), "CheckCredentialsModels", args, resSuccess).SetArg(3, results).Return(nil),
+	)
+	client := cloudapi.NewClientFromCaller(mockFacadeCaller)
+
+	result, err := client.CheckCredentialsModels(c.Context(), args)
+	c.Assert(result, tc.IsNil)
+	c.Assert(err, tc.ErrorMatches, "boom")
+
+	result, err = client.CheckCredentialsModels(c.Context(), args)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result, tc.DeepEquals, results.Results)
+}
+
 func (s *cloudSuite) TestUpdateCredential(c *tc.C) {
 	ctrl := gomock.NewController(c)
 	defer ctrl.Finish()
@@ -362,6 +389,16 @@ var (
 		"username": "admin",
 		"password": "adm1n",
 	})
+	testTaggedCredential = params.TaggedCredential{
+		Tag: testCredentialTag.String(),
+		Credential: params.CloudCredential{
+			AuthType: "userpass",
+			Attributes: map[string]string{
+				"username": "admin",
+				"password": "adm1n",
+			},
+		},
+	}
 )
 
 func (s *cloudSuite) TestRevokeCredential(c *tc.C) {
@@ -682,7 +719,7 @@ func (s *cloudSuite) TestRevokeCloud(c *tc.C) {
 
 func createCredentials(n int) map[string]cloud.Credential {
 	result := map[string]cloud.Credential{}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		result[names.NewCloudCredentialTag(fmt.Sprintf("foo/bob/bar%d", i)).String()] = testCredential
 	}
 	return result
@@ -930,7 +967,7 @@ type cloudCredentialMatcher struct {
 	arg params.UpdateCredentialArgs
 }
 
-func (c cloudCredentialMatcher) Matches(x interface{}) bool {
+func (c cloudCredentialMatcher) Matches(x any) bool {
 	cred, ok := x.(params.UpdateCredentialArgs)
 	if !ok {
 		return false

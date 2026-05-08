@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju subnet reference: IP address ranges in CIDR notation, grouped into network spaces for application networking."
+---
+
 (subnet)=
 # Subnet
 

@@ -87,8 +87,8 @@ func (*tcpProxySuite) TestCloseConns(c *tc.C) {
 
 	conn2, err := net.Dial("tcp", p.Addr())
 	c.Assert(err, tc.IsNil)
-	defer conn1.Close()
-	assertEcho(c, conn1)
+	defer conn2.Close()
+	assertEcho(c, conn2)
 
 	p.CloseConns()
 
@@ -157,13 +157,11 @@ func tcpEcho(wg *sync.WaitGroup, listener net.Listener) {
 		if err != nil {
 			return
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			defer conn.Close()
 			// Echo anything that was written.
 			io.Copy(conn, conn)
-		}()
+		})
 	}
 }
 

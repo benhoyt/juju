@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju logs reference: agent logs, audit logs, log files structure, verbosity levels, and log management for debugging and monitoring."
+---
+
 (log)=
 # Log
 

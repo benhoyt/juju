@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju credentials reference: authentication material for cloud access, credential types, storage, and model associations."
+---
+
 (credential)=
 # Credential
 

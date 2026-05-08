@@ -54,7 +54,7 @@ func (s *stateSuite) TestGetSequencesForExportMultiple(c *tc.C) {
 
 	var seqValue uint64
 	err := s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			var err error
 			if seqValue, err = NextValue(ctx, state, tx, domainsequence.StaticNamespace("foo")); err != nil {
 				return err
@@ -129,32 +129,4 @@ func (s *stateSuite) TestImportSequencesTwice(c *tc.C) {
 		"foo_bar": 2,
 	})
 	c.Assert(err, tc.ErrorIs, sequenceerrors.DuplicateNamespaceSequence)
-}
-
-func (s *stateSuite) TestRemoveAllSequences(c *tc.C) {
-	state := NewState(s.TxnRunnerFactory())
-
-	seq, err := state.GetSequencesForExport(c.Context())
-	c.Assert(err, tc.ErrorIsNil)
-	c.Check(seq, tc.HasLen, 0)
-
-	err = state.ImportSequences(c.Context(), map[string]uint64{
-		"foo":     1,
-		"foo_bar": 2,
-	})
-	c.Assert(err, tc.ErrorIsNil)
-
-	seq, err = state.GetSequencesForExport(c.Context())
-	c.Assert(err, tc.ErrorIsNil)
-	c.Check(seq, tc.DeepEquals, map[string]uint64{
-		"foo":     1,
-		"foo_bar": 2,
-	})
-
-	err = state.RemoveAllSequences(c.Context())
-	c.Assert(err, tc.ErrorIsNil)
-
-	seq, err = state.GetSequencesForExport(c.Context())
-	c.Assert(err, tc.ErrorIsNil)
-	c.Check(seq, tc.HasLen, 0)
 }

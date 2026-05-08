@@ -153,6 +153,19 @@ func (c *Client) UserCredentials(ctx context.Context, user names.UserTag, cloud 
 	return tags, nil
 }
 
+// CheckCredentialsModels validates supplied cloud credentials' content against
+// models that currently use these credentials.
+// If there are any models that are using a credential and these models or their
+// cloud instances are not going to be accessible with corresponding credential,
+// there will be detailed validation errors per model.
+func (c *Client) CheckCredentialsModels(ctx context.Context, args params.TaggedCredentials) ([]params.UpdateCredentialResult, error) {
+	var results params.UpdateCredentialResults
+	if err := c.facade.FacadeCall(ctx, "CheckCredentialsModels", args, &results); err != nil {
+		return nil, errors.Trace(err)
+	}
+	return results.Results, nil
+}
+
 // UpdateCloudsCredentials updates clouds credentials content on the controller.
 // Passed in credentials are keyed on the credential tag.
 // This operation can be forced to ignore validation checks.
@@ -462,10 +475,10 @@ func cloudToParams(cloud jujucloud.Cloud) params.Cloud {
 			StorageEndpoint:  region.StorageEndpoint,
 		}
 	}
-	var regionConfig map[string]map[string]interface{}
+	var regionConfig map[string]map[string]any
 	for r, attr := range cloud.RegionConfig {
 		if regionConfig == nil {
-			regionConfig = make(map[string]map[string]interface{})
+			regionConfig = make(map[string]map[string]any)
 		}
 		regionConfig[r] = attr
 	}

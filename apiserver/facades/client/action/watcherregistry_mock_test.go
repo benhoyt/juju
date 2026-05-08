@@ -13,7 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
-	worker "github.com/juju/worker/v4"
+	worker "github.com/juju/worker/v5"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -190,6 +190,44 @@ func (c *MockWatcherRegistryRegisterNamedCall) Do(f func(context.Context, string
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockWatcherRegistryRegisterNamedCall) DoAndReturn(f func(context.Context, string, worker.Worker) error) *MockWatcherRegistryRegisterNamedCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// Report mocks base method.
+func (m *MockWatcherRegistry) Report(arg0 context.Context) map[string]any {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Report", arg0)
+	ret0, _ := ret[0].(map[string]any)
+	return ret0
+}
+
+// Report indicates an expected call of Report.
+func (mr *MockWatcherRegistryMockRecorder) Report(arg0 any) *MockWatcherRegistryReportCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Report", reflect.TypeOf((*MockWatcherRegistry)(nil).Report), arg0)
+	return &MockWatcherRegistryReportCall{Call: call}
+}
+
+// MockWatcherRegistryReportCall wrap *gomock.Call
+type MockWatcherRegistryReportCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockWatcherRegistryReportCall) Return(arg0 map[string]any) *MockWatcherRegistryReportCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockWatcherRegistryReportCall) Do(f func(context.Context) map[string]any) *MockWatcherRegistryReportCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockWatcherRegistryReportCall) DoAndReturn(f func(context.Context) map[string]any) *MockWatcherRegistryReportCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

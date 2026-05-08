@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/juju/clock"
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
@@ -69,7 +69,7 @@ func (s *importSuite) TestImport(c *tc.C) {
 		Arch:            "arch",
 		VirtType:        "virtType",
 		RootStorageType: "rootStorageType",
-		RootStorageSize: ptr(uint64(128)),
+		RootStorageSize: new(uint64(128)),
 		DateCreated:     creationTime.UnixNano(),
 		Source:          "source",
 		Priority:        40,
@@ -110,7 +110,7 @@ func (s *importSuite) TestImportWithNonCustomSource(c *tc.C) {
 		Arch:            "arch",
 		VirtType:        "virtType",
 		RootStorageType: "rootStorageType",
-		RootStorageSize: ptr(uint64(128)),
+		RootStorageSize: new(uint64(128)),
 		DateCreated:     creationTime.UnixNano(),
 		Source:          "source",
 		Priority:        40,

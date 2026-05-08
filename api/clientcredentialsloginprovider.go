@@ -6,6 +6,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"os"
 
 	"github.com/juju/errors"
 
@@ -15,23 +16,54 @@ import (
 )
 
 var (
-	loginWithClientCredentialsAPICall = func(ctx context.Context, caller base.APICaller, request interface{}, response interface{}) error {
+	loginWithClientCredentialsAPICall = func(ctx context.Context, caller base.APICaller, request any, response any) error {
 		return caller.APICall(ctx, "Admin", 4, "", "LoginWithClientCredentials", request, response)
 	}
 )
+
+const (
+	// clientIDEnvVar is the environment variable used to specify the client ID
+	// for client credentials authentication.
+	clientIDEnvVar = "JUJU_CLIENT_ID"
+	// clientSecretEnvVar is the environment variable used to specify the client
+	// secret for client credentials authentication.
+	clientSecretEnvVar = "JUJU_CLIENT_SECRET"
+)
+
+// NewClientCredentialsLoginProviderFromEnvironment returns a LoginProvider implementation that
+// authenticates the entity with the client credentials retrieved from the environment.
+func NewClientCredentialsLoginProviderFromEnvironment(f func()) *clientCredentialsLoginProvider {
+	clientID := os.Getenv(clientIDEnvVar)
+	clientSecret := os.Getenv(clientSecretEnvVar)
+
+	return &clientCredentialsLoginProvider{
+		clientID:     clientID,
+		clientSecret: clientSecret,
+
+		afterLoginCallback: f,
+	}
+}
 
 // NewClientCredentialsLoginProvider returns a LoginProvider implementation that
 // authenticates the entity with the given client credentials.
 func NewClientCredentialsLoginProvider(clientID, clientSecret string) *clientCredentialsLoginProvider {
 	return &clientCredentialsLoginProvider{
-		clientID:     clientID,
-		clientSecret: clientSecret,
+		clientID:           clientID,
+		clientSecret:       clientSecret,
+		afterLoginCallback: nil,
 	}
 }
 
 type clientCredentialsLoginProvider struct {
 	clientID     string
 	clientSecret string
+
+	afterLoginCallback func()
+}
+
+// String returns a string representation of the client credentials login provider.
+func (p *clientCredentialsLoginProvider) String() string {
+	return "ClientCredentialsLoginProvider"
 }
 
 // AuthHeader implements the [LoginProvider.AuthHeader] method.
@@ -45,6 +77,10 @@ func (p *clientCredentialsLoginProvider) AuthHeader() (http.Header, error) {
 // It authenticates as the entity using client credentials.
 // Subsequent requests on the state will act as that entity.
 func (p *clientCredentialsLoginProvider) Login(ctx context.Context, caller base.APICaller) (*LoginResultParams, error) {
+	if !p.clientIdAndSecretSet() {
+		return nil, errors.New("both client id and client secret must be set")
+	}
+
 	var result params.LoginResult
 	request := struct {
 		ClientID     string `json:"client-id"`
@@ -59,5 +95,13 @@ func (p *clientCredentialsLoginProvider) Login(ctx context.Context, caller base.
 		return nil, errors.Trace(err)
 	}
 
+	if p.afterLoginCallback != nil {
+		p.afterLoginCallback()
+	}
+
 	return NewLoginResultParams(result)
+}
+
+func (p *clientCredentialsLoginProvider) clientIdAndSecretSet() bool {
+	return p.clientID != "" && p.clientSecret != ""
 }

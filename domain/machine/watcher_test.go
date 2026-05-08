@@ -17,6 +17,7 @@ import (
 	corecharm "github.com/juju/juju/core/charm"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/database"
+	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/model"
 	coreobjectstore "github.com/juju/juju/core/objectstore"
@@ -29,18 +30,20 @@ import (
 	applicationstorageservice "github.com/juju/juju/domain/application/service/storage"
 	applicationstate "github.com/juju/juju/domain/application/state"
 	"github.com/juju/juju/domain/deployment"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	domainmachine "github.com/juju/juju/domain/machine"
+	machineerrors "github.com/juju/juju/domain/machine/errors"
 	"github.com/juju/juju/domain/machine/service"
 	"github.com/juju/juju/domain/machine/state"
 	objectstorestate "github.com/juju/juju/domain/objectstore/state"
 	removalservice "github.com/juju/juju/domain/removal/service"
 	removalstatecontroller "github.com/juju/juju/domain/removal/state/controller"
 	removalstatemodel "github.com/juju/juju/domain/removal/state/model"
+	domainstorage "github.com/juju/juju/domain/storage"
 	domaintesting "github.com/juju/juju/domain/testing"
 	"github.com/juju/juju/environs"
 	changestreamtesting "github.com/juju/juju/internal/changestream/testing"
-	internalcharm "github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	internalstorage "github.com/juju/juju/internal/storage"
 	internaltesting "github.com/juju/juju/internal/testing"
@@ -80,7 +83,6 @@ func (s *watcherSuite) SetUpTest(c *tc.C) {
 		func(ctx context.Context) (service.Provider, error) {
 			return service.NewNoopProvider(), nil
 		},
-		nil,
 		domain.NewStatusHistory(loggertesting.WrapCheckLog(c), clock.WallClock),
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
@@ -102,7 +104,7 @@ func (s *watcherSuite) TestWatchModelMachines(c *tc.C) {
 				Channel: "24.04",
 				OSType:  deployment.Ubuntu,
 			},
-			Nonce: ptr("nonce-123"),
+			Nonce: new("nonce-123"),
 		})
 		c.Assert(err, tc.IsNil)
 	}, func(w watchertest.WatcherC[[]string]) {
@@ -115,7 +117,7 @@ func (s *watcherSuite) TestWatchModelMachines(c *tc.C) {
 				Channel: "24.04",
 				OSType:  deployment.Ubuntu,
 			},
-			Nonce: ptr("nonce-123"),
+			Nonce: new("nonce-123"),
 		})
 		c.Assert(err, tc.IsNil)
 	}, func(w watchertest.WatcherC[[]string]) {
@@ -157,9 +159,11 @@ func (s *watcherSuite) TestWatchModelMachinesInitialEventMachine(c *tc.C) {
 			Channel: "24.04",
 			OSType:  deployment.Ubuntu,
 		},
-		Nonce: ptr("nonce-123"),
+		Nonce: new("nonce-123"),
 	})
 	c.Assert(err, tc.ErrorIsNil)
+
+	s.AssertChangeStreamIdle(c)
 
 	watcher, err := s.svc.WatchModelMachines(c.Context())
 	c.Assert(err, tc.ErrorIsNil)
@@ -189,6 +193,8 @@ func (s *watcherSuite) TestWatchModelMachinesInitialEventContainer(c *tc.C) {
 	})
 	c.Assert(err, tc.ErrorIsNil)
 
+	s.AssertChangeStreamIdle(c)
+
 	watcher, err := s.svc.WatchModelMachines(c.Context())
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -211,7 +217,7 @@ func (s *watcherSuite) TestWatchModelMachineLifeStartTimesInitialEvent(c *tc.C) 
 			Channel: "24.04",
 			OSType:  deployment.Ubuntu,
 		},
-		Nonce: ptr("nonce-123"),
+		Nonce: new("nonce-123"),
 	})
 	c.Assert(err, tc.ErrorIsNil)
 
@@ -239,7 +245,7 @@ func (s *watcherSuite) TestWatchModelMachineLifeStartTimes(c *tc.C) {
 				Channel: "24.04",
 				OSType:  deployment.Ubuntu,
 			},
-			Nonce: ptr("nonce-123"),
+			Nonce: new("nonce-123"),
 		})
 		c.Assert(err, tc.ErrorIsNil)
 	}, func(w watchertest.WatcherC[[]string]) {
@@ -275,16 +281,16 @@ func (s *watcherSuite) TestMachineCloudInstanceWatchWithSet(c *tc.C) {
 			Channel: "24.04",
 			OSType:  deployment.Ubuntu,
 		},
-		Nonce: ptr("nonce-123"),
+		Nonce: new("nonce-123"),
 	})
 	c.Assert(err, tc.IsNil)
 	machineUUID, err := s.svc.GetMachineUUID(c.Context(), res.MachineName)
 	c.Assert(err, tc.IsNil)
 	hc := &instance.HardwareCharacteristics{
-		Mem:      ptr[uint64](1024),
-		RootDisk: ptr[uint64](256),
-		CpuCores: ptr[uint64](4),
-		CpuPower: ptr[uint64](75),
+		Mem:      new(uint64(1024)),
+		RootDisk: new(uint64(256)),
+		CpuCores: new(uint64(4)),
+		CpuPower: new(uint64(75)),
 	}
 	watcher, err := s.svc.WatchMachineCloudInstances(c.Context(), machineUUID)
 	c.Assert(err, tc.ErrorIsNil)
@@ -296,63 +302,6 @@ func (s *watcherSuite) TestMachineCloudInstanceWatchWithSet(c *tc.C) {
 		c.Assert(err, tc.ErrorIsNil)
 	}, func(w watchertest.WatcherC[struct{}]) {
 		w.Check(watchertest.SliceAssert(struct{}{}))
-	})
-
-	harness.Run(c, struct{}{})
-}
-
-func (s *watcherSuite) TestWatchLXDProfiles(c *tc.C) {
-	res0, err := s.svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
-		Platform: deployment.Platform{
-			Channel: "24.04",
-			OSType:  deployment.Ubuntu,
-		},
-	})
-	c.Assert(err, tc.ErrorIsNil)
-	machineUUIDm0, err := s.svc.GetMachineUUID(c.Context(), res0.MachineName)
-	c.Assert(err, tc.IsNil)
-	err = s.svc.SetMachineCloudInstance(c.Context(), machineUUIDm0, instance.Id("123"), "", "nonce", nil)
-	c.Assert(err, tc.ErrorIsNil)
-
-	res1, err := s.svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
-		Platform: deployment.Platform{
-			Channel: "24.04",
-			OSType:  deployment.Ubuntu,
-		},
-	})
-	c.Assert(err, tc.ErrorIsNil)
-	machineUUIDm1, err := s.svc.GetMachineUUID(c.Context(), res1.MachineName)
-	c.Assert(err, tc.IsNil)
-	err = s.svc.SetMachineCloudInstance(c.Context(), machineUUIDm1, instance.Id("456"), "", "nonce", nil)
-	c.Assert(err, tc.ErrorIsNil)
-
-	watcher, err := s.svc.WatchLXDProfiles(c.Context(), machineUUIDm0)
-	c.Assert(err, tc.ErrorIsNil)
-	harness := watchertest.NewHarness(s, watchertest.NewWatcherC(c, watcher))
-
-	// Should notify when a new profile is added.
-	harness.AddTest(c, func(c *tc.C) {
-		err := s.svc.SetAppliedLXDProfileNames(c.Context(), machineUUIDm0, []string{"profile-0"})
-		c.Assert(err, tc.ErrorIsNil)
-	}, func(w watchertest.WatcherC[struct{}]) {
-		w.Check(watchertest.SliceAssert(struct{}{}))
-	})
-
-	// Should notify when profiles are overwritten.
-	harness.AddTest(c, func(c *tc.C) {
-		err := s.svc.SetAppliedLXDProfileNames(c.Context(), machineUUIDm0, []string{"profile-0", "profile-1", "profile-2"})
-		c.Assert(err, tc.ErrorIsNil)
-	}, func(w watchertest.WatcherC[struct{}]) {
-		w.Check(watchertest.SliceAssert(struct{}{}))
-	})
-
-	// Nothing to notify when the lxd profiles are set on the other (non
-	// watched) machine.
-	harness.AddTest(c, func(c *tc.C) {
-		err := s.svc.SetAppliedLXDProfileNames(c.Context(), machineUUIDm1, []string{"profile-0"})
-		c.Assert(err, tc.ErrorIsNil)
-	}, func(w watchertest.WatcherC[struct{}]) {
-		w.AssertNoChange()
 	})
 
 	harness.Run(c, struct{}{})
@@ -492,26 +441,28 @@ func (s *watcherSuite) TestWatchMachineLife(c *tc.C) {
 	harness.Run(c, struct{}{})
 }
 
-// WatchMachineAndMachineUnitLife tests the functionality of watching machine
-// and machines units lifecycle changes.
-func (s *watcherSuite) TestWatchMachineAndMachineUnitLife(c *tc.C) {
-	watcher, err := s.svc.WatchMachineAndMachineUnitLife(c.Context(), "0")
+func (s *watcherSuite) TestWatchMachineLifeAndDependantsNotFound(c *tc.C) {
+	_, err := s.svc.WatchMachineLifeAndDependants(c.Context(), "0")
+	c.Assert(err, tc.ErrorIs, machineerrors.MachineNotFound)
+}
+
+// TestWatchMachineLifeAndDependants tests the functionality of watching machine
+// lifecycle changes and lifecycle/deletion of dependants.
+func (s *watcherSuite) TestWatchMachineLifeAndDependants(c *tc.C) {
+	m, err := s.svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
+		Platform: deployment.Platform{
+			Channel: "24.04",
+			OSType:  deployment.Ubuntu,
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	s.AssertChangeStreamIdle(c)
+
+	watcher, err := s.svc.WatchMachineLifeAndDependants(c.Context(), "0")
 	c.Assert(err, tc.ErrorIsNil)
 
 	harness := watchertest.NewHarness(s, watchertest.NewWatcherC(c, watcher))
-
-	harness.AddTest(c, func(c *tc.C) {
-		_, err := s.svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
-			Platform: deployment.Platform{
-				Channel: "24.04",
-				OSType:  deployment.Ubuntu,
-			},
-		})
-		c.Assert(err, tc.ErrorIsNil)
-	}, func(w watchertest.WatcherC[struct{}]) {
-		w.AssertChange()
-	})
-
 	// Create a second machine, make sure it doesn't trigger a change.
 	harness.AddTest(c, func(c *tc.C) {
 		_, err := s.svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
@@ -525,26 +476,45 @@ func (s *watcherSuite) TestWatchMachineAndMachineUnitLife(c *tc.C) {
 		w.AssertNoChange()
 	})
 
+	// Add a container and make sure a change is seen.
+	harness.AddTest(c, func(c *tc.C) {
+		_, err := s.svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
+			Platform: deployment.Platform{
+				Channel: "24.04",
+				OSType:  deployment.Ubuntu,
+			},
+			Directive: deployment.Placement{
+				Type:      deployment.PlacementTypeContainer,
+				Container: deployment.ContainerTypeLXD,
+				Directive: m.MachineName.String(),
+			},
+		})
+		c.Assert(err, tc.ErrorIsNil)
+	}, func(w watchertest.WatcherC[struct{}]) {
+		w.AssertChange()
+	})
+
 	harness.Run(c, struct{}{})
 }
 
-// WatchMachineAndMachineUnitLife tests the functionality of watching machine
-// and machines units lifecycle changes.
-func (s *watcherSuite) TestWatchMachineAndMachineUnitLifeWithUnits(c *tc.C) {
-	watcher, err := s.svc.WatchMachineAndMachineUnitLife(c.Context(), "0")
-	c.Assert(err, tc.ErrorIsNil)
-
+// TestWatchMachineLifeAndDependantsWithUnits tests the functionality of
+// watching machine lifecycle changes and lifecycle/deletion of dependants.
+func (s *watcherSuite) TestWatchMachineLifeAndDependantsWithUnits(c *tc.C) {
 	factory := changestream.NewWatchableDBFactoryForNamespace(s.GetWatchableDB, "pelican")
 	appService := s.setupApplicationService(c, factory)
 	removalService := s.setupRemovalService(c, factory)
 
+	appUUID := s.createIAASApplication(c, appService, "some-app", applicationservice.AddIAASUnitArg{})
+	unitUUIDs, _ := s.getAppUnitAndMachineUUIDs(c, appUUID)
+	unitUUID := unitUUIDs[0]
+
+	s.AssertChangeStreamIdle(c)
+
+	watcher, err := s.svc.WatchMachineLifeAndDependants(c.Context(), "0")
+	c.Assert(err, tc.ErrorIsNil)
+
 	harness := watchertest.NewHarness(s, watchertest.NewWatcherC(c, watcher))
-
-	var appUUID, unitUUID string
-
 	harness.AddTest(c, func(c *tc.C) {
-		appUUID = s.createIAASApplication(c, appService, "some-app", applicationservice.AddIAASUnitArg{})
-
 		// Dump another unit on the same machine, which will prevent the
 		// removal of the machine when the unit is removed.
 		_, _, err := appService.AddIAASUnits(c.Context(), "some-app", applicationservice.AddIAASUnitArg{
@@ -553,9 +523,6 @@ func (s *watcherSuite) TestWatchMachineAndMachineUnitLifeWithUnits(c *tc.C) {
 			},
 		})
 		c.Assert(err, tc.ErrorIsNil)
-
-		unitUUIDs, _ := s.getAppUnitAndMachineUUIDs(c, appUUID)
-		unitUUID = unitUUIDs[0]
 	}, func(w watchertest.WatcherC[struct{}]) {
 		w.AssertChange()
 	})
@@ -584,6 +551,65 @@ func (s *watcherSuite) TestWatchMachineAndMachineUnitLifeWithUnits(c *tc.C) {
 		c.Assert(err, tc.ErrorIsNil)
 	}, func(w watchertest.WatcherC[struct{}]) {
 		w.AssertNoChange()
+	})
+
+	harness.Run(c, struct{}{})
+}
+
+// TestWatchMachineLifeAndDependantsWithStorage tests the functionality of
+// watching machine lifecycle changes and lifecycle/deletion of dependants.
+func (s *watcherSuite) TestWatchMachineLifeAndDependantsWithStorage(c *tc.C) {
+	m, err := s.svc.AddMachine(c.Context(), domainmachine.AddMachineArgs{
+		Platform: deployment.Platform{
+			Channel: "24.04",
+			OSType:  deployment.Ubuntu,
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	mUUID, err := s.svc.GetMachineUUID(c.Context(), m.MachineName)
+	c.Assert(err, tc.ErrorIsNil)
+
+	mfsUUID := s.createMachineFilesystem(c, mUUID.String())
+	mvUUID := s.createMachineVolume(c, mUUID.String())
+	fsUUID := s.createAttachedFilesystem(c, mUUID.String())
+	vUUID := s.createAttachedVolume(c, mUUID.String())
+	pvUUID := s.createPlanAttachedVolume(c, mUUID.String())
+
+	s.AssertChangeStreamIdle(c)
+
+	watcher, err := s.svc.WatchMachineLifeAndDependants(c.Context(), "0")
+	c.Assert(err, tc.ErrorIsNil)
+
+	harness := watchertest.NewHarness(s, watchertest.NewWatcherC(c, watcher))
+	harness.AddTest(c, func(c *tc.C) {
+		s.deleteFilesystem(c, mfsUUID)
+	}, func(w watchertest.WatcherC[struct{}]) {
+		w.AssertChange()
+	})
+
+	harness.AddTest(c, func(c *tc.C) {
+		s.deleteFilesystem(c, fsUUID)
+	}, func(w watchertest.WatcherC[struct{}]) {
+		w.AssertChange()
+	})
+
+	harness.AddTest(c, func(c *tc.C) {
+		s.deleteVolume(c, mvUUID)
+	}, func(w watchertest.WatcherC[struct{}]) {
+		w.AssertChange()
+	})
+
+	harness.AddTest(c, func(c *tc.C) {
+		s.deleteVolume(c, vUUID)
+	}, func(w watchertest.WatcherC[struct{}]) {
+		w.AssertChange()
+	})
+
+	harness.AddTest(c, func(c *tc.C) {
+		s.deleteVolume(c, pvUUID)
+	}, func(w watchertest.WatcherC[struct{}]) {
+		w.AssertChange()
 	})
 
 	harness.Run(c, struct{}{})
@@ -766,16 +792,21 @@ func (s *watcherSuite) setupApplicationService(c *tc.C, factory domain.Watchable
 	caasProviderGetter := func(ctx context.Context) (applicationservice.CAASProvider, error) {
 		return appProvider{}, nil
 	}
+	cloudInfoGetter := func(ctx context.Context) (applicationservice.CloudInfoProvider, error) {
+		return nil, coreerrors.NotSupported
+	}
 	storageProviderRegistryGetter := corestorage.ConstModelStorageRegistry(
 		func() internalstorage.ProviderRegistry {
 			return internalstorage.NotImplementedProviderRegistry{}
 		},
 	)
-	state := applicationstate.NewState(modelDB, clock.WallClock, loggertesting.WrapCheckLog(c))
+	state := applicationstate.NewState(modelDB, model.UUID(s.ModelUUID()), clock.WallClock, loggertesting.WrapCheckLog(c))
 	storageSvc := applicationstorageservice.NewService(
-		state, applicationstorageservice.NewStoragePoolProvider(
+		state,
+		applicationstorageservice.NewStoragePoolProvider(
 			storageProviderRegistryGetter, state,
 		),
+		loggertesting.WrapCheckLog(c),
 	)
 
 	return applicationservice.NewWatchableService(
@@ -786,8 +817,10 @@ func (s *watcherSuite) setupApplicationService(c *tc.C, factory domain.Watchable
 		nil,
 		providerGetter,
 		caasProviderGetter,
+		cloudInfoGetter,
 		nil,
 		domain.NewStatusHistory(loggertesting.WrapCheckLog(c), clock.WallClock),
+		model.UUID(s.ModelUUID()),
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
@@ -810,7 +843,7 @@ func (s *watcherSuite) createIAASApplication(c *tc.C, svc *applicationservice.Wa
 		},
 		ResolvedResources: applicationservice.ResolvedResources{{
 			Name:     "buzz",
-			Revision: ptr(42),
+			Revision: new(42),
 			Origin:   charmresource.OriginStore,
 		}},
 	}, units...)
@@ -826,7 +859,8 @@ func (s *watcherSuite) setCharmObjectStoreMetadata(c *tc.C, appID string) {
 		return s.ModelTxnRunner(), nil
 	}
 
-	objectStoreUUID, err := objectstorestate.NewState(modelDB).PutMetadata(c.Context(), coreobjectstore.Metadata{
+	uuid := tc.Must(c, uuid.NewUUID).String()
+	objectStoreUUID, err := objectstorestate.NewState(modelDB, clock.WallClock).PutMetadata(c.Context(), uuid, coreobjectstore.Metadata{
 		SHA256: fmt.Sprintf("%v-sha256", appID),
 		SHA384: fmt.Sprintf("%v-sha384", appID),
 		Path:   fmt.Sprintf("/path/to/%v", appID),
@@ -890,6 +924,197 @@ WHERE u.application_uuid = ?
 	}
 
 	return allUnitUUIDs, allMachineUUIDs
+}
+
+func (s *watcherSuite) deleteFilesystem(c *tc.C, fsUUID string) {
+	txn := func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+DELETE FROM machine_filesystem WHERE filesystem_uuid = ?
+			`, fsUUID)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+DELETE FROM storage_filesystem_attachment WHERE storage_filesystem_uuid = ?
+			`, fsUUID)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+DELETE FROM storage_filesystem WHERE uuid = ?
+			`, fsUUID)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	err := s.ModelTxnRunner().StdTxn(c.Context(), txn)
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *watcherSuite) deleteVolume(c *tc.C, volUUID string) {
+	txn := func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+DELETE FROM machine_volume WHERE volume_uuid = ?
+			`, volUUID)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+DELETE FROM storage_volume_attachment WHERE storage_volume_uuid = ?
+			`, volUUID)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+DELETE FROM storage_volume_attachment_plan WHERE storage_volume_uuid = ?
+			`, volUUID)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+DELETE FROM storage_volume WHERE uuid = ?
+			`, volUUID)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	err := s.ModelTxnRunner().StdTxn(c.Context(), txn)
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *watcherSuite) createMachineFilesystem(
+	c *tc.C, machineUUID string,
+) string {
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID).String()
+	txn := func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO storage_filesystem (uuid, filesystem_id, life_id, provision_scope_id) VALUES (?, ?, ?, ?)
+		`, fsUUID, "0", 0, 0)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO machine_filesystem (machine_uuid, filesystem_uuid) VALUES (?, ?)
+		`, machineUUID, fsUUID)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	err := s.ModelTxnRunner().StdTxn(c.Context(), txn)
+	c.Assert(err, tc.ErrorIsNil)
+	return fsUUID
+}
+
+func (s *watcherSuite) createMachineVolume(
+	c *tc.C, machineUUID string,
+) string {
+	volUUID := tc.Must(c, domainstorage.NewVolumeUUID).String()
+	txn := func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO storage_volume (uuid, volume_id, life_id, provision_scope_id) VALUES (?, ?, ?, ?)
+		`, volUUID, "0", 0, 0)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO machine_volume (machine_uuid, volume_uuid) VALUES (?, ?)
+		`, machineUUID, volUUID)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	err := s.ModelTxnRunner().StdTxn(c.Context(), txn)
+	c.Assert(err, tc.ErrorIsNil)
+	return volUUID
+}
+
+func (s *watcherSuite) createAttachedVolume(
+	c *tc.C, machineUUID string,
+) string {
+	volUUID := tc.Must(c, domainstorage.NewVolumeUUID).String()
+	vaUUID := tc.Must(c, domainstorage.NewVolumeAttachmentUUID).String()
+	txn := func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO storage_volume (uuid, volume_id, life_id, provision_scope_id)
+VALUES (?, ?, ?, ?)
+		`, volUUID, "1", 0, 0)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO storage_volume_attachment (uuid, storage_volume_uuid, life_id,
+                                       provision_scope_id, net_node_uuid)
+VALUES (?, ?, ?, ?, (SELECT net_node_uuid FROM machine WHERE uuid = ?))
+		`, vaUUID, volUUID, 0, 0, machineUUID)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	err := s.ModelTxnRunner().StdTxn(c.Context(), txn)
+	c.Assert(err, tc.ErrorIsNil)
+	return volUUID
+}
+
+func (s *watcherSuite) createPlanAttachedVolume(
+	c *tc.C, machineUUID string,
+) string {
+	volUUID := tc.Must(c, domainstorage.NewVolumeUUID).String()
+	vaUUID := tc.Must(c, domainstorage.NewVolumeAttachmentUUID).String()
+	txn := func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO storage_volume (uuid, volume_id, life_id, provision_scope_id)
+VALUES (?, ?, ?, ?)
+		`, volUUID, "2", 0, 0)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO storage_volume_attachment_plan (uuid, storage_volume_uuid, life_id,
+                                            provision_scope_id, net_node_uuid)
+VALUES (?, ?, ?, ?, (SELECT net_node_uuid FROM machine WHERE uuid = ?))
+		`, vaUUID, volUUID, 0, 0, machineUUID)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	err := s.ModelTxnRunner().StdTxn(c.Context(), txn)
+	c.Assert(err, tc.ErrorIsNil)
+	return volUUID
+}
+
+func (s *watcherSuite) createAttachedFilesystem(
+	c *tc.C, machineUUID string,
+) string {
+	fsUUID := tc.Must(c, domainstorage.NewFilesystemUUID).String()
+	faUUID := tc.Must(c, domainstorage.NewFilesystemAttachmentUUID).String()
+	txn := func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO storage_filesystem (uuid, filesystem_id, life_id, provision_scope_id)
+VALUES (?, ?, ?, ?)
+		`, fsUUID, "1", 0, 0)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO storage_filesystem_attachment (uuid, storage_filesystem_uuid,
+                                          life_id, provision_scope_id,
+                                          net_node_uuid)
+VALUES (?, ?, ?, ?, (SELECT net_node_uuid FROM machine WHERE uuid = ?))
+		`, faUUID, fsUUID, 0, 0, machineUUID)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	err := s.ModelTxnRunner().StdTxn(c.Context(), txn)
+	c.Assert(err, tc.ErrorIsNil)
+	return fsUUID
 }
 
 type stubCharm struct {
@@ -976,8 +1201,4 @@ func (caasApplication) Units() ([]caas.Unit, error) {
 	return []caas.Unit{{
 		Id: "some-app-0",
 	}}, nil
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }

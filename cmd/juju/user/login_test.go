@@ -18,9 +18,10 @@ import (
 	"github.com/juju/juju/api"
 	apibase "github.com/juju/juju/api/base"
 	"github.com/juju/juju/api/jujuclient"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/internal/loginprovider"
 	"github.com/juju/juju/cmd/juju/user"
 	"github.com/juju/juju/cmd/modelcmd"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/internal/pki"
 	"github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/juju"
@@ -452,6 +453,31 @@ To login as user "current-user" run 'juju login -u current-user -c ` + existingN
 	}
 }
 
+func (s *LoginCommandSuite) TestLoginToUnregisteredController(c *tc.C) {
+	var (
+		existingName string
+		details      jujuclient.ControllerDetails
+	)
+	for existingName, details = range s.store.Controllers {
+		break
+	}
+
+	delete(s.store.Controllers, existingName)
+	delete(s.store.Accounts, existingName)
+
+	loginCmd := user.NewLoginCommand()
+	args := []string{details.APIEndpoints[0], "-c", "some-controller-name", "-u", "some-user"}
+	stdin := ""
+	stdout, stderr, exitcode := run(c, stdin, loginCmd, args...)
+	c.Assert(exitcode, tc.Equals, 0)
+	c.Check(stdout, tc.Equals, "")
+	c.Check(stderr, tc.Matches, `(?s).*Welcome, some-user. You are now logged into "some-controller-name".*`)
+	newDetails := s.store.Controllers["some-controller-name"]
+	c.Check(newDetails.APIEndpoints, tc.DeepEquals, []string{details.APIEndpoints[0]})
+	newAccount := s.store.Accounts["some-controller-name"]
+	c.Check(newAccount.User, tc.Equals, "some-user")
+}
+
 func (s *LoginCommandSuite) TestLoginErrorSpecifyingUsernameWithOIDC(c *tc.C) {
 	s.store.Controllers["oidc-controller"] = jujuclient.ControllerDetails{
 		APIEndpoints:   []string{"1.1.1.1:12345"},
@@ -478,8 +504,8 @@ func (s *LoginCommandSuite) TestLoginWithOIDCWithNoAccount(c *tc.C) {
 	s.store.CurrentControllerName = "oidc-controller"
 	var checkPatchFuncCalled bool
 	s.PatchValue(user.NewAPIConnection, func(_ context.Context, p juju.NewAPIConnectionParams) (api.Connection, error) {
-		sessionTokenLogin := api.NewSessionTokenLoginProvider("", nil, nil)
-		c.Check(p.DialOpts.LoginProvider, tc.FitsTypeOf, sessionTokenLogin)
+		loginProvider := loginprovider.NewTryInOrderLoginProvider(logger)
+		c.Check(p.DialOpts.LoginProvider, tc.FitsTypeOf, loginProvider)
 		c.Check(p.AccountDetails, tc.NotNil)
 		if p.AccountDetails != nil {
 			p.AccountDetails.SessionToken = "new-token"
@@ -505,12 +531,12 @@ func (s *LoginCommandSuite) TestLoginToPublicControllerWithOIDC(c *tc.C) {
 	sessionLoginProvider := NewMockLoginProvider(ctrl)
 
 	var checkPatchFuncCalled bool
-	*user.APIOpen = func(cmd *modelcmd.CommandBase, ctx context.Context, info *api.Info, opts api.DialOpts) (api.Connection, error) {
+	s.PatchValue(user.APIOpen, func(cmd *modelcmd.CommandBase, ctx context.Context, info *api.Info, opts api.DialOpts) (api.Connection, error) {
 		checkPatchFuncCalled = true
 		_, err := opts.LoginProvider.Login(ctx, nil)
 		c.Check(err, tc.ErrorIsNil)
 		return s.apiConnection, nil
-	}
+	})
 
 	var tokenCallbackFunc func(string)
 	sessionLoginFactory.EXPECT().NewLoginProvider("", gomock.Any(), gomock.Any()).DoAndReturn(
@@ -525,6 +551,7 @@ func (s *LoginCommandSuite) TestLoginToPublicControllerWithOIDC(c *tc.C) {
 			return nil, nil
 		})
 
+	sessionLoginProvider.EXPECT().String().Return("mock-session-login-provider").AnyTimes()
 	_, _, code := runLoginWithFakeSessionLoginProvider(c, sessionLoginFactory, "mycontroller.com", "-c", "oidc-controller")
 	c.Assert(code, tc.Equals, 0)
 	c.Assert(checkPatchFuncCalled, tc.Equals, true)
@@ -548,10 +575,11 @@ func run(c *tc.C, stdin string, command cmd.Command, args ...string) (stdout, st
 	c.Logf("in LoginControllerSuite.run")
 	var stdoutBuf, stderrBuf bytes.Buffer
 	ctxt := &cmd.Context{
-		Dir:    c.MkDir(),
-		Stdin:  strings.NewReader(stdin),
-		Stdout: &stdoutBuf,
-		Stderr: &stderrBuf,
+		Context: c.Context(),
+		Dir:     c.MkDir(),
+		Stdin:   strings.NewReader(stdin),
+		Stdout:  &stdoutBuf,
+		Stderr:  &stderrBuf,
 	}
 	exitCode := cmd.Main(command, ctxt, args)
 	return stdoutBuf.String(), stderrBuf.String(), exitCode

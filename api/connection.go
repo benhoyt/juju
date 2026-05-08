@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"sync"
 
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/httpbakery"
 	"github.com/juju/clock"
@@ -19,7 +20,6 @@ import (
 	"github.com/juju/juju/api/agent/keyupdater"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/semversion"
-	jujuproxy "github.com/juju/juju/internal/proxy"
 	"github.com/juju/juju/rpc/jsoncodec"
 )
 
@@ -85,6 +85,12 @@ type conn struct {
 	// closed is a channel that gets closed when State.Close is called.
 	closed chan struct{}
 
+	// done is true when the connection was already closed.
+	done bool
+
+	// closeMutex protects the closed channel and done boolean.
+	closeMutex sync.Mutex
+
 	// loggedIn holds whether the client has successfully logged
 	// in. It's a int32 so that the atomic package can be used to
 	// access it safely.
@@ -107,7 +113,7 @@ type conn struct {
 	// proxier is the proxier used for this connection when not nil. If's expected
 	// the proxy has already been started when placing in this var. This struct
 	// will take the responsibility of closing the proxy.
-	proxier jujuproxy.Proxier
+	proxier Proxier
 }
 
 // Login implements the Login method of the Connection interface providing authentication
@@ -116,7 +122,7 @@ type conn struct {
 // TODO (alesstimec, wallyworld): This method should be removed and
 // a login provider should be used instead.
 func (c *conn) Login(ctx context.Context, name names.Tag, password, nonce string, ms []macaroon.Slice) error {
-	lp := NewLegacyLoginProvider(name, password, nonce, ms, c.bakeryClient, c.cookieURL)
+	lp := NewLegacyLoginProvider(name, password, nonce, ms, c.cookieURL)
 	result, err := lp.Login(ctx, c)
 	if err != nil {
 		return errors.Trace(err)

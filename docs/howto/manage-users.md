@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Manage users in Juju: add, disable, enable, remove users, change passwords, and control access levels to controllers and models."
+---
+
 (manage-users)=
 # How to manage users
 

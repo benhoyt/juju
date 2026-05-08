@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju cloud substrate reference: AWS, Azure, GCP, Kubernetes, OpenStack, MAAS, LXD, and other supported cloud platforms."
+---
+
 (cloud)=
 # Cloud (substrate)
 ```{ibnote}

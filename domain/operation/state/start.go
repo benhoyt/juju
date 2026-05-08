@@ -18,6 +18,7 @@ import (
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	machineerrors "github.com/juju/juju/domain/machine/errors"
 	"github.com/juju/juju/domain/operation"
+	operationerrors "github.com/juju/juju/domain/operation/errors"
 	"github.com/juju/juju/domain/operation/internal"
 	sequencestate "github.com/juju/juju/domain/sequence/state"
 	"github.com/juju/juju/internal/errors"
@@ -128,7 +129,7 @@ func (st *State) AddActionOperation(ctx context.Context,
 			UUID:           operationUUID.String(),
 			OperationID:    strconv.FormatUint(operationID, 10),
 			Summary:        fmt.Sprintf("action %q", args.ActionName),
-			EnqueuedAt:     time.Now().UTC(),
+			EnqueuedAt:     st.clock.Now().UTC(),
 			Parallel:       args.IsParallel,
 			ExecutionGroup: args.ExecutionGroup,
 		})
@@ -143,6 +144,14 @@ func (st *State) AddActionOperation(ctx context.Context,
 		}
 
 		err = st.insertOperationAction(ctx, tx, operationUUID.String(), charmUUID, args.ActionName)
+		if notDefined, ok := errors.AsType[errActionNotDefined](err); ok {
+			// Translate the error to domain error, enhanced with the unit name
+			return operationerrors.ActionNotDefined{
+				UnitName:   targetUnits[0].String(),
+				CharmName:  notDefined.CharmName,
+				HasActions: notDefined.HasActions,
+			}
+		}
 		if err != nil {
 			return errors.Errorf("inserting operation action: %w", err)
 		}
@@ -197,7 +206,7 @@ func (st *State) addExecOperation(
 		return operation.RunResult{}, errors.Errorf("generating operation ID: %w", err)
 	}
 
-	now := time.Now().UTC()
+	now := st.clock.Now().UTC()
 	// Insert the operation first.
 	err = st.insertOperation(ctx, tx, insertOperation{
 		UUID:           operationUUID,
@@ -378,6 +387,10 @@ func (st *State) insertOperationAction(ctx context.Context, tx *sqlair.TX, opera
 		CharmActionKey: actionName,
 	}
 
+	if err := st.checkActionDefined(ctx, tx, charmUUID, actionName); err != nil {
+		return errors.Capture(err)
+	}
+
 	query := `
 INSERT INTO operation_action (operation_uuid, charm_uuid, charm_action_key)
 VALUES ($insertOperationAction.*)
@@ -389,12 +402,79 @@ VALUES ($insertOperationAction.*)
 
 	err = tx.Query(ctx, stmt, action).Run()
 	if err != nil {
-		// We know that we can have a FK error here if the charm action (
-		// charm_action_key) does not exist for the provided charm, so we return
-		// a user error.
 		return errors.Errorf("inserting action %q for charm %q and operation %q", actionName, charmUUID, operationUUID)
 	}
 	return nil
+}
+
+// errActionNotDefined describes an error that occurs when the given charm does
+// not define the given action.
+type errActionNotDefined struct {
+	// CharmName is the name of the charm missing the action.
+	CharmName string
+	// HasActions is true if the charm defines some actions.
+	HasActions bool
+}
+
+// Error implements builtin.error
+func (a errActionNotDefined) Error() string {
+	return fmt.Sprintf("action not defined for charm %q", a.CharmName)
+}
+
+// checkActionDefined checks if an action is defined for a specific charm by its
+// UUID and action name. Returns nil if the action is defined, an errActionNotDefined
+// if it is not defined, or any error if the query fails.
+func (st *State) checkActionDefined(ctx context.Context, tx *sqlair.TX, charmUUID, name string) error {
+	type search struct {
+		CharmUUID      string `db:"charm_uuid"`
+		CharmActionKey string `db:"charm_action_key"`
+	}
+	type found struct {
+		CharmName   string `db:"charm_name"`
+		ActionCount int    `db:"action_count"`
+	}
+	queryFound := `
+SELECT key AS &search.charm_action_key 
+FROM   charm_action
+WHERE  charm_uuid = $search.charm_uuid 
+AND    "key" = $search.charm_action_key`
+
+	queryInfo := `
+WITH action_count AS (
+    SELECT $search.charm_uuid AS charm_uuid, COUNT(1) AS count 
+    FROM   charm_action AS ca
+    WHERE  ca.charm_uuid = $search.charm_uuid 
+)
+SELECT c.reference_name AS &found.charm_name, ca.count AS &found.action_count
+FROM   charm AS c 
+JOIN   action_count AS ca ON c.uuid = ca.charm_uuid 
+WHERE  c.uuid = $search.charm_uuid`
+
+	input := search{CharmUUID: charmUUID, CharmActionKey: name}
+	stmtFound, err := st.Prepare(queryFound, input)
+	if err != nil {
+		return errors.Capture(err)
+	}
+	stmtCheck, err := st.Prepare(queryInfo, input, found{})
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	if err := tx.Query(ctx, stmtFound, input).Get(&input); err == nil {
+		return nil // found
+	} else if !errors.Is(err, sqlair.ErrNoRows) {
+		return errors.Errorf("querying action %q for charm %q: %w", name, charmUUID, err)
+	}
+
+	var info found
+	if err := tx.Query(ctx, stmtCheck, input).Get(&info); err != nil {
+		return errors.Errorf("querying charm %q info: %w", charmUUID, err)
+	}
+
+	return errActionNotDefined{
+		CharmName:  info.CharmName,
+		HasActions: info.ActionCount > 0,
+	}
 }
 
 func (st *State) addMachineTask(
@@ -439,7 +519,7 @@ func (st *State) addMachineTaskWithID(
 	operationUUID string,
 	machineName machine.Name,
 ) operation.MachineTaskResult {
-	now := time.Now().UTC()
+	now := st.clock.Now().UTC()
 
 	// Since the insert of task doesn't fail the transaction, we need to cleanup
 	// the task if any of its inserts fail.
@@ -448,7 +528,7 @@ func (st *State) addMachineTaskWithID(
 			TaskID: taskID, EnqueuedAt: now}); err != nil {
 			return errors.Errorf("inserting operation task: %w", err)
 		}
-		if err := st.insertOperationTaskStatus(ctx, tx, taskUUID, corestatus.Pending); err != nil {
+		if err := st.insertOperationTaskStatus(ctx, tx, taskUUID, corestatus.Pending, ""); err != nil {
 			return errors.Errorf("inserting operation task status: %w", err)
 		}
 		machineUUID, err := st.getMachineUUID(ctx, tx, machineName)
@@ -495,7 +575,7 @@ func (st *State) addUnitTask(ctx context.Context, tx *sqlair.TX, operationUUID s
 }
 
 func (st *State) addUnitTaskWithID(ctx context.Context, tx *sqlair.TX, taskID string, taskUUID string, operationUUID string, unitName coreunit.Name) operation.UnitTaskResult {
-	now := time.Now().UTC()
+	now := st.clock.Now().UTC()
 
 	// Since the insert of task doesn't fail the transaction, we need to cleanup
 	// the task if any of its inserts fail.
@@ -506,7 +586,7 @@ func (st *State) addUnitTaskWithID(ctx context.Context, tx *sqlair.TX, taskID st
 			return errors.Errorf("inserting operation task: %w", err)
 		}
 
-		if err := st.insertOperationTaskStatus(ctx, tx, taskUUID, corestatus.Pending); err != nil {
+		if err := st.insertOperationTaskStatus(ctx, tx, taskUUID, corestatus.Pending, ""); err != nil {
 			return errors.Errorf("inserting operation task status: %w", err)
 		}
 
@@ -548,16 +628,17 @@ VALUES ($insertOperationTask.*)
 	return errors.Capture(tx.Query(ctx, stmt, task).Run())
 }
 
-func (st *State) insertOperationTaskStatus(ctx context.Context, tx *sqlair.TX, taskUUID string, status corestatus.Status) error {
+func (st *State) insertOperationTaskStatus(ctx context.Context, tx *sqlair.TX, taskUUID string, status corestatus.Status, message string) error {
 	statusValue := insertTaskStatus{
 		TaskUUID:  taskUUID,
 		Status:    string(status),
-		UpdatedAt: time.Now().UTC(),
+		Message:   message,
+		UpdatedAt: st.clock.Now().UTC(),
 	}
 
 	query := `
-INSERT INTO operation_task_status (task_uuid, status_id, updated_at) 
-SELECT $insertTaskStatus.task_uuid, id, $insertTaskStatus.updated_at
+INSERT INTO operation_task_status (task_uuid, status_id, message, updated_at) 
+SELECT $insertTaskStatus.task_uuid, id, $insertTaskStatus.message, $insertTaskStatus.updated_at
 FROM operation_task_status_value 
 WHERE status = $insertTaskStatus.status`
 	stmt, err := st.Prepare(query, statusValue)

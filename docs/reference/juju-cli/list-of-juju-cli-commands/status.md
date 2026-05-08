@@ -34,9 +34,9 @@ Report the status of the `mysql` application:
 
     juju status mysql
 
-Report the status for applications that start with `nova-`:
+Report the status of the `mysql/0` unit:
 
-    juju status nova-*
+    juju status mysql/0
 
 Include information about storage and relations in output:
 
@@ -46,32 +46,16 @@ Provide output as valid `JSON`:
 
     juju status --format=json
 
-Show only applications/units in active status:
-
-    juju status active
-
-Show only applications/units in error status:
-
-    juju status error
-
 
 ## Details
 
-Report the model's status, optionally filtered by names of applications or
-units. When selectors are present, filter the report to exclude entities that
-do not match.
+Report the model's status, optionally filtered by exact machine,
+application, or unit names.
 
     juju status [<selector> [...]]
 
-`<selector>` selects machines, units or applications from the model to display.
-Wildcard characters (`*`) enable multiple entities to be matched at the same
-time.
-
-    (<machine>|<unit>|<application>)[*]
-
-When an entity that matches &lt;selector&gt; is integrated with other applications, the
-status of those applications will also be presented. By default (without a
-`<selector>`) the status of all applications and their units will be displayed.
+When selectors are present, filter the report to exclude entities that do not
+match.
 
 
 ### Altering the output format

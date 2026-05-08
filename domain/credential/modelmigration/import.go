@@ -7,14 +7,14 @@ import (
 	"context"
 	"reflect"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 
 	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/core/credential"
-	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/modelmigration"
 	"github.com/juju/juju/core/user"
+	credentialerrors "github.com/juju/juju/domain/credential/errors"
 	"github.com/juju/juju/domain/credential/service"
 	"github.com/juju/juju/domain/credential/state"
 	"github.com/juju/juju/internal/errors"
@@ -37,7 +37,7 @@ func RegisterImport(coordinator Coordinator, logger logger.Logger) {
 // service methods needed for credential import.
 type ImportService interface {
 	CloudCredential(context.Context, credential.Key) (cloud.Credential, error)
-	UpdateCloudCredential(context.Context, credential.Key, cloud.Credential) error
+	InsertCloudCredential(context.Context, credential.Key, cloud.Credential) error
 }
 
 type importOperation struct {
@@ -85,11 +85,11 @@ func (i *importOperation) Execute(ctx context.Context, model description.Model) 
 
 	existing, err := i.service.CloudCredential(ctx, key)
 
-	if errors.Is(err, coreerrors.NotFound) {
+	if errors.Is(err, credentialerrors.NotFound) {
 		credential := cloud.NewCredential(
 			cloud.AuthType(cred.AuthType()),
 			cred.Attributes())
-		return errors.Capture(i.service.UpdateCloudCredential(ctx, key, credential))
+		return errors.Capture(i.service.InsertCloudCredential(ctx, key, credential))
 	} else if err != nil {
 		return errors.Capture(err)
 	}

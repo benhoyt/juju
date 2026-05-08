@@ -20,11 +20,11 @@ import (
 
 	"github.com/juju/juju/api/jujuclient"
 	jujucloud "github.com/juju/juju/cloud"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/cloud"
 	"github.com/juju/juju/environs"
 	environsTesting "github.com/juju/juju/environs/testing"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	_ "github.com/juju/juju/internal/provider/dummy"
 	_ "github.com/juju/juju/internal/provider/gce"
 	"github.com/juju/juju/internal/testing"
@@ -74,6 +74,13 @@ func (s *addCredentialSuite) SetUpTest(c *tc.C) {
 		clouds: func() (map[names.CloudTag]jujucloud.Cloud, error) { return nil, nil },
 	}
 	s.credentialAPIFunc = func(ctx context.Context) (cloud.CredentialAPI, error) { return s.api, nil }
+	c.Cleanup(func() {
+		s.store = nil
+		s.cloudByNameFunc = nil
+		s.api = nil
+		s.credentialAPIFunc = nil
+		s.authTypes = nil
+	})
 }
 
 func (s *addCredentialSuite) runCmd(c *tc.C, stdin io.Reader, args ...string) (*cmd.Context, *cloud.AddCredentialCommand, error) {
@@ -107,12 +114,12 @@ func (s *addCredentialSuite) TestBadLocalCloudName(c *tc.C) {
 }
 
 func (s *addCredentialSuite) TestAddFromFileBadFilename(c *tc.C) {
+	s.authTypes = []jujucloud.AuthType{jujucloud.UserPassAuthType, jujucloud.AccessKeyAuthType}
 	_, err := s.run(c, nil, "somecloud", "-f", "somefile.yaml", "--client")
 	c.Assert(err, tc.ErrorMatches, ".*open somefile.yaml: .*")
 }
 
 func (s *addCredentialSuite) TestNoCredentialsRequired(c *tc.C) {
-	s.authTypes = nil
 	_, err := s.run(c, nil, "somecloud", "--client")
 	c.Assert(err, tc.ErrorMatches, `cloud "somecloud" does not require credentials`)
 }
@@ -158,6 +165,7 @@ credentials:
 }
 
 func (s *addCredentialSuite) TestAddFromFileNoCredentialsFound(c *tc.C) {
+	s.authTypes = []jujucloud.AuthType{jujucloud.UserPassAuthType, jujucloud.AccessKeyAuthType}
 	sourceFile := s.createTestCredentialData(c)
 	_, err := s.run(c, nil, "anothercloud", "-f", sourceFile, "--client")
 	c.Assert(err, tc.ErrorMatches, `no credentials for cloud anothercloud exist in file.*`)
@@ -689,7 +697,7 @@ func (s *addCredentialSuite) assertAddCredentialWithOptions(c *tc.C, input strin
 			{
 				"username", jujucloud.CredentialAttr{Optional: false},
 			}, {
-				"algorithm", jujucloud.CredentialAttr{Options: []interface{}{"optionA", "optionB"}},
+				"algorithm", jujucloud.CredentialAttr{Options: []any{"optionA", "optionB"}},
 			},
 		},
 	}

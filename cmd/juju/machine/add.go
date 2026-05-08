@@ -16,6 +16,7 @@ import (
 	"github.com/juju/juju/api/client/machinemanager"
 	"github.com/juju/juju/api/client/modelconfig"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/block"
 	"github.com/juju/juju/cmd/juju/common"
 	"github.com/juju/juju/cmd/modelcmd"
@@ -23,11 +24,10 @@ import (
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/model"
+	"github.com/juju/juju/core/storage"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/environs/manual"
 	"github.com/juju/juju/environs/manual/sshprovisioner"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/storage"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -38,8 +38,8 @@ The command operates in three modes, depending on the options provided:
 
   - provision a new machine from the cloud (default, see "Provisioning
     a new machine")
-  - connect to a live computer and allocate it as a machine (see "Manual
-    provisioning")
+  - connect to a live computer and allocate it as a machine (see "Adding
+    a pre-existing machine")
   - create an operating system container (see "Container creation")
 
 The ` + "`add-machine` " + `command is unavailable in Kubernetes clouds. Provisioning
@@ -67,12 +67,12 @@ about how to allocate the machine in the cloud. For example, one can direct
 the MAAS provider to acquire a particular node by specifying its hostname.
 
 
-### Manual provisioning
+### Adding a pre-existing machine
 
 Call ` + "`add-machine` " + ` with the address of a network-accessible computer to
 allocate that machine to the model.
 
-Manual provisioning is the process of installing Juju on an existing machine
+This is the process of installing Juju on an existing machine
 and bringing it under Juju's management. The Juju controller must be able to
 access the new machine over the network.
 
@@ -220,7 +220,7 @@ func (c *addCommand) Init(args []string) error {
 }
 
 type ModelConfigAPI interface {
-	ModelGet(ctx context.Context) (map[string]interface{}, error)
+	ModelGet(ctx context.Context) (map[string]any, error)
 	Close() error
 }
 
@@ -235,8 +235,8 @@ type MachineManagerAPI interface {
 // splitUserHost given a host string of example user@192.168.122.122
 // it will return user and 192.168.122.122
 func splitUserHost(host string) (string, string) {
-	if at := strings.Index(host, "@"); at != -1 {
-		return host[:at], host[at+1:]
+	if before, after, ok := strings.Cut(host, "@"); ok {
+		return before, after
 	}
 	return "", host
 }
@@ -402,7 +402,7 @@ func (c *addCommand) tryManualProvision(ctx *cmd.Context, client manual.Provisio
 		return errNonManualScope
 	}
 
-	authKeys, err := common.ReadAuthorizedKeys(ctx, c.PublicKey)
+	authKeys, err := common.ReadAuthorizedKeys(c.PublicKey)
 	if err != nil {
 		return errors.Annotatef(err, "cannot reading authorized-keys")
 	}

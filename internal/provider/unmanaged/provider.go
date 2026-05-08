@@ -130,6 +130,7 @@ func (p UnmanagedProvider) Open(ctx context.Context, args environs.OpenParams, i
 	// Open.
 	envConfig := newModelConfig(args.Config, args.Config.UnknownAttrs())
 	host, user := args.Cloud.Endpoint, ""
+	host = strings.TrimPrefix(host, "ssh:")
 	if i := strings.IndexRune(host, '@'); i >= 0 {
 		user, host = host[:i], host[i+1:]
 	}
@@ -168,7 +169,7 @@ func (p UnmanagedProvider) validate(ctx context.Context, cfg, old *config.Config
 
 	// If the user hasn't already specified a value, set it to the
 	// given value.
-	defineIfNot := func(keyName string, value interface{}) {
+	defineIfNot := func(keyName string, value any) {
 		if _, defined := cfg.AllAttrs()[keyName]; !defined {
 			logger.Infof(ctx, "%s was not defined. Defaulting to %v.", keyName, value)
 			envConfig.attrs[keyName] = value

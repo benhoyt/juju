@@ -31,13 +31,14 @@ import (
 	"github.com/juju/juju/domain/application"
 	applicationcharm "github.com/juju/juju/domain/application/charm"
 	applicationservice "github.com/juju/juju/domain/application/service"
+	domainconstraints "github.com/juju/juju/domain/constraints"
 	crossmodelrelationservice "github.com/juju/juju/domain/crossmodelrelation/service"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/domain/relation"
 	"github.com/juju/juju/domain/removal"
 	"github.com/juju/juju/domain/resolve"
 	domainstorage "github.com/juju/juju/domain/storage"
 	"github.com/juju/juju/environs/config"
-	internalcharm "github.com/juju/juju/internal/charm"
 )
 
 // Services represents all the services that the application facade requires.
@@ -122,6 +123,11 @@ type CrossModelRelationService interface {
 	// GetRemoteApplicationOffererByApplicationName returns the UUID of the remote
 	// application offerer for the given application name.
 	GetRemoteApplicationOffererByApplicationName(context.Context, string) (coreremoteapplication.UUID, error)
+
+	// IsApplicationSynthetic checks if the given application exists in the
+	// model and is a synthetic application (SAAS), based on the charm source being
+	// 'cmr' (cross-model relation).
+	IsApplicationSynthetic(ctx context.Context, appName string) (bool, error)
 }
 
 // CredentialService provides access to credentials.
@@ -191,6 +197,14 @@ type ApplicationService interface {
 
 	// GetApplicationLife looks up the life of the specified application.
 	GetApplicationLife(context.Context, coreapplication.UUID) (life.Value, error)
+
+	// GetApplicationStorageDirectivesInfo returns the storage directives set for an application,
+	// keyed to the storage name. If the application does not have any storage
+	// directives set then an empty result is returned.
+	//
+	// If the application does not exist, then a [applicationerrors.ApplicationNotFound]
+	// error is returned.
+	GetApplicationStorageDirectivesInfo(ctx context.Context, uuid coreapplication.UUID) (map[string]application.ApplicationStorageInfo, error)
 
 	// GetUnitLife looks up the life of the specified unit.
 	GetUnitLife(context.Context, unit.Name) (life.Value, error)
@@ -262,6 +276,13 @@ type ApplicationService interface {
 	// valid, and [applicationerrors.ApplicationNotFound] if the application is
 	// not found.
 	GetApplicationUUIDByName(ctx context.Context, name string) (coreapplication.UUID, error)
+
+	// GetApplicationDetailsByName returns the application details for the given
+	// application name. This includes the UUID, life status, name, and whether
+	// the application is synthetic.
+	// Returns an error satisfying [applicationerrors.ApplicationNotFound] if
+	// the application does not exist.
+	GetApplicationDetailsByName(ctx context.Context, name string) (application.ApplicationDetails, error)
 
 	// GetApplicationConstraints returns the application constraints for the
 	// specified application UUID.
@@ -374,7 +395,7 @@ type ApplicationService interface {
 
 	// ResolveApplicationConstraints resolves given application constraints, taking
 	// into account the model constraints.
-	ResolveApplicationConstraints(ctx context.Context, appCons constraints.Value) (constraints.Value, error)
+	ResolveApplicationConstraints(ctx context.Context, appCons constraints.Value) (domainconstraints.Constraints, error)
 }
 
 type ResolveService interface {
@@ -410,6 +431,21 @@ type ResourceService interface {
 type StorageService interface {
 	// GetStoragePoolUUID returns the UUID of the storage pool for the specified name.
 	GetStoragePoolUUID(context.Context, string) (domainstorage.StoragePoolUUID, error)
+
+	// GetStoragePoolUUIDsByName returns pool UUIDs keyed by pool name for
+	// the supplied names. Unknown names are omitted.
+	GetStoragePoolUUIDsByName(ctx context.Context, names []string) (map[string]domainstorage.StoragePoolUUID, error)
+
+	// GetStorageInstanceUUIDForID returns the StorageInstanceUUID for the given
+	// storage ID.
+	GetStorageInstanceUUIDForID(context.Context, string) (domainstorage.StorageInstanceUUID, error)
+
+	// GetStorageInstanceUUIDsByIDs retrieves the UUIDs of storage instances by
+	// their IDs.
+	GetStorageInstanceUUIDsByIDs(
+		ctx context.Context,
+		storageIDs []string,
+	) (map[string]domainstorage.StorageInstanceUUID, error)
 }
 
 // StatusService provides access to the status service.
@@ -549,7 +585,7 @@ type RemovalService interface {
 		wait time.Duration,
 	) (removal.UUID, error)
 
-	// RemoveRelation checks if a relation with the input UUID exists.
+	// RemoveRelationWithRemoteOfferer checks if a relation with the input UUID exists.
 	// If it does, the relation is guaranteed after this call to be:
 	// - No longer alive.
 	// - Removed or scheduled to be removed with the input force qualification.
@@ -557,7 +593,7 @@ type RemovalService interface {
 	// life-cycle advancement and removal to finish before forcefully removing the
 	// remote application. This duration is ignored if the force argument is false.
 	// The UUID for the scheduled removal job is returned.
-	RemoveRemoteRelation(
+	RemoveRelationWithRemoteOfferer(
 		ctx context.Context,
 		relUUID corerelation.UUID,
 		force bool,

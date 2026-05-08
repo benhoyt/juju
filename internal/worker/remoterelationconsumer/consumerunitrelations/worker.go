@@ -9,8 +9,8 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 	"gopkg.in/macaroon.v2"
 
 	coreapplication "github.com/juju/juju/core/application"
@@ -18,6 +18,7 @@ import (
 	corerelation "github.com/juju/juju/core/relation"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/domain/relation"
+	relationerrors "github.com/juju/juju/domain/relation/errors"
 )
 
 // Service defines the interface required to watch for local relation changes.
@@ -34,7 +35,11 @@ type Service interface {
 // required to authenticate with the remote model.
 type RelationUnitChange struct {
 	relation.RelationUnitChange
-	Macaroon *macaroon.Macaroon
+	// ConsumerApplicationUUID is the UUID of the consuming application
+	// in the local (consumer) model. This is used as the application
+	// token when publishing changes to the offering model.
+	ConsumerApplicationUUID coreapplication.UUID
+	Macaroon                *macaroon.Macaroon
 }
 
 // ReportableWorker is an interface that allows a worker to be reported
@@ -155,7 +160,12 @@ func (w *localWorker) loop() error {
 	ctx := w.catacomb.Context(context.Background())
 
 	watcher, err := w.service.WatchRelationUnits(ctx, w.consumerRelationUUID, w.consumerApplicationUUID)
-	if err != nil {
+	if errors.Is(err, relationerrors.RelationNotFound) {
+		// If the relation has been removed, the worker can be cleanly exited.
+		// The parent worker will clean up the offerer unit worker once that has
+		// been witnessed.
+		return nil
+	} else if err != nil {
 		return errors.Annotatef(err, "watching local side of relation %v", w.consumerRelationUUID)
 	}
 
@@ -182,7 +192,12 @@ func (w *localWorker) loop() error {
 			w.logger.Debugf(ctx, "local relation units changed for %v", w.consumerRelationUUID)
 
 			unitRelationInfo, err := w.service.GetRelationUnits(ctx, w.consumerRelationUUID, w.consumerApplicationUUID)
-			if err != nil {
+			if errors.Is(err, relationerrors.RelationNotFound) {
+				// If the relation has been removed, the worker can be cleanly
+				// exited. The parent worker will clean up the offerer unit
+				// worker once that has been witnessed.
+				return nil
+			} else if err != nil {
 				return errors.Annotatef(
 					err, "fetching local side of relation %v", w.consumerRelationUUID)
 			}
@@ -198,8 +213,9 @@ func (w *localWorker) loop() error {
 			case <-w.catacomb.Dying():
 				return w.catacomb.ErrDying()
 			case w.changes <- RelationUnitChange{
-				RelationUnitChange: event,
-				Macaroon:           w.macaroon,
+				RelationUnitChange:      event,
+				ConsumerApplicationUUID: w.consumerApplicationUUID,
+				Macaroon:                w.macaroon,
 			}:
 			}
 
@@ -209,7 +225,9 @@ func (w *localWorker) loop() error {
 }
 
 // Report provides information for the engine report.
-func (w *localWorker) Report() map[string]any {
+func (w *localWorker) Report(ctx context.Context) map[string]any {
+	ctx = w.catacomb.Context(ctx)
+
 	result := make(map[string]any)
 	result["consumer-relation-uuid"] = w.consumerRelationUUID.String()
 	result["consumer-application-uuid"] = w.consumerApplicationUUID.String()
@@ -218,9 +236,13 @@ func (w *localWorker) Report() map[string]any {
 	case <-time.After(time.Second):
 		result["error"] = "timed out waiting for report"
 
-	case <-w.catacomb.Dying():
-		result["error"] = "worker is dying"
-
+	case <-ctx.Done():
+		select {
+		case <-w.catacomb.Dying():
+			result["error"] = "worker is dying"
+		default:
+			result["error"] = ctx.Err().Error()
+		}
 	case event := <-w.reportRequests:
 		result["changed-units"] = event.UnitsSettings
 		result["all-units"] = event.AllUnits

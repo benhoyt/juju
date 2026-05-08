@@ -9,19 +9,18 @@ import (
 	"testing"
 
 	"github.com/juju/collections/transform"
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
-	"github.com/juju/juju/core/network"
-	networktesting "github.com/juju/juju/core/network/testing"
+	corenetwork "github.com/juju/juju/core/network"
+	"github.com/juju/juju/domain/network"
 	"github.com/juju/juju/domain/network/internal"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 )
 
 type importSuite struct {
-	importService    *MockImportService
-	migrationService *MockMigrationService
+	migrationService *MockLinkLayerDevicesMigrationService
 }
 
 func TestImportSuite(t *testing.T) {
@@ -31,11 +30,9 @@ func TestImportSuite(t *testing.T) {
 func (s *importSuite) setupMocks(c *tc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 
-	s.importService = NewMockImportService(ctrl)
-	s.migrationService = NewMockMigrationService(ctrl)
+	s.migrationService = NewMockLinkLayerDevicesMigrationService(ctrl)
 
 	c.Cleanup(func() {
-		s.importService = nil
 		s.migrationService = nil
 	})
 
@@ -44,122 +41,9 @@ func (s *importSuite) setupMocks(c *tc.C) *gomock.Controller {
 
 func (s *importSuite) newImportOperation(c *tc.C) *importOperation {
 	return &importOperation{
-		importService:    s.importService,
 		migrationService: s.migrationService,
 		logger:           loggertesting.WrapCheckLog(c),
 	}
-}
-
-func (s *importSuite) TestImportSubnetWithoutSpaces(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	model := description.NewModel(description.ModelArgs{})
-	model.AddSubnet(description.SubnetArgs{
-		ID:                "previousID",
-		CIDR:              "10.0.0.0/24",
-		ProviderId:        "subnet-provider-id",
-		ProviderNetworkId: "subnet-provider-network-id",
-		VLANTag:           42,
-		AvailabilityZones: []string{"az1", "az2"},
-		FanLocalUnderlay:  "192.168.0.0/12",
-		FanOverlay:        "10.0.0.0/8",
-	})
-	s.importService.EXPECT().AddSubnet(gomock.Any(), network.SubnetInfo{
-		CIDR:              "10.0.0.0/24",
-		ProviderId:        "subnet-provider-id",
-		ProviderNetworkId: "subnet-provider-network-id",
-		VLANTag:           42,
-		AvailabilityZones: []string{"az1", "az2"},
-	})
-
-	op := s.newImportOperation(c)
-	err := op.Execute(c.Context(), model)
-	c.Assert(err, tc.ErrorIsNil)
-}
-
-func (s *importSuite) TestImportSubnetAndSpaceNotLinked(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	model := description.NewModel(description.ModelArgs{})
-	model.AddSubnet(description.SubnetArgs{
-		ID:                "previous-subnet-id",
-		CIDR:              "10.0.0.0/24",
-		ProviderId:        "subnet-provider-id",
-		ProviderNetworkId: "subnet-provider-network-id",
-		VLANTag:           42,
-		AvailabilityZones: []string{"az1", "az2"},
-	})
-	s.importService.EXPECT().AddSubnet(gomock.Any(), network.SubnetInfo{
-		CIDR:              "10.0.0.0/24",
-		ProviderId:        "subnet-provider-id",
-		ProviderNetworkId: "subnet-provider-network-id",
-		VLANTag:           42,
-		AvailabilityZones: []string{"az1", "az2"},
-	})
-	model.AddSpace(description.SpaceArgs{
-		Id:         "previous-space-id",
-		Name:       "space-name",
-		ProviderID: "space-provider-id",
-	})
-	spaceInfo := network.SpaceInfo{
-		Name:       "space-name",
-		ProviderId: "space-provider-id",
-	}
-	s.importService.EXPECT().AddSpace(gomock.Any(), spaceInfo)
-
-	op := s.newImportOperation(c)
-	err := op.Execute(c.Context(), model)
-	c.Assert(err, tc.ErrorIsNil)
-}
-
-func (s *importSuite) TestImportSpaceWithSubnet(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	spUUID := networktesting.GenSpaceUUID(c)
-
-	model := description.NewModel(description.ModelArgs{})
-	model.AddSpace(description.SpaceArgs{
-		Id:         "previous-space-id",
-		Name:       "space-name",
-		ProviderID: "space-provider-id",
-	})
-	spaceInfo := network.SpaceInfo{
-		Name:       "space-name",
-		ProviderId: "space-provider-id",
-	}
-	s.importService.EXPECT().AddSpace(gomock.Any(), spaceInfo).
-		Return(spUUID, nil)
-	s.importService.EXPECT().Space(gomock.Any(), spUUID).
-		Return(&network.SpaceInfo{
-			ID:         spUUID,
-			Name:       "space-name",
-			ProviderId: network.Id("space-provider-id"),
-		}, nil)
-	model.AddSubnet(description.SubnetArgs{
-		ID:                "previous-subnet-id",
-		CIDR:              "10.0.0.0/24",
-		ProviderId:        "subnet-provider-id",
-		ProviderNetworkId: "subnet-provider-network-id",
-		VLANTag:           42,
-		AvailabilityZones: []string{"az1", "az2"},
-		SpaceID:           "previous-space-id",
-		SpaceName:         "space-name",
-		ProviderSpaceId:   "space-provider-id",
-	})
-	s.importService.EXPECT().AddSubnet(gomock.Any(), network.SubnetInfo{
-		CIDR:              "10.0.0.0/24",
-		ProviderId:        "subnet-provider-id",
-		ProviderNetworkId: "subnet-provider-network-id",
-		VLANTag:           42,
-		AvailabilityZones: []string{"az1", "az2"},
-		SpaceID:           spUUID,
-		SpaceName:         "space-name",
-		ProviderSpaceId:   "space-provider-id",
-	})
-
-	op := s.newImportOperation(c)
-	err := op.Execute(c.Context(), model)
-	c.Assert(err, tc.ErrorIsNil)
 }
 
 func (s *importSuite) TestImportLinkLayerDevices(c *tc.C) {
@@ -178,16 +62,17 @@ func (s *importSuite) TestImportLinkLayerDevices(c *tc.C) {
 	}
 	model.AddLinkLayerDevice(dArgs)
 
+	s.migrationService.EXPECT().GetModelCloudType(c.Context()).Return("ec2", nil)
 	args := []internal.ImportLinkLayerDevice{
 		{
 			IsAutoStart: dArgs.IsAutoStart,
 			IsEnabled:   dArgs.IsUp,
-			MTU:         ptr(int64(dArgs.MTU)),
+			MTU:         new(int64(dArgs.MTU)),
 			MachineID:   dArgs.MachineID,
-			MACAddress:  ptr(dArgs.MACAddress),
+			MACAddress:  new(dArgs.MACAddress),
 			Name:        dArgs.Name,
-			ProviderID:  ptr(dArgs.ProviderID),
-			Type:        network.EthernetDevice,
+			ProviderID:  new(dArgs.ProviderID),
+			Type:        network.DeviceTypeEthernet,
 		},
 	}
 	s.migrationService.EXPECT().ImportLinkLayerDevices(gomock.Any(), lldArgMatcher{c: c, expected: args}).Return(nil)
@@ -226,7 +111,7 @@ func (s *importSuite) TestImportLinkLayerDevicesWithAddresses(c *tc.C) {
 
 		ProviderID:       "address-10.0.0.1",
 		SubnetCIDR:       "10.0.0.0/24",
-		ConfigMethod:     string(network.ConfigStatic),
+		ConfigMethod:     string(corenetwork.ConfigStatic),
 		Value:            "10.0.0.1",
 		ProviderSubnetID: "subnet-10.0.0.0/24",
 		Origin:           "provider",
@@ -239,7 +124,7 @@ func (s *importSuite) TestImportLinkLayerDevicesWithAddresses(c *tc.C) {
 
 		ProviderID:       "address-fd42:9102:88cb:dce3:216:3eff:fe59:a9dc",
 		SubnetCIDR:       "fd42:9102:88cb:dce3::/64",
-		ConfigMethod:     string(network.ConfigManual),
+		ConfigMethod:     string(corenetwork.ConfigManual),
 		Value:            "fd42:9102:88cb:dce3:216:3eff:fe59:a9dc",
 		ProviderSubnetID: "subnet-fd42:9102:88cb:dce3::/64",
 		Origin:           "provider",
@@ -252,7 +137,7 @@ func (s *importSuite) TestImportLinkLayerDevicesWithAddresses(c *tc.C) {
 
 		ProviderID:       "address-198.0.0.1",
 		SubnetCIDR:       "198.0.0.0/24",
-		ConfigMethod:     string(network.ConfigDHCP),
+		ConfigMethod:     string(corenetwork.ConfigDHCP),
 		Value:            "198.0.0.1",
 		ProviderSubnetID: "subnet-198.0.0.0/24",
 		Origin:           "provider",
@@ -263,7 +148,7 @@ func (s *importSuite) TestImportLinkLayerDevicesWithAddresses(c *tc.C) {
 		DeviceName: "eth0",
 		MachineID:  "1",
 
-		ConfigMethod: string(network.ConfigDHCP),
+		ConfigMethod: string(corenetwork.ConfigDHCP),
 		Value:        "172.0.0.1",
 		Origin:       "machine",
 		IsShadow:     false,
@@ -274,79 +159,80 @@ func (s *importSuite) TestImportLinkLayerDevicesWithAddresses(c *tc.C) {
 		DeviceName: "eth0",
 		MachineID:  "1",
 
-		ConfigMethod: string(network.ConfigDHCP),
+		ConfigMethod: string(corenetwork.ConfigDHCP),
 		Value:        "fd42:9102:88cb:dce3:216:3eff:dead:a9dc",
 		Origin:       "machine",
 		IsShadow:     false,
 		IsSecondary:  true,
 	})
 
+	s.migrationService.EXPECT().GetModelCloudType(c.Context()).Return("ec2", nil)
 	s.migrationService.EXPECT().ImportLinkLayerDevices(gomock.Any(), lldArgMatcher{c: c,
 		expected: []internal.ImportLinkLayerDevice{{
 			MachineID: "0",
 			Name:      "eth0",
 			Addresses: []internal.ImportIPAddress{{
-				ProviderID:       ptr("address-10.0.0.1"),
+				ProviderID:       new("address-10.0.0.1"),
 				SubnetCIDR:       "10.0.0.0/24",
-				ConfigType:       network.ConfigStatic,
+				ConfigType:       corenetwork.ConfigStatic,
 				AddressValue:     "10.0.0.1/24",
-				ProviderSubnetID: ptr("subnet-10.0.0.0/24"),
+				ProviderSubnetID: new("subnet-10.0.0.0/24"),
 				Origin:           "provider",
 				IsShadow:         false,
 				IsSecondary:      false,
 				// Resolved values
-				Type:  network.IPv4Address,
-				Scope: network.ScopeCloudLocal,
+				Type:  corenetwork.IPv4Address,
+				Scope: corenetwork.ScopeCloudLocal,
 			}, {
-				ProviderID:       ptr("address-fd42:9102:88cb:dce3:216:3eff:fe59:a9dc"),
+				ProviderID:       new("address-fd42:9102:88cb:dce3:216:3eff:fe59:a9dc"),
 				SubnetCIDR:       "fd42:9102:88cb:dce3::/64",
-				ConfigType:       network.ConfigManual,
+				ConfigType:       corenetwork.ConfigManual,
 				AddressValue:     "fd42:9102:88cb:dce3:216:3eff:fe59:a9dc/64",
-				ProviderSubnetID: ptr("subnet-fd42:9102:88cb:dce3::/64"),
+				ProviderSubnetID: new("subnet-fd42:9102:88cb:dce3::/64"),
 				Origin:           "provider",
 				IsShadow:         true,
 				IsSecondary:      true,
 				// Resolved values
-				Type:  network.IPv6Address,
-				Scope: network.ScopeCloudLocal,
+				Type:  corenetwork.IPv6Address,
+				Scope: corenetwork.ScopeCloudLocal,
 			}},
 		}, {
 			MachineID: "0",
 			Name:      "eth1",
 			Addresses: []internal.ImportIPAddress{{
-				ProviderID:       ptr("address-198.0.0.1"),
+				ProviderID:       new("address-198.0.0.1"),
 				SubnetCIDR:       "198.0.0.0/24",
-				ConfigType:       network.ConfigDHCP,
+				ConfigType:       corenetwork.ConfigDHCP,
 				AddressValue:     "198.0.0.1/24",
-				ProviderSubnetID: ptr("subnet-198.0.0.0/24"),
+				ProviderSubnetID: new("subnet-198.0.0.0/24"),
 				Origin:           "provider",
 				IsShadow:         true,
 				IsSecondary:      false,
 				// Resolved values
-				Type:  network.IPv4Address,
-				Scope: network.ScopePublic,
+				Type:  corenetwork.IPv4Address,
+				Scope: corenetwork.ScopePublic,
 			}},
 		}, {
 			MachineID: "1",
 			Name:      "eth0",
 			Addresses: []internal.ImportIPAddress{{
-				ConfigType:   network.ConfigDHCP,
+				ConfigType:   corenetwork.ConfigDHCP,
 				AddressValue: "172.0.0.1/32",
 				Origin:       "machine",
 				IsShadow:     false,
 				IsSecondary:  true,
 				// Resolved values
-				Type:  network.IPv4Address,
-				Scope: network.ScopePublic,
+				Type:  corenetwork.IPv4Address,
+				Scope: corenetwork.ScopePublic,
 			}, {
-				ConfigType:   network.ConfigDHCP,
+				ConfigType:   corenetwork.ConfigDHCP,
 				AddressValue: "fd42:9102:88cb:dce3:216:3eff:dead:a9dc/128",
 				Origin:       "machine",
 				IsShadow:     false,
 				IsSecondary:  true,
 				// Resolved values
-				Type:  network.IPv6Address,
-				Scope: network.ScopeCloudLocal,
+				Type:  corenetwork.IPv6Address,
+				Scope: corenetwork.ScopeCloudLocal,
 			}}}}}).Return(nil)
 
 	// Act
@@ -373,12 +259,68 @@ func (s *importSuite) TestImportLinkLayerDevicesWithAddressesErrorNoDevice(c *tc
 		Value: "10.0.0.1",
 	})
 
+	s.migrationService.EXPECT().GetModelCloudType(c.Context()).Return("lxd", nil)
+
 	// Act
 	op := s.newImportOperation(c)
 	err := op.Execute(c.Context(), model)
 
 	// Assert
 	c.Assert(err, tc.ErrorMatches, `address \"10.0.0.1\" for machine \"0\" on device \"eth1\" not found`)
+}
+
+func (s *importSuite) TestImportLinkLayerDevicesSkipsFanAddresses(c *tc.C) {
+	// Arrange
+	defer s.setupMocks(c).Finish()
+	model := description.NewModel(description.ModelArgs{})
+
+	model.AddLinkLayerDevice(description.LinkLayerDeviceArgs{
+		Name:      "eth0",
+		MachineID: "0",
+	})
+	model.AddIPAddress(description.IPAddressArgs{
+		DeviceName: "eth0",
+		MachineID:  "0",
+
+		ConfigMethod: string(corenetwork.ConfigStatic),
+		Value:        "240.0.0.1",
+	})
+	model.AddIPAddress(description.IPAddressArgs{
+		DeviceName:       "eth0",
+		MachineID:        "0",
+		ProviderID:       "address-10.0.0.1",
+		SubnetCIDR:       "10.0.0.0/24",
+		ConfigMethod:     string(corenetwork.ConfigStatic),
+		Value:            "10.0.0.1",
+		ProviderSubnetID: "subnet--10.0.0.0/24",
+		Origin:           "provider",
+	})
+
+	s.migrationService.EXPECT().GetModelCloudType(c.Context()).Return("lxd", nil)
+	s.migrationService.EXPECT().ImportLinkLayerDevices(gomock.Any(), lldArgMatcher{c: c,
+		expected: []internal.ImportLinkLayerDevice{{
+			MachineID: "0",
+			Name:      "eth0",
+			Addresses: []internal.ImportIPAddress{{
+				ProviderID:   new("address-10.0.0.1"),
+				SubnetCIDR:   "10.0.0.0/24",
+				ConfigType:   corenetwork.ConfigStatic,
+				AddressValue: "10.0.0.1/24",
+				Origin:       "provider",
+				IsShadow:     false,
+				IsSecondary:  false,
+				// Resolved values
+				Type:  corenetwork.IPv4Address,
+				Scope: corenetwork.ScopeCloudLocal,
+			}},
+		}}}).Return(nil)
+
+	// Act
+	op := s.newImportOperation(c)
+	err := op.Execute(c.Context(), model)
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
 }
 
 func (s *importSuite) TestImportLinkLayerDevicesWithAddressesErrorInvalidConfigMethod(c *tc.C) {
@@ -397,6 +339,8 @@ func (s *importSuite) TestImportLinkLayerDevicesWithAddressesErrorInvalidConfigM
 		ConfigMethod: "not-valid",
 		Value:        "10.0.0.1",
 	})
+
+	s.migrationService.EXPECT().GetModelCloudType(c.Context()).Return("ec2", nil)
 
 	// Act
 	op := s.newImportOperation(c)
@@ -421,13 +365,14 @@ func (s *importSuite) TestImportLinkLayerDevicesOptionalValues(c *tc.C) {
 	}
 	model.AddLinkLayerDevice(dArgs)
 
+	s.migrationService.EXPECT().GetModelCloudType(c.Context()).Return("ec2", nil)
 	args := []internal.ImportLinkLayerDevice{
 		{
 			IsAutoStart: dArgs.IsAutoStart,
 			IsEnabled:   dArgs.IsUp,
 			MachineID:   dArgs.MachineID,
 			Name:        dArgs.Name,
-			Type:        network.EthernetDevice,
+			Type:        network.DeviceTypeEthernet,
 		},
 	}
 	s.migrationService.EXPECT().ImportLinkLayerDevices(gomock.Any(), lldArgMatcher{c: c, expected: args}).Return(nil)
@@ -446,7 +391,7 @@ type lldArgMatcher struct {
 	expected []internal.ImportLinkLayerDevice
 }
 
-func (m lldArgMatcher) Matches(x interface{}) bool {
+func (m lldArgMatcher) Matches(x any) bool {
 	input, ok := x.([]internal.ImportLinkLayerDevice)
 	if !ok {
 		return false

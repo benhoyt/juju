@@ -8,24 +8,20 @@ import (
 
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4/workertest"
+	"github.com/juju/worker/v5/workertest"
 	"go.uber.org/mock/gomock"
 
 	"github.com/juju/juju/apiserver/facades/agent/uniter"
 	apiservertesting "github.com/juju/juju/apiserver/testing"
-	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/core/watcher/watchertest"
 	applicationservice "github.com/juju/juju/domain/application/service"
-	domainmachine "github.com/juju/juju/domain/machine"
 	machineservice "github.com/juju/juju/domain/machine/service"
 	portservice "github.com/juju/juju/domain/port/service"
 	_ "github.com/juju/juju/internal/secrets/provider/all"
 	"github.com/juju/juju/internal/services"
 	"github.com/juju/juju/rpc/params"
 )
-
-const allEndpoints = ""
 
 type uniterLegacySuite struct {
 	uniterSuiteBase
@@ -359,74 +355,6 @@ func (s *uniterLegacySuite) TestStorageAttachments(c *tc.C) {
 	// We need to set up a unit that has storage metadata defined.
 }
 
-func (s *uniterLegacySuite) TestOpenedMachinePortRangesByEndpoint(c *tc.C) {
-	_, err := s.machineService.AddMachine(c.Context(), domainmachine.AddMachineArgs{})
-	c.Assert(err, tc.ErrorIsNil)
-
-	_, _, err = s.applicationService.AddIAASUnits(c.Context(), "mysql",
-		applicationservice.AddIAASUnitArg{})
-	c.Assert(err, tc.ErrorIsNil)
-
-	wordpressUnitUUID, err := s.applicationService.GetUnitUUID(c.Context(), "wordpress/0")
-	c.Assert(err, tc.ErrorIsNil)
-	mysqlUnitUUID, err := s.applicationService.GetUnitUUID(c.Context(), "mysql/1")
-	c.Assert(err, tc.ErrorIsNil)
-
-	// Open some ports on both units using different endpoints.
-	err = s.portService.UpdateUnitPorts(c.Context(), wordpressUnitUUID, network.GroupedPortRanges{
-		allEndpoints:      []network.PortRange{network.MustParsePortRange("100-200/tcp")},
-		"monitoring-port": []network.PortRange{network.MustParsePortRange("10-20/udp")},
-	}, network.GroupedPortRanges{})
-	c.Assert(err, tc.ErrorIsNil)
-
-	err = s.portService.UpdateUnitPorts(c.Context(), mysqlUnitUUID, network.GroupedPortRanges{
-		"server": []network.PortRange{network.MustParsePortRange("3306/tcp")},
-	}, network.GroupedPortRanges{})
-	c.Assert(err, tc.ErrorIsNil)
-
-	// Get the open port ranges
-	args := params.Entities{Entities: []params.Entity{
-		{Tag: "unit-mysql-0"},
-		{Tag: "machine-0"},
-		{Tag: "machine-1"},
-		{Tag: "unit-foo-42"},
-		{Tag: "machine-42"},
-		{Tag: "application-wordpress"},
-	}}
-	expectPortRanges := map[string][]params.OpenUnitPortRangesByEndpoint{
-		"unit-mysql-1": {
-			{
-				Endpoint:   "server",
-				PortRanges: []params.PortRange{{FromPort: 3306, ToPort: 3306, Protocol: "tcp"}},
-			},
-		},
-		"unit-wordpress-0": {
-			{
-				Endpoint:   "",
-				PortRanges: []params.PortRange{{FromPort: 100, ToPort: 200, Protocol: "tcp"}},
-			},
-			{
-				Endpoint:   "monitoring-port",
-				PortRanges: []params.PortRange{{FromPort: 10, ToPort: 20, Protocol: "udp"}},
-			},
-		},
-	}
-	result, err := s.uniter.OpenedMachinePortRangesByEndpoint(c.Context(), args)
-	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(result, tc.DeepEquals, params.OpenPortRangesByEndpointResults{
-		Results: []params.OpenPortRangesByEndpointResult{
-			{Error: apiservertesting.ErrUnauthorized},
-			{
-				UnitPortRanges: expectPortRanges,
-			},
-			{Error: apiservertesting.ErrUnauthorized},
-			{Error: apiservertesting.ErrUnauthorized},
-			{Error: apiservertesting.ErrUnauthorized},
-			{Error: apiservertesting.ErrUnauthorized},
-		},
-	})
-}
-
 func (s *uniterLegacySuite) TestPrivateAddressWithRemoteRelation(c *tc.C) {
 	c.Skip("Reimplement with CMR domain work, JUJU-4855\n" +
 		"This test asserts that a relation unit's settings include: " +
@@ -458,10 +386,6 @@ func (s *uniterLegacySuite) TestModelEgressSubnets(c *tc.C) {
 		"via model config.")
 }
 
-func (s *uniterLegacySuite) makeMysqlUniter(c *tc.C) *uniter.UniterAPI {
-	return nil
-}
-
 func (s *uniterLegacySuite) TestRefresh(c *tc.C) {
 }
 
@@ -469,43 +393,6 @@ func (s *uniterLegacySuite) TestRefreshNoArgs(c *tc.C) {
 	results, err := s.uniter.Refresh(c.Context(), params.Entities{Entities: []params.Entity{}})
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results, tc.DeepEquals, params.UnitRefreshResults{Results: []params.UnitRefreshResult{}})
-}
-
-func (s *uniterLegacySuite) TestOpenedPortRangesByEndpoint(c *tc.C) {
-	unitUUID, err := s.applicationService.GetUnitUUID(c.Context(), "mysql/0")
-	c.Assert(err, tc.ErrorIsNil)
-
-	err = s.portService.UpdateUnitPorts(c.Context(), unitUUID, network.GroupedPortRanges{
-		allEndpoints: []network.PortRange{network.MustParsePortRange("1000/tcp")},
-		"db":         []network.PortRange{network.MustParsePortRange("1111/udp")},
-	}, network.GroupedPortRanges{})
-	c.Assert(err, tc.ErrorIsNil)
-
-	// Get the open port ranges
-	expectPortRanges := []params.OpenUnitPortRangesByEndpoint{
-		{
-			Endpoint:   "",
-			PortRanges: []params.PortRange{{FromPort: 1000, ToPort: 1000, Protocol: "tcp"}},
-		},
-		{
-			Endpoint:   "db",
-			PortRanges: []params.PortRange{{FromPort: 1111, ToPort: 1111, Protocol: "udp"}},
-		},
-	}
-
-	uniterAPI := s.makeMysqlUniter(c)
-
-	result, err := uniterAPI.OpenedPortRangesByEndpoint(c.Context())
-	c.Assert(err, tc.ErrorIsNil)
-	c.Assert(result, tc.DeepEquals, params.OpenPortRangesByEndpointResults{
-		Results: []params.OpenPortRangesByEndpointResult{
-			{
-				UnitPortRanges: map[string][]params.OpenUnitPortRangesByEndpoint{
-					"unit-mysql-0": expectPortRanges,
-				},
-			},
-		},
-	})
 }
 
 func (s *uniterLegacySuite) TestCommitHookChangesWithSecrets(c *tc.C) {

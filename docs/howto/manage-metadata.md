@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn how to manage Simplestreams metadata for LXD images, Juju agent binaries, and custom cloud image configuration."
+---
+
 (manage-metadata)=
 # How to manage Simplestreams metadata
 ```{ibnote}

@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "View Juju agent dependency engine status using juju_engine_report. Debug worker states and dependencies on any Juju machine."
+---
+
 (juju_engine_report)=
 # `juju_engine_report`
 

@@ -19,14 +19,14 @@ import (
 	"github.com/juju/juju/api/client/resources"
 	commoncharm "github.com/juju/juju/api/common/charm"
 	"github.com/juju/juju/api/common/charms"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/application/deployer/mocks"
 	"github.com/juju/juju/cmd/modelcmd"
 	corebase "github.com/juju/juju/core/base"
 	"github.com/juju/juju/core/model"
-	"github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
+	"github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	coretesting "github.com/juju/juju/internal/testing"
 )
 
@@ -292,8 +292,8 @@ func (s *charmSuite) expectResolveChannel() {
 		}).AnyTimes()
 }
 
-func minimalModelConfig() map[string]interface{} {
-	return map[string]interface{}{
+func minimalModelConfig() map[string]any {
+	return map[string]any{
 		"name":            "test",
 		"type":            "unmanaged",
 		"uuid":            coretesting.ModelTag.Id(),
@@ -306,8 +306,4 @@ func minimalModelConfig() map[string]interface{} {
 		"ca-private-key": coretesting.CAKey,
 		"image-stream":   "testing",
 	}
-}
-
-func strptr(s string) *string {
-	return &s
 }

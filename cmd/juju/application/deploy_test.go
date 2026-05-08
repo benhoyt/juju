@@ -17,7 +17,7 @@ import (
 	"github.com/juju/collections/transform"
 	"github.com/juju/errors"
 	"github.com/juju/gnuflag"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 	"gopkg.in/macaroon.v2"
@@ -32,6 +32,8 @@ import (
 	"github.com/juju/juju/api/jujuclient"
 	"github.com/juju/juju/api/jujuclient/jujuclienttesting"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/application/deployer"
 	"github.com/juju/juju/cmd/juju/application/mocks"
 	"github.com/juju/juju/cmd/juju/application/store"
@@ -45,12 +47,10 @@ import (
 	"github.com/juju/juju/core/devices"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/model"
+	"github.com/juju/juju/core/storage"
 	"github.com/juju/juju/core/version"
-	"github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
-	"github.com/juju/juju/internal/storage"
+	"github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/internal/testhelpers"
 	coretesting "github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc/params"
@@ -71,8 +71,8 @@ func (s *DeploySuiteBase) runDeploy(c *tc.C, args ...string) error {
 	return err
 }
 
-func minimalModelConfig() map[string]interface{} {
-	return map[string]interface{}{
+func minimalModelConfig() map[string]any {
+	return map[string]any{
 		"name":           "name",
 		"uuid":           coretesting.ModelTag.Id(),
 		"type":           "foo",
@@ -470,7 +470,7 @@ func (s *CAASDeploySuiteBase) SetUpTest(c *tc.C) {
 }
 
 func (s *CAASDeploySuiteBase) fakeAPI() *fakeDeployAPI {
-	cfgAttrs := map[string]interface{}{
+	cfgAttrs := map[string]any{
 		"name":             "sword",
 		"uuid":             coretesting.ModelTag.Id(),
 		"type":             model.CAAS,
@@ -789,10 +789,6 @@ func setupConfigFile(c *tc.C, dir string) (string, string) {
 	return path, string(content)
 }
 
-func ptr[T any](v T) *T {
-	return &v
-}
-
 func (s *DeploySuite) TestDeployWithChannel(c *tc.C) {
 	curl := charm.MustParseURL("ch:dummy")
 	origin := commoncharm.Origin{
@@ -820,9 +816,9 @@ func (s *DeploySuite) TestDeployWithChannel(c *tc.C) {
 	)
 	s.fakeAPI.Call("DeployFromRepository", application.DeployFromRepositoryArg{
 		CharmName:  "dummy",
-		Channel:    ptr("beta"),
+		Channel:    new("beta"),
 		ConfigYAML: "dummy: {}\n",
-		NumUnits:   ptr(1),
+		NumUnits:   new(1),
 	}).Returns(application.DeployInfo{
 		Architecture: "amd64",
 		Base:         corebase.Base{OS: "ubuntu", Channel: corebase.Channel{Track: "22.04"}},
@@ -872,7 +868,7 @@ func (s *DeploySuite) TestDeployCharmWithSomeEndpointBindingsSpecifiedSuccess(c 
 	s.fakeAPI.Call("DeployFromRepository", application.DeployFromRepositoryArg{
 		CharmName:  "wordpress-extra-bindings",
 		ConfigYAML: "wordpress-extra-bindings: {}\n",
-		NumUnits:   ptr(1),
+		NumUnits:   new(1),
 		EndpointBindings: map[string]string{
 			"db":        "db",
 			"db-client": "db",
@@ -965,8 +961,8 @@ func (s *DeployUnitTestSuite) SetUpTest(c *tc.C) {
 	s.PatchEnvironment("JUJU_COOKIEFILE", cookiesFile)
 }
 
-func (s *DeployUnitTestSuite) cfgAttrs() map[string]interface{} {
-	return map[string]interface{}{
+func (s *DeployUnitTestSuite) cfgAttrs() map[string]any {
+	return map[string]any{
 		"name":           "name",
 		"uuid":           "deadbeef-0bad-400d-8000-4b1d0d06f00d",
 		"type":           "foo",
@@ -1146,7 +1142,7 @@ type deployerConfigMatcher struct {
 	expected deployer.DeployerConfig
 }
 
-func (m deployerConfigMatcher) Matches(x interface{}) bool {
+func (m deployerConfigMatcher) Matches(x any) bool {
 	obtained, ok := x.(deployer.DeployerConfig)
 	m.c.Assert(ok, tc.IsTrue)
 	if !ok {
@@ -1220,9 +1216,9 @@ func (f *fakeDeployAPI) Sequences(ctx context.Context) (map[string]int, error) {
 	return nil, nil
 }
 
-func (f *fakeDeployAPI) ModelGet(ctx context.Context) (map[string]interface{}, error) {
+func (f *fakeDeployAPI) ModelGet(ctx context.Context) (map[string]any, error) {
 	results := f.MethodCall(f, "ModelGet")
-	return results[0].(map[string]interface{}), testhelpers.TypeAssertError(results[1])
+	return results[0].(map[string]any), testhelpers.TypeAssertError(results[1])
 }
 
 func (f *fakeDeployAPI) ResolveCharm(ctx context.Context, url *charm.URL, preferredChannel commoncharm.Origin, switchCharm bool) (
@@ -1265,7 +1261,7 @@ func (f *fakeDeployAPI) BestFacadeVersion(facade string) int {
 	return results[0].(int)
 }
 
-func (f *fakeDeployAPI) APICall(ctx context.Context, objType string, version int, id, request string, params, response interface{}) error {
+func (f *fakeDeployAPI) APICall(ctx context.Context, objType string, version int, id, request string, params, response any) error {
 	results := f.MethodCall(f, "APICall", objType, version, id, request, params, response)
 	return testhelpers.TypeAssertError(results[0])
 }
@@ -1308,7 +1304,7 @@ func (f *fakeDeployAPI) CharmInfo(ctx context.Context, url string) (*apicommonch
 	return results[0].(*apicommoncharms.CharmInfo), testhelpers.TypeAssertError(results[1])
 }
 
-func (f *fakeDeployAPI) Get(ctx context.Context, endpoint string, extra interface{}) error {
+func (f *fakeDeployAPI) Get(ctx context.Context, endpoint string, extra any) error {
 	return nil
 }
 
@@ -1340,7 +1336,7 @@ func (f *fakeDeployAPI) GetAnnotations(context.Context, []string) ([]params.Anno
 	return nil, nil
 }
 
-func (f *fakeDeployAPI) GetConfig(context.Context, ...string) ([]map[string]interface{}, error) {
+func (f *fakeDeployAPI) GetConfig(context.Context, ...string) ([]map[string]any, error) {
 	return nil, nil
 }
 
@@ -1427,15 +1423,15 @@ func (f *fakeDeployAPI) GrantOffer(ctx context.Context, user, access string, off
 	return testhelpers.TypeAssertError(res[0])
 }
 
-func stringToInterface(args []string) []interface{} {
-	interfaceArgs := make([]interface{}, len(args))
+func stringToInterface(args []string) []any {
+	interfaceArgs := make([]any, len(args))
 	for i, a := range args {
 		interfaceArgs[i] = a
 	}
 	return interfaceArgs
 }
 
-func vanillaFakeModelAPI(cfgAttrs map[string]interface{}) *fakeDeployAPI {
+func vanillaFakeModelAPI(cfgAttrs map[string]any) *fakeDeployAPI {
 	var logger loggo.Logger
 	fakeAPI := &fakeDeployAPI{CallMocker: testhelpers.NewCallMocker(logger)}
 

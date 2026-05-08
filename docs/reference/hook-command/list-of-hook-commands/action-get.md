@@ -1,7 +1,7 @@
 (hook-command-action-get)=
 # `action-get`
 ## Summary
-Get action parameters.
+Gets action parameters.
 
 ## Usage
 ``` action-get [options] [<key>[.<key>.<key>...]]```
@@ -19,6 +19,8 @@ Get action parameters.
 
 ## Details
 
-action-get will print the value of the parameter at the given key, serialized
-as YAML.  If multiple keys are passed, action-get will recurse into the param
+`action-get` will print the value of the parameter at the given key, serialized
+as YAML.
+
+If multiple keys are passed, `action-get` will recurse into the param
 map as needed.

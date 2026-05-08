@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Browse commands available on Juju-provisioned compute resources, including juju-dumplogs, juju-exec, and juju-introspect for debugging."
+---
+
 (list-of-commands-available-on-a-compute-resource-provisioned-by-juju)=
 # List of commands available on a compute resource provisioned by Juju
 

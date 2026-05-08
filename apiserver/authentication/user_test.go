@@ -64,7 +64,7 @@ func (s *userAuthenticatorSuite) TestValidUserLogin(c *tc.C) {
 		Name:        usertesting.GenNewName(c, "bobbrown"),
 		DisplayName: "Bob Brown",
 		CreatorUUID: s.AdminUserUUID,
-		Password:    ptr(auth.NewPassword("password")),
+		Password:    new(auth.NewPassword("password")),
 		Permission: permission.AccessSpec{
 			Access: permission.LoginAccess,
 			Target: permission.ID{
@@ -93,7 +93,7 @@ func (s *userAuthenticatorSuite) TestDisabledUserLogin(c *tc.C) {
 		Name:        name,
 		DisplayName: "Bob Brown",
 		CreatorUUID: s.AdminUserUUID,
-		Password:    ptr(auth.NewPassword("password")),
+		Password:    new(auth.NewPassword("password")),
 		Permission: permission.AccessSpec{
 			Access: permission.LoginAccess,
 			Target: permission.ID{
@@ -123,7 +123,7 @@ func (s *userAuthenticatorSuite) TestRemovedUserLogin(c *tc.C) {
 		Name:        name,
 		DisplayName: "Bob Brown",
 		CreatorUUID: s.AdminUserUUID,
-		Password:    ptr(auth.NewPassword("password")),
+		Password:    new(auth.NewPassword("password")),
 		Permission: permission.AccessSpec{
 			Access: permission.LoginAccess,
 			Target: permission.ID{
@@ -154,7 +154,7 @@ func (s *userAuthenticatorSuite) TestUserLoginWrongPassword(c *tc.C) {
 		Name:        name,
 		DisplayName: "Bob Brown",
 		CreatorUUID: s.AdminUserUUID,
-		Password:    ptr(auth.NewPassword("password")),
+		Password:    new(auth.NewPassword("password")),
 		Permission: permission.AccessSpec{
 			Access: permission.LoginAccess,
 			Target: permission.ID{
@@ -378,7 +378,7 @@ func (s *userAuthenticatorSuite) TestAuthenticateLocalLoginMacaroon(c *tc.C) {
 	service.CheckCallNames(c, "Auth", "NewMacaroon")
 	calls := service.Calls()
 	c.Assert(calls, tc.HasLen, 2)
-	c.Check(calls[1].Args, tc.SameContents, []interface{}{
+	c.Check(calls[1].Args, tc.SameContents, []any{
 		[]checkers.Caveat{
 			{
 				Condition: "time-before 0001-01-02T00:00:00Z", Namespace: "std",
@@ -526,8 +526,4 @@ func (s *macaroonAuthenticatorSuite) TestMacaroonAuthentication(c *tc.C) {
 			c.Assert(authenticatedTag.String(), tc.Equals, test.expectTag)
 		}
 	}
-}
-
-func ptr[T any](t T) *T {
-	return &t
 }

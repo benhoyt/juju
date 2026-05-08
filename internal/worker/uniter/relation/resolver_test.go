@@ -20,8 +20,8 @@ import (
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/core/life"
 	corerelation "github.com/juju/juju/core/relation"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/charm/hooks"
+	"github.com/juju/juju/domain/deployment/charm"
+	"github.com/juju/juju/domain/deployment/charm/hooks"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/testhelpers"
 	coretesting "github.com/juju/juju/internal/testing"
@@ -56,12 +56,12 @@ func TestMockRelationResolverSuite(t *testing.T) {
 
 type apiCall struct {
 	request string
-	args    interface{}
-	result  interface{}
+	args    any
+	result  any
 	err     error
 }
 
-func uniterAPICall(request string, args, result interface{}, err error) apiCall {
+func uniterAPICall(request string, args, result any, err error) apiCall {
 	return apiCall{
 		request: request,
 		args:    args,
@@ -71,7 +71,7 @@ func uniterAPICall(request string, args, result interface{}, err error) apiCall 
 }
 
 func mockAPICaller(c *tc.C, callNumber *int32, apiCalls ...apiCall) apitesting.APICallerFunc {
-	apiCaller := apitesting.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := apitesting.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		switch objType {
 		case "NotifyWatcher":
 			return nil

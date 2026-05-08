@@ -22,7 +22,7 @@ jobs:
           snap info juju > snap-info.txt
           channel=$(awk -F':' -v ver=$majmin 'NR == 1, /channels/ {next} {gsub(/ /, "", $1); gsub(/ /, "", $2); if (!match($1,ver)) next; if ($2 == "--") next; print $1; exit}' snap-info.txt)
           echo "version=$version" >> $GITHUB_OUTPUT 
-          echo "channel=$channel" >> $GITHUB_OUTPUT 
+          echo "channel=$channel" >> $GITHUB_OUTPUT
 
   upgrade:
     name: Upgrade Smoke
@@ -38,8 +38,9 @@ jobs:
       CHARM_localhost: apache2
       CHARM_microk8s: snappass-test
       OCI_REGISTRY: 10.152.183.69
+      JUJU_PUBLISH_STREAM: proposed
       UPGRADE_FLAGS_localhost: --build-agent
-      UPGRADE_FLAGS_microk8s: --agent-stream=develop
+      UPGRADE_FLAGS_microk8s: --agent-stream=proposed
       MODEL_TYPE_localhost: iaas
       MODEL_TYPE_microk8s: caas
 
@@ -56,7 +57,7 @@ jobs:
       - name: Setup LXD
         if: matrix.cloud == 'localhost'
         uses: canonical/setup-lxd@2fa6235ef2dfd3288e0de09edac03f2ebf922968
-    
+
       - name: Wait for LXD
         if: matrix.cloud == 'localhost'
         run: |
@@ -68,7 +69,7 @@ jobs:
       - name: Set some variables
         run: |
           set -euxo pipefail
-          
+
           sourceJujuVersion=$(snap info juju | yq ".channels[\"${{ needs.setup.outputs.channel }}\"]" | cut -d' ' -f1)
           echo "source-juju-version=${sourceJujuVersion}" >> $GITHUB_OUTPUT
         id: vars
@@ -110,6 +111,13 @@ jobs:
           channel: "1.34-strict/stable"
           addons: '["dns", "hostpath-storage"]'
           launch-configuration: "$GITHUB_WORKSPACE/.github/microk8s-launch-config-aws.yaml"
+
+      - name: Install k8s Dependencies
+        if: matrix.cloud == 'microk8s'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y podman >/dev/null 2>&1
 
       - name: Setup local caas registry
         if: matrix.cloud == 'microk8s'
@@ -153,15 +161,14 @@ jobs:
           cp ~/certs/ca.crt $BUILD_TEMP/
           cat >$BUILD_TEMP/Dockerfile <<EOL
             FROM ghcr.io/juju/jujud-operator:${SOURCE_JUJU_VERSION}
-          
+
             COPY ca.crt /usr/local/share/ca-certificates/ca.crt
 
             RUN update-ca-certificates
           EOL
-          docker build $BUILD_TEMP -t ${OCI_REGISTRY}/test-repo/jujud-operator:${SOURCE_JUJU_VERSION}
-          docker push ${OCI_REGISTRY}/test-repo/jujud-operator:${SOURCE_JUJU_VERSION}
-          
-          OCI_REGISTRY_USERNAME=${OCI_REGISTRY}/test-repo make seed-repository
+          podman build $BUILD_TEMP -t ${OCI_REGISTRY}/test-repo/jujud-operator:${SOURCE_JUJU_VERSION}
+          podman push -f v2s2 "${OCI_REGISTRY}/test-repo/jujud-operator:${SOURCE_JUJU_VERSION}" "docker://${OCI_REGISTRY}/test-repo/jujud-operator:${SOURCE_JUJU_VERSION}"
+          PUSH_OCI_REGISTRY=${OCI_REGISTRY}/test-repo make seed-repository
 
       - name: Bootstrap Juju - localhost
         if: matrix.cloud == 'localhost'
@@ -169,10 +176,10 @@ jobs:
         run: |
           set -euxo pipefail
 
+          juju version
           juju bootstrap localhost c \
             --model-default enable-os-upgrade=false \
             --constraints "arch=$(go env GOARCH)"
-          juju version
 
           juju add-model m
           juju set-model-constraints arch=$(go env GOARCH)
@@ -180,20 +187,15 @@ jobs:
 
       - name: Bootstrap Juju - microk8s
         if: matrix.cloud == 'microk8s'
-
-        # TODO: Enabling developer-mode is a bit of a hack to get this working for now.
-        # Ideally, we would mock our own simplestream, similar to Jenkins, to select
-        # and filter with as standard, instead of skipping over them with this flag
         run: |
           set -euxo pipefail
 
+          juju version
           sg snap_microk8s <<EOF
             juju bootstrap microk8s c \
               --constraints "arch=$(go env GOARCH)" \
-              --config caas-image-repo="${OCI_REGISTRY}/test-repo" \
-              --config features="[developer-mode]"
+              --config caas-image-repo="${OCI_REGISTRY}/test-repo"
           EOF
-          juju version
 
           juju add-model m
           juju set-model-constraints arch=$(go env GOARCH)
@@ -208,6 +210,8 @@ jobs:
           DEPLOY_FLAGS=''
           if [[ ${{ matrix.cloud }} == 'microk8s' ]]; then
             DEPLOY_FLAGS='--trust'
+          else
+            DEPLOY_FLAGS='--base ubuntu@20.04'
           fi
 
           CURRENT_CHARM=${CHARM_${{ matrix.cloud }}}
@@ -255,8 +259,30 @@ jobs:
 
             RUN update-ca-certificates
           EOL
-          docker build $BUILD_TEMP -t ${OCI_REGISTRY}/test-repo/jujud-operator:${TARGET_JUJU_VERSION}
-          docker push ${OCI_REGISTRY}/test-repo/jujud-operator:${TARGET_JUJU_VERSION}
+          podman build $BUILD_TEMP -t ${OCI_REGISTRY}/test-repo/jujud-operator:${TARGET_JUJU_VERSION}
+          podman push -f v2s2 "${OCI_REGISTRY}/test-repo/jujud-operator:${TARGET_JUJU_VERSION}" "docker://${OCI_REGISTRY}/test-repo/jujud-operator:${TARGET_JUJU_VERSION}"
+
+      - name: Publish binaries on simplestreams
+        if: matrix.cloud == 'microk8s'
+        run: |
+          set -euxo pipefail
+
+          make simplestreams
+
+      - name: Sync local simplestreams to controller
+        if: matrix.cloud == 'microk8s'
+        env:
+          TARGET_JUJU_VERSION: ${{ needs.setup.outputs.version }}
+        run: |
+          set -euxo pipefail
+
+          # Sync the local simplestreams to the controller. It will make it aware of the new jujud-operator image,
+          # even if the binary itself will not be used as is. upgrade will simply fetch the new image from the registry.
+          # However, without this step, upgrade will fail as it will not be able to find the new jujud-operator image.
+          juju --debug sync-agent-binary -m controller \
+            --source="$PWD/_build/simplestreams" \
+            --stream=${JUJU_PUBLISH_STREAM} \
+            --agent-version ${TARGET_JUJU_VERSION}
 
       - name: Preflight
         shell: bash
@@ -272,12 +298,20 @@ jobs:
         run: |
           set -euxo pipefail
 
-          OUTPUT=$(juju upgrade-controller --debug ${UPGRADE_FLAGS_${{ matrix.cloud }}})
-          if [[ $OUTPUT == 'no upgrades available' ]]; then
+          # Upgrade to the latest stable.
+          OUTPUT=$(juju upgrade-controller --debug ${UPGRADE_FLAGS_${{ matrix.cloud }}} 2>&1)
+          if [[ $OUTPUT == *'no upgrades available'* ]]; then
+            echo $OUTPUT
+            juju debug-log --replay --no-tail -m controller
+
+            if [[ ${{ matrix.cloud }} == 'microk8s' ]]; then
+              sudo DEBIAN_FRONTEND=noninteractive apt install -y podman >/dev/null 2>&1
+              podman search --list-tags ${OCI_REGISTRY}/test-repo/jujud-operator
+            fi
             exit 1
           fi
           .github/verify-agent-version.sh ${MODEL_TYPE_${{ matrix.cloud }}} ${TARGET_JUJU_VERSION}
-          
+
           PANIC=$(juju debug-log --replay --no-tail -m controller | grep "panic" || true)
           if [ "$PANIC" != "" ]; then
               echo "Panic found:"

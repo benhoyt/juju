@@ -12,8 +12,8 @@ import (
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/model"
-	jujucharm "github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/charm/hooks"
+	jujucharm "github.com/juju/juju/domain/deployment/charm"
+	"github.com/juju/juju/domain/deployment/charm/hooks"
 	"github.com/juju/juju/internal/worker"
 	"github.com/juju/juju/internal/worker/uniter/hook"
 	"github.com/juju/juju/internal/worker/uniter/operation"
@@ -31,7 +31,6 @@ type ResolverConfig struct {
 	ShouldRetryHooks    bool
 	StartRetryHookTimer func()
 	StopRetryHookTimer  func()
-	VerifyCharmProfile  resolver.Resolver
 	Reboot              resolver.Resolver
 	Leadership          resolver.Resolver
 	Actions             resolver.Resolver
@@ -223,15 +222,6 @@ func (s *uniterResolver) nextOpConflicted(
 	// Only IAAS models deal with conflicted upgrades.
 	// TODO(caas) - what to do here.
 
-	// Verify the charm profile before proceeding.  No hooks to run, if the
-	// correct one is not yet applied.
-	_, err := s.config.VerifyCharmProfile.NextOp(ctx, localState, remoteState, opFactory)
-	if e := errors.Cause(err); e == resolver.ErrDoNotProceed {
-		return nil, resolver.ErrNoOperation
-	} else if e != resolver.ErrNoOperation {
-		return nil, err
-	}
-
 	if remoteState.ResolvedMode != params.ResolvedNone {
 		if err := s.config.ClearResolved(); err != nil {
 			return nil, errors.Trace(err)
@@ -250,14 +240,6 @@ func (s *uniterResolver) newUpgradeOperation(
 	remoteState remotestate.Snapshot,
 	opFactory operation.Factory,
 ) (operation.Operation, error) {
-	// Verify the charm profile before proceeding.  No hooks to run, if the
-	// correct one is not yet applied.
-	_, err := s.config.VerifyCharmProfile.NextOp(ctx, localState, remoteState, opFactory)
-	if e := errors.Cause(err); e == resolver.ErrDoNotProceed {
-		return nil, resolver.ErrNoOperation
-	} else if e != resolver.ErrNoOperation {
-		return nil, err
-	}
 	return opFactory.NewUpgrade(remoteState.CharmURL)
 }
 

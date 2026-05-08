@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Utilize the catacomb package for binding worker lifetimes and tracking errors across groups of related workers in Juju development."
+---
+
 (catacomb-package)=
 # Catacomb package
 The **`catacomb`** package is a subpackage in the Go `worker` library that leverages {ref}`the tomb package <tomb-package>` to bind the lifetimes of, and track the errors of, a group of related {ref}`workers <worker>`. In Juju it is used in precisely this way.

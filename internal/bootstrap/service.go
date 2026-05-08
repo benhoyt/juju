@@ -12,8 +12,8 @@ import (
 	"github.com/juju/juju/core/unit"
 	"github.com/juju/juju/domain/application"
 	applicationservice "github.com/juju/juju/domain/application/service"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/environs/config"
-	"github.com/juju/juju/internal/charm"
 )
 
 // AgentPasswordService provides access to agent password management.
@@ -32,9 +32,9 @@ type ApplicationService interface {
 		resolve application.ResolveControllerCharmDownload,
 	) (application.ResolvedControllerCharmDownload, error)
 
-	// UpdateCloudService updates the cloud service for the specified application, returning an error
+	// UpdateK8sService updates the cloud service for the specified application, returning an error
 	// satisfying [applicationerrors.ApplicationNotFoundError] if the application doesn't exist.
-	UpdateCloudService(ctx context.Context, appName, providerID string, sAddrs network.ProviderAddresses) error
+	UpdateK8sService(ctx context.Context, appName, providerID string, sAddrs network.ProviderAddresses) error
 }
 
 // IAASApplicationService instances create an IAAS application.
@@ -59,9 +59,9 @@ type CAASApplicationService interface {
 	// UpdateApplication updates the application with the given name.
 	UpdateCAASUnit(ctx context.Context, unitName unit.Name, params applicationservice.UpdateCAASUnitParams) error
 
-	// UpdateCloudService updates the cloud service for the specified application, returning an error
+	// UpdateK8sService updates the cloud service for the specified application, returning an error
 	// satisfying [applicationerrors.ApplicationNotFoundError] if the application doesn't exist.
-	UpdateCloudService(ctx context.Context, appName, providerID string, sAddrs network.ProviderAddresses) error
+	UpdateK8sService(ctx context.Context, appName, providerID string, sAddrs network.ProviderAddresses) error
 }
 
 // ModelConfigService provides access to the model configuration.

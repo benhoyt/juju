@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Understand the containeragent binary and containerAgentCommand for spawning unit agents in Kubernetes deployments with Juju."
+---
+
 (binary-containeragent)=
 # Binary container agent
 > See first: [Juju | `containeragent`](https://juju.is/docs/juju/containeragent-binary)

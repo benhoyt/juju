@@ -32,10 +32,9 @@ import (
 	coreunit "github.com/juju/juju/core/unit"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	applicationservice "github.com/juju/juju/domain/application/service"
-	"github.com/juju/juju/domain/storage"
+	"github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/domain/storageprovisioning"
-	"github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
 	"github.com/juju/juju/internal/cloudconfig/podcfg"
 	"github.com/juju/juju/internal/docker"
 	internalstorage "github.com/juju/juju/internal/storage"
@@ -71,8 +70,8 @@ type ApplicationOps interface {
 	ProvisioningInfo(
 		ctx context.Context, appName string, appUUID coreapplication.UUID,
 		facade CAASProvisionerFacade,
-		storageProvisioningService StorageProvisioningService,
 		applicationService ApplicationService,
+		storageProvisioningService StorageProvisioningService,
 		resourceOpenerGetter ResourceOpenerGetter,
 		lastProvisioningInfo *ProvisioningInfo,
 		logger logger.Logger) (*ProvisioningInfo, error)
@@ -88,8 +87,7 @@ type ApplicationOps interface {
 		logger logger.Logger) error
 
 	AppDead(ctx context.Context, appName string, appUUID coreapplication.UUID,
-		app caas.Application, broker CAASBroker, applicationService ApplicationService,
-		statusService StatusService,
+		app caas.Application, applicationService ApplicationService,
 		clk clock.Clock, logger logger.Logger) error
 
 	EnsureTrust(ctx context.Context, appName string, app caas.Application,
@@ -109,13 +107,11 @@ type ApplicationOps interface {
 
 	ReconcileDeadUnitScale(ctx context.Context, appName string, appUUID coreapplication.UUID,
 		app caas.Application, facade CAASProvisionerFacade,
-		applicationService ApplicationService, statusService StatusService,
-		logger logger.Logger) error
+		applicationService ApplicationService, logger logger.Logger) error
 
 	EnsureScale(ctx context.Context, appName string, appUUID coreapplication.UUID,
 		app caas.Application, appLife life.Value, facade CAASProvisionerFacade,
-		applicationService ApplicationService, statusService StatusService,
-		logger logger.Logger) error
+		applicationService ApplicationService, logger logger.Logger) error
 }
 
 type applicationOps struct{}
@@ -125,12 +121,13 @@ var _ ApplicationOps = &applicationOps{}
 func (applicationOps) ProvisioningInfo(
 	ctx context.Context, appName string, appUUID coreapplication.UUID,
 	facade CAASProvisionerFacade,
-	storageProvisioningService StorageProvisioningService,
 	applicationService ApplicationService,
+	storageProvisioningService StorageProvisioningService,
 	resourceOpenerGetter ResourceOpenerGetter,
 	lastProvisioningInfo *ProvisioningInfo,
 	logger logger.Logger) (*ProvisioningInfo, error) {
-	return provisioningInfo(ctx, appName, appUUID, facade, storageProvisioningService, applicationService, resourceOpenerGetter, lastProvisioningInfo, logger)
+	return provisioningInfo(ctx, appName, appUUID, facade, applicationService,
+		storageProvisioningService, resourceOpenerGetter, lastProvisioningInfo, logger)
 }
 
 func (applicationOps) AppAlive(
@@ -141,8 +138,7 @@ func (applicationOps) AppAlive(
 	clk clock.Clock, logger logger.Logger,
 ) error {
 	return appAlive(ctx, appName, appUUID, app, password,
-		lastApplied, provisioningInfo, statusService,
-		clk, logger)
+		lastApplied, provisioningInfo, statusService, clk, logger)
 }
 
 func (applicationOps) AppDying(
@@ -152,15 +148,15 @@ func (applicationOps) AppDying(
 	applicationService ApplicationService, statusService StatusService,
 	logger logger.Logger,
 ) error {
-	return appDying(ctx, appName, appUUID, app, appLife, facade, applicationService, statusService, logger)
+	return appDying(ctx, appName, appUUID, app, appLife, facade, applicationService, logger)
 }
 
 func (applicationOps) AppDead(ctx context.Context,
-	appName string, appUUID coreapplication.UUID, app caas.Application, broker CAASBroker,
-	applicationService ApplicationService, statusService StatusService,
+	appName string, appUUID coreapplication.UUID, app caas.Application,
+	applicationService ApplicationService,
 	clk clock.Clock, logger logger.Logger,
 ) error {
-	return appDead(ctx, appName, appUUID, app, broker, applicationService, statusService, clk, logger)
+	return appDead(ctx, appName, appUUID, app, applicationService, clk, logger)
 }
 
 func (applicationOps) EnsureTrust(
@@ -178,7 +174,7 @@ func (applicationOps) UpdateState(
 	broker CAASBroker, applicationService ApplicationService, statusService StatusService,
 	clk clock.Clock, logger logger.Logger,
 ) (UpdateStatusState, error) {
-	return updateState(ctx, appName, appUUID, app, lastReportedStatus, broker, applicationService, statusService, clk, logger)
+	return updateState(ctx, appName, appUUID, app, lastReportedStatus, broker, applicationService, statusService, clk)
 }
 
 func (applicationOps) RefreshApplicationStatus(
@@ -201,20 +197,20 @@ func (applicationOps) ReconcileDeadUnitScale(
 	ctx context.Context,
 	appName string, appUUID coreapplication.UUID, app caas.Application,
 	facade CAASProvisionerFacade,
-	applicationService ApplicationService, statusService StatusService,
+	applicationService ApplicationService,
 	logger logger.Logger,
 ) error {
-	return reconcileDeadUnitScale(ctx, appName, appUUID, app, facade, applicationService, statusService, logger)
+	return reconcileDeadUnitScale(ctx, appName, appUUID, app, facade, applicationService, logger)
 }
 
 func (applicationOps) EnsureScale(
 	ctx context.Context,
 	appName string, appUUID coreapplication.UUID, app caas.Application, appLife life.Value,
 	facade CAASProvisionerFacade,
-	applicationService ApplicationService, statusService StatusService,
+	applicationService ApplicationService,
 	logger logger.Logger,
 ) error {
-	return ensureScale(ctx, appName, appUUID, app, appLife, facade, applicationService, statusService, logger)
+	return ensureScale(ctx, appName, appUUID, app, appLife, facade, applicationService, logger)
 }
 
 type Tomb interface {
@@ -280,31 +276,13 @@ func appAlive(ctx context.Context, appName string, appUUID coreapplication.UUID,
 	storageUniqueID := getStorageUniqueID(appUUID)
 	filesystems := []internalstorage.KubernetesFilesystemParams{}
 	for _, fst := range pi.FilesystemTemplates {
-		for i := range fst.Count {
-			mountPoint, err := storage.FilesystemMountPointK8s(
-				fst.Location, fst.MaxCount, i, fst.StorageName,
-			)
-			if err != nil {
-				return errors.Trace(err)
-			}
-			fsp := internalstorage.KubernetesFilesystemParams{
-				StorageName: fst.StorageName,
-				Size:        fst.SizeMiB,
-				Provider:    internalstorage.ProviderType(fst.ProviderType),
-				Attributes: transform.Map(fst.Attributes, func(k, v string) (string, any) {
-					return k, v
-				}),
-				Attachment: &internalstorage.KubernetesFilesystemAttachmentParams{
-					ReadOnly: fst.ReadOnly,
-					Path:     mountPoint,
-				},
-				ResourceTags: pi.StorageResourceTags,
-			}
-			filesystems = append(filesystems, fsp)
-		}
+		filesystems = append(filesystems, makeKubernetesFilesystemParams(
+			fst,
+			fst.Attachments,
+			pi.StorageResourceTags,
+		))
 	}
 
-	// TODO(sidecar): container.Mounts[*].Path <= consolidate? => provisionInfo.Filesystems[*].Attachment.Path
 	config := caas.ApplicationConfig{
 		IsPrivateImageRepo:   pi.ImageDetails.IsPrivate(),
 		IntroductionSecret:   password,
@@ -355,21 +333,56 @@ func appAlive(ctx context.Context, appName string, appUUID coreapplication.UUID,
 	return nil
 }
 
+func makeKubernetesFilesystemParams(
+	fst storageprovisioning.FilesystemTemplate,
+	attachments []storageprovisioning.FilesystemAttachmentTemplateWithProvisioned,
+	storageResourceTags map[string]string,
+) internalstorage.KubernetesFilesystemParams {
+	k8sFileSystemParamAttachments := make(
+		[]internalstorage.KubernetesFilesystemAttachmentParams,
+		len(attachments),
+	)
+
+	for i, attachment := range attachments {
+		pvcNames := make([]string, len(attachment.ProvisionedAttachments))
+		for j, provisionedAttachment := range attachment.ProvisionedAttachments {
+			pvcNames[j] = provisionedAttachment.ProviderID
+		}
+		k8sFileSystemParamAttachments[i] = internalstorage.KubernetesFilesystemAttachmentParams{
+			ReadOnly:            attachment.ReadOnly,
+			Path:                attachment.MountPoint,
+			ContainerName:       attachment.ContainerKey,
+			ProvisionedPVCNames: pvcNames,
+		}
+	}
+
+	return internalstorage.KubernetesFilesystemParams{
+		StorageName: fst.StorageName,
+		Size:        fst.SizeMiB,
+		Provider:    internalstorage.ProviderType(fst.ProviderType),
+		Attributes: transform.Map(fst.Attributes, func(k, v string) (string, any) {
+			return k, v
+		}),
+		Attachments:  k8sFileSystemParamAttachments,
+		ResourceTags: storageResourceTags,
+	}
+}
+
 // appDying handles the life.Dying state for the CAAS application. It deals with scaling down
 // the application and removing units.
 func appDying(
 	ctx context.Context,
 	appName string, appUUID coreapplication.UUID, app caas.Application, appLife life.Value,
 	facade CAASProvisionerFacade,
-	applicationService ApplicationService, statusService StatusService,
+	applicationService ApplicationService,
 	logger logger.Logger,
 ) (err error) {
 	logger.Debugf(ctx, "application %q dying", appName)
-	err = ensureScale(ctx, appName, appUUID, app, appLife, facade, applicationService, statusService, logger)
+	err = ensureScale(ctx, appName, appUUID, app, appLife, facade, applicationService, logger)
 	if err != nil {
 		return errors.Annotate(err, "cannot scale dying application to 0")
 	}
-	err = reconcileDeadUnitScale(ctx, appName, appUUID, app, facade, applicationService, statusService, logger)
+	err = reconcileDeadUnitScale(ctx, appName, appUUID, app, facade, applicationService, logger)
 	if err != nil {
 		return errors.Annotate(err, "cannot reconcile dead units in dying application")
 	}
@@ -380,8 +393,8 @@ func appDying(
 // is removed from the k8s cluster and unblocks the cleanup of the application in state.
 func appDead(
 	ctx context.Context,
-	appName string, appUUID coreapplication.UUID, app caas.Application, broker CAASBroker,
-	applicationService ApplicationService, statusService StatusService,
+	appName string, appUUID coreapplication.UUID, app caas.Application,
+	applicationService ApplicationService,
 	clk clock.Clock, logger logger.Logger,
 ) error {
 	logger.Debugf(ctx, "application %q dead", appName)
@@ -393,15 +406,12 @@ func appDead(
 	if err != nil {
 		return errors.Trace(err)
 	}
-	_, err = updateState(ctx, appName, appUUID, app, nil, broker, applicationService, statusService, clk, logger)
-	if err != nil {
+	// Clear the managed-resources flag so the removal service knows the
+	// provisioner has finished cleaning up k8s resources. The removal domain
+	// handles all DB cleanup (cloud-service rows, etc.) independently.
+	if err := applicationService.ClearApplicationHasK8sResources(ctx, appUUID); err != nil {
 		return errors.Trace(err)
 	}
-	// TODO(k8s): re-implement this to prevent a dead app from going away through
-	// creating a new domain concept that holds the application until this worker
-	// has destroyed all the k8s resources.
-	//
-	// Clear "has-resources" flag so state knows it can now remove the application.
 	return nil
 }
 
@@ -437,20 +447,20 @@ func updateState(
 	appName string, appUUID coreapplication.UUID, app caas.Application,
 	lastReportedStatus UpdateStatusState,
 	broker CAASBroker, applicationService ApplicationService, statusService StatusService,
-	clk clock.Clock, logger logger.Logger,
+	clk clock.Clock,
 ) (UpdateStatusState, error) {
 	svc, err := app.Service()
 	if err != nil && !errors.Is(err, errors.NotFound) {
 		return nil, errors.Trace(err)
 	}
 	if svc != nil {
-		err := applicationService.UpdateCloudService(
+		err := applicationService.UpdateK8sService(
 			ctx, appName, svc.Id, svc.Addresses)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
 		now := clk.Now()
-		err = statusService.SetApplicationStatus(ctx, appName, status.StatusInfo{
+		err = statusService.SetOperatorStatus(ctx, appName, status.StatusInfo{
 			Status:  svc.Status.Status,
 			Message: svc.Status.Message,
 			Data:    svc.Status.Data,
@@ -488,7 +498,7 @@ func updateState(
 			Address:    &u.Address,
 			Ports:      &u.Ports,
 		}
-		args.AgentStatus, args.CloudContainerStatus = updateStatus(u.Status)
+		args.AgentStatus, args.CloudContainerStatus = updateStatus(u.Status, clk)
 
 		lastStatus, ok := lastReportedStatus[unitName]
 		reportedStatus[unitName] = args
@@ -602,7 +612,6 @@ func reconcileDeadUnitScale(
 	appName string, appUUID coreapplication.UUID, app caas.Application,
 	facade CAASProvisionerFacade,
 	applicationService ApplicationService,
-	statusService StatusService,
 	logger logger.Logger,
 ) error {
 	unitNamesAndLives, err := applicationService.GetAllUnitLifeForApplication(ctx, appUUID)
@@ -641,9 +650,8 @@ func reconcileDeadUnitScale(
 
 	storageUniqueID := getStorageUniqueID(appUUID)
 	err = ensureScaleWithFsAttachments(
-		ctx, appName, app, desiredScale,
-		facade, logger, storageUniqueID,
-	)
+		ctx, appName, appUUID, app, desiredScale,
+		facade, logger, storageUniqueID)
 	if err != nil && !errors.Is(err, errors.NotFound) {
 		return fmt.Errorf(
 			"scaling application %q to scale %d: %w",
@@ -678,7 +686,7 @@ func ensureScale(
 	ctx context.Context,
 	appName string, appUUID coreapplication.UUID, app caas.Application, appLife life.Value,
 	facade CAASProvisionerFacade,
-	applicationService ApplicationService, statusService StatusService,
+	applicationService ApplicationService,
 	logger logger.Logger,
 ) error {
 	var err error
@@ -728,6 +736,7 @@ func ensureScale(
 		err := ensureScaleWithFsAttachments(
 			ctx,
 			appName,
+			appUUID,
 			app,
 			ps.ScaleTarget,
 			facade,
@@ -795,7 +804,7 @@ func setApplicationStatus(
 ) error {
 	logger.Tracef(ctx, "updating application %q status to %q, %q, %v", appName, s, reason, data)
 	now := clk.Now()
-	return statusService.SetApplicationStatus(ctx, appName, status.StatusInfo{
+	return statusService.SetOperatorStatus(ctx, appName, status.StatusInfo{
 		Status:  s,
 		Message: reason,
 		Data:    data,
@@ -819,7 +828,7 @@ func updateProvisioningState(
 
 // ensureScaleWithFsAttachments scales an application while ensuring required PVCs are created.
 func ensureScaleWithFsAttachments(
-	ctx context.Context, appName string,
+	ctx context.Context, appName string, appUUID coreapplication.UUID,
 	app caas.Application, scaleTarget int,
 	facade CAASProvisionerFacade, logger logger.Logger, storageUniqueID string,
 ) error {
@@ -847,8 +856,8 @@ func provisioningInfo(
 	ctx context.Context,
 	appName string, appUUID coreapplication.UUID,
 	facade CAASProvisionerFacade,
-	storageProvisioningService StorageProvisioningService,
 	applicationService ApplicationService,
+	storageProvisioningService StorageProvisioningService,
 	resourceOpenerGetter ResourceOpenerGetter,
 	lastProvisioningInfo *ProvisioningInfo,
 	logger logger.Logger,
@@ -919,7 +928,7 @@ func provisioningInfo(
 			return nil, errors.Trace(err)
 		}
 		pi.Images[v.Name] = rsc
-		err = ro.SetResourceUsed(ctx, opened.UUID)
+		err = ro.SetResourceUsed(ctx, coreresource.UUID(opened.ID))
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
@@ -929,10 +938,11 @@ func provisioningInfo(
 }
 
 // updateStatus constructs the agent and cloud container status values.
-func updateStatus(podStatus status.StatusInfo) (
+func updateStatus(podStatus status.StatusInfo, clk clock.Clock) (
 	agentStatus *status.StatusInfo,
 	cloudContainerStatus *status.StatusInfo,
 ) {
+	now := clk.Now()
 	switch podStatus.Status {
 	case status.Unknown:
 		// The container runtime can spam us with unimportant
@@ -943,41 +953,49 @@ func updateStatus(podStatus status.StatusInfo) (
 		agentStatus = &status.StatusInfo{
 			Status:  status.Allocating,
 			Message: podStatus.Message,
+			Since:   &now,
 		}
 		cloudContainerStatus = &status.StatusInfo{
 			Status:  status.Waiting,
 			Message: podStatus.Message,
 			Data:    podStatus.Data,
+			Since:   &now,
 		}
 	case status.Running:
 		// A pod has finished starting so the workload is now active.
 		agentStatus = &status.StatusInfo{
 			Status: status.Idle,
+			Since:  &now,
 		}
 		cloudContainerStatus = &status.StatusInfo{
 			Status:  status.Running,
 			Message: podStatus.Message,
 			Data:    podStatus.Data,
+			Since:   &now,
 		}
 	case status.Error:
 		agentStatus = &status.StatusInfo{
 			Status:  status.Error,
 			Message: podStatus.Message,
 			Data:    podStatus.Data,
+			Since:   &now,
 		}
 		cloudContainerStatus = &status.StatusInfo{
 			Status:  status.Error,
 			Message: podStatus.Message,
 			Data:    podStatus.Data,
+			Since:   &now,
 		}
 	case status.Blocked:
 		agentStatus = &status.StatusInfo{
 			Status: status.Idle,
+			Since:  &now,
 		}
 		cloudContainerStatus = &status.StatusInfo{
 			Status:  status.Blocked,
 			Message: podStatus.Message,
 			Data:    podStatus.Data,
+			Since:   &now,
 		}
 	}
 	return agentStatus, cloudContainerStatus

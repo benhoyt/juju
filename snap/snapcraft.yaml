@@ -1,5 +1,5 @@
 name: juju
-version: 4.0-beta8
+version: 4.1-beta2
 summary: Juju - a model-driven operator lifecycle manager for K8s and machines
 license: AGPL-3.0
 description: |
@@ -53,12 +53,15 @@ apps:
       - dot-google
       - dot-kubernetes
       - dot-maas
+      - dot-minikube-cacrt
+      - dot-minikube-profiles
       - dot-openstack
       - dot-oracle
       # Needed so that arbitrary cloud/credential yaml files can be read and backups written.
       - home
       # Needed to that SSO via the web browser can work.
       - desktop
+    completer: usr/share/bash-completion/completions/juju
   fetch-oci:
     daemon: oneshot
     command: wrappers/fetch-oci
@@ -224,7 +227,7 @@ parts:
       - libuv
       - libsqlite3
     source: https://github.com/canonical/dqlite.git
-    source-tag: v1.18.1
+    source-tag: v1.18.5
     source-type: git
     source-depth: 1
     plugin: nil
@@ -255,14 +258,14 @@ parts:
     plugin: nil
     source: .
     build-snaps:
-      - go/latest/stable
+      - go/1.25/stable
     build-packages:
       - musl-tools
     override-build: |
       set -ex
 
       # TODO: use make plugin.
-      export GOTOOLCHAIN=go1.25.0+auto
+      export GOTOOLCHAIN=go1.26.0+auto
       export CC=musl-gcc
       export PKG_CONFIG_PATH="${CRAFT_STAGE}/snap-linux-musl/lib/pkgconfig"
       export PACKAGES="libuv dqlite liblz4 sqlite3"
@@ -271,10 +274,9 @@ parts:
       export CGO_CFLAGS="$(pkg-config --cflags ${PACKAGES})"
       export CGO_LDFLAGS="$(pkg-config --libs ${PACKAGES}) -Wl,-z,stack-size=1048576"
       export CGO_LDFLAGS_ALLOW="(-Wl,-wrap,pthread_create)|(-Wl,-z,now)"
-      export GO_LDFLAGS='-s -w -extldflags "-static" -linkmode "external" -X github.com/juju/juju/version.GitCommit= -X github.com/juju/juju/version.GitTreeState= -X github.com/juju/juju/version.Grade= -X github.com/juju/juju/version.build='
+      export GO_LDFLAGS='-s -w -extldflags "-static" -linkmode "external" -X github.com/juju/juju/core/version.GitCommit= -X github.com/juju/juju/core/version.GitTreeState= -X github.com/juju/juju/core/version.Grade= -X github.com/juju/juju/core/version.build= -X github.com/juju/juju/internal/cloudconfig/podcfg.JujudOCINamespace='
       go mod download
-      go install -tags libsqlite3,dqlite -ldflags "${GO_LDFLAGS}" github.com/juju/juju/cmd/jujud-controller
-      mv ${SNAPCRAFT_PART_INSTALL}/bin/jujud-controller ${SNAPCRAFT_PART_INSTALL}/bin/jujud
+      go install -tags libsqlite3,dqlite -ldflags "${GO_LDFLAGS}" github.com/juju/juju/cmd/jujud
 
   juju:
     after:
@@ -282,20 +284,21 @@ parts:
     plugin: nil
     source: .
     build-snaps:
-      - go/latest/stable
+      - go/1.25/stable
     override-build: |
       set -ex
 
       # TODO: use make plugin.
-      export GOTOOLCHAIN=go1.25.0+auto
+      export GOTOOLCHAIN=go1.26.0+auto
       export GOBIN="${CRAFT_PART_INSTALL}/bin"
       export CGO_ENABLED=0
-      export GO_LDFLAGS='-s -w -extldflags "-static" -X github.com/juju/juju/version.GitCommit= -X github.com/juju/juju/version.GitTreeState= -X github.com/juju/juju/version.Grade= -X github.com/juju/juju/version.build='
+      export GO_LDFLAGS='-s -w -extldflags "-static" -X github.com/juju/juju/core/version.GitCommit= -X github.com/juju/juju/core/version.GitTreeState= -X github.com/juju/juju/core/version.Grade= -X github.com/juju/juju/core/version.build= -X github.com/juju/juju/internal/cloudconfig/podcfg.JujudOCINamespace='
       go mod download
       go install -ldflags "${GO_LDFLAGS}" github.com/juju/juju/cmd/juju github.com/juju/juju/cmd/jujuc github.com/juju/juju/cmd/plugins/juju-metadata
 
-      mkdir -p ${CRAFT_PART_INSTALL}/bash_completions
-      cp -a etc/bash_completion.d/juju* ${CRAFT_PART_INSTALL}/bash_completions/.
+      for completion in etc/bash_completion.d/*; do
+        install -D ${completion} ../install/usr/share/bash-completion/completions/$(basename ${completion})
+      done
       jujud=${CRAFT_STAGE}/bin/jujud
       version=$($jujud version)
       hash=$(sha256sum $jujud | cut -d " " -f 1)
@@ -366,6 +369,16 @@ plugs:
     interface: personal-files
     read:
       - $HOME/.maasrc
+
+  dot-minikube-cacrt:
+    interface: personal-files
+    read:
+      - $HOME/.minikube/ca.crt
+
+  dot-minikube-profiles:
+    interface: personal-files
+    read:
+      - $HOME/.minikube/profiles
 
   dot-oracle:
     interface: personal-files

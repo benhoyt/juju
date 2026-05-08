@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju upgrade reference: upgrade CLI clients, controllers, models, applications, and machines with version compatibility guidance."
+---
+
 (upgrading-things)=
 # Upgrading things
 ```{ibnote}

@@ -16,7 +16,7 @@ import (
 	"github.com/juju/juju/api/http"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/core/resource"
-	charmresource "github.com/juju/juju/internal/charm/resource"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -39,7 +39,7 @@ type Client struct {
 func NewClient(apiCaller base.APICallCloser, options ...Option) (*Client, error) {
 	frontend, backend := base.NewClientFacade(apiCaller, "Resources", options...)
 
-	httpClient, err := apiCaller.HTTPClient()
+	httpClient, err := apiCaller.HTTPClient(base.HTTPClientScopeModel)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}

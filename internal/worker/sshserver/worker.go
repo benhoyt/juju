@@ -8,8 +8,8 @@ import (
 	"sync"
 
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 
 	"github.com/juju/juju/controller"
 	"github.com/juju/juju/core/logger"
@@ -119,12 +119,12 @@ func (ssw *serverWrapperWorker) Wait() error {
 
 // Report calls the report methods in the workerReporters map to collect and return
 // report maps to the inspection worker.
-func (ssw *serverWrapperWorker) Report() map[string]any {
+func (ssw *serverWrapperWorker) Report(ctx context.Context) map[string]any {
 	ssw.m.RLock()
 	defer ssw.m.RUnlock()
 	reports := map[string]any{}
 	for name, reporter := range ssw.workerReporters {
-		reports[name] = reporter.Report()
+		reports[name] = reporter.Report(ctx)
 	}
 	return map[string]any{
 		"workers": reports,
@@ -175,13 +175,18 @@ func (ssw *serverWrapperWorker) loop() error {
 		select {
 		case <-ssw.catacomb.Dying():
 			return ssw.catacomb.ErrDying()
-		case <-changesChan:
+		case _, ok := <-changesChan:
+			if !ok {
+				return errors.New("controller config watcher closed")
+			}
+
 			config, err := ssw.config.ControllerConfigService.ControllerConfig(ctx)
 			if err != nil {
 				return errors.Trace(err)
 			}
-			if maxConns == config.SSHMaxConcurrentConnections() {
-				ssw.config.Logger.Debugf(context.Background(), "controller configuration changed, but nothing changed for the ssh server.")
+			if maxConns == config.SSHMaxConcurrentConnections() &&
+				port == config.SSHServerPort() {
+				ssw.config.Logger.Debugf(ctx, "controller configuration changed, but nothing changed for the ssh server")
 				continue
 			}
 			return errors.New("changes detected, stopping SSH server worker")

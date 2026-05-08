@@ -346,6 +346,24 @@ func (s *Service) GetAllAPIAddressesForClients(ctx context.Context) ([]string, e
 	return orderedAddrs, nil
 }
 
+// GetAPIAddressesByControllerIDForClients returns a map of controller IDs to
+// their API addresses that are available for clients. The map is keyed by
+// controller ID, and the values are slices of strings representing the API
+// addresses for each controller node.
+func (s *Service) GetAPIAddressesByControllerIDForClients(ctx context.Context) (map[string][]string, error) {
+	addresses, err := s.st.GetAPIAddressesForClients(ctx)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	result := make(map[string][]string, len(addresses))
+	for controllerID, addrs := range addresses {
+		result[controllerID] = addrs.PrioritizedForScope(controllernode.ScopeMatchCloudLocal)
+	}
+
+	return result, nil
+}
+
 // GetAllCloudLocalAPIAddresses returns a string slice of api
 // addresses available for clients. The list only contains cloud
 // local addresses. The returned strings are IP address only without

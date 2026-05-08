@@ -25,6 +25,11 @@ type Nameservers struct {
 	Addresses []string `yaml:"addresses,omitempty,flow"`
 }
 
+// Overrides contains extra config for an interface.
+type Overrides struct {
+	RouteMetric int `yaml:"route-metric"`
+}
+
 // Interface includes all the fields that are common between all interfaces (ethernet, wifi, bridge, bond)
 type Interface struct {
 	AcceptRA  *bool    `yaml:"accept-ra,omitempty"`
@@ -33,6 +38,7 @@ type Interface struct {
 	Critical bool `yaml:"critical,omitempty"`
 	// DHCP4 defaults to true, so we must use a pointer to know if it was specified as false
 	DHCP4          *bool         `yaml:"dhcp4,omitempty"`
+	DHCP4Overrides *Overrides    `yaml:"dhcp4-overrides,omitempty"`
 	DHCP6          *bool         `yaml:"dhcp6,omitempty"`
 	DHCPIdentifier string        `yaml:"dhcp-identifier,omitempty"` // "duid" or  "mac"
 	Gateway4       string        `yaml:"gateway4,omitempty"`
@@ -62,7 +68,7 @@ type Interface struct {
 	// present.
 	//
 	// See: https://github.com/canonical/netplan/blob/main/examples/openvswitch.yaml
-	OVSParameters *map[string]interface{} `yaml:"openvswitch,omitempty"`
+	OVSParameters *map[string]any `yaml:"openvswitch,omitempty"`
 }
 
 // Ethernet defines fields for just Ethernet devices
@@ -163,7 +169,7 @@ type IntString struct {
 	String *string
 }
 
-func (i *IntString) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (i *IntString) UnmarshalYAML(unmarshal func(any) error) error {
 	var asInt int
 	var err error
 	if err = unmarshal(&asInt); err == nil {
@@ -178,7 +184,7 @@ func (i *IntString) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	return errors.Annotatef(err, "not valid as an int or a string")
 }
 
-func (i IntString) MarshalYAML() (interface{}, error) {
+func (i IntString) MarshalYAML() (any, error) {
 	if i.Int != nil {
 		return *i.Int, nil
 	} else if i.String != nil {
@@ -341,7 +347,7 @@ func ReadDirectory(dirPath string) (np Netplan, err error) {
 	// Since the file list is pre-sorted, the first unmarshalled file
 	// serves as the base configuration; subsequent configuration maps are
 	// merged into it.
-	var mergedConfig map[interface{}]interface{}
+	var mergedConfig map[any]any
 	for _, dirEntry := range sortedDirEntries {
 		if !dirEntry.IsDir() && strings.HasSuffix(dirEntry.Name(), ".yaml") {
 			np.sourceFiles = append(np.sourceFiles, dirEntry.Name())
@@ -352,7 +358,7 @@ func ReadDirectory(dirPath string) (np Netplan, err error) {
 				return Netplan{}, errors.Annotatef(err, "reading netplan configuration from %q", pathToConfig)
 			}
 
-			var unmarshaledContents map[interface{}]interface{}
+			var unmarshaledContents map[any]any
 			if err := goyaml.Unmarshal(configContents, &unmarshaledContents); err != nil {
 				return Netplan{}, errors.Annotatef(err, "unmarshaling netplan configuration from %q", pathToConfig)
 
@@ -371,7 +377,7 @@ func ReadDirectory(dirPath string) (np Netplan, err error) {
 				// paranoid and double check that a malicious
 				// file did not mutate the type of the returned
 				// value.
-				mergedConfigMap, ok := mergedResult.(map[interface{}]interface{})
+				mergedConfigMap, ok := mergedResult.(map[any]any)
 				if !ok {
 					return Netplan{}, errors.Errorf("merging netplan configuration from %s caused the original configuration to become corrupted", pathToConfig)
 				}
@@ -413,15 +419,15 @@ func ReadDirectory(dirPath string) (np Netplan, err error) {
 // The function returns back the merged destination object which *may* be
 // different than the one that was passed into the function (e.g. if dst was
 // a map or slice that got resized).
-func mergeNetplanConfigs(dst, src interface{}) (interface{}, error) {
+func mergeNetplanConfigs(dst, src any) (any, error) {
 	if dst == nil {
 		return src, nil
 	}
 
 	var err error
 	switch dstVal := dst.(type) {
-	case map[interface{}]interface{}:
-		srcVal, ok := src.(map[interface{}]interface{})
+	case map[any]any:
+		srcVal, ok := src.(map[any]any)
 		if !ok {
 			return nil, errors.Errorf("configuration values have different types (destination: %T, src: %T)", dst, src)
 		}
@@ -459,8 +465,8 @@ func mergeNetplanConfigs(dst, src interface{}) (interface{}, error) {
 		}
 
 		return dstVal, nil
-	case []interface{}:
-		srcVal, ok := src.([]interface{})
+	case []any:
+		srcVal, ok := src.([]any)
 		if !ok {
 			return nil, errors.Errorf("configuration values have different types (destination: %T, src: %T)", dst, src)
 		}
@@ -474,7 +480,7 @@ func mergeNetplanConfigs(dst, src interface{}) (interface{}, error) {
 			// don't care about the values that may get potentially
 			// appended, hence the pre-calculation of the dstVal
 			// length.
-			for i := 0; i < dstLen; i++ {
+			for i := range dstLen {
 				if reflect.DeepEqual(dstVal[i], srcSliceVal) {
 					continue nextSrcSliceVal // value already present
 				}

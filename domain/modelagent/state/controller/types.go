@@ -7,3 +7,8 @@ package controller
 type agentVersion struct {
 	Version string `db:"version"`
 }
+
+type agentBinaryStore struct {
+	Version          string `db:"version"`
+	ArchitectureName string `db:"architecture_name"`
+}

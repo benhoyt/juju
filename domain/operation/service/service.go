@@ -144,10 +144,6 @@ type State interface {
 
 	// InsertMigratingOperations inserts a new operation and its tasks.
 	InsertMigratingOperations(ctx context.Context, args internal.ImportOperationsArgs) error
-
-	// DeleteImportedOperations deletes all imported operations (used for rollback).
-	// Return the store paths of the deleted operations.
-	DeleteImportedOperations(ctx context.Context) ([]string, error)
 }
 
 // LeadershipService describes the methods for managing (application)

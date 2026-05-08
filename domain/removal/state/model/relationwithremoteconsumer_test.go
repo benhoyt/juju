@@ -1,0 +1,210 @@
+// Copyright 2025 Canonical Ltd.
+// Licensed under the AGPLv3, see LICENCE file for details.
+
+package model
+
+import (
+	"context"
+	"database/sql"
+	"testing"
+	"time"
+
+	"github.com/juju/tc"
+
+	"github.com/juju/juju/domain/life"
+	removalerrors "github.com/juju/juju/domain/removal/errors"
+	loggertesting "github.com/juju/juju/internal/logger/testing"
+)
+
+type relationWithRemoteConsumer struct {
+	baseSuite
+}
+
+func TestRelationWithRemoteConsumerSuite(t *testing.T) {
+	tc.Run(t, &relationWithRemoteConsumer{})
+}
+
+func (s *relationWithRemoteConsumer) TestRelationWithRemoteConsumerExists(c *tc.C) {
+	relUUID, _, _ := s.createRelationWithRemoteConsumer(c)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	exists, err := st.RelationWithRemoteConsumerExists(c.Context(), relUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.Equals, true)
+}
+
+func (s *relationWithRemoteConsumer) TestRelationWithRemoteConsumerExistsFalseForRegularRelation(c *tc.C) {
+	relUUID := s.createRelation(c)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	exists, err := st.RelationWithRemoteConsumerExists(c.Context(), relUUID.String())
+
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.Equals, false)
+}
+
+func (s *relationWithRemoteConsumer) TestRelationWithRemoteConsumerExistsFalseForNonExistingRelation(c *tc.C) {
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	exists, err := st.RelationWithRemoteConsumerExists(c.Context(), "not-today-henry")
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(exists, tc.Equals, false)
+}
+
+func (s *relationWithRemoteConsumer) TestEnsureRelationWithRemoteConsumerNotAliveCascadeNormalSuccess(c *tc.C) {
+	relUUID, synthAppUUID, _ := s.createRelationWithRemoteConsumer(c)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	artifacts, err := st.EnsureRelationWithRemoteConsumerNotAliveCascade(c.Context(), relUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+
+	var lifeID int
+	row := s.DB().QueryRowContext(c.Context(), "SELECT life_id FROM relation where uuid = ?", relUUID.String())
+	err = row.Scan(&lifeID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(lifeID, tc.Equals, int(life.Dying))
+
+	// The synth app should still be alive
+	row = s.DB().QueryRowContext(c.Context(), "SELECT life_id FROM application where uuid = ?", synthAppUUID.String())
+	err = row.Scan(&lifeID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(lifeID, tc.Equals, int(life.Alive))
+
+	// But the synth units should all be dead
+	rows, err := s.DB().QueryContext(c.Context(), "SELECT life_id FROM unit where application_uuid = ?", synthAppUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var lifeID int
+		err := rows.Scan(&lifeID)
+		c.Assert(err, tc.ErrorIsNil)
+		c.Check(lifeID, tc.Equals, int(life.Dead))
+	}
+
+	// Check the returned synth rel units
+	synthRelUnitUUIDs := artifacts.SyntheticRelationUnitUUIDs
+	c.Check(len(synthRelUnitUUIDs), tc.Equals, 3)
+
+	var gotAppUUID string
+	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, `
+SELECT DISTINCT u.application_uuid
+FROM            relation_unit AS ru
+JOIN            unit AS u ON ru.unit_uuid = u.uuid
+WHERE           ru.uuid IN (?, ?, ?)
+`, synthRelUnitUUIDs[0], synthRelUnitUUIDs[1], synthRelUnitUUIDs[2]).Scan(&gotAppUUID)
+		return err
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(gotAppUUID, tc.Equals, synthAppUUID.String())
+}
+
+func (s *relationWithRemoteConsumer) TestEnsureRelationWithRemoteConsumerNotAliveCascadeNotExistsSuccess(c *tc.C) {
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	// We don't care if it's already gone.
+	_, err := st.EnsureRelationWithRemoteConsumerNotAliveCascade(c.Context(), "some-relation-uuid")
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *relationWithRemoteConsumer) TestRelationWithRemoteConsumerScheduleRemovalNormalSuccess(c *tc.C) {
+	relUUID, _, _ := s.createRelationWithRemoteConsumer(c)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	when := time.Now().UTC()
+	err := st.RelationWithRemoteConsumerScheduleRemoval(
+		c.Context(), "removal-uuid", relUUID.String(), false, when,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	row := s.DB().QueryRowContext(c.Context(), `
+SELECT t.name, r.entity_uuid, r.force, r.scheduled_for
+FROM   removal r JOIN removal_type t ON r.removal_type_id = t.id
+where  r.uuid = ?`, "removal-uuid",
+	)
+
+	var (
+		removalType  string
+		rUUID        string
+		force        bool
+		scheduledFor time.Time
+	)
+	err = row.Scan(&removalType, &rUUID, &force, &scheduledFor)
+	c.Assert(err, tc.ErrorIsNil)
+
+	c.Check(removalType, tc.Equals, "relation with remote consumer")
+	c.Check(rUUID, tc.Equals, relUUID.String())
+	c.Check(force, tc.Equals, false)
+	c.Check(scheduledFor, tc.Equals, when)
+}
+
+func (s *relationWithRemoteConsumer) TestRelationWithRemoteConsumerScheduleRemovalNotExistsSuccess(c *tc.C) {
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	when := time.Now().UTC()
+	err := st.RelationWithRemoteConsumerScheduleRemoval(
+		c.Context(), "removal-uuid", "some-relation-uuid", true, when,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	row := s.DB().QueryRowContext(c.Context(), `
+SELECT t.name, r.entity_uuid, r.force, r.scheduled_for
+FROM   removal r JOIN removal_type t ON r.removal_type_id = t.id
+where  r.uuid = ?`, "removal-uuid",
+	)
+
+	var (
+		removalType  string
+		rUUID        string
+		force        bool
+		scheduledFor time.Time
+	)
+	err = row.Scan(&removalType, &rUUID, &force, &scheduledFor)
+	c.Assert(err, tc.ErrorIsNil)
+
+	c.Check(removalType, tc.Equals, "relation with remote consumer")
+	c.Check(rUUID, tc.Equals, "some-relation-uuid")
+	c.Check(force, tc.Equals, true)
+	c.Check(scheduledFor, tc.Equals, when)
+}
+
+func (s *relationWithRemoteConsumer) TestDeleteRelationWithRemoteConsumerUnitsUnitsStillInScope(c *tc.C) {
+	relUUID, _, _ := s.createRelationWithRemoteConsumer(c)
+
+	s.advanceRelationLife(c, relUUID, life.Dying)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	err := st.DeleteRelationWithRemoteConsumer(c.Context(), relUUID.String())
+	c.Assert(err, tc.ErrorIs, removalerrors.UnitsStillInScope)
+	c.Check(err, tc.ErrorIs, removalerrors.RemovalJobIncomplete)
+}
+
+func (s *relationWithRemoteConsumer) TestDeleteRelationWithRemoteConsumerUnits(c *tc.C) {
+	// Arrange
+	relUUID, synthAppUUID, _ := s.createRelationWithRemoteConsumer(c)
+
+	s.advanceRelationLife(c, relUUID, life.Dying)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	err := st.DeleteRelationUnits(c.Context(), relUUID.String())
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Act
+	err = st.DeleteRelationWithRemoteConsumer(c.Context(), relUUID.String())
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+
+	// The synth app should be deleted.
+	row := s.DB().QueryRow("SELECT COUNT(*) FROM application WHERE uuid = ?", synthAppUUID.String())
+	var count int
+	err = row.Scan(&count)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(count, tc.Equals, 0)
+}

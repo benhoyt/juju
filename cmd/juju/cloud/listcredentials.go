@@ -17,11 +17,11 @@ import (
 	"github.com/juju/juju/api/jujuclient"
 	jujucloud "github.com/juju/juju/cloud"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/common"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/output"
 	"github.com/juju/juju/environs"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -373,7 +373,7 @@ func removeSecrets(cloudName string, cloudCred *jujucloud.CloudCredential, cloud
 }
 
 // formatCredentialsTabular writes a tabular summary of cloud information.
-func formatCredentialsTabular(writer io.Writer, value interface{}) error {
+func formatCredentialsTabular(writer io.Writer, value any) error {
 	credentials, ok := value.(credentialsMap)
 	if !ok {
 		return errors.Errorf("expected value of type %T, got %T", credentials, value)

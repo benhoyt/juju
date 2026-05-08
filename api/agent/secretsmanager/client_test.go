@@ -28,19 +28,15 @@ type SecretsSuite struct {
 }
 
 func (s *SecretsSuite) TestNewClient(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		return nil
 	})
 	client := secretsmanager.NewClient(apiCaller)
 	c.Assert(client, tc.NotNil)
 }
 
-func ptr[T any](v T) *T {
-	return &v
-}
-
 func (s *SecretsSuite) TestGetSecretBackendConfig(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -58,7 +54,7 @@ func (s *SecretsSuite) TestGetSecretBackendConfig(c *tc.C) {
 					ModelName:      "fred",
 					Config: params.SecretBackendConfig{
 						BackendType: "controller",
-						Params:      map[string]interface{}{"foo": "bar"},
+						Params:      map[string]any{"foo": "bar"},
 					},
 				},
 			},
@@ -66,7 +62,7 @@ func (s *SecretsSuite) TestGetSecretBackendConfig(c *tc.C) {
 		return nil
 	})
 	client := secretsmanager.NewClient(apiCaller)
-	result, err := client.GetSecretBackendConfig(c.Context(), ptr("active-id"))
+	result, err := client.GetSecretBackendConfig(c.Context(), new("active-id"))
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(result, tc.DeepEquals, &provider.ModelBackendConfigInfo{
 		ActiveID: "active-id",
@@ -77,7 +73,7 @@ func (s *SecretsSuite) TestGetSecretBackendConfig(c *tc.C) {
 				ModelName:      "fred",
 				BackendConfig: provider.BackendConfig{
 					BackendType: "controller",
-					Config:      map[string]interface{}{"foo": "bar"},
+					Config:      map[string]any{"foo": "bar"},
 				},
 			},
 		},
@@ -85,7 +81,7 @@ func (s *SecretsSuite) TestGetSecretBackendConfig(c *tc.C) {
 }
 
 func (s *SecretsSuite) TestGetBackendConfigForDraining(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -101,7 +97,7 @@ func (s *SecretsSuite) TestGetBackendConfigForDraining(c *tc.C) {
 					ModelName:      "fred",
 					Config: params.SecretBackendConfig{
 						BackendType: "controller",
-						Params:      map[string]interface{}{"foo": "bar"},
+						Params:      map[string]any{"foo": "bar"},
 					},
 				},
 			},
@@ -109,7 +105,7 @@ func (s *SecretsSuite) TestGetBackendConfigForDraining(c *tc.C) {
 		return nil
 	})
 	client := secretsmanager.NewClient(apiCaller)
-	result, activeID, err := client.GetBackendConfigForDrain(c.Context(), ptr("active-id"))
+	result, activeID, err := client.GetBackendConfigForDrain(c.Context(), new("active-id"))
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(result, tc.DeepEquals, &provider.ModelBackendConfig{
 		ControllerUUID: coretesting.ControllerTag.Id(),
@@ -117,7 +113,7 @@ func (s *SecretsSuite) TestGetBackendConfigForDraining(c *tc.C) {
 		ModelName:      "fred",
 		BackendConfig: provider.BackendConfig{
 			BackendType: "controller",
-			Config:      map[string]interface{}{"foo": "bar"},
+			Config:      map[string]any{"foo": "bar"},
 		},
 	})
 	c.Assert(activeID, tc.Equals, "active-id")
@@ -126,7 +122,7 @@ func (s *SecretsSuite) TestGetBackendConfigForDraining(c *tc.C) {
 func (s *SecretsSuite) TestCreateSecretURIs(c *tc.C) {
 	uri := coresecrets.NewURI()
 	uri2 := coresecrets.NewURI()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -152,7 +148,7 @@ func (s *SecretsSuite) TestCreateSecretURIs(c *tc.C) {
 
 func (s *SecretsSuite) TestGetContentInfo(c *tc.C) {
 	uri := coresecrets.NewURI()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -184,7 +180,7 @@ func (s *SecretsSuite) TestGetContentInfo(c *tc.C) {
 
 func (s *SecretsSuite) TestGetContentInfoExternal(c *tc.C) {
 	uri := coresecrets.NewURI()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -211,7 +207,7 @@ func (s *SecretsSuite) TestGetContentInfoExternal(c *tc.C) {
 					Draining:       true,
 					Config: params.SecretBackendConfig{
 						BackendType: "some-backend",
-						Params:      map[string]interface{}{"foo": "bar"},
+						Params:      map[string]any{"foo": "bar"},
 					},
 				},
 			}},
@@ -231,14 +227,14 @@ func (s *SecretsSuite) TestGetContentInfoExternal(c *tc.C) {
 		ModelName:      "model",
 		BackendConfig: provider.BackendConfig{
 			BackendType: "some-backend",
-			Config:      map[string]interface{}{"foo": "bar"},
+			Config:      map[string]any{"foo": "bar"},
 		},
 	})
 	c.Assert(draining, tc.IsTrue)
 }
 
 func (s *SecretsSuite) TestGetContentInfoLabelArgOnly(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -268,7 +264,7 @@ func (s *SecretsSuite) TestGetContentInfoLabelArgOnly(c *tc.C) {
 }
 
 func (s *SecretsSuite) TestGetContentInfoError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		*(result.(*params.SecretContentResults)) = params.SecretContentResults{
 			Results: []params.SecretContentResult{{
 				Error: &params.Error{Message: "boom"},
@@ -286,7 +282,7 @@ func (s *SecretsSuite) TestGetContentInfoError(c *tc.C) {
 
 func (s *SecretsSuite) TestGetRevisionContentInfo(c *tc.C) {
 	uri := coresecrets.NewURI()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -315,7 +311,7 @@ func (s *SecretsSuite) TestGetRevisionContentInfo(c *tc.C) {
 
 func (s *SecretsSuite) TestGetRevisionContentInfoExternal(c *tc.C) {
 	uri := coresecrets.NewURI()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -339,7 +335,7 @@ func (s *SecretsSuite) TestGetRevisionContentInfoExternal(c *tc.C) {
 					Draining:       true,
 					Config: params.SecretBackendConfig{
 						BackendType: "some-backend",
-						Params:      map[string]interface{}{"foo": "bar"},
+						Params:      map[string]any{"foo": "bar"},
 					},
 				},
 			}},
@@ -359,14 +355,14 @@ func (s *SecretsSuite) TestGetRevisionContentInfoExternal(c *tc.C) {
 		ModelName:      "model",
 		BackendConfig: provider.BackendConfig{
 			BackendType: "some-backend",
-			Config:      map[string]interface{}{"foo": "bar"},
+			Config:      map[string]any{"foo": "bar"},
 		},
 	})
 	c.Assert(draining, tc.IsTrue)
 }
 
 func (s *SecretsSuite) TestGetRevisionContentInfoError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		*(result.(*params.SecretContentResults)) = params.SecretContentResults{
 			Results: []params.SecretContentResult{{
 				Error: &params.Error{Message: "boom"},
@@ -385,7 +381,7 @@ func (s *SecretsSuite) TestGetRevisionContentInfoError(c *tc.C) {
 func (s *SecretsSuite) TestSecretMetadata(c *tc.C) {
 	uri := coresecrets.NewURI()
 	now := time.Now()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -436,7 +432,7 @@ func (s *SecretsSuite) TestSecretMetadata(c *tc.C) {
 }
 
 func (s *SecretsSuite) TestWatchConsumedSecretsChanges(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -458,7 +454,7 @@ func (s *SecretsSuite) TestWatchConsumedSecretsChanges(c *tc.C) {
 }
 
 func (s *SecretsSuite) GetConsumerSecretsRevisionInfo(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -492,7 +488,7 @@ func (s *SecretsSuite) GetConsumerSecretsRevisionInfo(c *tc.C) {
 }
 
 func (s *SecretsSuite) TestWatchObsolete(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -512,7 +508,7 @@ func (s *SecretsSuite) TestWatchObsolete(c *tc.C) {
 }
 
 func (s *SecretsSuite) TestWatchDeleted(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -532,7 +528,7 @@ func (s *SecretsSuite) TestWatchDeleted(c *tc.C) {
 }
 
 func (s *SecretsSuite) TestWatchSecretsRotationChanges(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -552,7 +548,7 @@ func (s *SecretsSuite) TestWatchSecretsRotationChanges(c *tc.C) {
 }
 
 func (s *SecretsSuite) TestSecretRotated(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -577,7 +573,7 @@ func (s *SecretsSuite) TestSecretRotated(c *tc.C) {
 }
 
 func (s *SecretsSuite) TestWatchSecretRevisionsExpiryChanges(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -598,7 +594,7 @@ func (s *SecretsSuite) TestWatchSecretRevisionsExpiryChanges(c *tc.C) {
 
 func (s *SecretsSuite) TestGrant(c *tc.C) {
 	uri := coresecrets.NewURI()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -621,8 +617,8 @@ func (s *SecretsSuite) TestGrant(c *tc.C) {
 	})
 	client := secretsmanager.NewClient(apiCaller)
 	err := client.Grant(c.Context(), uri, &secretsmanager.SecretRevokeGrantArgs{
-		UnitName:    ptr("wordpress/0"),
-		RelationKey: ptr("wordpress:db mysql:server"),
+		UnitName:    new("wordpress/0"),
+		RelationKey: new("wordpress:db mysql:server"),
 		Role:        coresecrets.RoleView,
 	})
 	c.Assert(err, tc.ErrorMatches, "FAIL")
@@ -630,7 +626,7 @@ func (s *SecretsSuite) TestGrant(c *tc.C) {
 
 func (s *SecretsSuite) TestRevoke(c *tc.C) {
 	uri := coresecrets.NewURI()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -653,8 +649,8 @@ func (s *SecretsSuite) TestRevoke(c *tc.C) {
 	})
 	client := secretsmanager.NewClient(apiCaller)
 	err := client.Revoke(c.Context(), uri, &secretsmanager.SecretRevokeGrantArgs{
-		ApplicationName: ptr("wordpress"),
-		RelationKey:     ptr("wordpress:db mysql:server"),
+		ApplicationName: new("wordpress"),
+		RelationKey:     new("wordpress:db mysql:server"),
 		Role:            coresecrets.RoleView,
 	})
 	c.Assert(err, tc.ErrorMatches, "FAIL")
@@ -663,7 +659,7 @@ func (s *SecretsSuite) TestRevoke(c *tc.C) {
 func (s *SecretsSuite) TestUnitOwnedSecretsAndRevisions(c *tc.C) {
 	uri := coresecrets.NewURI()
 	unit := names.NewUnitTag("foo/0")
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -692,7 +688,7 @@ func (s *SecretsSuite) TestUnitOwnedSecretsAndRevisions(c *tc.C) {
 func (s *SecretsSuite) TestOwnedSecretRevisions(c *tc.C) {
 	uri := coresecrets.NewURI()
 	unit := names.NewUnitTag("foo/0")
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "SecretsManager")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")

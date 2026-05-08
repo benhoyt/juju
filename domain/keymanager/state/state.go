@@ -47,7 +47,7 @@ func (s *State) checkModelExists(
 
 	modelExistsStmt, err := s.Prepare(`
 SELECT (uuid) AS (&modelUUIDValue.model_uuid)
-FROM v_model
+FROM model
 WHERE uuid = $modelUUIDValue.model_uuid
 `, modelUUIDVal)
 	if err != nil {
@@ -160,7 +160,7 @@ AND fingerprint = $userPublicKeyInsert.fingerprint
 	// exists and nothing more needs to be done.
 	if err == nil {
 		return row.Id, nil
-	} else if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
+	} else if !errors.Is(err, sqlair.ErrNoRows) {
 		return 0, errors.Errorf(
 			"fetching existing user %q key id when ensuring public key: %w",
 			key.UserId, err,
@@ -718,6 +718,63 @@ AND id IN (SELECT id
 		return errors.Errorf(
 			"deleting public keys for user %q: %w",
 			userUUID, err,
+		)
+	}
+
+	return nil
+}
+
+// DeletePublicKeysForModel removes all of the public keys associated with the
+// model.
+// The following errors can be expected:
+// - [github.com/juju/juju/domain/model/errors.NotFound] - When the model does
+// not exist.
+func (st *State) DeletePublicKeysForModel(
+	ctx context.Context,
+	modelUUID model.UUID,
+) error {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return err
+	}
+
+	modelUUIDVal := modelUUIDValue{UUID: modelUUID.String()}
+
+	deleteFromModelStmt, err := st.Prepare(`
+DELETE FROM model_authorized_keys
+WHERE model_uuid = $modelUUIDValue.model_uuid
+`, modelUUIDVal)
+	if err != nil {
+		return errors.Errorf(
+			"preparing delete keys statement when deleting public keys for model %q: %w",
+			modelUUID, err,
+		)
+	}
+
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err := st.checkModelExists(ctx, modelUUID, tx)
+		if err != nil {
+			return errors.Errorf(
+				"deleting public keys for model %q: %w",
+				modelUUID, err,
+			)
+		}
+
+		err = tx.Query(ctx, deleteFromModelStmt, modelUUIDVal).Run()
+		if err != nil {
+			return errors.Errorf(
+				"deleting public keys for model %q: %w",
+				modelUUID, err,
+			)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return errors.Errorf(
+			"deleting public keys for model %q: %w",
+			modelUUID, err,
 		)
 	}
 

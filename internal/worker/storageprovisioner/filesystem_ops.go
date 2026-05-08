@@ -44,6 +44,9 @@ func createFilesystems(ctx context.Context, deps *dependencies, ops map[names.Fi
 		for i, err := range validationErrors {
 			if err == nil {
 				continue
+			} else if errors.Is(err, storage.FilesystemCreateParamsIncomplete) {
+				addPendingFilesystem(ctx, deps, filesystemParams[i])
+				continue
 			}
 			statuses = append(statuses, params.EntityStatusArgs{
 				Tag:    filesystemParams[i].Tag.String(),
@@ -64,14 +67,15 @@ func createFilesystems(ctx context.Context, deps *dependencies, ops map[names.Fi
 			return errors.Annotatef(err, "creating filesystems from source %q", sourceName)
 		}
 		for i, result := range results {
+			fsTag := filesystemParams[i].Tag
 			statuses = append(statuses, params.EntityStatusArgs{
-				Tag:    filesystemParams[i].Tag.String(),
+				Tag:    fsTag.String(),
 				Status: status.Attaching.String(),
 			})
 			entityStatus := &statuses[len(statuses)-1]
 			if result.Error != nil {
 				// Reschedule the filesystem creation.
-				reschedule = append(reschedule, ops[filesystemParams[i].Tag])
+				reschedule = append(reschedule, ops[fsTag])
 
 				// Note: we keep the status as "pending" to indicate
 				// that we will retry. When we distinguish between
@@ -81,12 +85,22 @@ func createFilesystems(ctx context.Context, deps *dependencies, ops map[names.Fi
 				entityStatus.Info = result.Error.Error()
 				deps.config.Logger.Debugf(ctx,
 					"failed to create %s: %v",
-					names.ReadableString(filesystemParams[i].Tag),
+					names.ReadableString(fsTag),
 					result.Error,
 				)
 				continue
 			}
-			filesystems = append(filesystems, *result.Filesystem)
+			if result.Filesystem == nil {
+				// If no filesystem information was returned, there is nothing
+				// to report back to the controller, but the filesystem is now
+				// provisioned.
+				updateFilesystem(ctx, deps, storage.Filesystem{
+					Tag:    filesystemParams[i].Tag,
+					Volume: filesystemParams[i].Volume,
+				})
+			} else {
+				filesystems = append(filesystems, *result.Filesystem)
+			}
 		}
 	}
 	scheduleOperations(deps, reschedule...)
@@ -150,6 +164,14 @@ func attachFilesystems(ctx context.Context, deps *dependencies, ops map[params.M
 		}
 		for i, result := range results {
 			p := filesystemAttachmentParams[i]
+			id := params.MachineStorageId{
+				MachineTag:    p.Machine.String(),
+				AttachmentTag: p.Filesystem.String(),
+			}
+			if errors.Is(result.Error, storage.FilesystemAttachParamsIncomplete) {
+				addPendingFilesystemAttachment(ctx, deps, id, p)
+				continue
+			}
 			statuses = append(statuses, params.EntityStatusArgs{
 				Tag:    p.Filesystem.String(),
 				Status: status.Attached.String(),
@@ -157,10 +179,6 @@ func attachFilesystems(ctx context.Context, deps *dependencies, ops map[params.M
 			entityStatus := &statuses[len(statuses)-1]
 			if result.Error != nil {
 				// Reschedule the filesystem attachment.
-				id := params.MachineStorageId{
-					MachineTag:    p.Machine.String(),
-					AttachmentTag: p.Filesystem.String(),
-				}
 				reschedule = append(reschedule, ops[id])
 
 				// Note: we keep the status as "attaching" to
@@ -316,7 +334,7 @@ func detachFilesystems(ctx context.Context, deps *dependencies, ops map[params.M
 	for sourceName, filesystemAttachmentParams := range paramsBySource {
 		deps.config.Logger.Debugf(ctx, "detaching filesystems: %+v", filesystemAttachmentParams)
 		filesystemSource, ok := filesystemSources[sourceName]
-		if !ok && deps.isApplicationKind() {
+		if !ok {
 			continue
 		}
 		errs, err := filesystemSource.DetachFilesystems(ctx, filesystemAttachmentParams)
@@ -550,7 +568,7 @@ type createFilesystemOp struct {
 	args storage.FilesystemParams
 }
 
-func (op *createFilesystemOp) key() interface{} {
+func (op *createFilesystemOp) key() any {
 	return op.args.Tag
 }
 
@@ -559,7 +577,7 @@ type removeFilesystemOp struct {
 	tag names.FilesystemTag
 }
 
-func (op *removeFilesystemOp) key() interface{} {
+func (op *removeFilesystemOp) key() any {
 	return op.tag
 }
 
@@ -568,7 +586,7 @@ type attachFilesystemOp struct {
 	args storage.FilesystemAttachmentParams
 }
 
-func (op *attachFilesystemOp) key() interface{} {
+func (op *attachFilesystemOp) key() any {
 	return params.MachineStorageId{
 		MachineTag:    op.args.Machine.String(),
 		AttachmentTag: op.args.Filesystem.String(),
@@ -580,7 +598,7 @@ type detachFilesystemOp struct {
 	args storage.FilesystemAttachmentParams
 }
 
-func (op *detachFilesystemOp) key() interface{} {
+func (op *detachFilesystemOp) key() any {
 	return params.MachineStorageId{
 		MachineTag:    op.args.Machine.String(),
 		AttachmentTag: op.args.Filesystem.String(),

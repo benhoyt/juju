@@ -8,9 +8,9 @@ import (
 	"fmt"
 
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/block"
 	"github.com/juju/juju/cmd/modelcmd"
-	"github.com/juju/juju/internal/cmd"
 )
 
 var usageAddSSHKeySummary = `
@@ -18,10 +18,8 @@ Adds a public SSH key to a model.`[1:]
 
 var usageAddSSHKeyDetails = `
 Juju maintains a per-model cache of public SSH keys which it copies to
-each unit (including units already deployed). By default this includes the
-key of the user who created the model (assuming it is stored in the
-default location ` + "`~/.ssh/`" + `). Additional keys may be added with this command,
-quoting the entire public key as an argument.
+each unit (including units already deployed). All keys must be added to a model
+explicitly with this command, quoting the entire public key as an argument.
 
 `[1:]
 

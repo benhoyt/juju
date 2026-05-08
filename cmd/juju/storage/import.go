@@ -14,9 +14,10 @@ import (
 	apistorage "github.com/juju/juju/api/client/storage"
 	"github.com/juju/juju/api/jujuclient"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/modelcmd"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/storage"
+	"github.com/juju/juju/core/storage"
+	internalstorage "github.com/juju/juju/internal/storage"
 )
 
 // NewImportFilesystemCommand returns a command used to import a filesystem.
@@ -168,7 +169,7 @@ func (c *importFilesystemCommand) Run(ctx *cmd.Context) (err error) {
 	)
 	storageTag, err := api.ImportStorage(
 		ctx,
-		storage.StorageKindFilesystem,
+		internalstorage.StorageKindFilesystem,
 		c.storagePool, c.storageProviderId, c.storageName, c.force,
 	)
 	if err != nil {
@@ -184,7 +185,7 @@ type StorageImporter interface {
 
 	ImportStorage(
 		ctx context.Context,
-		kind storage.StorageKind,
+		kind internalstorage.StorageKind,
 		storagePool, storageProviderId, storageName string,
 		force bool,
 	) (names.StorageTag, error)
@@ -196,7 +197,7 @@ type apiStorageImporter struct {
 
 func (a apiStorageImporter) ImportStorage(
 	ctx context.Context,
-	kind storage.StorageKind, storagePool, storageProviderId, storageName string, force bool,
+	kind internalstorage.StorageKind, storagePool, storageProviderId, storageName string, force bool,
 ) (names.StorageTag, error) {
 	return a.Import(ctx, kind, storagePool, storageProviderId, storageName, force)
 }

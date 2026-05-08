@@ -5,6 +5,9 @@ package uniter
 
 import (
 	"context"
+	"maps"
+	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"github.com/juju/collections/transform"
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
+	"github.com/juju/proxy"
 
 	"github.com/juju/juju/apiserver/common"
 	commonmodel "github.com/juju/juju/apiserver/common/model"
@@ -22,7 +26,7 @@ import (
 	apiservercharms "github.com/juju/juju/apiserver/internal/charms"
 	"github.com/juju/juju/caas"
 	"github.com/juju/juju/core/application"
-	"github.com/juju/juju/core/leadership"
+	coreerrors "github.com/juju/juju/core/errors"
 	corelease "github.com/juju/juju/core/lease"
 	"github.com/juju/juju/core/life"
 	corelogger "github.com/juju/juju/core/logger"
@@ -32,10 +36,13 @@ import (
 	"github.com/juju/juju/core/objectstore"
 	corerelation "github.com/juju/juju/core/relation"
 	"github.com/juju/juju/core/status"
+	corestorage "github.com/juju/juju/core/storage"
 	coreunit "github.com/juju/juju/core/unit"
 	"github.com/juju/juju/core/watcher"
 	domainapplication "github.com/juju/juju/domain/application"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
+	crossmodelrelationerrors "github.com/juju/juju/domain/crossmodelrelation/errors"
+	"github.com/juju/juju/domain/deployment/charm"
 	domainlife "github.com/juju/juju/domain/life"
 	machineerrors "github.com/juju/juju/domain/machine/errors"
 	domainnetork "github.com/juju/juju/domain/network"
@@ -45,12 +52,11 @@ import (
 	relationerrors "github.com/juju/juju/domain/relation/errors"
 	resolveerrors "github.com/juju/juju/domain/resolve/errors"
 	"github.com/juju/juju/domain/unitstate"
-	"github.com/juju/juju/internal/charm"
 	internalerrors "github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/rpc/params"
 )
 
-// UniterAPI implements the latest version (v21) of the Uniter API.
+// UniterAPI implements the latest version (v22) of the Uniter API.
 type UniterAPI struct {
 	*StatusAPI
 	*StorageAPI
@@ -58,7 +64,6 @@ type UniterAPI struct {
 	*common.APIAddresser
 	*commonmodel.ModelConfigWatcher
 	*common.RebootRequester
-	*common.UnitStateAPI
 
 	modelUUID model.UUID
 	modelType model.ModelType
@@ -66,8 +71,6 @@ type UniterAPI struct {
 	lxdProfileAPI           *LXDProfileAPI
 	clock                   clock.Clock
 	auth                    facade.Authorizer
-	leadershipChecker       leadership.Checker
-	leadershipRevoker       leadership.Revoker
 	accessUnit              common.GetAuthFunc
 	accessApplication       common.GetAuthFunc
 	accessUnitOrApplication common.GetAuthFunc
@@ -75,21 +78,24 @@ type UniterAPI struct {
 	containerBrokerFunc     caas.NewContainerBrokerFunc
 	watcherRegistry         facade.WatcherRegistry
 
-	applicationService      ApplicationService
-	resolveService          ResolveService
-	statusService           StatusService
-	controllerConfigService ControllerConfigService
-	machineService          MachineService
-	modelConfigService      ModelConfigService
-	modelInfoService        ModelInfoService
-	modelProviderService    ModelProviderService
-	networkService          NetworkService
-	portService             PortService
-	operationService        OperationService
-	relationService         RelationService
-	removalService          RemovalService
-	secretService           SecretService
-	unitStateService        UnitStateService
+	applicationService        ApplicationService
+	resolveService            ResolveService
+	statusService             StatusService
+	controllerConfigService   ControllerConfigService
+	controllerNodeService     ControllerNodeService
+	crossModelRelationService CrossModelRelationService
+	machineService            MachineService
+	modelConfigService        ModelConfigService
+	modelInfoService          ModelInfoService
+	modelProviderService      ModelProviderService
+	networkService            NetworkService
+	portService               PortService
+	operationService          OperationService
+	relationService           RelationService
+	removalService            RemovalService
+	secretService             SecretService
+	unitStateService          UnitStateService
+	tracingService            TracingService
 
 	store objectstore.ObjectStore
 
@@ -106,6 +112,10 @@ type UniterAPIv19 struct {
 }
 
 type UniterAPIv20 struct {
+	*UniterAPIv21
+}
+
+type UniterAPIv21 struct {
 	*UniterAPI
 }
 
@@ -189,15 +199,16 @@ func (u *UniterAPI) OpenedMachinePortRangesByEndpoint(ctx context.Context, args 
 			}
 
 			// Ensure results are sorted by endpoint name to be consistent.
-			sort.Slice(result.Results[i].UnitPortRanges[unitTag], func(a, b int) bool {
-				return result.Results[i].UnitPortRanges[unitTag][a].Endpoint < result.Results[i].UnitPortRanges[unitTag][b].Endpoint
-			})
+			r := result.Results[i].UnitPortRanges[unitTag]
+			sort.Slice(r, func(a, b int) bool { return r[a].Endpoint < r[b].Endpoint })
 		}
 	}
 	return result, nil
 }
 
-func (u *UniterAPI) getOneMachineOpenedPortRanges(ctx context.Context, canAccess common.AuthFunc, machineTag string) (map[coreunit.Name]network.GroupedPortRanges, error) {
+func (u *UniterAPI) getOneMachineOpenedPortRanges(
+	ctx context.Context, canAccess common.AuthFunc, machineTag string,
+) (map[coreunit.Name]network.GroupedPortRanges, error) {
 	tag, err := names.ParseMachineTag(machineTag)
 	if err != nil {
 		return nil, apiservererrors.ErrPerm
@@ -209,7 +220,7 @@ func (u *UniterAPI) getOneMachineOpenedPortRanges(ctx context.Context, canAccess
 	if err != nil {
 		return nil, internalerrors.Errorf("getting machine UUID for %q: %w", tag, err)
 	}
-	machineOpenedPortRanges, err := u.portService.GetMachineOpenedPorts(ctx, machineUUID.String())
+	machineOpenedPortRanges, err := u.portService.GetMachineOpenedPorts(ctx, machineUUID)
 	if err != nil {
 		return nil, internalerrors.Errorf("getting opened ports for machine %q: %w", tag, err)
 	}
@@ -380,7 +391,10 @@ func (u *UniterAPI) PrivateAddress(ctx context.Context, args params.Entities) (p
 	return result, nil
 }
 
-// AvailabilityZone returns the availability zone for each given unit, if applicable.
+// AvailabilityZone returns the availability zone for each given unit. The
+// availability zone for a unit is established off of the attached machine for
+// the unit. If the unit is not attached to a machine or if the machine has no
+// AZ set then an empty string is returned. This is not an error condition.
 func (u *UniterAPI) AvailabilityZone(ctx context.Context, args params.Entities) (params.StringResults, error) {
 	var results params.StringResults
 
@@ -414,19 +428,36 @@ func (u *UniterAPI) AvailabilityZone(ctx context.Context, args params.Entities) 
 			results.Results[i].Error = apiservererrors.ServerError(err)
 			continue
 		}
+
 		machineUUID, err := u.applicationService.GetUnitMachineUUID(ctx, unitName)
-		if errors.Is(err, applicationerrors.UnitNotFound) {
-			results.Results[i].Error = apiservererrors.ServerError(errors.NotFoundf("unit %q", unitName))
+		switch {
+		case errors.Is(err, applicationerrors.UnitMachineNotAssigned):
+			// The unit is not assigned to a machine so we have no availability
+			// zone information. Most likely because the unit is on a CAAS model.
+			// In this case we report an empty AZ and this is fine.
+			results.Results[i].Result = ""
 			continue
-		} else if err != nil {
+		case errors.Is(err, applicationerrors.UnitNotFound):
+			results.Results[i].Error = apiservererrors.ParamsErrorf(
+				params.CodeNotFound, "unit %q not found", unitName,
+			)
+			continue
+		case err != nil:
 			results.Results[i].Error = apiservererrors.ServerError(err)
 			continue
 		}
+
 		az, err := u.machineService.AvailabilityZone(ctx, machineUUID)
-		if errors.Is(err, machineerrors.AvailabilityZoneNotFound) {
-			results.Results[i].Error = apiservererrors.ServerError(errors.NotProvisioned)
-			continue
-		} else if err != nil {
+		switch {
+		case errors.Is(err, machineerrors.AvailabilityZoneNotFound):
+			// If the machine has no availability zone set then when do nothing.
+			// It is possible and likely that not every cloud reports an AZ.
+			az = ""
+		case errors.Is(err, machineerrors.MachineNotFound):
+			results.Results[i].Error = apiservererrors.ParamsErrorf(
+				params.CodeNotFound, "unable to find machine for unit %q", unitName,
+			)
+		case err != nil:
 			results.Results[i].Error = apiservererrors.ServerError(err)
 			continue
 		}
@@ -756,7 +787,7 @@ func (u *UniterAPI) charmModifiedVersion(
 			return -1, err
 		}
 		id, err = u.applicationService.GetApplicationUUIDByUnitName(ctx, name)
-		if errors.Is(err, applicationerrors.UnitNotFound) {
+		if errors.Is(err, applicationerrors.ApplicationNotFound) {
 			// Return an error that also matches a generic not found error.
 			return -1, internalerrors.Join(err, errors.Hide(errors.NotFound))
 		} else if err != nil {
@@ -897,7 +928,7 @@ func (u *UniterAPI) SetCharm(ctx context.Context, args params.EntitiesCharmURL) 
 			result.Results[i].Error = apiservererrors.ParamsErrorf(params.CodeNotFound, "unit %q not found", unitName)
 			continue
 		} else if errors.Is(err, applicationerrors.CharmNotFound) {
-			result.Results[i].Error = apiservererrors.ParamsErrorf(params.CodeNotFound, "charm %q not found", charmLocator)
+			result.Results[i].Error = apiservererrors.ParamsErrorf(params.CodeNotFound, "charm %v not found", charmLocator)
 			continue
 		} else if err != nil {
 			result.Results[i].Error = apiservererrors.ServerError(err)
@@ -1056,7 +1087,7 @@ func (u *UniterAPI) ConfigSettings(ctx context.Context, args params.Entities) (p
 		}
 
 		appID, err := u.applicationService.GetApplicationUUIDByUnitName(ctx, unitName)
-		if errors.Is(err, applicationerrors.UnitNotFound) {
+		if errors.Is(err, applicationerrors.ApplicationNotFound) {
 			result.Results[i].Error = apiservererrors.ServerError(apiservererrors.ErrPerm)
 			continue
 		} else if err != nil {
@@ -1222,7 +1253,7 @@ func (u *UniterAPI) Actions(ctx context.Context, args params.Entities) (params.A
 		results.Results[i].Action = &params.Action{
 			Name:           action.ActionName,
 			Parameters:     action.Parameters,
-			Parallel:       ptr(action.IsParallel),
+			Parallel:       new(action.IsParallel),
 			ExecutionGroup: nilZeroPtr(action.ExecutionGroup),
 		}
 	}
@@ -1618,13 +1649,6 @@ func (u *UniterAPI) EnterScope(ctx context.Context, args params.RelationUnits) (
 	return result, nil
 }
 
-type subordinateCreator func(ctx context.Context, subordinateAppID application.UUID, principalUnitName coreunit.Name) error
-
-// CreateSubordinate creates units on a subordinate application.
-func (c subordinateCreator) CreateSubordinate(ctx context.Context, subordinateAppID application.UUID, principalUnitName coreunit.Name) error {
-	return c(ctx, subordinateAppID, principalUnitName)
-}
-
 func (u *UniterAPI) oneEnterScope(ctx context.Context, canAccess common.AuthFunc, relTagStr string, unitTag names.UnitTag) error {
 	if !canAccess(unitTag) {
 		return apiservererrors.ErrPerm
@@ -1647,7 +1671,7 @@ func (u *UniterAPI) oneEnterScope(ctx context.Context, canAccess common.AuthFunc
 		return internalerrors.Capture(err)
 	}
 
-	info, err := u.networkService.GetUnitRelationNetwork(ctx, unitName, relKey)
+	infos, err := u.networkService.GetUnitRelationNetworks(ctx, unitName, []corerelation.UUID{relUUID})
 	switch {
 	case errors.Is(err, applicationerrors.UnitNotFound):
 		return errors.NotFoundf("unit %s", unitTag)
@@ -1657,12 +1681,16 @@ func (u *UniterAPI) oneEnterScope(ctx context.Context, canAccess common.AuthFunc
 		return internalerrors.Capture(err)
 	}
 
+	info, ok := infos[relUUID]
+	if !ok {
+		return errors.NotFoundf("relation %s", relTagStr)
+	}
+
 	err = u.relationService.EnterScope(
 		ctx,
 		relUUID,
 		unitName,
 		unitNetworkToUnitSettings(info),
-		subordinateCreator(u.applicationService.AddIAASSubordinateUnit),
 	)
 	if internalerrors.Is(err, relationerrors.PotentialRelationUnitNotValid) {
 		u.logger.Debugf(ctx, "ignoring %q EnterScope for %q, not valid", unitName, relKey.String())
@@ -1992,44 +2020,6 @@ func (u *UniterAPI) readOneRemoteSettings(ctx context.Context, canAccess common.
 	return settings, nil
 }
 
-func (u *UniterAPI) updateUnitAndApplicationSettings(ctx context.Context, arg params.RelationUnitSettings, canAccess common.AuthFunc) error {
-	unitTag, err := names.ParseUnitTag(arg.Unit)
-	if err != nil {
-		return apiservererrors.ErrPerm
-	}
-	if !canAccess(unitTag) {
-		return apiservererrors.ErrPerm
-	}
-	relKey, err := corerelation.ParseKeyFromTagString(arg.Relation)
-	if err != nil {
-		return apiservererrors.ErrPerm
-	}
-	relUUID, err := u.relationService.GetRelationUUIDByKey(ctx, relKey)
-	if err != nil {
-		return internalerrors.Capture(err)
-	}
-	unitName := coreunit.Name(unitTag.Id())
-
-	// This is not the place to update those fields they are updated
-	// if required in setUnitRelationNetworks.
-	// Keeping those entries here may override incoming update with old values
-	delete(arg.Settings, "ingress-address")
-	delete(arg.Settings, "egress-subnets")
-
-	if u.logger.IsLevelEnabled(corelogger.TRACE) {
-		u.logger.Tracef(ctx, "relation unit settings for %q: %#v", unitName.String(), arg)
-	}
-
-	err = u.relationService.SetRelationApplicationAndUnitSettings(ctx, unitName, relUUID, arg.ApplicationSettings, arg.Settings)
-	if errors.Is(err, corelease.ErrNotHeld) {
-		return apiservererrors.ErrPerm
-	} else if err != nil {
-		return internalerrors.Capture(err)
-	}
-
-	return nil
-}
-
 // WatchRelationUnits returns a RelationUnitsWatcher for observing
 // changes to every unit in the supplied relation that is visible to
 // the supplied unit.
@@ -2088,7 +2078,7 @@ func (u *UniterAPI) watchOneRelationUnit(
 			internalerrors.Capture(internalerrors.Errorf("starting related units watcher: %w", err))
 	}
 
-	id, changes, err := internal.EnsureRegisterWatcher[params.RelationUnitsChange](
+	id, changes, err := internal.EnsureRegisterWatcher(
 		ctx,
 		u.watcherRegistry,
 		watch,
@@ -2145,7 +2135,7 @@ func (u *UniterAPI) oneSetRelationStatus(
 	err = u.statusService.SetRelationStatus(ctx, unitName, relationUUID, status.StatusInfo{
 		Status:  status.Status(relStatus),
 		Message: message,
-		Since:   ptr(u.clock.Now()),
+		Since:   new(u.clock.Now()),
 	})
 	if errors.Is(err, errors.NotFound) {
 		return apiservererrors.ErrPerm
@@ -2169,21 +2159,12 @@ func (u *UniterAPI) getOneRelationById(ctx context.Context, relID int) (params.R
 	} else if err != nil {
 		return nothing, err
 	}
-	var applicationName string
-	tag := u.auth.GetAuthTag()
-	switch tag.(type) {
-	case names.UnitTag:
-		applicationName, err = names.UnitApplication(tag.Id())
-		if err != nil {
-			return nothing, err
-		}
-	case names.ApplicationTag:
-		applicationName = tag.Id()
-	default:
-		panic("authenticated entity is not a unit or application")
+	applicationName, err := u.authApplicationName()
+	if err != nil {
+		return nothing, err
 	}
 	// Use the currently authenticated unit to get the endpoint.
-	result, err := u.prepareRelationResult(rel, applicationName)
+	result, err := u.prepareRelationResult(ctx, rel, applicationName)
 	if err != nil {
 		// An error from prepareRelationResult means the authenticated
 		// unit's application is not part of the requested
@@ -2194,7 +2175,20 @@ func (u *UniterAPI) getOneRelationById(ctx context.Context, relID int) (params.R
 	return result, nil
 }
 
+func (u *UniterAPI) authApplicationName() (string, error) {
+	tag := u.auth.GetAuthTag()
+	switch tag.(type) {
+	case names.UnitTag:
+		return names.UnitApplication(tag.Id())
+	case names.ApplicationTag:
+		return tag.Id(), nil
+	default:
+		return "", apiservererrors.ErrPerm
+	}
+}
+
 func (u *UniterAPI) prepareRelationResult(
+	ctx context.Context,
 	rel relation.RelationDetails,
 	applicationName string,
 ) (params.RelationResultV2, error) {
@@ -2226,16 +2220,47 @@ func (u *UniterAPI) prepareRelationResult(
 		ApplicationName: otherAppName,
 		ModelUUID:       u.modelUUID.String(),
 	}
+	remoteModelUUID, err := u.crossModelRelationService.GetRelationRemoteModelUUID(ctx, rel.UUID)
+	if errors.Is(err, relationerrors.RelationNotFound) {
+		return params.RelationResultV2{}, coreerrors.NotFound
+	} else if err != nil && !errors.Is(err, crossmodelrelationerrors.RelationNotCrossModel) {
+		return params.RelationResultV2{}, internalerrors.Capture(err)
+	} else if err == nil {
+		// It's a cross-model relation, set the remote model UUID.
+		otherApplication.ModelUUID = remoteModelUUID.String()
+	}
+
 	return params.RelationResultV2{
-		Id:   rel.ID,
-		Key:  rel.Key.String(),
-		Life: rel.Life,
+		Id:        rel.ID,
+		Key:       rel.Key.String(),
+		Life:      rel.Life,
+		Suspended: rel.Suspended,
 		Endpoint: params.Endpoint{
 			ApplicationName: unitEp.ApplicationName,
 			Relation:        params.NewCharmRelation(unitEp.Relation),
 		},
 		OtherApplication: otherApplication,
 	}, nil
+}
+
+func unitNetworkToNetworkInfoResult(info domainnetork.UnitNetwork) params.NetworkInfoResult {
+	return params.NetworkInfoResult{
+		Info: transform.Slice(info.DeviceInfos, func(dev domainnetork.DeviceInfo) params.NetworkInfo {
+			return params.NetworkInfo{
+				MACAddress:    dev.MACAddress,
+				InterfaceName: dev.Name,
+				Addresses: transform.Slice(dev.Addresses, func(addr domainnetork.AddressInfo) params.InterfaceAddress {
+					return params.InterfaceAddress{
+						Hostname: addr.Hostname,
+						Address:  addr.Value,
+						CIDR:     addr.CIDR,
+					}
+				}),
+			}
+		}),
+		EgressSubnets:    info.EgressSubnets,
+		IngressAddresses: info.IngressAddresses,
+	}
 }
 
 func (u *UniterAPI) getOneRelation(
@@ -2271,7 +2296,7 @@ func (u *UniterAPI) getOneRelation(
 	if err != nil {
 		return nothing, apiservererrors.ErrBadId
 	}
-	return u.prepareRelationResult(rel, appName)
+	return u.prepareRelationResult(ctx, rel, appName)
 }
 
 func (u *UniterAPI) destroySubordinates(ctx context.Context, principal coreunit.Name) error {
@@ -2317,34 +2342,53 @@ func (u *UniterAPI) NetworkInfo(ctx context.Context, args params.NetworkInfoPara
 		return params.NetworkInfoResults{}, apiservererrors.ErrPerm
 	}
 
-	infos, err := u.networkService.GetUnitEndpointNetworks(ctx, coreunit.Name(unitTag.Id()), args.Endpoints)
-	if errors.Is(err, applicationerrors.UnitNotFound) {
-		return params.NetworkInfoResults{}, errors.NotFoundf("unit %q", unitTag.Id())
-	} else if err != nil {
-		return params.NetworkInfoResults{}, internalerrors.Capture(err)
-	}
-
+	unitName := coreunit.Name(unitTag.Id())
 	results := params.NetworkInfoResults{
 		Results: make(map[string]params.NetworkInfoResult),
 	}
 
-	for _, info := range infos {
-		results.Results[info.EndpointName] = params.NetworkInfoResult{
-			Info: transform.Slice(info.DeviceInfos, func(dev domainnetork.DeviceInfo) params.NetworkInfo {
-				return params.NetworkInfo{
-					MACAddress:    dev.MACAddress,
-					InterfaceName: dev.Name,
-					Addresses: transform.Slice(dev.Addresses, func(addr domainnetork.AddressInfo) params.InterfaceAddress {
-						return params.InterfaceAddress{
-							Hostname: addr.Hostname,
-							Address:  addr.Value,
-							CIDR:     addr.CIDR,
-						}
-					}),
-				}
-			}),
-			EgressSubnets:    info.EgressSubnets,
-			IngressAddresses: info.IngressAddresses,
+	if len(args.Endpoints) > 0 {
+		infos, err := u.networkService.GetUnitEndpointNetworks(ctx, unitName, args.Endpoints)
+		if errors.Is(err, applicationerrors.UnitNotFound) {
+			return params.NetworkInfoResults{}, errors.NotFoundf("unit %q", unitTag.Id())
+		} else if err != nil {
+			return params.NetworkInfoResults{}, internalerrors.Capture(err)
+		}
+
+		for _, info := range infos {
+			results.Results[info.EndpointName] = unitNetworkToNetworkInfoResult(info)
+		}
+	}
+
+	if args.RelationId != nil {
+		relationUUID, err := u.relationService.GetRelationUUIDByID(
+			ctx, *args.RelationId,
+		)
+		if errors.Is(err, relationerrors.RelationNotFound) {
+			return params.NetworkInfoResults{}, apiservererrors.ErrPerm
+		} else if err != nil {
+			return params.NetworkInfoResults{}, internalerrors.Capture(err)
+		}
+		infos, err := u.networkService.GetUnitRelationNetworks(
+			ctx, unitName, []corerelation.UUID{relationUUID},
+		)
+		if errors.Is(err, applicationerrors.UnitNotFound) {
+			return params.NetworkInfoResults{}, errors.NotFoundf("unit %q", unitTag.Id())
+		} else if errors.Is(err, relationerrors.RelationNotFound) {
+			return params.NetworkInfoResults{}, apiservererrors.ErrPerm
+		} else if err != nil {
+			return params.NetworkInfoResults{}, internalerrors.Capture(err)
+		}
+
+		info, ok := infos[relationUUID]
+		if !ok {
+			return params.NetworkInfoResults{}, apiservererrors.ErrPerm
+		}
+
+		overrideRelationEndpoint := len(args.Endpoints) == 0 ||
+			slices.Contains(args.Endpoints, info.EndpointName)
+		if overrideRelationEndpoint {
+			results.Results[info.EndpointName] = unitNetworkToNetworkInfoResult(info)
 		}
 	}
 	return results, nil
@@ -2352,7 +2396,7 @@ func (u *UniterAPI) NetworkInfo(ctx context.Context, args params.NetworkInfoPara
 
 // WatchUnitRelations returns a StringsWatcher, for each given
 // unit, that notifies of changes to the lifecycles of relations
-// relevant to that unit. For principal units, this will be all of the
+// relevant to that unit. For principal units, this will be all the
 // relations for the application. For subordinate units, only
 // relations with the principal unit's application will be monitored.
 func (u *UniterAPI) WatchUnitRelations(ctx context.Context, args params.Entities) (params.StringsWatchResults, error) {
@@ -2398,26 +2442,11 @@ func (u *UniterAPI) watchOneUnitRelations(ctx context.Context, tag names.UnitTag
 		return nothing, internalerrors.Capture(updatedError)
 	}
 
-	watcherId, initial, err := internal.EnsureRegisterWatcher[[]string](ctx, u.watcherRegistry, watch)
+	watcherId, initial, err := internal.EnsureRegisterWatcher(ctx, u.watcherRegistry, watch)
 	if err != nil {
 		return nothing, nil
 	}
 	return params.StringsWatchResult{StringsWatcherId: watcherId, Changes: initial}, nil
-}
-
-func makeAppAuthChecker(authTag names.Tag) common.AuthFunc {
-	return func(tag names.Tag) bool {
-		if tag, ok := tag.(names.ApplicationTag); ok {
-			switch authTag.(type) {
-			case names.UnitTag:
-				appName, err := names.UnitApplication(authTag.Id())
-				return err == nil && appName == tag.Id()
-			case names.ApplicationTag:
-				return tag == authTag
-			}
-		}
-		return false
-	}
 }
 
 // CloudSpec returns the cloud spec used by the model in which the
@@ -2539,21 +2568,24 @@ func (u *UniterAPI) goalStateRelations(
 
 		// Now gather the goal state.
 		for _, e := range endPoints {
-			var appName string
-			appID, err := u.applicationService.GetApplicationUUIDByName(ctx, e.ApplicationName)
-			if err == nil {
-				appName = e.ApplicationName
-			} else if errors.Is(err, applicationerrors.ApplicationNotFound) {
-				u.logger.Debugf(ctx, "application %q must be a remote application.", e.ApplicationName)
-				// TODO(jack-w-shaw): Once CMRs have been implemented in DQLite,
-				// set the appName to the remote application URL.
-				continue
-			} else {
-				return nil, err
+			appUUID, err := u.applicationService.GetApplicationUUIDByName(ctx, e.ApplicationName)
+			if errors.Is(err, applicationerrors.ApplicationNotFound) {
+				return nil, errors.NotFoundf("application %q", e.ApplicationName)
+			} else if err != nil {
+				return nil, internalerrors.Capture(err)
 			}
 
-			// We don't show units for the same application as we are currently processing.
-			if appName == baseAppName {
+			// We don't show units for the same application as we are currently
+			// processing.
+			if e.ApplicationName == baseAppName {
+				continue
+			}
+
+			// If we are on the offering side of a remote relation, don't show
+			// anything in goal state for that relation.
+			if ok, err := u.crossModelRelationService.IsRemoteApplicationConsumer(ctx, appUUID); err != nil {
+				return nil, internalerrors.Capture(err)
+			} else if ok {
 				continue
 			}
 
@@ -2564,15 +2596,13 @@ func (u *UniterAPI) goalStateRelations(
 			if relationGoalState == nil {
 				relationGoalState = params.UnitsGoalState{}
 			}
-			relationGoalState[appName] = goalState
+			relationGoalState[e.ApplicationName] = goalState
 
-			units, err := u.goalStateUnits(ctx, appName, appID, principalName)
+			units, err := u.goalStateUnits(ctx, e.ApplicationName, appUUID, principalName)
 			if err != nil {
 				return nil, err
 			}
-			for unitName, unitGS := range units {
-				relationGoalState[unitName] = unitGS
-			}
+			maps.Copy(relationGoalState, units)
 
 			// Merge in the goal state for the current remote endpoint
 			// with any other goal state already collected for the local endpoint.
@@ -2580,9 +2610,7 @@ func (u *UniterAPI) goalStateRelations(
 			if unitsGoalState == nil {
 				unitsGoalState = params.UnitsGoalState{}
 			}
-			for k, v := range relationGoalState {
-				unitsGoalState[k] = v
-			}
+			maps.Copy(unitsGoalState, relationGoalState)
 			result[resultEndpointName] = unitsGoalState
 		}
 	}
@@ -2592,12 +2620,16 @@ func (u *UniterAPI) goalStateRelations(
 // goalStateUnits loops through all application units related to principalName,
 // and stores the goal state status in UnitsGoalState.
 func (u *UniterAPI) goalStateUnits(ctx context.Context, appName string, appID application.UUID, principalName coreunit.Name) (params.UnitsGoalState, error) {
-
 	allUnitNames, err := u.applicationService.GetUnitNamesForApplication(ctx, appName)
 	if errors.Is(err, applicationerrors.ApplicationNotFound) {
 		return nil, errors.NotFoundf("application %q", appName)
 	} else if err != nil {
 		return nil, errors.Trace(err)
+	}
+
+	// We have no units for this application, so return empty goal state.
+	if len(allUnitNames) == 0 {
+		return params.UnitsGoalState{}, nil
 	}
 
 	unitWorkloadStatuses, err := u.statusService.GetUnitWorkloadStatusesForApplication(ctx, appID)
@@ -2751,15 +2783,7 @@ func (u *UniterAPI) CloudAPIVersion(ctx context.Context) (params.StringResult, e
 
 // UpdateNetworkInfo refreshes the network settings for a unit's bound
 // endpoints.
-func (u *UniterAPI) UpdateNetworkInfo(ctx context.Context, args params.Entities) (params.ErrorResults, error) {
-	// TODO(gfouillet) - 2025-07-01 - Remove me in the next facade update
-	//   Looks like this method is never called. I implemented it in case
-	//   of possible calls I cannot be aware, but nor QA with config changes
-	//   nor searching "UpdateNetworkInfo" in the code base make me find
-	//   a possible code path to this facade method. I believe it is unused.
-	//   Update relation unit settings with network info are already done in
-	//   both EnterScope and CommitHookChanged, which seems to be enough for
-	//   all our use cases.
+func (u *UniterAPIv21) UpdateNetworkInfo(ctx context.Context, args params.Entities) (params.ErrorResults, error) {
 	canAccess, err := u.accessUnit(ctx)
 	if err != nil {
 		return params.ErrorResults{}, errors.Trace(err)
@@ -2786,6 +2810,11 @@ func (u *UniterAPI) UpdateNetworkInfo(ctx context.Context, args params.Entities)
 	return params.ErrorResults{Results: res}, nil
 }
 
+// UpdateNetworkInfo is not implemented in version 22 of the uniter. The
+// Uniter API package stopped using it with version 18, however it was
+// not removed from the facade at that time.
+func (u *UniterAPI) UpdateNetworkInfo(_ context.Context, _, _ struct{}) {}
+
 // CommitHookChanges batches together all required API calls for applying
 // a set of changes after a hook successfully completes and executes them in a
 // single transaction.
@@ -2794,8 +2823,6 @@ func (u *UniterAPI) CommitHookChanges(ctx context.Context, args params.CommitHoo
 	if err != nil {
 		return params.ErrorResults{}, errors.Trace(err)
 	}
-
-	canAccessApp := makeAppAuthChecker(u.auth.GetAuthTag())
 
 	res := make([]params.ErrorResult, len(args.Args))
 	for i, arg := range args.Args {
@@ -2810,7 +2837,7 @@ func (u *UniterAPI) CommitHookChanges(ctx context.Context, args params.CommitHoo
 			continue
 		}
 
-		if err := u.commitHookChangesForOneUnit(ctx, unitTag, arg, canAccessUnit, canAccessApp); err != nil {
+		if err := u.commitHookChangesForOneUnit(ctx, unitTag, arg); err != nil {
 			// Log quota-related errors to aid operators
 			if errors.Is(err, errors.QuotaLimitExceeded) {
 				u.logger.Errorf(ctx, "%s: %v", unitTag, err)
@@ -2822,31 +2849,80 @@ func (u *UniterAPI) CommitHookChanges(ctx context.Context, args params.CommitHoo
 	return params.ErrorResults{Results: res}, nil
 }
 
+func (u *UniterAPI) updatedNetworkInfo(
+	ctx context.Context, unitName coreunit.Name,
+) (map[corerelation.UUID]unitstate.Settings, error) {
+	relationUUIDs, err := u.relationService.GetRelationUUIDsByUnitName(ctx, unitName)
+	if err != nil {
+		return nil, internalerrors.Errorf("getting relation UUIDs of unit %q: %w", unitName, err)
+	}
+	if len(relationUUIDs) == 0 {
+		return nil, nil
+	}
+
+	relationNetworkInfos, err := u.networkService.GetUnitRelationNetworks(ctx, unitName, relationUUIDs)
+	if err != nil {
+		return nil, internalerrors.Errorf("getting updated relation network info for unit %q: %w", unitName, err)
+	}
+
+	return transform.Map(relationNetworkInfos, func(relationUUID corerelation.UUID, relationNetworkInfo domainnetork.UnitNetwork) (corerelation.UUID, unitstate.Settings) {
+		var ingress, egress string
+		if len(relationNetworkInfo.EgressSubnets) > 0 {
+			egress = strings.Join(relationNetworkInfo.EgressSubnets, ",")
+		}
+		if len(relationNetworkInfo.IngressAddresses) > 0 {
+			ingress = relationNetworkInfo.IngressAddresses[0]
+		}
+		settings := unitstate.Settings{
+			unitstate.EgressSubnetsKey:  egress,
+			unitstate.IngressAddressKey: ingress,
+		}
+		return relationUUID, settings
+	}), nil
+}
+
 func (u *UniterAPI) commitHookChangesForOneUnit(
 	ctx context.Context,
 	unitTag names.UnitTag,
 	changes params.CommitHookChangesArg,
-	canAccessUnit, canAccessApp common.AuthFunc,
 ) error {
+	unitName, err := coreunit.NewName(unitTag.Id())
+	if err != nil {
+		return internalerrors.Errorf("parsing unit name: %w", err)
+	}
+	arg := unitstate.CommitHookChangesArg{
+		UnitName: unitName,
+	}
+
 	if changes.UpdateNetworkInfo {
-		err := u.setUnitRelationNetworks(ctx, coreunit.Name(unitTag.Id()))
+		relationNetworkSettings, err := u.updatedNetworkInfo(ctx, unitName)
 		if err != nil {
-			return internalerrors.Errorf("updating network info: %w", err)
+			return internalerrors.Capture(err)
+		}
+		if len(relationNetworkSettings) != 0 {
+			arg.UpdatedRelationNetworkInfo = relationNetworkSettings
 		}
 	}
 
+	relationUnitSettings := make([]unitstate.RelationSettings, 0, len(changes.RelationUnitSettings))
 	for _, rus := range changes.RelationUnitSettings {
 		// Ensure the unit in the unit settings matches the root unit name.
 		if rus.Unit != changes.Tag {
 			return apiservererrors.ErrPerm
 		}
-		err := u.updateUnitAndApplicationSettings(ctx, rus, canAccessUnit)
+		relKey, err := corerelation.ParseKeyFromTagString(rus.Relation)
 		if err != nil {
-			return internalerrors.Errorf("updating unit and application settings for %q: %w", unitTag.Id(), err)
+			return apiservererrors.ErrPerm
 		}
+		relationUnitSettings = append(relationUnitSettings, unitstate.RelationSettings{
+			RelationKey:         relKey,
+			ApplicationSettings: unitstate.Settings(rus.ApplicationSettings),
+			Settings:            unitstate.Settings(rus.Settings),
+		})
 	}
+	arg.RelationSettings = relationUnitSettings
 
-	if len(changes.OpenPorts)+len(changes.ClosePorts) > 0 {
+	if len(changes.OpenPorts) > 0 {
 		openPorts := network.GroupedPortRanges{}
 		for _, r := range changes.OpenPorts {
 			// Ensure the tag in the port open request matches the root unit name.
@@ -2866,7 +2942,10 @@ func (u *UniterAPI) commitHookChangesForOneUnit(
 			}
 			openPorts[r.Endpoint] = append(openPorts[r.Endpoint], portRange)
 		}
+		arg.OpenPorts = openPorts
+	}
 
+	if len(changes.ClosePorts) > 0 {
 		closePorts := network.GroupedPortRanges{}
 		for _, r := range changes.ClosePorts {
 			// Ensure the tag in the port close request matches the root unit name
@@ -2881,19 +2960,7 @@ func (u *UniterAPI) commitHookChangesForOneUnit(
 			}
 			closePorts[r.Endpoint] = append(closePorts[r.Endpoint], portRange)
 		}
-
-		unitName, err := coreunit.NewName(unitTag.Id())
-		if err != nil {
-			return internalerrors.Errorf("parsing unit name: %w", err)
-		}
-		unitUUID, err := u.applicationService.GetUnitUUID(ctx, unitName)
-		if err != nil {
-			return internalerrors.Errorf("getting UUID of unit %q: %w", unitName, err)
-		}
-		err = u.portService.UpdateUnitPorts(ctx, unitUUID, openPorts, closePorts)
-		if err != nil {
-			return internalerrors.Errorf("updating unit ports of unit %q: %w", unitName, err)
-		}
+		arg.ClosePorts = closePorts
 	}
 
 	/*
@@ -2909,32 +2976,22 @@ func (u *UniterAPI) commitHookChangesForOneUnit(
 			return apiservererrors.ErrPerm
 		}
 
-		unitName, err := coreunit.NewName(unitTag.Id())
-		if err != nil {
-			return errors.Trace(err)
-		}
-
-		// TODO (manadart 2024-10-12): Only charm state is ever set here.
-		// The full state is set in the call to SetState (apiserver/common).
-		// Integrate this into a transaction with other setters once we are also
-		// reading the state from Dqlite.
-		// We also need to factor ctrlCfg.MaxCharmStateSize() into the service
-		// call.
-		if err := u.unitStateService.SetState(ctx, unitstate.UnitState{
-			Name:       unitName,
-			CharmState: changes.SetUnitState.CharmState,
-		}); err != nil {
-			return errors.Trace(err)
-		}
+		// TODO (manadart 2024-10-12): Factor ctrlCfg.MaxCharmStateSize() into
+		// the service call.
+		arg.CharmState = changes.SetUnitState.CharmState
 	}
 
-	for _, addParams := range changes.AddStorage {
-		// Ensure the tag in the request matches the root unit name.
-		if addParams.UnitTag != changes.Tag {
-			return apiservererrors.ErrPerm
-		}
+	preparedStorageAdds, err := u.prepareCommitHookStorageAdds(ctx, unitName, changes)
+	if err != nil {
+		return internalerrors.Errorf("preparing storage additions: %w", err)
+	}
+	arg.AddStorage = preparedStorageAdds
 
-		// TODO(storage): Add storage to the unit.
+	// Note: the call to CommitHookChanges will eventually move to the end
+	// of the method. During the change over to running in a single txn,
+	// make it here to preserve the order.
+	if err := u.unitStateService.CommitHookChanges(ctx, arg); err != nil {
+		return apiservererrors.ServerError(err)
 	}
 
 	// TODO - do in txn once we have support for that
@@ -3034,9 +3091,15 @@ func (u *UniterAPI) setUnitRelationNetworks(ctx context.Context, name coreunit.N
 		if err != nil {
 			return internalerrors.Errorf("getting relation UUID: %w", err)
 		}
-		unitNetwork, err := u.networkService.GetUnitRelationNetwork(ctx, name, rel.Key)
+		unitNetworks, err := u.networkService.GetUnitRelationNetworks(
+			ctx, name, []corerelation.UUID{relationUUID},
+		)
 		if err != nil {
 			return internalerrors.Errorf("getting relation network: %w", err)
+		}
+		unitNetwork, ok := unitNetworks[relationUUID]
+		if !ok {
+			return internalerrors.Errorf("relation network not found")
 		}
 
 		// Set relation settings.
@@ -3204,14 +3267,14 @@ func (u *UniterAPI) watchUnit(ctx context.Context, tag names.UnitTag) (watcher.N
 
 // Merge merges in the provided leadership settings. Only leaders for
 // the given service may perform this operation.
-func (u *UniterAPIv20) Merge(ctx context.Context, bulkArgs params.MergeLeadershipSettingsBulkParams) (params.ErrorResults, error) {
+func (u *UniterAPIv20) Merge(_ context.Context, bulkArgs params.MergeLeadershipSettingsBulkParams) (params.ErrorResults, error) {
 	results := make([]params.ErrorResult, len(bulkArgs.Params))
 	return params.ErrorResults{Results: results}, nil
 }
 
 // Read reads leadership settings for the provided service ID. Any
 // unit of the service may perform this operation.
-func (u *UniterAPIv20) Read(ctx context.Context, bulkArgs params.Entities) (params.GetLeadershipSettingsBulkResults, error) {
+func (u *UniterAPIv20) Read(_ context.Context, bulkArgs params.Entities) (params.GetLeadershipSettingsBulkResults, error) {
 	results := make([]params.GetLeadershipSettingsResult, len(bulkArgs.Entities))
 	return params.GetLeadershipSettingsBulkResults{Results: results}, nil
 }
@@ -3246,10 +3309,207 @@ func (u *UniterAPI) Merge(ctx context.Context, _, _ struct{}) {}
 func (u *UniterAPI) Read(ctx context.Context, _, _ struct{}) {}
 
 // WatchLeadershipSettings is not implemented in version 21 of the uniter.
-func (u *UniterAPI) WatchLeadershipSettings(ctx context.Context, _, _ struct{}) {}
+func (u *UniterAPI) WatchLeadershipSettings(_ context.Context, _, _ struct{}) {}
 
-func ptr[T any](v T) *T {
-	return &v
+// GetUnitContext returns the contexts of the units specified in the request.
+func (u *UniterAPI) GetUnitContext(ctx context.Context, args params.Entity) (params.UnitContext, error) {
+	canAccess, err := u.accessUnit(ctx)
+	if err != nil {
+		return params.UnitContext{}, errors.Trace(err)
+	}
+
+	tag, err := names.ParseUnitTag(args.Tag)
+	if err != nil {
+		return params.UnitContext{}, apiservererrors.ServerError(apiservererrors.ErrPerm)
+	}
+
+	if !canAccess(tag) {
+		return params.UnitContext{}, apiservererrors.ServerError(apiservererrors.ErrPerm)
+	}
+
+	unitName, err := coreunit.NewName(tag.Id())
+	if err != nil {
+		return params.UnitContext{}, apiservererrors.ServerError(
+			errors.BadRequestf("parsing unit name: %s", tag.Id()),
+		)
+	}
+
+	unitContext, err := u.getUnitContext(ctx, unitName)
+	if err != nil {
+		return params.UnitContext{}, apiservererrors.ServerError(err)
+	}
+
+	// Get the charm tracing config for the unit.
+	charmTraceConfig, err := u.tracingService.GetCharmTracingConfig(ctx)
+	if err == nil {
+		unitContext.CharmTracingConfig = params.CharmTracingConfig{
+			HTTPEndpoint:  charmTraceConfig.HTTPEndpoint,
+			GRPCEndpoint:  charmTraceConfig.GRPCEndpoint,
+			CACertificate: charmTraceConfig.CACertificate,
+		}
+	} else {
+		u.logger.Errorf(ctx, "getting charm tracing config failed: %v", err)
+	}
+
+	apiAddresses, err := u.controllerNodeService.GetAllAPIAddressesForAgents(ctx)
+	if err != nil {
+		return params.UnitContext{}, apiservererrors.ServerError(
+			internalerrors.Errorf("getting private addresses for unit %q: %w", unitName, err),
+		)
+	}
+	unitContext.APIAddresses = apiAddresses
+
+	return unitContext, nil
+}
+
+func (u *UniterAPI) getUnitContext(ctx context.Context, unitName coreunit.Name) (params.UnitContext, error) {
+	if u.modelType == model.CAAS {
+		return u.getCAASUnitContext(ctx, unitName)
+	}
+	return u.getIAASUnitContext(ctx, unitName)
+}
+
+func (u *UniterAPI) getCAASUnitContext(ctx context.Context, unitName coreunit.Name) (params.UnitContext, error) {
+	unitContext, err := u.applicationService.GetCAASUnitContext(ctx, unitName)
+	if errors.Is(err, applicationerrors.UnitNotFound) {
+		return params.UnitContext{}, errors.NotFoundf("getting unit %q", unitName)
+	} else if err != nil {
+		return params.UnitContext{}, errors.Trace(err)
+	}
+
+	return params.UnitContext{
+		CloudAPIVersion:            unitContext.CloudAPIVersion,
+		LegacyProxySettings:        encodeProxySettings(unitContext.LegacyProxySettings),
+		JujuProxySettings:          encodeProxySettings(unitContext.JujuProxySettings),
+		OpenedPortRangesByEndpoint: encodeOpenedPortRangesByEndpoint(unitContext.OpenedPortRangesByEndpoint),
+	}, nil
+}
+
+func (u *UniterAPI) getIAASUnitContext(ctx context.Context, unitName coreunit.Name) (params.UnitContext, error) {
+	unitContext, err := u.applicationService.GetIAASUnitContext(ctx, unitName)
+	if errors.Is(err, applicationerrors.UnitNotFound) {
+		return params.UnitContext{}, errors.NotFoundf("getting unit %q", unitName)
+	} else if err != nil {
+		return params.UnitContext{}, errors.Trace(err)
+	}
+
+	return params.UnitContext{
+		CloudAPIVersion:                   unitContext.CloudAPIVersion,
+		LegacyProxySettings:               encodeProxySettings(unitContext.LegacyProxySettings),
+		JujuProxySettings:                 encodeProxySettings(unitContext.JujuProxySettings),
+		PrivateAddress:                    unitContext.PrivateAddress,
+		OpenedMachinePortRangesByEndpoint: encodeOpenedPortRangesByEndpoint(unitContext.OpenedMachinePortRangesByEndpoint),
+	}, nil
+}
+
+func encodeProxySettings(settings proxy.Settings) params.ProxySettings {
+	return params.ProxySettings{
+		HTTPProxy:  settings.Http,
+		HTTPSProxy: settings.Https,
+		FTPProxy:   settings.Ftp,
+		NoProxy:    settings.NoProxy,
+	}
+}
+
+func (u *UniterAPI) prepareCommitHookStorageAdds(
+	ctx context.Context,
+	unitName coreunit.Name,
+	changes params.CommitHookChangesArg,
+) ([]unitstate.PreparedStorageAdd, error) {
+	if len(changes.AddStorage) == 0 {
+		return nil, nil
+	}
+
+	unitUUID, err := u.applicationService.GetUnitUUID(ctx, unitName)
+	switch {
+	case errors.Is(err, coreunit.InvalidUnitName):
+		return nil, apiservererrors.ParamsErrorf(params.CodeNotValid, "invalid unit name %q", unitName)
+	case errors.Is(err, applicationerrors.UnitNotFound):
+		return nil, apiservererrors.ParamsErrorf(params.CodeNotFound, "unit %q does not exist", unitName)
+	case err != nil:
+		return nil, internalerrors.Errorf("getting unit uuid for unit name %q: %w", unitName, err)
+	}
+
+	result := make([]unitstate.PreparedStorageAdd, 0, len(changes.AddStorage))
+	for _, addParams := range changes.AddStorage {
+		if addParams.UnitTag != changes.Tag {
+			return nil, apiservererrors.ErrPerm
+		}
+
+		count, err := u.getCommitHookStorageAddCount(addParams)
+		if err != nil {
+			return nil, err
+		}
+
+		prepared, err := u.applicationService.PrepareUnitAddStorage(
+			ctx, corestorage.Name(addParams.StorageName), unitUUID, count)
+		if err != nil {
+			return nil, internalerrors.Errorf(
+				"preparing storage add %q for unit %q: %w", addParams.StorageName, unitName, err)
+		}
+
+		result = append(result, unitstate.PreparedStorageAdd{
+			StorageName: corestorage.Name(addParams.StorageName),
+			Storage:     prepared,
+		})
+	}
+
+	return result, nil
+}
+
+func (u *UniterAPI) getCommitHookStorageAddCount(
+	addParams params.StorageAddParams,
+) (uint32, error) {
+	if addParams.Directives.Pool != "" {
+		return 0, apiservererrors.ParamsErrorf(
+			params.CodeNotSupported,
+			"storage directive %s pool override not supported",
+			addParams.StorageName,
+		)
+	}
+	if addParams.Directives.SizeMiB != nil {
+		return 0, apiservererrors.ParamsErrorf(
+			params.CodeNotSupported,
+			"storage directive %s size override not supported",
+			addParams.StorageName,
+		)
+	}
+
+	storageCount := uint32(1)
+	if addParams.Directives.Count != nil {
+		if *addParams.Directives.Count > math.MaxUint32 {
+			return 0,
+				apiservererrors.ParamsErrorf(
+					params.CodeNotValid,
+					"storage directive %s count %d too large",
+					addParams.StorageName,
+					*addParams.Directives.Count,
+				)
+		}
+		storageCount = uint32(*addParams.Directives.Count)
+	}
+
+	return storageCount, nil
+}
+
+func encodeOpenedPortRangesByEndpoint(openedPortRangesByEndpoint map[coreunit.Name]network.GroupedPortRanges) map[string]map[string][]params.PortRange {
+	result := map[string]map[string][]params.PortRange{}
+	for unitName, groupedPortRanges := range openedPortRangesByEndpoint {
+		unitTag := names.NewUnitTag(unitName.String())
+
+		unitPortRanges := make(map[string][]params.PortRange, len(groupedPortRanges))
+		for endpoint, portRanges := range groupedPortRanges {
+			for _, portRange := range portRanges {
+				unitPortRanges[endpoint] = append(unitPortRanges[endpoint], params.PortRange{
+					FromPort: portRange.FromPort,
+					ToPort:   portRange.ToPort,
+					Protocol: portRange.Protocol,
+				})
+			}
+		}
+		result[unitTag.String()] = unitPortRanges
+	}
+	return result
 }
 
 func nilZeroPtr[T comparable](v T) *T {

@@ -24,7 +24,7 @@ import (
 	corebase "github.com/juju/juju/core/base"
 	coreresources "github.com/juju/juju/core/resource"
 	resourcetesting "github.com/juju/juju/core/resource/testing"
-	charmresource "github.com/juju/juju/internal/charm/resource"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/internal/uuid"
 	"github.com/juju/juju/rpc/params"
 )
@@ -51,6 +51,14 @@ func (s *UploadSuite) setup(c *tc.C) *gomock.Controller {
 	s.mockFacadeCaller.EXPECT().RawAPICaller().Return(s.mockAPICaller).AnyTimes()
 	s.mockFacadeCaller.EXPECT().BestAPIVersion().Return(2).AnyTimes()
 	s.client = resources.NewClientForTest(s.mockFacadeCaller, s.mockHTTPClient)
+
+	c.Cleanup(func() {
+		s.mockHTTPClient = nil
+		s.mockAPICaller = nil
+		s.mockFacadeCaller = nil
+		s.client = nil
+	})
+
 	return ctrl
 }
 
@@ -79,7 +87,7 @@ type reqMatcher struct {
 	req *http.Request
 }
 
-func (m reqMatcher) Matches(x interface{}) bool {
+func (m reqMatcher) Matches(x any) bool {
 	obtained, ok := x.(*http.Request)
 	if !ok {
 		return false
@@ -220,8 +228,7 @@ func (s *UploadSuite) TestUploadPendingResourceNoFile(c *tc.C) {
 }
 
 func (s *UploadSuite) TestUploadPendingResourceBadApplication(c *tc.C) {
-	ctrl := gomock.NewController(c)
-	defer ctrl.Finish()
+	defer s.setup(c).Finish()
 
 	_, err := s.client.UploadPendingResource(c.Context(), resources.UploadPendingResourceArgs{})
 	c.Assert(err, tc.ErrorMatches, `.*invalid application.*`)
@@ -333,7 +340,7 @@ func newResource(c *tc.C, name, username, data string) (coreresources.Resource, 
 			Fingerprint: res.Fingerprint.Bytes(),
 			Size:        res.Size,
 		},
-		UUID:            res.UUID.String(),
+		ID:              res.ID,
 		ApplicationName: res.ApplicationName,
 		Username:        username,
 		Timestamp:       res.Timestamp,

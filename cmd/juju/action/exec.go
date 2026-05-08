@@ -18,10 +18,10 @@ import (
 	actionapi "github.com/juju/juju/api/client/action"
 	"github.com/juju/juju/api/jujuclient"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/block"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/model"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/internal/naturalsort"
 )
 
@@ -274,8 +274,8 @@ func (c *execCommand) Run(ctx *cmd.Context) error {
 }
 
 // printExecOutput is the default "plain" formatter for the exec command.
-func (c *execCommand) printExecOutput(w io.Writer, value interface{}) error {
-	info, ok := value.(map[string]interface{})
+func (c *execCommand) printExecOutput(w io.Writer, value any) error {
+	info, ok := value.(map[string]any)
 	if !ok {
 		return errors.Errorf("expected value of type %T, got %T", info, value)
 	}
@@ -288,11 +288,11 @@ func (c *execCommand) printExecOutput(w io.Writer, value interface{}) error {
 
 	for name := range info {
 		names = append(names, name)
-		resultMetadata, ok := info[name].(map[string]interface{})
+		resultMetadata, ok := info[name].(map[string]any)
 		if !ok {
 			return errors.Errorf("expected value of type %T, got %T", resultMetadata, info[name])
 		}
-		resultData, ok := resultMetadata["results"].(map[string]interface{})
+		resultData, ok := resultMetadata["results"].(map[string]any)
 		if ok {
 			if stdout, ok := resultData["stdout"]; ok {
 				outputs[name] += forceNewline(stdout.(string))

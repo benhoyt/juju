@@ -17,22 +17,26 @@ import (
 	"github.com/juju/juju/core/network"
 	corerelation "github.com/juju/juju/core/relation"
 	corestatus "github.com/juju/juju/core/status"
+	corestorage "github.com/juju/juju/core/storage"
 	coreunit "github.com/juju/juju/core/unit"
 	"github.com/juju/juju/core/watcher"
 	domainapplication "github.com/juju/juju/domain/application"
 	"github.com/juju/juju/domain/application/charm"
+	applicationservice "github.com/juju/juju/domain/application/service"
 	domainblockdevice "github.com/juju/juju/domain/blockdevice"
+	internalcharm "github.com/juju/juju/domain/deployment/charm"
 	domainlife "github.com/juju/juju/domain/life"
 	domainnetwork "github.com/juju/juju/domain/network"
 	"github.com/juju/juju/domain/operation"
 	"github.com/juju/juju/domain/relation"
 	"github.com/juju/juju/domain/removal"
 	"github.com/juju/juju/domain/resolve"
+	domainstorage "github.com/juju/juju/domain/storage"
 	"github.com/juju/juju/domain/storageprovisioning"
+	tracingservice "github.com/juju/juju/domain/tracing/service"
 	"github.com/juju/juju/domain/unitstate"
 	"github.com/juju/juju/environs/cloudspec"
 	"github.com/juju/juju/environs/config"
-	internalcharm "github.com/juju/juju/internal/charm"
 )
 
 // Services represents all the services that the uniter facade requires.
@@ -43,6 +47,7 @@ type Services struct {
 	StatusService              StatusService
 	ControllerConfigService    ControllerConfigService
 	ControllerNodeService      ControllerNodeService
+	CrossModelRelationService  CrossModelRelationService
 	MachineService             MachineService
 	ModelConfigService         ModelConfigService
 	ModelInfoService           ModelInfoService
@@ -55,6 +60,7 @@ type Services struct {
 	SecretService              SecretService
 	StorageProvisioningService StorageProvisioningService
 	UnitStateService           UnitStateService
+	TracingService             TracingService
 }
 
 // ControllerConfigService provides the controller configuration for the model.
@@ -81,6 +87,19 @@ type ControllerNodeService interface {
 	// WatchControllerAPIAddresses returns a watcher that observes changes to the
 	// controller ip addresses.
 	WatchControllerAPIAddresses(context.Context) (watcher.NotifyWatcher, error)
+}
+
+// CrossModelRelationService provides access to the cross model relation
+// service.
+type CrossModelRelationService interface {
+	// GetRelationRemoteModelUUID returns the remote model UUID for the given
+	// relation UUID. This method works for both offerer and consumer side
+	// relations.
+	GetRelationRemoteModelUUID(ctx context.Context, relationUUID corerelation.UUID) (model.UUID, error)
+
+	// IsRemoteApplicationConsumer checks if the remote application is a
+	// consumer in this model i.e. they're a proxy consumer for an application.
+	IsRemoteApplicationConsumer(ctx context.Context, appUUID coreapplication.UUID) (bool, error)
 }
 
 // ModelConfigService is used by the provisioner facade to get model config.
@@ -124,15 +143,9 @@ type ApplicationService interface {
 	GetUnitPrincipal(context.Context, coreunit.Name) (coreunit.Name, bool, error)
 
 	// GetUnitMachineName gets the name of the unit's machine.
-	//
-	// The following errors may be returned:
-	//   - [applicationerrors.UnitMachineNotAssigned] if the unit does not have a
-	//     machine assigned.
 	GetUnitMachineName(context.Context, coreunit.Name) (coremachine.Name, error)
 
-	// GetUnitMachineUUID gets the uuid of the unit's machine. If the unit's
-	// machine cannot be found [applicationerrors.UnitMachineNotAssigned] is
-	// returned.
+	// GetUnitMachineUUID gets the uuid of the unit's machine.
 	GetUnitMachineUUID(context.Context, coreunit.Name) (coremachine.UUID, error)
 
 	// GetUnitNamesForApplication returns a slice of the unit names for the given application
@@ -144,20 +157,12 @@ type ApplicationService interface {
 	// WatchUnitForLegacyUniter watches for some specific changes to the unit with
 	// the given name. The watcher will emit a notification when there is a change to
 	// the unit's inherent properties, it's subordinates or it's resolved mode.
-	//
-	// If the unit does not exist an error satisfying [applicationerrors.UnitNotFound]
-	// will be returned.
 	WatchUnitForLegacyUniter(context.Context, coreunit.Name) (watcher.NotifyWatcher, error)
 
 	// GetApplicationUUIDByUnitName returns the application UUID for the named unit.
-	//
-	// Returns [applicationerrors.UnitNotFound] if the unit is not found.
 	GetApplicationUUIDByUnitName(context.Context, coreunit.Name) (coreapplication.UUID, error)
 
 	// GetApplicationUUIDByName returns an application UUID by application name.
-	//
-	// Returns [applicationerrors.ApplicationNotFound] if the application is not
-	// found.
 	GetApplicationUUIDByName(ctx context.Context, name string) (coreapplication.UUID, error)
 
 	// GetCharmModifiedVersion looks up the charm modified version of the given
@@ -169,20 +174,20 @@ type ApplicationService interface {
 	// not available, [applicationerrors.CharmNotResolved] is returned.
 	GetAvailableCharmArchiveSHA256(context.Context, charm.CharmLocator) (string, error)
 
-	// GetCharmLXDProfile returns the LXD profile along with the revision of the
-	// charm using the charm name, source and revision.
-	GetCharmLXDProfile(context.Context, charm.CharmLocator) (internalcharm.LXDProfile, charm.Revision, error)
-
 	// GetApplicationTrustSetting returns the application trust setting.
 	GetApplicationTrustSetting(ctx context.Context, appName string) (bool, error)
 
 	// GetUnitRefreshAttributes returns the refresh attributes for the unit.
 	GetUnitRefreshAttributes(context.Context, coreunit.Name) (domainapplication.UnitAttributes, error)
 
-	// AddIAASSubordinateUnit adds a IAAS unit to the specified subordinate
-	// application to the application on the same machine as the given principal
-	// unit and records the principal-subordinate relationship.
-	AddIAASSubordinateUnit(ctx context.Context, subordinateAppID coreapplication.UUID, principalUnitName coreunit.Name) error
+	// PrepareUnitAddStorage validates and prepares unit storage add arguments
+	// without performing any writes.
+	PrepareUnitAddStorage(
+		ctx context.Context,
+		storageName corestorage.Name,
+		unitUUID coreunit.UUID,
+		count uint32,
+	) (domainstorage.IAASUnitAddStorageArg, error)
 
 	// SetUnitWorkloadVersion sets the workload version for the given unit.
 	SetUnitWorkloadVersion(ctx context.Context, unitName coreunit.Name, version string) error
@@ -225,6 +230,14 @@ type ApplicationService interface {
 	// UpdateUnitCharm updates the currently running charm marker for the given
 	// unit.
 	UpdateUnitCharm(context.Context, coreunit.Name, charm.CharmLocator) error
+
+	// GetIAASUnitContext returns the unit context for a unit running on an IAAS
+	// provider.
+	GetIAASUnitContext(context.Context, coreunit.Name) (applicationservice.IAASUnitContext, error)
+
+	// GetCAASUnitContext returns the unit context for a unit running on an CAAS
+	// provider.
+	GetCAASUnitContext(context.Context, coreunit.Name) (applicationservice.CAASUnitContext, error)
 }
 
 // NetworkService is the interface that is used to interact with the
@@ -252,14 +265,16 @@ type NetworkService interface {
 	// - [network.NoAddressError] if the unit has no private address associated
 	GetUnitPrivateAddress(ctx context.Context, unitName coreunit.Name) (network.SpaceAddress, error)
 
-	// GetUnitRelationNetwork retrieves network relation information for a given
-	// unit and relation key.
+	// GetUnitRelationNetworks retrieves network relation information for a given
+	// unit and relation UUIDs.
 	//
 	// The following errors may be returned:
 	// - [applicationerrors.UnitNotFound] if the unit does not exist
-	// - [relationerrors.RelationNotFound] if the relation key doesn't belong to
-	//   the unit.
-	GetUnitRelationNetwork(ctx context.Context, unitName coreunit.Name, relKey corerelation.Key) (domainnetwork.UnitNetwork, error)
+	// - [relationerrors.RelationNotFound] if the relation doesn't belong to the
+	//   unit.
+	GetUnitRelationNetworks(
+		ctx context.Context, unitName coreunit.Name, relationUUIDs []corerelation.UUID,
+	) (map[corerelation.UUID]domainnetwork.UnitNetwork, error)
 
 	// GetUnitEndpointNetworks retrieves network relation information for a given unit and specified endpoints.
 	// It returns exactly one info for each endpoint names passed in argument,
@@ -268,7 +283,9 @@ type NetworkService interface {
 	//
 	// The following errors may be returned:
 	// - [applicationerrors.UnitNotFound] if the unit does not exist
-	GetUnitEndpointNetworks(ctx context.Context, unitName coreunit.Name, endpointNames []string) ([]domainnetwork.UnitNetwork, error)
+	GetUnitEndpointNetworks(
+		ctx context.Context, unitName coreunit.Name, endpointNames []string,
+	) ([]domainnetwork.UnitNetwork, error)
 }
 
 type ResolveService interface {
@@ -329,6 +346,9 @@ type StatusService interface {
 // UnitStateService describes the ability to retrieve and persist
 // unit agent state for informing hook reconciliation.
 type UnitStateService interface {
+	// CommitHookChanges persists a set of changes after a hook successfully
+	// completes and executes them in a single transaction.
+	CommitHookChanges(ctx context.Context, arg unitstate.CommitHookChangesArg) error
 	// SetState persists the input unit state.
 	SetState(context.Context, unitstate.UnitState) error
 	// GetState returns the full unit state. The state may be empty.
@@ -337,13 +357,10 @@ type UnitStateService interface {
 
 // PortService describes the ability to open and close port ranges for units.
 type PortService interface {
-	// UpdateUnitPorts opens and closes ports for the endpoints of a given unit.
-	UpdateUnitPorts(ctx context.Context, unitUUID coreunit.UUID, openPorts, closePorts network.GroupedPortRanges) error
-
 	// GetMachineOpenedPorts returns the opened ports for all the units on the
 	// machine. Opened ports are grouped first by unit name and then by
 	// endpoint.
-	GetMachineOpenedPorts(ctx context.Context, machineUUID string) (map[coreunit.Name]network.GroupedPortRanges, error)
+	GetMachineOpenedPorts(ctx context.Context, machineUUID coremachine.UUID) (map[coreunit.Name]network.GroupedPortRanges, error)
 
 	// GetUnitOpenedPorts returns the opened ports for a given unit uuid,
 	// grouped by endpoint.
@@ -414,10 +431,6 @@ type MachineService interface {
 	// machine.
 	AppliedLXDProfileNames(ctx context.Context, mUUID coremachine.UUID) ([]string, error)
 
-	// WatchMachineCloudInstances returns a StringsWatcher that is subscribed to
-	// the changes in the machine_cloud_instance table in the model.
-	WatchLXDProfiles(ctx context.Context, machineUUID coremachine.UUID) (watcher.NotifyWatcher, error)
-
 	// AvailabilityZone returns the hardware characteristics of the specified
 	// machine.
 	AvailabilityZone(ctx context.Context, machineUUID coremachine.UUID) (string, error)
@@ -440,20 +453,23 @@ type RelationService interface {
 	// overwritten in the relation according to the supplied map.
 	//
 	// If there is a subordinate application related to the unit entering scope
-	// that needs a subordinate unit creating, then the subordinate unit will be
-	// created with the provided createSubordinate function.
+	// that needs a subordinate unit created, then the subordinate unit will be
+	// created.
 	//
 	// The following error types can be expected to be returned:
 	//   - [relationerrors.PotentialRelationUnitNotValid] if the unit entering
 	//     scope is a subordinate and the endpoint scope is charm.ScopeContainer
 	//     where the other application is a principal, but not in the current
 	//     relation.
+	//   - [relationerrors.CannotEnterScopeNotAlive] if the unit or relation is not
+	//     alive.
+	//   - [relationerrors.CannotEnterScopeSubordinateNotAlive] if a subordinate
+	//     unit is needed but already exists and is not alive.
 	EnterScope(
 		ctx context.Context,
 		relationUUID corerelation.UUID,
 		unitName coreunit.Name,
 		settings map[string]string,
-		createSubordinate relation.SubordinateCreator,
 	) error
 
 	// GetGoalStateRelationDataForApplication returns GoalStateRelationData for
@@ -479,6 +495,10 @@ type RelationService interface {
 	// for a relation.
 	GetRelationDetails(ctx context.Context, relationUUID corerelation.UUID) (relation.RelationDetails, error)
 
+	// GetRelationUUIDsByUnitName returns a slice of relation UUIDs for relations
+	// the given unit is part of and in scope.
+	GetRelationUUIDsByUnitName(ctx context.Context, unitName coreunit.Name) ([]corerelation.UUID, error)
+
 	// GetRelationUnitUUID returns the relation unit UUID for the given unit
 	// within the given relation.
 	GetRelationUnitUUID(
@@ -493,6 +513,7 @@ type RelationService interface {
 	// if the operation fails.
 	GetRelationUnitChanges(
 		ctx context.Context,
+		relationUUID corerelation.UUID,
 		unitUUIDs []coreunit.UUID,
 		appUUIDs []coreapplication.UUID,
 	) (relation.RelationUnitsChange, error)
@@ -535,15 +556,6 @@ type RelationService interface {
 		unitName coreunit.Name,
 		relationUUID corerelation.UUID,
 		unitSettings map[string]string,
-	) error
-
-	// SetRelationApplicationAndUnitSettings records settings for a unit and
-	// an application in a relation.
-	SetRelationApplicationAndUnitSettings(
-		ctx context.Context,
-		unitName coreunit.Name,
-		relationUnitUUID corerelation.UUID,
-		applicationSettings, unitSettings map[string]string,
 	) error
 
 	// WatchRelationUnitApplicationLifeSuspendedStatus returns a watcher that notifies
@@ -589,6 +601,13 @@ type RemovalService interface {
 	// LeaveScope updates the relation to indicate that the unit represented by
 	// the input relation unit UUID is not in the implied relation scope.
 	LeaveScope(ctx context.Context, relationID corerelation.UnitUUID) error
+
+	// MarkStorageAttachmentAsDead marks the storage attachment as dead and
+	// cascade removes the filesystem attachments, volume attachments and volume
+	// attachment plans.
+	MarkStorageAttachmentAsDead(
+		ctx context.Context, uuid domainstorage.StorageAttachmentUUID,
+	) error
 }
 
 // BlockDeviceService provides methods to watch and manage block devices.
@@ -630,14 +649,14 @@ type StorageProvisioningService interface {
 	// the given storage attachment UUID.
 	GetUnitStorageAttachmentInfo(
 		ctx context.Context,
-		uuid storageprovisioning.StorageAttachmentUUID,
+		uuid domainstorage.StorageAttachmentUUID,
 	) (storageprovisioning.StorageAttachmentInfo, error)
 
 	// GetStorageAttachmentUUIDForUnit returns the UUID of the storage
 	// attachment for the given storage ID and unit UUID.
 	GetStorageAttachmentUUIDForUnit(
 		ctx context.Context, storageID string, unitUUID coreunit.UUID,
-	) (storageprovisioning.StorageAttachmentUUID, error)
+	) (domainstorage.StorageAttachmentUUID, error)
 
 	// WatchStorageAttachmentsForUnit returns a watcher that emits the storage
 	// IDs for the provided unit when the unit's storage attachments are
@@ -647,6 +666,12 @@ type StorageProvisioningService interface {
 	// WatchStorageAttachment returns a notification watcher for the storage
 	// attachment.
 	WatchStorageAttachment(
-		ctx context.Context, uuid storageprovisioning.StorageAttachmentUUID,
+		ctx context.Context, uuid domainstorage.StorageAttachmentUUID,
 	) (watcher.NotifyWatcher, error)
+}
+
+// TracingService provides methods to retrieve tracing configuration for charms.
+type TracingService interface {
+	// GetCharmTracingConfig returns the charm tracing config from the state.
+	GetCharmTracingConfig(ctx context.Context) (tracingservice.CharmTracingConfig, error)
 }

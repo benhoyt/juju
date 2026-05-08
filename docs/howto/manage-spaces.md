@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn how to create, view, rename, and delete network spaces in Juju for organizing subnets and controlling application networking."
+---
+
 (manage-spaces)=
 # How to manage spaces
 

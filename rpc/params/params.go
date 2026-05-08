@@ -18,7 +18,7 @@ import (
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/semversion"
-	"github.com/juju/juju/internal/storage"
+	"github.com/juju/juju/core/storage"
 	"github.com/juju/juju/internal/tools"
 )
 
@@ -338,8 +338,8 @@ type UpgradeCharmProfileStatusResults struct {
 
 // ConfigResult holds configuration values for an entity.
 type ConfigResult struct {
-	Config map[string]interface{} `json:"config"`
-	Error  *Error                 `json:"error,omitempty"`
+	Config map[string]any `json:"config"`
+	Error  *Error         `json:"error,omitempty"`
 }
 
 // ModelOperatorInfo holds infor needed for a model operator.
@@ -391,9 +391,9 @@ type Resolved struct {
 
 // ResolvedResults holds results of the Resolved call.
 type ResolvedResults struct {
-	Application string                 `json:"application"`
-	Charm       string                 `json:"charm"`
-	Settings    map[string]interface{} `json:"settings"`
+	Application string         `json:"application"`
+	Charm       string         `json:"charm"`
+	Settings    map[string]any `json:"settings"`
 }
 
 // UnitsResolved holds parameters for the ResolveUnitErrors call.
@@ -452,7 +452,7 @@ type ApplicationUnitParams struct {
 	FilesystemInfo []KubernetesFilesystemInfo `json:"filesystem-info,omitempty"`
 	Status         string                     `json:"status"`
 	Info           string                     `json:"info"`
-	Data           map[string]interface{}     `json:"data,omitempty"`
+	Data           map[string]any             `json:"data,omitempty"`
 }
 
 // UpdateApplicationUnitResults holds results from UpdateApplicationUnits
@@ -725,7 +725,7 @@ type StateServingInfo struct {
 	// The private key for the CA cert so that a new controller
 	// cert can be generated when needed.
 	CAPrivateKey string `json:"ca-private-key"`
-	// this will be passed as the KeyFile argument to MongoDB
+	// SystemIdentity will be passed as the KeyFile for the database.
 	SystemIdentity string `json:"system-identity"`
 }
 
@@ -759,19 +759,19 @@ type UpdateBehavior struct {
 // ContainerConfig contains information from the model config that is
 // needed for container cloud-init.
 type ContainerConfig struct {
-	ProviderType               string                 `json:"provider-type"`
-	AuthorizedKeys             string                 `json:"authorized-keys"`
-	SSLHostnameVerification    bool                   `json:"ssl-hostname-verification"`
-	LegacyProxy                proxy.Settings         `json:"legacy-proxy"`
-	JujuProxy                  proxy.Settings         `json:"juju-proxy"`
-	AptProxy                   proxy.Settings         `json:"apt-proxy"`
-	SnapProxy                  proxy.Settings         `json:"snap-proxy"`
-	SnapStoreAssertions        string                 `json:"snap-store-assertions"`
-	SnapStoreProxyID           string                 `json:"snap-store-proxy-id"`
-	SnapStoreProxyURL          string                 `json:"snap-store-proxy-url"`
-	AptMirror                  string                 `json:"apt-mirror,omitempty"`
-	CloudInitUserData          map[string]interface{} `json:"cloudinit-userdata,omitempty"`
-	ContainerInheritProperties string                 `json:"container-inherit-properties,omitempty"`
+	ProviderType               string         `json:"provider-type"`
+	AuthorizedKeys             string         `json:"authorized-keys"`
+	SSLHostnameVerification    bool           `json:"ssl-hostname-verification"`
+	LegacyProxy                proxy.Settings `json:"legacy-proxy"`
+	JujuProxy                  proxy.Settings `json:"juju-proxy"`
+	AptProxy                   proxy.Settings `json:"apt-proxy"`
+	SnapProxy                  proxy.Settings `json:"snap-proxy"`
+	SnapStoreAssertions        string         `json:"snap-store-assertions"`
+	SnapStoreProxyID           string         `json:"snap-store-proxy-id"`
+	SnapStoreProxyURL          string         `json:"snap-store-proxy-url"`
+	AptMirror                  string         `json:"apt-mirror,omitempty"`
+	CloudInitUserData          map[string]any `json:"cloudinit-userdata,omitempty"`
+	ContainerInheritProperties string         `json:"container-inherit-properties,omitempty"`
 	*UpdateBehavior
 }
 
@@ -816,6 +816,7 @@ type IsControllerResults struct {
 }
 
 // JobsResult holds the jobs for a machine that are returned by a call to Jobs.
+//
 // Deprecated: Jobs is being deprecated. Use IsController instead.
 type JobsResult struct {
 	Jobs  []string `json:"jobs"`
@@ -966,6 +967,30 @@ type ControllerDetails struct {
 	Error        *Error   `json:"error,omitempty"`
 }
 
+// ControllersChangeResult contains the results
+// of a single EnableHA API call or
+// an error.
+type ControllersChangeResult struct {
+	Result ControllersChanges `json:"result"`
+	Error  *Error             `json:"error,omitempty"`
+}
+
+// ControllersChangeResults contains the results
+// of the EnableHA API call.
+type ControllersChangeResults struct {
+	Results []ControllersChangeResult `json:"results"`
+}
+
+// ControllersChanges lists the servers
+// that have been added, removed or maintained in the
+// pool as a result of an enable-ha operation.
+type ControllersChanges struct {
+	Added      []string `json:"added,omitempty"`
+	Maintained []string `json:"maintained,omitempty"`
+	Removed    []string `json:"removed,omitempty"`
+	Converted  []string `json:"converted,omitempty"`
+}
+
 // FindToolsParams defines parameters for the FindTools method.
 type FindToolsParams struct {
 	// Number will be used to match tools versions exactly if non-zero.
@@ -1048,8 +1073,8 @@ func (m *LogRecord) UnmarshalJSON(data []byte) error {
 // PubSubMessage is used to propagate pubsub messages from one api server to the
 // others.
 type PubSubMessage struct {
-	Topic string                 `json:"topic"`
-	Data  map[string]interface{} `json:"data"`
+	Topic string         `json:"topic"`
+	Data  map[string]any `json:"data"`
 }
 
 // LeaseOperations is used to send raft operational messages between controllers.
@@ -1137,18 +1162,11 @@ type BundleChangesMapArgs struct {
 	// Method is the action to be performed to apply this change.
 	Method string `json:"method"`
 	// Args holds a list of arguments to pass to the method.
-	Args map[string]interface{} `json:"args"`
+	Args map[string]any `json:"args"`
 	// Requires holds a list of dependencies for this change. Each dependency
 	// is represented by the corresponding change id, and must be applied
 	// before this change is applied.
 	Requires []string `json:"requires"`
-}
-
-type MongoVersion struct {
-	Major         int    `json:"major"`
-	Minor         int    `json:"minor"`
-	Patch         string `json:"patch"`
-	StorageEngine string `json:"engine"`
 }
 
 // MacaroonResults contains a set of MacaroonResults.
@@ -1327,7 +1345,7 @@ type GenerationApplication struct {
 
 	// Config changes are the effective new configuration values resulting from
 	// changes made under this branch.
-	ConfigChanges map[string]interface{} `json:"config"`
+	ConfigChanges map[string]any `json:"config"`
 }
 
 // Generation represents a model generation's details including config changes.
@@ -1418,4 +1436,34 @@ type CLICommandStatus struct {
 type VirtualHostnameTargetArg struct {
 	Tag       string  `json:"tag"`
 	Container *string `json:"container,omitempty"`
+}
+
+// ProxySettings contains the proxy settings for a model, which may be used by
+// agents in the model.
+type ProxySettings struct {
+	HTTPProxy  string `json:"http-proxy,omitempty"`
+	HTTPSProxy string `json:"https-proxy,omitempty"`
+	FTPProxy   string `json:"ftp-proxy,omitempty"`
+	NoProxy    string `json:"no-proxy,omitempty"`
+}
+
+// CharmTracingConfig contains the tracing configuration for charms, which may
+// be used by agents in the model.
+type CharmTracingConfig struct {
+	HTTPEndpoint  string `json:"http-endpoint,omitempty"`
+	GRPCEndpoint  string `json:"grpc-endpoint,omitempty"`
+	CACertificate string `json:"ca-certificate,omitempty"`
+}
+
+// UnitContext contains all the context information required for the
+// construction of a context factory.
+type UnitContext struct {
+	APIAddresses                      []string                          `json:"api-addresses"`
+	CloudAPIVersion                   string                            `json:"cloud-api-version"`
+	LegacyProxySettings               ProxySettings                     `json:"legacy-proxy-settings"`
+	JujuProxySettings                 ProxySettings                     `json:"juju-proxy-settings"`
+	PrivateAddress                    *string                           `json:"private-address,omitempty"`
+	OpenedMachinePortRangesByEndpoint map[string]map[string][]PortRange `json:"opened-machine-port-ranges-by-endpoint,omitempty"`
+	OpenedPortRangesByEndpoint        map[string]map[string][]PortRange `json:"opened-port-ranges-by-endpoint,omitempty"`
+	CharmTracingConfig                CharmTracingConfig                `json:"charm-tracing-config,omitempty"`
 }

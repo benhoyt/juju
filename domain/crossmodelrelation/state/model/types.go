@@ -19,6 +19,8 @@ import (
 	domainsecret "github.com/juju/juju/domain/secret"
 )
 
+type uuids []string
+
 // nameAndUUID is an agnostic container for the pair of
 // `uuid` and `name` columns.
 type nameAndUUID struct {
@@ -37,6 +39,11 @@ type uuid struct {
 	UUID string `db:"uuid"`
 }
 
+type uuidAndLife struct {
+	UUID string `db:"uuid"`
+	Life int    `db:"life_id"`
+}
+
 type applicationUUIDAndCharmSource struct {
 	UUID        string            `db:"uuid"`
 	CharmSource charm.CharmSource `db:"name"`
@@ -50,6 +57,14 @@ type name struct {
 type offerAndApplicationUUID struct {
 	UUID            string `db:"uuid"`
 	ApplicationUUID string `db:"application_uuid"`
+}
+
+type consumeDetail struct {
+	OfferUUID         string             `db:"uuid"`
+	EndpointName      string             `db:"name"`
+	EndpointRole      charm.RelationRole `db:"role"`
+	EndpointInterface string             `db:"interface"`
+	EndpointLimit     int                `db:"capacity"`
 }
 
 // offerDetail contains the data necessary for create
@@ -72,6 +87,7 @@ type offerDetail struct {
 	EndpointName      string             `db:"endpoint_name"`
 	EndpointRole      charm.RelationRole `db:"endpoint_role"`
 	EndpointInterface string             `db:"endpoint_interface"`
+	EndpointLimit     int                `db:"endpoint_limit"`
 }
 
 type offerFilter struct {
@@ -96,6 +112,7 @@ func (o offerDetails) TransformToOfferDetails() []*crossmodelrelation.OfferDetai
 				Name:      details.EndpointName,
 				Role:      details.EndpointRole,
 				Interface: details.EndpointInterface,
+				Limit:     details.EndpointLimit,
 			})
 			converted[details.OfferUUID] = found
 			continue
@@ -117,6 +134,7 @@ func (o offerDetails) TransformToOfferDetails() []*crossmodelrelation.OfferDetai
 					Name:      details.EndpointName,
 					Role:      details.EndpointRole,
 					Interface: details.EndpointInterface,
+					Limit:     details.EndpointLimit,
 				},
 			},
 			TotalConnections:       details.TotalConnections,
@@ -128,7 +146,7 @@ func (o offerDetails) TransformToOfferDetails() []*crossmodelrelation.OfferDetai
 	return slices.Collect(maps.Values(converted))
 }
 
-type applicationDetails struct {
+type setApplicationDetails struct {
 	UUID      string    `db:"uuid"`
 	Name      string    `db:"name"`
 	CharmUUID string    `db:"charm_uuid"`
@@ -247,6 +265,18 @@ type offerConnectionQuery struct {
 	OfferUUID string `db:"offer_uuid"`
 }
 
+// offerConnectionDetail maps the result of the offer connection details query.
+type offerConnectionDetail struct {
+	OfferUUID         string         `db:"offer_uuid"`
+	RelationID        int            `db:"relation_id"`
+	Username          string         `db:"username"`
+	ConsumerModelUUID string         `db:"consumer_model_uuid"`
+	EndpointName      string         `db:"endpoint_name"`
+	Status            string         `db:"status"`
+	Message           sql.NullString `db:"message"`
+	StatusSince       *time.Time     `db:"updated_at"`
+}
+
 type relation struct {
 	UUID       string `db:"uuid"`
 	LifeID     int    `db:"life_id"`
@@ -293,6 +323,11 @@ type applicationUUID struct {
 	UUID string `db:"uuid"`
 }
 
+type unit struct {
+	UUID string `db:"uuid"`
+	Name string `db:"name"`
+}
+
 type secretRevisions []revisionUUID
 type revisionUUID struct {
 	UUID string `db:"uuid"`
@@ -322,8 +357,18 @@ type secretRef struct {
 }
 
 type secretLatestRevision struct {
-	ID             string `db:"secret_id"`
-	LatestRevision int    `db:"latest_revision"`
+	ID              string    `db:"secret_id"`
+	LatestRevision  int       `db:"latest_revision"`
+	ApplicationUUID string    `db:"owner_application_uuid"`
+	UpdatedAt       time.Time `db:"updated_at"`
+}
+
+type secretUnitConsumer struct {
+	UnitUUID        string `db:"unit_uuid"`
+	SecretID        string `db:"secret_id"`
+	SourceModelUUID string `db:"source_model_uuid"`
+	Label           string `db:"label"`
+	CurrentRevision int    `db:"current_revision"`
 }
 
 type secretRevisionObsolete struct {
@@ -408,6 +453,14 @@ type cidr struct {
 	CIDR string `db:"cidr"`
 }
 
+// offerConnectionIngress is used to fetch ingress CIDRs keyed by
+// offer UUID and relation ID, so they can be matched to connection details.
+type offerConnectionIngress struct {
+	OfferUUID  string `db:"offer_uuid"`
+	RelationID int    `db:"relation_id"`
+	CIDR       string `db:"cidr"`
+}
+
 type lifeID struct {
 	Life int `db:"life_id"`
 }
@@ -443,4 +496,21 @@ type setRelationStatus struct {
 	Status corestatus.Status `db:"status"`
 	// UpdatedAt specifies the timestamp of the insertion
 	UpdatedAt time.Time `db:"updated_at"`
+}
+
+// remoteModelUUID is used to fetch the UUID of a remote model. It can be NULL
+// in the case of the relation not being CMR.
+type remoteModelUUID struct {
+	UUID sql.NullString `db:"uuid"`
+}
+
+// remoteSecretGrant is used to insert secret_permission records for imported
+// remote secrets.
+type remoteSecretGrant struct {
+	SecretID      string                        `db:"secret_id"`
+	RoleID        domainsecret.Role             `db:"role_id"`
+	SubjectUUID   string                        `db:"subject_uuid"`
+	SubjectTypeID domainsecret.GrantSubjectType `db:"subject_type_id"`
+	ScopeUUID     string                        `db:"scope_uuid"`
+	ScopeTypeID   domainsecret.GrantScopeType   `db:"scope_type_id"`
 }

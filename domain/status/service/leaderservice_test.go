@@ -24,14 +24,16 @@ import (
 	statuserrors "github.com/juju/juju/domain/status/errors"
 	"github.com/juju/juju/internal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
+	"github.com/juju/juju/internal/statushistory"
 )
 
 type leaderServiceSuite struct {
 	modelState      *MockModelState
 	controllerState *MockControllerState
 
-	leadership    *MockEnsurer
-	statusHistory *statusHistoryRecorder
+	leadership       *MockEnsurer
+	clusterDescriber *MockClusterDescriber
+	statusHistory    *statusHistoryRecorder
 
 	service *LeadershipService
 }
@@ -50,7 +52,7 @@ func (s *leaderServiceSuite) TestSetRelationStatus(c *tc.C) {
 	sts := corestatus.StatusInfo{
 		Status:  corestatus.Broken,
 		Message: "message",
-		Since:   ptr(time.Now()),
+		Since:   new(time.Now()),
 	}
 
 	expectedStatus := status.StatusInfo[status.RelationStatusType]{
@@ -80,7 +82,7 @@ func (s *leaderServiceSuite) TestSetRelationStatusRelationNotFound(c *tc.C) {
 	unitName := unittesting.GenNewName(c, "app/0")
 	sts := corestatus.StatusInfo{
 		Status: corestatus.Broken,
-		Since:  ptr(time.Now()),
+		Since:  new(time.Now()),
 	}
 	expectedStatus := status.StatusInfo[status.RelationStatusType]{
 		Status: status.RelationStatusTypeBroken,
@@ -124,10 +126,20 @@ func (s *leaderServiceSuite) TestSetApplicationStatusForUnitLeader(c *tc.C) {
 	err := s.service.SetApplicationStatusForUnitLeader(c.Context(), unitName, corestatus.StatusInfo{
 		Status:  corestatus.Active,
 		Message: "doink",
-		Data:    map[string]interface{}{"foo": "bar"},
+		Data:    map[string]any{"foo": "bar"},
 		Since:   &now,
 	})
 	c.Assert(err, tc.ErrorIsNil)
+
+	c.Check(s.statusHistory.records, tc.DeepEquals, []statusHistoryRecord{{
+		ns: statushistory.Namespace{Kind: corestatus.KindApplication, ID: "foo"},
+		s: corestatus.StatusInfo{
+			Status:  corestatus.Active,
+			Message: "doink",
+			Data:    map[string]any{"foo": "bar"},
+			Since:   &now,
+		},
+	}})
 }
 
 func (s *leaderServiceSuite) TestSetApplicationStatusForUnitLeaderNotLeader(c *tc.C) {
@@ -148,7 +160,7 @@ func (s *leaderServiceSuite) TestSetApplicationStatusForUnitLeaderNotLeader(c *t
 	err := s.service.SetApplicationStatusForUnitLeader(c.Context(), unitName, corestatus.StatusInfo{
 		Status:  corestatus.Active,
 		Message: "doink",
-		Data:    map[string]interface{}{"foo": "bar"},
+		Data:    map[string]any{"foo": "bar"},
 		Since:   &now,
 	})
 	c.Assert(err, tc.ErrorIs, statuserrors.UnitNotLeader)
@@ -163,7 +175,7 @@ func (s *leaderServiceSuite) TestSetApplicationStatusForUnitLeaderInvalidUnitNam
 	err := s.service.SetApplicationStatusForUnitLeader(c.Context(), unitName, corestatus.StatusInfo{
 		Status:  corestatus.Active,
 		Message: "doink",
-		Data:    map[string]interface{}{"foo": "bar"},
+		Data:    map[string]any{"foo": "bar"},
 		Since:   &now,
 	})
 	c.Assert(err, tc.ErrorIs, coreunit.InvalidUnitName)
@@ -178,15 +190,15 @@ func (s *leaderServiceSuite) TestSetApplicationStatusForUnitLeaderNoUnitFound(c 
 	unitName := coreunit.Name("foo/666")
 
 	s.modelState.EXPECT().GetApplicationUUIDAndNameByUnitName(gomock.Any(), unitName).
-		Return(applicationUUID, "foo", statuserrors.UnitNotFound)
+		Return(applicationUUID, "foo", applicationerrors.UnitNotFound)
 
 	err := s.service.SetApplicationStatusForUnitLeader(c.Context(), unitName, corestatus.StatusInfo{
 		Status:  corestatus.Active,
 		Message: "doink",
-		Data:    map[string]interface{}{"foo": "bar"},
+		Data:    map[string]any{"foo": "bar"},
 		Since:   &now,
 	})
-	c.Assert(err, tc.ErrorIs, statuserrors.UnitNotFound)
+	c.Assert(err, tc.ErrorIs, applicationerrors.UnitNotFound)
 }
 
 func (s *leaderServiceSuite) TestGetApplicationAndUnitStatusesForUnitWithLeaderNotLeader(c *tc.C) {
@@ -278,20 +290,20 @@ func (s *leaderServiceSuite) TestGetApplicationAndUnitStatusesForUnitWithLeaderA
 	c.Check(applicationStatus, tc.DeepEquals, corestatus.StatusInfo{
 		Status:  corestatus.Active,
 		Message: "doink",
-		Data:    map[string]interface{}{"foo": "bar"},
+		Data:    map[string]any{"foo": "bar"},
 		Since:   &now,
 	})
 	c.Check(unitWorkloadStatuses, tc.DeepEquals, map[coreunit.Name]corestatus.StatusInfo{
 		"foo/0": {
 			Status:  corestatus.Active,
 			Message: "boink",
-			Data:    map[string]interface{}{"foo": "baz"},
+			Data:    map[string]any{"foo": "baz"},
 			Since:   &now,
 		},
 		"foo/1": {
 			Status:  corestatus.Blocked,
 			Message: "poink",
-			Data:    map[string]interface{}{"foo": "bat"},
+			Data:    map[string]any{"foo": "bat"},
 			Since:   &now,
 		},
 	})
@@ -361,20 +373,20 @@ func (s *leaderServiceSuite) TestGetApplicationAndUnitStatusesForUnitWithLeaderA
 	c.Check(applicationStatus, tc.DeepEquals, corestatus.StatusInfo{
 		Status:  corestatus.Blocked,
 		Message: "zoink",
-		Data:    map[string]interface{}{"foo": "baz"},
+		Data:    map[string]any{"foo": "baz"},
 		Since:   &now,
 	})
 	c.Check(unitWorkloadStatuses, tc.DeepEquals, map[coreunit.Name]corestatus.StatusInfo{
 		"foo/0": {
 			Status:  corestatus.Active,
 			Message: "boink",
-			Data:    map[string]interface{}{"foo": "baz"},
+			Data:    map[string]any{"foo": "baz"},
 			Since:   &now,
 		},
 		"foo/1": {
 			Status:  corestatus.Active,
 			Message: "poink",
-			Data:    map[string]interface{}{"foo": "bat"},
+			Data:    map[string]any{"foo": "bat"},
 			Since:   &now,
 		},
 	})
@@ -386,12 +398,14 @@ func (s *leaderServiceSuite) setupMocks(c *tc.C) *gomock.Controller {
 	s.modelState = NewMockModelState(ctrl)
 	s.controllerState = NewMockControllerState(ctrl)
 	s.leadership = NewMockEnsurer(ctrl)
+	s.clusterDescriber = NewMockClusterDescriber(ctrl)
 	s.statusHistory = &statusHistoryRecorder{}
 
 	s.service = NewLeadershipService(
 		s.modelState,
 		s.controllerState,
 		s.leadership,
+		s.clusterDescriber,
 		nil,
 		model.UUID("test-model"),
 		s.statusHistory,
@@ -401,6 +415,15 @@ func (s *leaderServiceSuite) setupMocks(c *tc.C) *gomock.Controller {
 		clock.WallClock,
 		loggertesting.WrapCheckLog(c),
 	)
+
+	c.Cleanup(func() {
+		s.modelState = nil
+		s.controllerState = nil
+		s.leadership = nil
+		s.clusterDescriber = nil
+		s.statusHistory = nil
+		s.service = nil
+	})
 
 	return ctrl
 }

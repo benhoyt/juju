@@ -12,11 +12,11 @@ import (
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/api/jujuclient"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/modelcmd"
 	jujucrossmodel "github.com/juju/juju/core/crossmodel"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
+	"github.com/juju/juju/domain/deployment/charm"
 )
 
 func newFindEndpointsCommandForTest(store jujuclient.ClientStore, api FindAPI) cmd.Command {
@@ -123,6 +123,27 @@ func (s *findSuite) TestEndpointFilter(c *tc.C) {
 		`
 Store   URL                    Access   Interfaces
 master  prod/model.hosted-db2  consume  http:db2, http:log
+`[1:],
+	)
+}
+
+func (s *findSuite) TestFindDefaultQualifierUsesAccountUser(c *tc.C) {
+	s.store.Accounts["test-master"] = jujuclient.AccountDetails{
+		User: "bob.smith@canonical.com",
+	}
+	s.mockAPI.c = c
+	s.mockAPI.expectedModelName = "model"
+	s.mockAPI.expectedFilter = &jujucrossmodel.ApplicationOfferFilter{
+		ModelQualifier: "bob.smith@canonical.com",
+		ModelName:      "model",
+		OfferName:      "hosted-db2",
+	}
+	s.assertFind(
+		c,
+		[]string{"--url", "model.hosted-db2"},
+		`
+Store   URL                    Access  Interfaces
+master  prod/model.hosted-db2  -       http:db2, http:log
 `[1:],
 	)
 }

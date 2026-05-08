@@ -13,52 +13,34 @@ import (
 	"github.com/juju/juju/core/secrets"
 	coreunit "github.com/juju/juju/core/unit"
 	"github.com/juju/juju/core/watcher/eventsource"
-	"github.com/juju/juju/domain"
 	domainsecret "github.com/juju/juju/domain/secret"
 	"github.com/juju/juju/domain/secretbackend"
 	"github.com/juju/juju/internal/secrets/provider"
 	"github.com/juju/juju/internal/uuid"
 )
 
-// AtomicState describes retrieval and persistence methods for
-// secrets that require atomic transactions.
-type AtomicState interface {
-	domain.AtomicStateBase
-
-	DeleteSecret(ctx domain.AtomicContext, uri *secrets.URI, revs []int) error
-	GetApplicationUUID(ctx domain.AtomicContext, appName string) (coreapplication.UUID, error)
-	GetUnitUUID(ctx domain.AtomicContext, name coreunit.Name) (coreunit.UUID, error)
-	GetSecretOwner(ctx domain.AtomicContext, uri *secrets.URI) (domainsecret.Owner, error)
-
-	CheckUserSecretLabelExists(ctx domain.AtomicContext, label string) (bool, error)
-	CheckApplicationSecretLabelExists(ctx domain.AtomicContext, appUUID coreapplication.UUID, label string) (bool, error)
-	CheckUnitSecretLabelExists(ctx domain.AtomicContext, unitUUID coreunit.UUID, label string) (bool, error)
-	CreateUserSecret(
-		ctx domain.AtomicContext, version int, uri *secrets.URI, secret domainsecret.UpsertSecretParams,
-	) error
-	CreateCharmApplicationSecret(
-		ctx domain.AtomicContext, version int, uri *secrets.URI, appUUID coreapplication.UUID, secret domainsecret.UpsertSecretParams,
-	) error
-	CreateCharmUnitSecret(
-		ctx domain.AtomicContext, version int, uri *secrets.URI, unitUUID coreunit.UUID, secret domainsecret.UpsertSecretParams,
-	) error
-	UpdateSecret(ctx domain.AtomicContext, uri *secrets.URI, secret domainsecret.UpsertSecretParams) error
-}
-
 // State describes retrieval and persistence methods needed for
 // the secrets domain service.
 type State interface {
-	AtomicState
-
+	GetApplicationUUID(ctx context.Context, appName string) (coreapplication.UUID, error)
 	GetModelUUID(ctx context.Context) (coremodel.UUID, error)
-	DeleteObsoleteUserSecretRevisions(ctx context.Context) ([]string, error)
+	GetUnitUUID(ctx context.Context, name coreunit.Name) (coreunit.UUID, error)
+	ImportSecretWithRevisions(ctx context.Context, version int, uri *secrets.URI,
+		owner domainsecret.Owner,
+		metaParams domainsecret.UpsertSecretParams,
+		revisions []domainsecret.UpsertRevisionParams) error
+	CreateUserSecret(ctx context.Context, version int, uri *secrets.URI, secret domainsecret.UpsertSecretParams) error
+	CreateCharmApplicationSecret(ctx context.Context, version int, uri *secrets.URI, appUUID coreapplication.UUID, secret domainsecret.UpsertSecretParams) error
+	CreateCharmUnitSecret(ctx context.Context, version int, uri *secrets.URI, unitUUID coreunit.UUID, secret domainsecret.UpsertSecretParams) error
 	GetSecret(ctx context.Context, uri *secrets.URI) (*secrets.SecretMetadata, error)
 	GetLatestRevision(ctx context.Context, uri *secrets.URI) (int, error)
 	GetLatestRevisions(ctx context.Context, uris []*secrets.URI) (map[string]int, error)
 	GetSecretValue(ctx context.Context, uri *secrets.URI, revision int) (secrets.SecretData, *secrets.ValueRef, error)
-	ListSecrets(ctx context.Context, uri *secrets.URI,
-		revision *int, labels domainsecret.Labels,
-	) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error)
+	GetSecretByURI(ctx context.Context, uri secrets.URI, revision *int) (*secrets.SecretMetadata,
+		[]*secrets.SecretRevisionMetadata, error)
+	ListSecretsByLabels(ctx context.Context, labels domainsecret.Labels, revision *int) ([]*secrets.SecretMetadata,
+		[][]*secrets.SecretRevisionMetadata, error)
+	ListAllSecrets(ctx context.Context) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error)
 	ListCharmSecrets(ctx context.Context,
 		appOwners domainsecret.ApplicationOwners, unitOwners domainsecret.UnitOwners,
 	) ([]*secrets.SecretMetadata, [][]*secrets.SecretRevisionMetadata, error)
@@ -74,7 +56,7 @@ type State interface {
 	GetRelationEndpoints(ctx context.Context, relationUUID string) ([]corerelation.EndpointIdentifier, error)
 	GetSecretGrants(ctx context.Context, uri *secrets.URI, role secrets.SecretRole) ([]domainsecret.GrantDetails, error)
 	ListGrantedSecretsForBackend(
-		ctx context.Context, backendID string, accessors []domainsecret.AccessParams, role secrets.SecretRole,
+		ctx context.Context, backendID string, accessors []domainsecret.AccessParams, roles []domainsecret.Role,
 	) ([]*secrets.SecretRevisionRef, error)
 	ListCharmSecretsToDrain(
 		ctx context.Context,
@@ -93,14 +75,17 @@ type State interface {
 	) ([]string, error)
 	GetApplicationUUIDsForNames(ctx context.Context, names domainsecret.ApplicationOwners) ([]string, error)
 	GetUnitUUIDsForNames(ctx context.Context, names domainsecret.UnitOwners) ([]string, error)
+	UpdateSecret(ctx context.Context, uri *secrets.URI, secret domainsecret.UpsertSecretParams) error
+	ScheduleUserSecretRemoval(ctx context.Context, removalUUID string, uri *secrets.URI, revisions []int, when time.Time) error
+	ScheduleObsoleteUserSecretRevisionsPruning(ctx context.Context, jobUUID string, when time.Time) error
 
 	// For watching obsolete secret revision changes.
 	InitialWatchStatementForObsoleteRevision(
 		appOwnerUUIDs domainsecret.ApplicationOwners, unitOwnerUUIDs domainsecret.UnitOwners,
 	) (tableName string, statement eventsource.NamespaceQuery)
 	GetRevisionIDsForObsolete(
-		ctx context.Context, appUUIDs domainsecret.ApplicationOwners, unitUUIDS domainsecret.UnitOwners, revisionUUIDs ...string,
-	) (map[string]string, error)
+		ctx context.Context, appUUIDs domainsecret.ApplicationOwners, unitUUIDs domainsecret.UnitOwners, revisionUUIDs []string,
+	) ([]string, error)
 
 	// For watching obsolete user secret revisions to prune.
 	GetObsoleteUserSecretRevisionsReadyToPrune(ctx context.Context) ([]string, error)
@@ -149,18 +134,18 @@ type State interface {
 type SecretBackendReferenceMutator interface {
 	// AddSecretBackendReference adds a reference to the
 	// secret backend for the given secret revision.
+	// secretID is the logical secret identifier (URI ID), shared across
+	// all revisions of the same secret.
 	AddSecretBackendReference(
-		ctx context.Context, valueRef *secrets.ValueRef, modelID coremodel.UUID, revisionID string,
+		ctx context.Context, valueRef *secrets.ValueRef, modelID coremodel.UUID, revisionID string, secretID string,
 	) (func() error, error)
-
-	// RemoveSecretBackendReference removes the reference
-	// to the secret backend for the given secret revision.
-	RemoveSecretBackendReference(ctx context.Context, revisionIDs ...string) error
 
 	// UpdateSecretBackendReference updates the reference
 	// to the secret backend for the given secret revision.
+	// secretID is the logical secret identifier (URI ID), shared across
+	// all revisions of the same secret.
 	UpdateSecretBackendReference(
-		ctx context.Context, valueRef *secrets.ValueRef, modelID coremodel.UUID, revisionID string,
+		ctx context.Context, valueRef *secrets.ValueRef, modelID coremodel.UUID, revisionID string, secretID string,
 	) (func() error, error)
 }
 
@@ -185,4 +170,8 @@ type SecretBackendState interface {
 	// GetActiveModelSecretBackend returns the active secret backend ID and config for the given model.
 	// It returns an error satisfying [modelerrors.NotFound] if the model provided does not exist.
 	GetActiveModelSecretBackend(ctx context.Context, modelUUID coremodel.UUID) (string, *provider.ModelBackendConfig, error)
+
+	// GetSecretBackendNamesByUUID returns a map of backend UUID to backend name for all backends.
+	// An empty map will be returned if there are no backends.
+	GetSecretBackendNamesByUUID(ctx context.Context) (map[string]string, error)
 }

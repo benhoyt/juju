@@ -24,7 +24,7 @@ func Register(requiredMigrationFacadeVersions facades.FacadeVersions) func(regis
 				return nil, errors.Errorf("making migration target version 4: %w", err)
 			}
 			return api, nil
-		}, reflect.TypeOf((*APIV4)(nil)))
+		}, reflect.TypeFor[*APIV4]())
 		// Bumped to version 5 for the addition of the token field in
 		// the Migration.TargetInfo struct.
 		registry.MustRegisterForMultiModel("MigrationTarget", 5, func(stdCtx context.Context, ctx facade.MultiModelContext) (facade.Facade, error) {
@@ -33,7 +33,7 @@ func Register(requiredMigrationFacadeVersions facades.FacadeVersions) func(regis
 				return nil, errors.Errorf("making migration target version 5: %w", err)
 			}
 			return api, nil
-		}, reflect.TypeOf((*APIV5)(nil)))
+		}, reflect.TypeFor[*APIV5]())
 		// Bumped to version 6 for the addition of the skipUserChecks field in
 		// the Migration.TargetInfo struct.
 		registry.MustRegisterForMultiModel("MigrationTarget", 6, func(stdCtx context.Context, ctx facade.MultiModelContext) (facade.Facade, error) {
@@ -42,7 +42,7 @@ func Register(requiredMigrationFacadeVersions facades.FacadeVersions) func(regis
 				return nil, errors.Errorf("making migration target version 6: %w", err)
 			}
 			return api, nil
-		}, reflect.TypeOf((*APIV6)(nil)))
+		}, reflect.TypeFor[*APIV6]())
 		// v7 handles requests with a model qualifier instead of a model owner.
 		registry.MustRegisterForMultiModel("MigrationTarget", 7, func(stdCtx context.Context, ctx facade.MultiModelContext) (facade.Facade, error) {
 			api, err := makeFacade(stdCtx, ctx, requiredMigrationFacadeVersions)
@@ -50,7 +50,7 @@ func Register(requiredMigrationFacadeVersions facades.FacadeVersions) func(regis
 				return nil, errors.Errorf("making migration target version 7: %w", err)
 			}
 			return api, nil
-		}, reflect.TypeOf((*API)(nil)))
+		}, reflect.TypeFor[*API]())
 	}
 }
 
@@ -118,10 +118,18 @@ func makeFacade(
 		}
 		return svc.Agent(), nil
 	}
+	removalServiceGetter := func(c context.Context, modelId model.UUID) (RemovalService, error) {
+		svc, err := ctx.DomainServicesForModel(c, modelId)
+		if err != nil {
+			return nil, errors.Errorf("retrieving domain services for model %q: %w", modelId, err)
+		}
+		return svc.Removal(), nil
+	}
 
 	return NewAPI(
 		ctx,
 		auth,
+		domainServices.Cloud(),
 		domainServices.ControllerConfig(),
 		domainServices.ExternalController(),
 		domainServices.Model(),
@@ -130,7 +138,9 @@ func makeFacade(
 		domainServices.Machine(),
 		modelAgentServiceGetter,
 		modelMigrationServiceGetter,
+		removalServiceGetter,
 		facadeVersions,
 		ctx.LogDir(),
+		ctx.Logger().Child("migrationtarget"),
 	)
 }

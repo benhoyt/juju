@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Learn how to add, remove, debug, and manage units in Juju applications. Complete guide to unit-level operations."
+---
+
 (manage-units)=
 # How to manage units
 

@@ -10,8 +10,8 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
 
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/core/flags"
@@ -70,7 +70,8 @@ type HTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
-// StatusHistory records status information into a generalized way.
+// StatusHistory records the status of a juju entity to display as its
+// status history when requested.
 type StatusHistory interface {
 	// RecordStatus records the given status information.
 	// If the status data cannot be marshalled, it will not be recorded, instead

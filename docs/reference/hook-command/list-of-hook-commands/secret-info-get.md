@@ -1,7 +1,7 @@
 (hook-command-secret-info-get)=
 # `secret-info-get`
 ## Summary
-Get a secret's metadata info.
+Gets a secret's metadata info.
 
 ## Usage
 ``` secret-info-get [options] <ID>```
@@ -10,7 +10,7 @@ Get a secret's metadata info.
 | Flag | Default | Usage |
 | --- | --- | --- |
 | `--format` | yaml | Specify output format (json&#x7c;yaml) |
-| `--label` |  | a label used to identify the secret |
+| `--label` |  | Specifies a label used to identify the secret. |
 | `-o`, `--output` |  | Specify an output file |
 
 ## Examples

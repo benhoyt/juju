@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/juju/errors"
-	"github.com/juju/loggo/v2"
+	"github.com/juju/loggo/v3"
 
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/instance"
@@ -18,7 +18,7 @@ import (
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/core/status"
-	"github.com/juju/juju/internal/charm"
+	"github.com/juju/juju/domain/deployment/charm"
 	"github.com/juju/juju/internal/tools"
 )
 
@@ -98,8 +98,8 @@ type StringResults struct {
 
 // MapResult holds a generic map or an error.
 type MapResult struct {
-	Result map[string]interface{} `json:"result"`
-	Error  *Error                 `json:"error,omitempty"`
+	Result map[string]any `json:"result"`
+	Error  *Error         `json:"error,omitempty"`
 }
 
 // MapResults holds the bulk operation result of an API call
@@ -123,13 +123,17 @@ type ModelCreateArgs struct {
 	// Name is the name for the new model.
 	Name string `json:"name"`
 
-	// Qualifier disambiguates the name of the model.
+	// Qualifier is the model owner identifier used to disambiguate Name.
+	// It uses user-id form (for example "admin" or "alice@external"),
+	// not full user-tag form (for example "user-admin").
+	// Clients should pass this through and let server-side validation decide
+	// whether it is acceptable.
 	Qualifier string `json:"qualifier"`
 
 	// Config defines the model config, which includes the name of the
 	// model. A model UUID is allocated by the API server during the
 	// creation of the model.
-	Config map[string]interface{} `json:"config,omitempty"`
+	Config map[string]any `json:"config,omitempty"`
 
 	// CloudTag is the tag of the cloud to create the model in.
 	// If this is empty, the model will be created in the same
@@ -148,12 +152,17 @@ type ModelCreateArgs struct {
 	// and the owner is the controller owner, the same credential
 	// used for the controller model will be used.
 	CloudCredentialTag string `json:"credential,omitempty"`
+
+	// TargetController is a JAAS specific field to specify the
+	// name of the controller that hosts the model.
+	TargetController string `json:"target-controller,omitempty"`
 }
 
 // Model holds the result of an API call returning a name and UUID
 // for a model and the tag of the server in which it is running.
 type Model struct {
-	Name      string `json:"name"`
+	Name string `json:"name"`
+	// Qualifier is the owner identifier used to disambiguate Name.
 	Qualifier string `json:"qualifier"`
 	UUID      string `json:"uuid"`
 	Type      string `json:"type"`
@@ -242,7 +251,7 @@ type SettingsResults struct {
 
 // ConfigSettings holds unit, application or charm configuration settings
 // with string keys and arbitrary values.
-type ConfigSettings map[string]interface{}
+type ConfigSettings map[string]any
 
 // ConfigSettingsResult holds a configuration map or an error.
 type ConfigSettingsResult struct {
@@ -323,10 +332,10 @@ type CommitHookChangesArg struct {
 }
 
 // ModelConfig holds a model configuration.
-type ModelConfig map[string]interface{}
+type ModelConfig map[string]any
 
 // ControllerConfig holds a controller configuration.
-type ControllerConfig map[string]interface{}
+type ControllerConfig map[string]any
 
 // ModelConfigResult holds model configuration.
 type ModelConfigResult struct {
@@ -382,7 +391,6 @@ type RelationUnitPairs struct {
 
 // RelationUnitSettings holds a relation tag, a unit tag and local
 // unit and app-level settings.
-// TODO(juju3) - remove
 type RelationUnitSettings struct {
 	Relation            string   `json:"relation"`
 	Unit                string   `json:"unit"`
@@ -392,7 +400,6 @@ type RelationUnitSettings struct {
 
 // RelationUnitsSettings holds the arguments for making a EnterScope
 // or UpdateRelationSettings API calls.
-// TODO(juju3) - remove
 type RelationUnitsSettings struct {
 	RelationUnits []RelationUnitSettings `json:"relation-units"`
 }
@@ -508,12 +515,11 @@ type LifeResults struct {
 // be a container.
 //
 // The InstanceInfo struct contains three categories of information:
-//   - interal data, as the machine's tag and the tags of any attached
+//   - internal data, as the machine's tag and the tags of any attached
 //     storage volumes
 //   - naming and other provider-specific information, including the
 //     instance id and display name
-//   - configuration information, including its attached storage volumes,
-//     charm profiles and networking
+//   - configuration information, including its attached storage volumes
 type InstanceInfo struct {
 	Tag             string                            `json:"tag"`
 	InstanceId      instance.Id                       `json:"instance-id"`
@@ -526,7 +532,9 @@ type InstanceInfo struct {
 	VolumeAttachments map[string]VolumeAttachmentInfo `json:"volume-attachments"`
 
 	NetworkConfig []NetworkConfig `json:"network-config"`
-	CharmProfiles []string        `json:"charm-profiles"`
+
+	// Deprecated: LXD profiles are no longer supported.
+	CharmProfiles []string `json:"charm-profiles"`
 }
 
 // InstancesInfo holds the parameters for making a SetInstanceInfo
@@ -537,18 +545,18 @@ type InstancesInfo struct {
 
 // EntityStatus holds the status of an entity.
 type EntityStatus struct {
-	Status status.Status          `json:"status"`
-	Info   string                 `json:"info"`
-	Data   map[string]interface{} `json:"data,omitempty"`
-	Since  *time.Time             `json:"since"`
+	Status status.Status  `json:"status"`
+	Info   string         `json:"info"`
+	Data   map[string]any `json:"data,omitempty"`
+	Since  *time.Time     `json:"since"`
 }
 
 // EntityStatusArgs holds parameters for setting the status of a single entity.
 type EntityStatusArgs struct {
-	Tag    string                 `json:"tag"`
-	Status string                 `json:"status"`
-	Info   string                 `json:"info"`
-	Data   map[string]interface{} `json:"data"`
+	Tag    string         `json:"tag"`
+	Status string         `json:"status"`
+	Info   string         `json:"info"`
+	Data   map[string]any `json:"data"`
 }
 
 // SetStatus holds the parameters for making a SetStatus/UpdateStatus call.
@@ -760,7 +768,7 @@ type CharmsResponse struct {
 	ErrorCode string `json:"error-code,omitempty"`
 
 	// ErrorInfo holds extra information associated with the error.
-	ErrorInfo map[string]interface{} `json:"error-info,omitempty"`
+	ErrorInfo map[string]any `json:"error-info,omitempty"`
 
 	CharmURL string   `json:"charm-url,omitempty"`
 	Files    []string `json:"files,omitempty"`
@@ -838,8 +846,8 @@ type ProvisioningInfo struct {
 	Tags              map[string]string        `json:"tags,omitempty"`
 	ImageMetadata     []CloudImageMetadata     `json:"image-metadata,omitempty"`
 	EndpointBindings  map[string]string        `json:"endpoint-bindings,omitempty"`
-	ControllerConfig  map[string]interface{}   `json:"controller-config,omitempty"`
-	CloudInitUserData map[string]interface{}   `json:"cloudinit-userdata,omitempty"`
+	ControllerConfig  map[string]any           `json:"controller-config,omitempty"`
+	CloudInitUserData map[string]any           `json:"cloudinit-userdata,omitempty"`
 	CharmLXDProfiles  []string                 `json:"charm-lxd-profiles,omitempty"`
 
 	ProvisioningNetworkTopology

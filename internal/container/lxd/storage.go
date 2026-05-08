@@ -29,7 +29,14 @@ func (s *Server) CreateVolume(pool, name string, cfg map[string]string) error {
 		Type:             "custom",
 		StorageVolumePut: api.StorageVolumePut{Config: cfg},
 	}
-	return errors.Annotatef(s.CreateStoragePoolVolume(pool, req), "creating storage pool volume %q", name)
+	op, err := s.CreateStoragePoolVolume(pool, req)
+	if err == nil {
+		err = op.Wait()
+	}
+	if err != nil {
+		return errors.Annotatef(err, "creating storage pool volume %q", name)
+	}
+	return nil
 }
 
 // EnsureDefaultStorage ensures that the input profile is configured with a
@@ -81,7 +88,11 @@ func (s *Server) EnsureDefaultStorage(profile *api.Profile, eTag string) error {
 		"pool": poolName,
 	}
 
-	if err := s.UpdateProfile(profile.Name, profile.Writable(), eTag); err != nil {
+	op, err := s.UpdateProfile(profile.Name, profile.Writable(), eTag)
+	if err == nil {
+		err = op.Wait()
+	}
+	if err != nil {
 		return errors.Trace(err)
 	}
 	logger.Debugf(context.TODO(), "created new disk device \"root\" in profile %q", profile.Name)

@@ -13,9 +13,9 @@ import (
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/api/jujuclient"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/model"
 	coremodel "github.com/juju/juju/core/model"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
 	"github.com/juju/juju/internal/testhelpers"
 	"github.com/juju/juju/internal/testing"
 )
@@ -89,7 +89,7 @@ func (s *ExportBundleCommandSuite) TestExportBundleSuccessNoFilename(c *tc.C) {
 	ctx, err := cmdtesting.RunCommand(c, model.NewExportBundleCommandForTest(s.fakeBundle, s.store))
 	c.Assert(err, tc.ErrorIsNil)
 	s.fakeBundle.CheckCalls(c, []testhelpers.StubCall{
-		{"ExportBundle", []interface{}{false}},
+		{"ExportBundle", []any{false}},
 	})
 
 	out := cmdtesting.Stdout(ctx)
@@ -132,7 +132,7 @@ func (s *ExportBundleCommandSuite) TestExportBundleSuccessFilename(c *tc.C) {
 	ctx, err := cmdtesting.RunCommand(c, model.NewExportBundleCommandForTest(s.fakeBundle, s.store), "--filename", s.fakeBundle.filename)
 	c.Assert(err, tc.ErrorIsNil)
 	s.fakeBundle.CheckCalls(c, []testhelpers.StubCall{
-		{"ExportBundle", []interface{}{false}},
+		{"ExportBundle", []any{false}},
 	})
 
 	out := cmdtesting.Stdout(ctx)
@@ -166,7 +166,7 @@ func (s *ExportBundleCommandSuite) TestExportBundleSuccesssOverwriteFilename(c *
 	ctx, err := cmdtesting.RunCommand(c, model.NewExportBundleCommandForTest(s.fakeBundle, s.store), "--filename", s.fakeBundle.filename)
 	c.Assert(err, tc.ErrorIsNil)
 	s.fakeBundle.CheckCalls(c, []testhelpers.StubCall{
-		{"ExportBundle", []interface{}{false}},
+		{"ExportBundle", []any{false}},
 	})
 
 	out := cmdtesting.Stdout(ctx)
@@ -182,7 +182,7 @@ func (s *ExportBundleCommandSuite) TestExportBundleIncludeCharmDefaults(c *tc.C)
 	ctx, err := cmdtesting.RunCommand(c, model.NewExportBundleCommandForTest(s.fakeBundle, s.store), "--include-charm-defaults", "--filename", s.fakeBundle.filename)
 	c.Assert(err, tc.ErrorIsNil)
 	s.fakeBundle.CheckCalls(c, []testhelpers.StubCall{
-		{"ExportBundle", []interface{}{true}},
+		{"ExportBundle", []any{true}},
 	})
 
 	out := cmdtesting.Stdout(ctx)

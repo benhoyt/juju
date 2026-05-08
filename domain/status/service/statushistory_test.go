@@ -96,7 +96,7 @@ func (s *statusHistorySuite) TestGetStatusHistoryMatchesData(c *tc.C) {
 			Status: status.Active,
 			Info:   "foo",
 			Data:   map[string]any{"bar": "baz"},
-			Since:  ptr(s.now),
+			Since:  new(s.now),
 		},
 	}})
 
@@ -110,7 +110,7 @@ func (s *statusHistorySuite) TestGetStatusHistoryMatchesData(c *tc.C) {
 		Status: status.Active,
 		Info:   "foo",
 		Data:   map[string]any{"bar": "baz"},
-		Since:  ptr(s.now),
+		Since:  new(s.now),
 	}})
 }
 
@@ -129,7 +129,7 @@ func (s *statusHistorySuite) TestGetStatusHistoryMatchesMultipleData(c *tc.C) {
 				Status: status.Active,
 				Info:   fmt.Sprintf("foo-%d", i),
 				Data:   map[string]any{"bar": fmt.Sprintf("baz-%d", i)},
-				Since:  ptr(s.now.Add(time.Duration(total-i) * time.Minute)),
+				Since:  new(s.now.Add(time.Duration(total-i) * time.Minute)),
 			},
 		})
 
@@ -138,7 +138,7 @@ func (s *statusHistorySuite) TestGetStatusHistoryMatchesMultipleData(c *tc.C) {
 			Status: status.Active,
 			Info:   fmt.Sprintf("foo-%d", i),
 			Data:   map[string]any{"bar": fmt.Sprintf("baz-%d", i)},
-			Since:  ptr(s.now.Add(time.Duration(total-i) * time.Minute)),
+			Since:  new(s.now.Add(time.Duration(total-i) * time.Minute)),
 		})
 	}
 
@@ -167,7 +167,7 @@ func (s *statusHistorySuite) TestGetStatusHistoryMatchesMultipleDataSize(c *tc.C
 				Status: status.Active,
 				Info:   fmt.Sprintf("foo-%d", i),
 				Data:   map[string]any{"bar": fmt.Sprintf("baz-%d", i)},
-				Since:  ptr(s.now.Add(time.Duration(total-i) * time.Minute)),
+				Since:  new(s.now.Add(time.Duration(total-i) * time.Minute)),
 			},
 		})
 
@@ -176,7 +176,7 @@ func (s *statusHistorySuite) TestGetStatusHistoryMatchesMultipleDataSize(c *tc.C
 			Status: status.Active,
 			Info:   fmt.Sprintf("foo-%d", i),
 			Data:   map[string]any{"bar": fmt.Sprintf("baz-%d", i)},
-			Since:  ptr(s.now.Add(time.Duration(total-i) * time.Minute)),
+			Since:  new(s.now.Add(time.Duration(total-i) * time.Minute)),
 		})
 	}
 
@@ -190,7 +190,49 @@ func (s *statusHistorySuite) TestGetStatusHistoryMatchesMultipleDataSize(c *tc.C
 		},
 	})
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(results, tc.DeepEquals, expected[:total-5])
+	c.Check(results, tc.DeepEquals, expected[5:])
+}
+
+// When a size filter is provided, the service should return the most recent
+// statuses, not the oldest ones. This test constructs records in chronological
+// order (oldest -> newest) and expects the last N (newest) to be returned.
+func (s *statusHistorySuite) TestGetStatusHistorySizeReturnsNewest(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	total := 10
+	size := 4
+
+	var records []statushistory.HistoryRecord
+	var expected []status.DetailedStatus
+	for i := range total {
+		rec := statushistory.HistoryRecord{
+			Kind: status.KindUnit,
+			Status: status.DetailedStatus{
+				Kind:   status.KindUnit,
+				Status: status.Active,
+				Info:   fmt.Sprintf("entry-%d", i),
+				Data:   map[string]any{"idx": i},
+				// Increasing over time so records are oldest -> newest
+				Since: new(s.now.Add(time.Duration(i) * time.Minute)),
+			},
+		}
+		records = append(records, rec)
+		expected = append(expected, rec.Status)
+	}
+
+	s.expectResults(records)
+
+	service := s.newService()
+	results, err := service.GetStatusHistory(c.Context(), StatusHistoryRequest{
+		Kind: status.KindUnit,
+		Filter: StatusHistoryFilter{
+			Size: size,
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Expect the newest N entries (i.e., the last N in chronological order)
+	c.Check(results, tc.DeepEquals, expected[total-size:])
 }
 
 func (s *statusHistorySuite) TestGetStatusHistoryMatchesKindData(c *tc.C) {
@@ -203,7 +245,7 @@ func (s *statusHistorySuite) TestGetStatusHistoryMatchesKindData(c *tc.C) {
 			Status: status.Active,
 			Info:   "foo",
 			Data:   map[string]any{"bar": "baz"},
-			Since:  ptr(s.now),
+			Since:  new(s.now),
 		},
 	}, {
 		Kind: status.KindApplication,
@@ -212,7 +254,7 @@ func (s *statusHistorySuite) TestGetStatusHistoryMatchesKindData(c *tc.C) {
 			Status: status.Active,
 			Info:   "foo",
 			Data:   map[string]any{"bar": "baz"},
-			Since:  ptr(s.now),
+			Since:  new(s.now),
 		},
 	}})
 
@@ -226,7 +268,7 @@ func (s *statusHistorySuite) TestGetStatusHistoryMatchesKindData(c *tc.C) {
 		Status: status.Active,
 		Info:   "foo",
 		Data:   map[string]any{"bar": "baz"},
-		Since:  ptr(s.now),
+		Since:  new(s.now),
 	}})
 }
 
@@ -425,13 +467,13 @@ func (s *statusHistorySuite) TestMatchesDate(c *tc.C) {
 				Kind: status.KindUnit,
 				Status: status.DetailedStatus{
 					Kind:  status.KindUnit,
-					Since: ptr(s.now),
+					Since: new(s.now),
 				},
 			},
 			request: StatusHistoryRequest{
 				Kind: status.KindUnit,
 				Filter: StatusHistoryFilter{
-					Date: ptr(s.now),
+					Date: new(s.now),
 				},
 			},
 			expected: false,
@@ -441,13 +483,13 @@ func (s *statusHistorySuite) TestMatchesDate(c *tc.C) {
 				Kind: status.KindUnit,
 				Status: status.DetailedStatus{
 					Kind:  status.KindUnit,
-					Since: ptr(s.now),
+					Since: new(s.now),
 				},
 			},
 			request: StatusHistoryRequest{
 				Kind: status.KindUnit,
 				Filter: StatusHistoryFilter{
-					Date: ptr(s.now.Add(-time.Second)),
+					Date: new(s.now.Add(-time.Second)),
 				},
 			},
 			expected: true,
@@ -474,13 +516,13 @@ func (s *statusHistorySuite) TestMatchesDelta(c *tc.C) {
 				Kind: status.KindUnit,
 				Status: status.DetailedStatus{
 					Kind:  status.KindUnit,
-					Since: ptr(s.now),
+					Since: new(s.now),
 				},
 			},
 			request: StatusHistoryRequest{
 				Kind: status.KindUnit,
 				Filter: StatusHistoryFilter{
-					Delta: ptr(time.Second),
+					Delta: new(time.Second),
 				},
 			},
 			expected: true,
@@ -490,13 +532,13 @@ func (s *statusHistorySuite) TestMatchesDelta(c *tc.C) {
 				Kind: status.KindUnit,
 				Status: status.DetailedStatus{
 					Kind:  status.KindUnit,
-					Since: ptr(s.now),
+					Since: new(s.now),
 				},
 			},
 			request: StatusHistoryRequest{
 				Kind: status.KindUnit,
 				Filter: StatusHistoryFilter{
-					Delta: ptr(-time.Second),
+					Delta: new(-time.Second),
 				},
 			},
 			expected: false,

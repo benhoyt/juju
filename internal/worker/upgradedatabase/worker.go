@@ -10,21 +10,25 @@ import (
 	"github.com/juju/clock"
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
-	"github.com/juju/worker/v4/dependency"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
+	"github.com/juju/worker/v5/dependency"
 
 	"github.com/juju/juju/agent"
+	coreagentbinary "github.com/juju/juju/core/agentbinary"
+	"github.com/juju/juju/core/arch"
 	coredatabase "github.com/juju/juju/core/database"
 	"github.com/juju/juju/core/logger"
 	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/core/upgrade"
+	jujuversion "github.com/juju/juju/core/version"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/core/watcher/eventsource"
 	"github.com/juju/juju/domain/schema"
 	domainupgrade "github.com/juju/juju/domain/upgrade"
 	upgradeerrors "github.com/juju/juju/domain/upgrade/errors"
+	internalerrors "github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/internal/worker/gate"
 )
 
@@ -39,6 +43,9 @@ type UpgradeService interface {
 	// CreateUpgrade creates an upgrade to and from specified versions
 	// If an upgrade is already running/pending, return an AlreadyExists err
 	CreateUpgrade(ctx context.Context, previousVersion, targetVersion semversion.Number) (domainupgrade.UUID, error)
+	// GetAllModelUUIDs returns all model uuids in the controller. If the
+	// controller has no models an empty result is returned.
+	GetAllModelUUIDs(ctx context.Context) ([]coremodel.UUID, error)
 	// SetControllerReady marks the supplied controllerID as being ready
 	// to start its upgrade. All provisioned controllers need to be ready
 	// before an upgrade can start
@@ -64,11 +71,17 @@ type UpgradeService interface {
 	WatchForUpgradeState(ctx context.Context, upgradeUUID domainupgrade.UUID, state upgrade.State) (watcher.NotifyWatcher, error)
 }
 
-// ModelService is the interface for the model service.
-type ModelService interface {
-	// ListModelUUIDs returns a list of all model UUIDs that are active in the
-	// controller.
-	ListModelUUIDs(context.Context) ([]coremodel.UUID, error)
+// ControllerNodeService provides the subset of methods of
+// [github.com/juju/juju/domain/controllernode/service.Service] .
+type ControllerNodeService interface {
+	// SetControllerNodeReportedAgentVersion sets the agent version for the
+	// supplied controllerID. Version represents the version of the controller
+	// node's agent binary.
+	SetControllerNodeReportedAgentVersion(
+		ctx context.Context,
+		controllerID string,
+		version coreagentbinary.Version,
+	) error
 }
 
 // Config holds the configuration for the worker.
@@ -80,12 +93,15 @@ type Config struct {
 	// Agent is the running machine agent.
 	Agent agent.Agent
 
-	// ModelService is the model manager service used to identify
-	// the model uuids required to upgrade.
-	ModelService ModelService
+	// ControllerNodeService provides a means to communicate the controller's
+	// running agent version.
+	ControllerNodeService ControllerNodeService
 
 	// UpgradeService is the upgrade service used to drive the upgrade.
 	UpgradeService UpgradeService
+
+	// UpgradeSteps is the list of upgrade steps to perform during the upgrade.
+	UpgradeSteps []UpgradeStep
 
 	// DBGetter is the database getter used to get the database for each model.
 	DBGetter coredatabase.DBGetter
@@ -124,6 +140,9 @@ func (c Config) Validate() error {
 	if c.Tag == nil {
 		return errors.NotValidf("invalid Tag")
 	}
+	if c.UpgradeService == nil {
+		return errors.NotValidf("nil UpgradeService")
+	}
 	return nil
 }
 
@@ -137,10 +156,12 @@ type upgradeDBWorker struct {
 	fromVersion semversion.Number
 	toVersion   semversion.Number
 
+	upgradeSteps []UpgradeStep
+
 	dbGetter coredatabase.DBGetter
 
-	modelService   ModelService
-	upgradeService UpgradeService
+	upgradeService        UpgradeService
+	controllerNodeService ControllerNodeService
 
 	logger logger.Logger
 	clock  clock.Clock
@@ -157,13 +178,15 @@ func NewUpgradeDatabaseWorker(config Config) (worker.Worker, error) {
 
 		controllerID: config.Tag.Id(),
 
+		upgradeSteps: config.UpgradeSteps,
+
 		fromVersion: config.FromVersion,
 		toVersion:   config.ToVersion,
 
 		dbGetter: config.DBGetter,
 
-		modelService:   config.ModelService,
-		upgradeService: config.UpgradeService,
+		upgradeService:        config.UpgradeService,
+		controllerNodeService: config.ControllerNodeService,
 
 		logger: config.Logger,
 		clock:  config.Clock,
@@ -194,6 +217,11 @@ func (w *upgradeDBWorker) Wait() error {
 func (w *upgradeDBWorker) loop() error {
 	ctx, cancel := w.scopedContext()
 	defer cancel()
+
+	err := w.recordControllerNodeAgentVersion(ctx)
+	if err != nil {
+		return errors.Annotate(err, "recording controller version")
+	}
 
 	if w.upgradeDone(ctx) {
 		// We're already upgraded, so we can uninstall this worker. This will
@@ -293,7 +321,7 @@ func (w *upgradeDBWorker) watchUpgrade(ctx context.Context) error {
 		// cause the upgrade to be marked as failed, and the next time the agent
 		// restarts, it will try again.
 		w.logger.Errorf(ctx, "failed to set controller ready: %v", err)
-		return w.abort(ctx, upgradeUUID)
+		return w.abort(ctx, upgradeUUID, internalerrors.Errorf("failed to set controller ready: %w", err))
 	}
 	w.logger.Infof(ctx, "marking the controller ready for upgrade")
 
@@ -375,7 +403,7 @@ func (w *upgradeDBWorker) runUpgrade(ctx context.Context, upgradeUUID domainupgr
 			return w.catacomb.ErrDying()
 
 		case <-w.clock.After(defaultUpgradeTimeout):
-			return w.abort(ctx, upgradeUUID)
+			return w.abort(ctx, upgradeUUID, errors.New("upgrade timed out"))
 
 		case <-watcher.Changes():
 			w.logger.Infof(ctx, "database upgrade starting")
@@ -396,17 +424,18 @@ func (w *upgradeDBWorker) runUpgrade(ctx context.Context, upgradeUUID domainupgr
 
 			w.logger.Errorf(ctx, "database upgrade failed, check logs for details")
 
-			return w.abort(ctx, upgradeUUID)
+			return w.abort(ctx, upgradeUUID, err)
 		}
 	}
 }
 
-func (w *upgradeDBWorker) abort(ctx context.Context, upgradeUUID domainupgrade.UUID) error {
-	return w.abortWithError(ctx, upgradeUUID, dependency.ErrBounce)
+func (w *upgradeDBWorker) abort(ctx context.Context, upgradeUUID domainupgrade.UUID, err error) error {
+	return w.abortWithError(ctx, upgradeUUID, internalerrors.Errorf("aborting upgrade: %w", err).Add(dependency.ErrBounce))
 }
 
 // abort marks the upgrade as failed and returns dependency.ErrBounce.
 func (w *upgradeDBWorker) abortWithError(ctx context.Context, upgradeUUID domainupgrade.UUID, err error) error {
+	w.logger.Errorf(ctx, "aborting upgrade %s: %v", upgradeUUID, err)
 	// Set the upgrade as failed, so that the next time the agent
 	// restarts, it will try again.
 	if err := w.upgradeService.SetDBUpgradeFailed(ctx, upgradeUUID); err != nil {
@@ -461,12 +490,12 @@ func (w *upgradeDBWorker) upgradeController(ctx context.Context) error {
 func (w *upgradeDBWorker) upgradeModels(ctx context.Context) error {
 	w.logger.Infof(ctx, "upgrading model databases from: %v to: %v", w.fromVersion, w.toVersion)
 
-	models, err := w.modelService.ListModelUUIDs(ctx)
+	modelUUIDs, err := w.upgradeService.GetAllModelUUIDs(ctx)
 	if err != nil {
-		return errors.Annotatef(err, "getting model list")
+		return errors.Annotatef(err, "getting all alive model uuids in controller")
 	}
 
-	for _, modelUUID := range models {
+	for _, modelUUID := range modelUUIDs {
 		if err := w.upgradeModel(ctx, modelUUID); err != nil {
 			return errors.Trace(err)
 		}
@@ -476,17 +505,41 @@ func (w *upgradeDBWorker) upgradeModels(ctx context.Context) error {
 }
 
 func (w *upgradeDBWorker) upgradeModel(ctx context.Context, modelUUID coremodel.UUID) error {
-	db, err := w.dbGetter.GetDB(ctx, modelUUID.String())
+	modelDB, err := w.dbGetter.GetDB(ctx, modelUUID.String())
 	if err != nil {
 		return errors.Annotatef(err, "model db %s", modelUUID)
 	}
 
 	ddl := schema.ModelDDL()
-	changeSet, err := ddl.Ensure(ctx, db)
+	changeSet, err := ddl.Ensure(ctx, modelDB)
 	if err != nil {
 		return errors.Annotatef(err, "applying model schema %s", modelUUID)
 	}
 	w.logger.Infof(ctx, "applied model schema changes from: %d to: %d for model %s", changeSet.Post, changeSet.Current, modelUUID)
+
+	// Perform any data migrations required for this upgrade.
+	// We should note, that this is not performed in the same transaction
+	// as the schema changes. This is because we need to access both the
+	// controller and model databases to perform the data migrations.
+	// If possible we should always try to perform data migrations in a
+	// the .PATCH files within the schema package. This will ensure that
+	// the schema and data migrations are performed in a single transaction.
+	// For the very few cases where this is not possible, we can use the
+	// upgrade steps here.
+	// Note: the ensure above is idempotent, so if the data migration
+	// fails halfway through, when we retry the upgrade, the schema
+	// ensure will be a no-op.
+	controllerDB, err := w.dbGetter.GetDB(ctx, coredatabase.ControllerNS)
+	if err != nil {
+		return errors.Annotatef(err, "controller db")
+	}
+
+	for _, upgradeStep := range w.upgradeSteps {
+		if err := upgradeStep(ctx, controllerDB, modelDB, modelUUID); err != nil {
+			return errors.Annotatef(err, "performing data migration for model %s", modelUUID)
+		}
+	}
+
 	return nil
 }
 
@@ -504,6 +557,30 @@ func (w *upgradeDBWorker) addWatcher(ctx context.Context, watcher eventsource.Wa
 	// that event before we can start watching.
 	if _, err := eventsource.ConsumeInitialEvent[struct{}](ctx, watcher); err != nil {
 		return errors.Trace(err)
+	}
+
+	return nil
+}
+
+// recordControllerNodeAgentVersion ensures that this controllers current running
+// version is correctly recorded in the controller database against the controller's id.
+// This method MUST be called every time the worker starts regardless of database
+// upgrades to perform. This ensures the database is always a correct reflection
+// of the controller' version.
+func (w *upgradeDBWorker) recordControllerNodeAgentVersion(
+	ctx context.Context,
+) error {
+	version := coreagentbinary.Version{
+		Number: jujuversion.Current,
+		Arch:   arch.HostArch(),
+	}
+	err := w.controllerNodeService.SetControllerNodeReportedAgentVersion(
+		ctx,
+		w.controllerID,
+		version,
+	)
+	if err != nil {
+		return errors.Annotate(err, "recoding controller node agent version")
 	}
 
 	return nil

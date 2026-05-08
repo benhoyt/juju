@@ -52,8 +52,9 @@ WHERE  uuid = $entityUUID.uuid`, unitUUID)
 
 // EnsureUnitNotAliveCascade ensures that there is no unit identified by the
 // input unit UUID, that is still alive. If the unit is the last one on the
-// machine, it will cascade and the machine is also set to dying. The
-// affected machine UUID is returned.
+// machine, it will cascade and the machine is also set to dying.
+// Non-dead cascaded entity UUIDs are returned so retries can re-schedule
+// child removals with updated intent.
 func (st *State) EnsureUnitNotAliveCascade(
 	ctx context.Context, uUUID string, destroyStorage bool,
 ) (internal.CascadedUnitLives, error) {
@@ -66,7 +67,9 @@ func (st *State) EnsureUnitNotAliveCascade(
 
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
 		var err error
-		cascaded, err = st.ensureUnitNotAliveCascade(ctx, tx, uUUID, true, destroyStorage)
+		cascaded, err = st.ensureUnitNotAliveCascade(
+			ctx, tx, uUUID, true, destroyStorage,
+		)
 		return errors.Capture(err)
 	})
 	return cascaded, errors.Capture(err)
@@ -91,28 +94,33 @@ AND    life_id = 0`, unitUUID)
 		return cascaded, errors.Errorf("advancing unit life: %w", err)
 	}
 
-	sAttachments, err := st.ensureUnitStorageAttachmentsNotAlive(ctx, tx, uUUID)
+	cascaded.CascadedStorageAttachmentLives, err = st.ensureUnitStorageAttachmentsNotAlive(
+		ctx, tx, uUUID,
+	)
 	if err != nil {
 		return cascaded, errors.Errorf("setting unit storage attachment lives to dying: %w", err)
 	}
-	cascaded.StorageAttachmentUUIDs = sAttachments
 
 	if destroyStorage {
-		sInstances, err := st.ensureUnitOwnedStorageInstancesNotAlive(ctx, tx, uUUID)
+		// TODO(storage): wire through obliterate separately from destroy.
+		cascaded.CascadedStorageInstanceLives, err = st.ensureUnitOwnedStorageInstancesNotAlive(
+			ctx, tx, uUUID, destroyStorage,
+		)
 		if err != nil {
 			return cascaded, errors.Errorf("setting unit storage instance lives to dying: %w", err)
 		}
-		cascaded.StorageInstanceUUIDs = sInstances
 	}
 
 	if checkMachine {
-		mUUID, machineStorageCascaded, err := st.markMachineAsDyingIfAllUnitsAreNotAlive(ctx, tx, uUUID)
+		mUUID, machineStorageCascaded, err := st.markMachineAsDyingIfAllUnitsAreNotAlive(
+			ctx, tx, uUUID,
+		)
 		if err != nil {
 			return cascaded, errors.Errorf("setting unit machine life to dying: %w", err)
 		}
 		if mUUID != "" {
 			cascaded.MachineUUID = &mUUID
-			cascaded.CascadedStorageLives = cascaded.CascadedStorageLives.Merge(machineStorageCascaded)
+			cascaded.CascadedStorageInstanceLives = cascaded.CascadedStorageInstanceLives.Merge(machineStorageCascaded)
 		}
 	}
 
@@ -121,24 +129,35 @@ AND    life_id = 0`, unitUUID)
 
 func (st *State) ensureUnitStorageAttachmentsNotAlive(
 	ctx context.Context, tx *sqlair.TX, uUUID string,
-) ([]string, error) {
+) (internal.CascadedStorageAttachmentLives, error) {
+	var cascaded internal.CascadedStorageAttachmentLives
+
 	unitUUID := entityUUID{UUID: uUUID}
 
 	stmt, err := st.Prepare(`
 SELECT &entityUUID.*
 FROM   storage_attachment
 WHERE  unit_uuid = $entityUUID.uuid
-AND    life_id = 0`, unitUUID)
+AND    life_id < 2`, unitUUID)
 	if err != nil {
-		return nil, errors.Errorf("preparing live storage attachments query: %w", err)
+		return cascaded, errors.Errorf(
+			"preparing live storage attachments query: %w", err,
+		)
 	}
 
 	var attachments []entityUUID
 	if err = tx.Query(ctx, stmt, unitUUID).GetAll(&attachments); err != nil {
 		if errors.Is(err, sqlair.ErrNoRows) {
-			return nil, nil
+			return cascaded, nil
 		}
-		return nil, errors.Errorf("running live storage attachments query: %w", err)
+		return cascaded, errors.Errorf(
+			"running live storage attachments query: %w", err,
+		)
+	}
+
+	for _, v := range attachments {
+		cascaded.StorageAttachmentUUIDs = append(
+			cascaded.StorageAttachmentUUIDs, v.UUID)
 	}
 
 	stmt, err = st.Prepare(`
@@ -147,18 +166,103 @@ SET    life_id = 1
 WHERE  unit_uuid = $entityUUID.uuid
 AND    life_id = 0`, unitUUID)
 	if err != nil {
-		return nil, errors.Errorf("preparing live storage attachments update: %w", err)
+		return cascaded, errors.Errorf(
+			"preparing live storage attachments update: %w", err,
+		)
 	}
 
 	if err = tx.Query(ctx, stmt, unitUUID).Run(); err != nil {
-		return nil, errors.Errorf("running live storage attachments update: %w", err)
+		return cascaded, errors.Errorf(
+			"running live storage attachments update: %w", err,
+		)
 	}
-	return transform.Slice(attachments, func(a entityUUID) string { return a.UUID }), nil
+
+	sfaStmt, err := st.Prepare(`
+SELECT sfa.uuid AS &entityUUID.uuid
+FROM   storage_attachment sa
+       JOIN storage_instance_filesystem sif ON sa.storage_instance_uuid = sif.storage_instance_uuid
+       JOIN storage_filesystem_attachment sfa ON sif.storage_filesystem_uuid = sfa.storage_filesystem_uuid
+WHERE  sa.unit_uuid = $entityUUID.uuid
+AND    sfa.life_id < 2`, entityUUID{})
+	if err != nil {
+		return cascaded, errors.Errorf(
+			"preparing live unit filesystem attachments query: %w", err,
+		)
+	}
+
+	var sfaUUIDs entityUUIDs
+	err = tx.Query(ctx, sfaStmt, unitUUID).GetAll(&sfaUUIDs)
+	if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
+		return cascaded, errors.Errorf(
+			"running live unit filesystem attachments query: %w", err,
+		)
+	}
+
+	for _, v := range sfaUUIDs {
+		cascaded.FileSystemAttachmentUUIDs = append(
+			cascaded.FileSystemAttachmentUUIDs, v.UUID)
+	}
+
+	svaStmt, err := st.Prepare(`
+SELECT sva.uuid AS &entityUUID.uuid
+FROM   storage_attachment sa
+       JOIN storage_instance_volume siv ON sa.storage_instance_uuid = siv.storage_instance_uuid
+       JOIN storage_volume_attachment sva ON siv.storage_volume_uuid = sva.storage_volume_uuid
+WHERE  sa.unit_uuid = $entityUUID.uuid
+AND    sva.life_id < 2`, entityUUID{})
+	if err != nil {
+		return cascaded, errors.Errorf(
+			"preparing live unit volume attachments query: %w", err,
+		)
+	}
+
+	var svaUUIDs entityUUIDs
+	err = tx.Query(ctx, svaStmt, unitUUID).GetAll(&svaUUIDs)
+	if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
+		return cascaded, errors.Errorf(
+			"running live unit volume attachments query: %w", err,
+		)
+	}
+
+	for _, v := range svaUUIDs {
+		cascaded.VolumeAttachmentUUIDs = append(
+			cascaded.VolumeAttachmentUUIDs, v.UUID)
+	}
+
+	svapStmt, err := st.Prepare(`
+SELECT svap.uuid AS &entityUUID.uuid
+FROM   storage_attachment sa
+       JOIN storage_instance_volume siv ON sa.storage_instance_uuid = siv.storage_instance_uuid
+       JOIN storage_volume_attachment_plan svap ON siv.storage_volume_uuid = svap.storage_volume_uuid
+WHERE  sa.unit_uuid = $entityUUID.uuid
+AND    svap.life_id < 2`, unitUUID)
+	if err != nil {
+		return cascaded, errors.Errorf(
+			"preparing live unit volume attachment plans query: %w", err,
+		)
+	}
+
+	var svapUUIDs entityUUIDs
+	err = tx.Query(ctx, svapStmt, unitUUID).GetAll(&svapUUIDs)
+	if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
+		return cascaded, errors.Errorf(
+			"running live unit volume attachment plans query: %w", err,
+		)
+	}
+
+	for _, v := range svapUUIDs {
+		cascaded.VolumeAttachmentPlanUUIDs = append(
+			cascaded.VolumeAttachmentPlanUUIDs, v.UUID)
+	}
+
+	return cascaded, nil
 }
 
 func (st *State) ensureUnitOwnedStorageInstancesNotAlive(
-	ctx context.Context, tx *sqlair.TX, uUUID string,
-) ([]string, error) {
+	ctx context.Context, tx *sqlair.TX, uUUID string, obliterate bool,
+) (internal.CascadedStorageInstanceLives, error) {
+	var cascaded internal.CascadedStorageInstanceLives
+
 	unitUUID := entityUUID{UUID: uUUID}
 
 	stmt, err := st.Prepare(`
@@ -166,43 +270,32 @@ SELECT si.uuid AS &entityUUID.uuid
 FROM   storage_unit_owner so 
 JOIN   storage_instance si ON so.storage_instance_uuid = si.uuid
 WHERE  so.unit_uuid = $entityUUID.uuid
-AND    si.life_id = 0`, unitUUID)
+AND    si.life_id < 2`, entityUUID{})
 	if err != nil {
-		return nil, errors.Errorf("preparing live storage instances query: %w", err)
+		return cascaded, errors.Errorf(
+			"preparing live storage instances query: %w", err,
+		)
 	}
 
-	var instances []entityUUID
+	var instances entityUUIDs
 	if err = tx.Query(ctx, stmt, unitUUID).GetAll(&instances); err != nil {
 		if errors.Is(err, sqlair.ErrNoRows) {
-			return nil, nil
+			return cascaded, nil
 		}
-		return nil, errors.Errorf("running live storage instances query: %w", err)
+		return cascaded, errors.Errorf(
+			"running live storage instances query: %w", err,
+		)
 	}
 
-	result := transform.Slice(instances, func(a entityUUID) string { return a.UUID })
-	instanceUUIDs := uuids(result)
-
-	stmt, err = st.Prepare(`
-UPDATE storage_instance
-SET    life_id = 1
-WHERE  uuid IN ($uuids[:])
-AND    life_id = 0`, instanceUUIDs)
-	if err != nil {
-		return nil, errors.Errorf("preparing live storage instances update: %w", err)
-	}
-
-	if err = tx.Query(ctx, stmt, instanceUUIDs).Run(); err != nil {
-		return nil, errors.Errorf("running live storage instances update: %w", err)
-	}
-	return result, nil
+	return st.ensureStorageInstancesNotAliveCascade(ctx, tx, instances, obliterate)
 }
 
 // markMachineAsDyingIfAllUnitsAreNotAlive checks if all the units on the
 // machine are not alive. If this is the case, it marks the machine as dying.
 func (st *State) markMachineAsDyingIfAllUnitsAreNotAlive(
 	ctx context.Context, tx *sqlair.TX, uUUID string,
-) (string, internal.CascadedStorageLives, error) {
-	var cascaded internal.CascadedStorageLives
+) (string, internal.CascadedStorageInstanceLives, error) {
+	var cascaded internal.CascadedStorageInstanceLives
 	unitUUID := entityUUID{UUID: uUUID}
 
 	lastUnitStmt, err := st.Prepare(`
@@ -277,7 +370,13 @@ AND    life_id = 0`, entityUUID{})
 		return "", cascaded, errors.Errorf("getting affected rows: %w", err)
 	} else if affected == 0 {
 		// The machine was already dying or dead.
-		return "", cascaded, nil
+		// We still need to return cascaded storage information
+		// so retries can re-schedule child removal jobs.
+		cascaded, err = st.ensureMachineStorageInstancesNotAliveCascade(ctx, tx, result.UUID)
+		if err != nil {
+			return "", cascaded, errors.Errorf("advancing machine storage entity lives: %w", err)
+		}
+		return result.UUID, cascaded, nil
 	}
 
 	updateInstanceStmt, err := st.Prepare(`
@@ -452,13 +551,94 @@ AND    life_id = 1`, unitUUID)
 	}))
 }
 
-// DeleteUnit removes a unit from the database completely.
-func (st *State) DeleteUnit(ctx context.Context, unitUUID string) error {
+// MarkUnitAsDeadWithNoEntities marks the unit with the input UUID as dead,
+// if there are no associated entities that are still found.
+func (st *State) MarkUnitAsDeadWithNoEntities(ctx context.Context, uUUID string) error {
 	db, err := st.DB(ctx)
 	if err != nil {
 		return errors.Capture(err)
 	}
 
+	unitUUID := entityAssociationCount{UUID: uUUID}
+	updateStmt, err := st.Prepare(`
+UPDATE unit
+SET    life_id = 2
+WHERE  uuid = $entityAssociationCount.uuid
+AND    life_id = 1`, unitUUID)
+	if err != nil {
+		return errors.Errorf("preparing unit life update: %w", err)
+	}
+
+	// The following statements check for associated entities that would
+	// prevent the unit from being marked as dead. As long as there are no
+	// relations or storage attachments associated with the unit, we can mark
+	// it as dead.
+
+	relationStmt, err := st.Prepare(`
+SELECT count(*) AS &entityAssociationCount.count
+FROM   relation_unit
+WHERE  unit_uuid = $entityAssociationCount.uuid
+`, unitUUID)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	storageAttachmentStmt, err := st.Prepare(`
+SELECT count(*) AS &entityAssociationCount.count
+FROM   storage_attachment
+WHERE  unit_uuid = $entityAssociationCount.uuid
+`, unitUUID)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	return errors.Capture(db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		if l, err := st.getUnitLife(ctx, tx, uUUID); err != nil {
+			return errors.Errorf("getting unit life: %w", err)
+		} else if l == life.Dead {
+			return nil
+		} else if l == life.Alive {
+			return errors.Errorf("unit still alive").Add(removalerrors.EntityStillAlive)
+		}
+
+		var counter entityAssociationCount
+		if err := tx.Query(ctx, relationStmt, unitUUID).Get(&counter); err != nil {
+			return errors.Errorf("getting relation unit count: %w", err)
+		} else if counter.Count > 0 {
+			return errors.Errorf("unit still has relations in scope").Add(removalerrors.EntityStillAlive)
+		}
+
+		if err := tx.Query(ctx, storageAttachmentStmt, unitUUID).Get(&counter); err != nil {
+			return errors.Errorf("getting storage attachment count: %w", err)
+		} else if counter.Count > 0 {
+			return errors.Errorf("unit still has storage attachments").Add(removalerrors.EntityStillAlive)
+		}
+
+		if err := tx.Query(ctx, updateStmt, unitUUID).Run(); err != nil {
+			return errors.Errorf("marking unit as dead: %w", err)
+		}
+
+		return nil
+	}))
+}
+
+// DeleteUnit removes a unit from the database completely.
+func (st *State) DeleteUnit(ctx context.Context, unitUUID string, force bool) error {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		return st.deleteUnit(ctx, tx, unitUUID, force)
+	})
+	if err != nil {
+		return errors.Errorf("delete unit transaction: %w", err)
+	}
+	return nil
+}
+
+func (st *State) deleteUnit(ctx context.Context, tx *sqlair.TX, unitUUID string, force bool) error {
 	// Get the net node UUID for the unit.
 	selectNetNodeStmt, err := st.Prepare(`
 SELECT    nn.uuid AS &entityUUID.uuid
@@ -479,6 +659,15 @@ WHERE principal_uuid = $entityAssociationCount.uuid
 		return errors.Capture(err)
 	}
 
+	relationUnitCountStmt, err := st.Prepare(`
+SELECT count(*) AS &entityAssociationCount.count
+FROM relation_unit
+WHERE unit_uuid = $entityAssociationCount.uuid
+`, unitUUIDCount)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
 	unitUUIDRec := entityUUID{UUID: unitUUID}
 	deleteUnitStmt, err := st.Prepare(`
 DELETE FROM unit
@@ -487,65 +676,73 @@ WHERE  uuid = $entityUUID.uuid;`, unitUUIDRec)
 		return errors.Errorf("preparing unit delete: %w", err)
 	}
 
-	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		// We only prevent deletion if the unit is alive.
-		// This method is only called by the unit removal job, which will invoke
-		// it for a dying (not dead) unit only if the job is forced.
-		// That check is made in the service layer.
-		if uLife, err := st.getUnitLife(ctx, tx, unitUUID); err != nil {
-			return errors.Errorf("getting unit life for unit %q: %w", unitUUID, err)
-		} else if uLife == life.Alive {
-			return errors.Errorf("cannot delete unit %q as it is still alive", unitUUID).
-				Add(removalerrors.EntityStillAlive)
-		}
-
-		// Delete all tasks related to the unit, and eventually removes
-		// operations if they are empty after tasks deletion.
-		_, err := st.cleanupTasksAndOperationsByUnitUUID(ctx, tx, unitUUID)
-		if err != nil {
-			return errors.Errorf("deleting operations for unit %q: %w", unitUUID, err)
-		}
-
-		var netNodeUUIDRec entityUUID
-		if err := tx.Query(ctx, selectNetNodeStmt, unitUUIDRec).Get(&netNodeUUIDRec); errors.Is(err, sqlair.ErrNoRows) {
-			return applicationerrors.UnitNotFound
-		} else if err != nil {
-			return errors.Errorf("getting net node UUID for unit %q: %w", unitUUID, err)
-		}
-
-		// Ensure that the unit has no associated subordinates.
-		var numSubordinates entityAssociationCount
-		err = tx.Query(ctx, subordinateStmt, unitUUIDCount).Get(&numSubordinates)
-		if err != nil {
-			return errors.Errorf("getting number of subordinates for unit %q: %w", unitUUID, err)
-		} else if numSubordinates.Count > 0 {
-			// It is required that all units have been completely removed
-			// before the application can be removed.
-			return errors.Errorf("cannot delete unit as it still associated subordinates").
-				Add(removalerrors.RemovalJobIncomplete)
-		}
-
-		if err := st.deleteUnitAnnotations(ctx, tx, unitUUID); err != nil {
-			return errors.Errorf("deleting annotations for unit %q: %w", unitUUID, err)
-		}
-
-		if err := st.deleteK8sPod(ctx, tx, unitUUID, netNodeUUIDRec.UUID); err != nil {
-			return errors.Errorf("deleting cloud container for unit %q: %w", unitUUID, err)
-		}
-
-		if err := st.deleteForeignKeyUnitReferences(ctx, tx, unitUUID); err != nil {
-			return errors.Errorf("deleting unit references for unit %q: %w", unitUUID, err)
-		}
-
-		if err := tx.Query(ctx, deleteUnitStmt, unitUUIDRec).Run(); err != nil {
-			return errors.Errorf("deleting unit for unit %q: %w", unitUUID, err)
-		}
-
-		return nil
-	})
-	if err != nil {
-		return errors.Errorf("delete unit transaction: %w", err)
+	// We only prevent deletion if the unit is alive.
+	// This method is only called by the unit removal job, which will invoke
+	// it for a dying (not dead) unit only if the job is forced.
+	// That check is made in the service layer.
+	if uLife, err := st.getUnitLife(ctx, tx, unitUUID); err != nil {
+		return errors.Errorf("getting unit life for unit %q: %w", unitUUID, err)
+	} else if uLife == life.Alive {
+		return errors.Errorf("cannot delete unit %q as it is still alive", unitUUID).
+			Add(removalerrors.EntityStillAlive)
 	}
+
+	// Ensure that the unit has no relation_unit records. These are cleaned
+	// up by the relation's own removal job (via LeaveScope or
+	// DeleteRelationUnits). If they still exist, we must wait for the
+	// relation removal to complete first.
+	var numRelationUnits entityAssociationCount
+	err = tx.Query(ctx, relationUnitCountStmt, unitUUIDCount).Get(&numRelationUnits)
+	if err != nil {
+		return errors.Errorf("getting relation unit count for unit %q: %w", unitUUID, err)
+	} else if numRelationUnits.Count > 0 {
+		return errors.Errorf("unit %q still has %d relation(s) in scope, waiting for relation removal",
+			unitUUID, numRelationUnits.Count).
+			Add(removalerrors.RemovalJobIncomplete)
+	}
+
+	// Delete all tasks related to the unit, and eventually removes
+	// operations if they are empty after tasks deletion.
+
+	if _, err := st.cleanupTasksAndOperationsByUnitUUID(ctx, tx, unitUUID); err != nil {
+		return errors.Errorf("deleting operations for unit %q: %w", unitUUID, err)
+	}
+
+	var netNodeUUIDRec entityUUID
+	if err := tx.Query(ctx, selectNetNodeStmt, unitUUIDRec).Get(&netNodeUUIDRec); errors.Is(err, sqlair.ErrNoRows) {
+		return applicationerrors.UnitNotFound
+	} else if err != nil {
+		return errors.Errorf("getting net node UUID for unit %q: %w", unitUUID, err)
+	}
+
+	// Ensure that the unit has no associated subordinates.
+	var numSubordinates entityAssociationCount
+	err = tx.Query(ctx, subordinateStmt, unitUUIDCount).Get(&numSubordinates)
+	if err != nil {
+		return errors.Errorf("getting number of subordinates for unit %q: %w", unitUUID, err)
+	} else if numSubordinates.Count > 0 && !force {
+		// It is required that all units have been completely removed
+		// before the application can be removed.
+		return errors.Errorf("cannot delete unit as it still associated subordinates").
+			Add(removalerrors.RemovalJobIncomplete)
+	}
+
+	if err := st.deleteUnitAnnotations(ctx, tx, unitUUID); err != nil {
+		return errors.Errorf("deleting annotations for unit %q: %w", unitUUID, err)
+	}
+
+	if err := st.deleteK8sPod(ctx, tx, unitUUID, netNodeUUIDRec.UUID); err != nil {
+		return errors.Errorf("deleting cloud container for unit %q: %w", unitUUID, err)
+	}
+
+	if err := st.deleteForeignKeyUnitReferences(ctx, tx, unitUUID); err != nil {
+		return errors.Errorf("deleting unit references for unit %q: %w", unitUUID, err)
+	}
+
+	if err := tx.Query(ctx, deleteUnitStmt, unitUUIDRec).Run(); err != nil {
+		return errors.Errorf("deleting unit for unit %q: %w", unitUUID, err)
+	}
+
 	return nil
 }
 

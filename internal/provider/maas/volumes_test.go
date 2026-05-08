@@ -11,8 +11,8 @@ import (
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/core/constraints"
+	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/internal/storage"
-	"github.com/juju/juju/internal/testhelpers"
 )
 
 type volumeSuite struct {
@@ -41,39 +41,94 @@ func (s *volumeSuite) TestBuildMAASVolumeParametersJustRootDisk(c *tc.C) {
 }
 
 func (s *volumeSuite) TestBuildMAASVolumeParametersNoTags(c *tc.C) {
-	vInfo, err := buildMAASVolumeParameters([]storage.VolumeParams{
-		{Tag: names.NewVolumeTag("1"), Size: 2000000},
-	}, constraints.Value{})
+	vInfo, err := buildMAASVolumeParameters(
+		[]storage.VolumeParams{
+			{
+				Provider: storage.ProviderType("maas"),
+				Tag:      names.NewVolumeTag("1"),
+				Size:     2000000,
+			},
+		},
+		constraints.Value{},
+	)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(vInfo, tc.DeepEquals, []volumeInfo{
-		{"root", 0, nil}, //root disk
+		{"root", 0, nil}, //root disk must be first
 		{"1", 1954, nil},
 	})
 }
 
+// TestBuildMAASVolumeParametersWithRootDisk checks that
+// [buildMAASVolumeParameters] correctly constructs the right volume parameters
+// for the supplied [storage.VolumeParams] and includes the root disk for the
+// node that is being acquired.
+//
+// This test also expects to see that the root disk is the first element of the
+// returned slice as required by the MAAS API.
 func (s *volumeSuite) TestBuildMAASVolumeParametersWithRootDisk(c *tc.C) {
 	var cons constraints.Value
 	rootSize := uint64(20000)
 	cons.RootDisk = &rootSize
-	vInfo, err := buildMAASVolumeParameters([]storage.VolumeParams{
-		{Tag: names.NewVolumeTag("1"), Size: 2000000},
-	}, cons)
+	vInfo, err := buildMAASVolumeParameters(
+		[]storage.VolumeParams{
+			{
+				Provider: storage.ProviderType("maas"),
+				Tag:      names.NewVolumeTag("1"),
+				Size:     2000000,
+			},
+		},
+		cons,
+	)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(vInfo, tc.DeepEquals, []volumeInfo{
-		{"root", 20, nil}, //root disk
+		{"root", 20, nil}, //root disk must be first
 		{"1", 1954, nil},
 	})
 }
 
+// TestBuildMAASVolumeParametersWithTags checks that [buildMAASVolumeParameters]
+// correctly constructs the right volume parameters for the supplied
+// [storage.VolumeParams] including tags and includes the root disk for the node
+// that is being acquired.
+//
+// This test also expects to see that the root disk is the first element of the
+// returned slice as required by the MAAS API.
 func (s *volumeSuite) TestBuildMAASVolumeParametersWithTags(c *tc.C) {
-	vInfo, err := buildMAASVolumeParameters([]storage.VolumeParams{
-		{Tag: names.NewVolumeTag("1"), Size: 2000000, Attributes: map[string]interface{}{"tags": "tag1,tag2"}},
-	}, constraints.Value{})
+	vInfo, err := buildMAASVolumeParameters(
+		[]storage.VolumeParams{
+			{
+				Provider:   storage.ProviderType("maas"),
+				Tag:        names.NewVolumeTag("1"),
+				Size:       2000000,
+				Attributes: map[string]any{"tags": "tag1,tag2"},
+			},
+		},
+		constraints.Value{},
+	)
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(vInfo, tc.DeepEquals, []volumeInfo{
-		{"root", 0, nil}, //root disk
+		{"root", 0, nil}, //root disk must be first
 		{"1", 1954, []string{"tag1", "tag2"}},
 	})
+}
+
+// TestBuildMAASVolumeParametersWithUnsupportedProvider tests that calling
+// [buildMAASVolumeParameters] with a volume that is using another provider
+// other then [maasStorageProviderType] returns a [coreerrors.NotSupported]
+// error to the caller.
+func (s *volumeSuite) TestBuildMAASVolumeParametersWithUnsupportedProvider(c *tc.C) {
+	_, err := buildMAASVolumeParameters(
+		[]storage.VolumeParams{
+			{
+				Provider:   storage.ProviderType("anotherprovider"),
+				Tag:        names.NewVolumeTag("1"),
+				Size:       2000000,
+				Attributes: map[string]any{"tags": "tag1,tag2"},
+			},
+		},
+		constraints.Value{},
+	)
+	c.Check(err, tc.ErrorIs, coreerrors.NotSupported)
 }
 
 func (s *volumeSuite) TestInstanceVolumesMAAS2(c *tc.C) {
@@ -117,119 +172,63 @@ func (s *volumeSuite) TestInstanceVolumesMAAS2(c *tc.C) {
 	c.Assert(volumes, tc.HasLen, 5)
 	c.Assert(attachments, tc.HasLen, 5)
 	c.Check(volumes, tc.SameContents, []storage.Volume{{
-		names.NewVolumeTag("1"),
-		storage.VolumeInfo{
+		Tag: names.NewVolumeTag("1"),
+		VolumeInfo: storage.VolumeInfo{
 			VolumeId: "volume-1",
 			Size:     476893,
 		},
 	}, {
-		names.NewVolumeTag("2"),
-		storage.VolumeInfo{
+		Tag: names.NewVolumeTag("2"),
+		VolumeInfo: storage.VolumeInfo{
 			VolumeId:   "volume-2",
 			Size:       238764,
 			HardwareId: "foo",
 		},
 	}, {
-		names.NewVolumeTag("3"),
-		storage.VolumeInfo{
+		Tag: names.NewVolumeTag("3"),
+		VolumeInfo: storage.VolumeInfo{
 			VolumeId: "volume-3",
 			Size:     238764,
 		},
 	}, {
-		names.NewVolumeTag("4"),
-		storage.VolumeInfo{
+		Tag: names.NewVolumeTag("4"),
+		VolumeInfo: storage.VolumeInfo{
 			VolumeId: "volume-4",
 			Size:     267374,
 			WWN:      "drbr",
 		},
 	}, {
-		names.NewVolumeTag("5"),
-		storage.VolumeInfo{
+		Tag: names.NewVolumeTag("5"),
+		VolumeInfo: storage.VolumeInfo{
 			VolumeId: "volume-5",
 			Size:     267374,
 		},
 	}})
 	c.Assert(attachments, tc.SameContents, []storage.VolumeAttachment{{
-		names.NewVolumeTag("1"),
-		mTag,
-		storage.VolumeAttachmentInfo{
+		Volume:  names.NewVolumeTag("1"),
+		Machine: mTag,
+		VolumeAttachmentInfo: storage.VolumeAttachmentInfo{
 			DeviceName: "sdb",
 		},
 	}, {
-		names.NewVolumeTag("2"),
-		mTag,
-		storage.VolumeAttachmentInfo{},
+		Volume:               names.NewVolumeTag("2"),
+		Machine:              mTag,
+		VolumeAttachmentInfo: storage.VolumeAttachmentInfo{},
 	}, {
-		names.NewVolumeTag("3"),
-		mTag,
-		storage.VolumeAttachmentInfo{
+		Volume:  names.NewVolumeTag("3"),
+		Machine: mTag,
+		VolumeAttachmentInfo: storage.VolumeAttachmentInfo{
 			DeviceLink: "/dev/disk/by-dname/sdd",
 		},
 	}, {
-		names.NewVolumeTag("4"),
-		mTag,
-		storage.VolumeAttachmentInfo{},
+		Volume:               names.NewVolumeTag("4"),
+		Machine:              mTag,
+		VolumeAttachmentInfo: storage.VolumeAttachmentInfo{},
 	}, {
-		names.NewVolumeTag("5"),
-		mTag,
-		storage.VolumeAttachmentInfo{
+		Volume:  names.NewVolumeTag("5"),
+		Machine: mTag,
+		VolumeAttachmentInfo: storage.VolumeAttachmentInfo{
 			DeviceLink: "/dev/disk/by-dname/sde-part1",
 		},
 	}})
-}
-
-type storageProviderSuite struct {
-	testhelpers.IsolationSuite
-}
-
-func TestStorageProviderSuite(t *testing.T) {
-	tc.Run(t, &storageProviderSuite{})
-}
-
-func (*storageProviderSuite) TestValidateConfigTags(c *tc.C) {
-	p := maasStorageProvider{}
-	validate := func(tags interface{}) {
-		cfg, err := storage.NewConfig("foo", maasStorageProviderType, map[string]interface{}{
-			"tags": tags,
-		})
-		c.Assert(err, tc.ErrorIsNil)
-		err = p.ValidateConfig(cfg)
-		c.Assert(err, tc.ErrorIsNil)
-	}
-	validate("singular")
-	validate("mul,ti,ple")
-	validate(" leading, spaces")
-	validate("trailing ,spaces ")
-	validate(" and,everything, in ,  between ")
-}
-
-func (*storageProviderSuite) TestValidateConfigInvalidConfig(c *tc.C) {
-	p := maasStorageProvider{}
-	cfg, err := storage.NewConfig("foo", maasStorageProviderType, map[string]interface{}{
-		"tags": "white space",
-	})
-	c.Assert(err, tc.ErrorIsNil)
-	err = p.ValidateConfig(cfg)
-	c.Assert(err, tc.ErrorMatches, `tags may not contain whitespace: "white space"`)
-}
-
-func (*storageProviderSuite) TestValidateConfigUnknownAttribute(c *tc.C) {
-	p := maasStorageProvider{}
-	cfg, err := storage.NewConfig("foo", maasStorageProviderType, map[string]interface{}{
-		"unknown": "config",
-	})
-	c.Assert(err, tc.ErrorIsNil)
-	err = p.ValidateConfig(cfg)
-	c.Assert(err, tc.ErrorIsNil) // unknown attributes are ignored
-}
-
-func (s *storageProviderSuite) TestSupports(c *tc.C) {
-	p := maasStorageProvider{}
-	c.Assert(p.Supports(storage.StorageKindBlock), tc.IsTrue)
-	c.Assert(p.Supports(storage.StorageKindFilesystem), tc.IsFalse)
-}
-
-func (s *storageProviderSuite) TestScope(c *tc.C) {
-	p := maasStorageProvider{}
-	c.Assert(p.Scope(), tc.Equals, storage.ScopeEnviron)
 }

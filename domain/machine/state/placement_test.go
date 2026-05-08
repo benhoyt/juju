@@ -119,7 +119,7 @@ func (s *placementSuite) TestPlaceNetNodeMachinesUnsetWithPlatform(c *tc.C) {
 }
 
 func (s *placementSuite) TestPlaceNetNodeMachinesUnsetWithNonce(c *tc.C) {
-	nonce := ptr("test-nonce")
+	nonce := new("test-nonce")
 	netNodeUUID := tc.Must(c, domainnetwork.NewNetNodeUUID)
 	machineUUID := machinetesting.GenUUID(c)
 
@@ -337,7 +337,7 @@ func (s *placementSuite) TestPlaceNetNodeMachinesContainer(c *tc.C) {
 				},
 				MachineUUID: machinetesting.GenUUID(c),
 				NetNodeUUID: netNodeUUID,
-				Nonce:       ptr("nonce-ense"),
+				Nonce:       new("nonce-ense"),
 			})
 		return err
 	})
@@ -357,7 +357,7 @@ func (s *placementSuite) TestPlaceNetNodeMachinesContainer(c *tc.C) {
 
 	// Check the nonce.
 	s.checkNonceForMachine(c, machine.Name("0"), nil)
-	s.checkNonceForMachine(c, machine.Name("0/lxd/0"), ptr("nonce-ense"))
+	s.checkNonceForMachine(c, machine.Name("0/lxd/0"), new("nonce-ense"))
 }
 
 func (s *placementSuite) TestPlaceNetNodeMachinesContainerWithDirective(c *tc.C) {
@@ -443,7 +443,7 @@ func (s *placementSuite) TestPlaceNetNodeMachinesContainerInvalidArch(c *tc.C) {
 				Directive: "0",
 			},
 			Constraints: constraints.Constraints{
-				Arch: ptr(arch.AMD64),
+				Arch: new(arch.AMD64),
 			},
 		})
 		return err
@@ -660,6 +660,58 @@ WHERE m.net_node_uuid = ?
 	c.Check(directive, tc.Equals, "zone=eu-west-1")
 }
 
+func (s *placementSuite) TestPlaceMachineWithSpacesConstraint(c *tc.C) {
+	// Arrange: Create spaces.
+	_, err := s.DB().ExecContext(c.Context(), `
+INSERT INTO space (uuid, name) VALUES
+	(?, ?),
+	(?, ?)`,
+		"0", "space1",
+		"1", "space2",
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Arrange: Create a machine with space constraints.
+	err = s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		_, err := PlaceMachine(ctx, tx, s.st, clock.WallClock, domainmachine.PlaceMachineArgs{
+			Directive: deployment.Placement{
+				Type: deployment.PlacementTypeUnset,
+			},
+			MachineUUID: machinetesting.GenUUID(c),
+			NetNodeUUID: tc.Must(c, domainnetwork.NewNetNodeUUID),
+			Constraints: constraints.Constraints{
+				Spaces: new([]constraints.SpaceConstraint{
+					{SpaceName: "space1", Exclude: false},
+					{SpaceName: "space2", Exclude: true},
+				}),
+			},
+		})
+		return err
+	})
+	// Assert: the placement succeeds.
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Act: Try to place a machine with a non-existent space constraint.
+	err = s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		_, err := PlaceMachine(ctx, tx, s.st, clock.WallClock, domainmachine.PlaceMachineArgs{
+			Directive: deployment.Placement{
+				Type: deployment.PlacementTypeUnset,
+			},
+			MachineUUID: machinetesting.GenUUID(c),
+			NetNodeUUID: tc.Must(c, domainnetwork.NewNetNodeUUID),
+			Constraints: constraints.Constraints{
+				Spaces: new([]constraints.SpaceConstraint{
+					{SpaceName: "nonexistent-space", Exclude: false},
+				}),
+			},
+		})
+		return err
+	})
+	// Assert: the placement fails with an error about the missing space.
+	c.Assert(err, tc.ErrorMatches, `.*space "nonexistent-space" does not exist.*`)
+	c.Assert(err, tc.ErrorIs, machineerrors.InvalidMachineConstraints)
+}
+
 // TestCreateMachineWithName_PopulatesHardwareCharacteristics verifies that machines can be created
 // with their hardware characteristics. This is required for the manual provider.
 func (s *placementSuite) TestCreateMachineWithName_PopulatesHardwareCharacteristics(c *tc.C) {
@@ -738,6 +790,38 @@ WHERE m.machine_uuid = ?
 	})
 	c.Assert(err, tc.ErrorIsNil)
 	c.Check(azUuid, tc.Equals, expectedAzUUID.String())
+}
+
+func (s *placementSuite) TestCreateMachineWithNameIndicatesUnmanagedMachine(c *tc.C) {
+	netNodeUUID := tc.Must(c, domainnetwork.NewNetNodeUUID)
+	machineUUID := machinetesting.GenUUID(c)
+	instanceID := instance.Id(domainmachine.ManualInstancePrefix + "10.0.0.1")
+
+	err := s.TxnRunner().Txn(c.Context(), func(ctx context.Context, tx *sqlair.TX) error {
+		return CreateMachineWithName(
+			ctx,
+			tx,
+			s.st,
+			clock.WallClock,
+			"0",
+			CreateMachineArgs{
+				MachineUUID: machineUUID.String(),
+				NetNodeUUID: netNodeUUID.String(),
+				InstanceID:  &instanceID,
+			},
+		)
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	var count int
+	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx,
+			"SELECT count(*) FROM machine_manual WHERE machine_uuid = ?",
+			machineUUID.String(),
+		).Scan(&count)
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(count, tc.Equals, 1)
 }
 
 func (s *placementSuite) checkSequenceForMachineNamespace(c *tc.C, expected int) {

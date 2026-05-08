@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/canonical/sqlair"
+	"github.com/juju/clock"
 
 	"github.com/juju/juju/core/database"
 	coreerrors "github.com/juju/juju/core/errors"
@@ -27,13 +28,54 @@ import (
 // UserState represents a type for interacting with the underlying state.
 type UserState struct {
 	*domain.StateBase
+
+	clock clock.Clock
 }
 
 // NewUserState returns a new State for interacting with the underlying state.
-func NewUserState(factory database.TxnRunnerFactory) *UserState {
+func NewUserState(factory database.TxnRunnerFactory, clock clock.Clock) *UserState {
 	return &UserState{
 		StateBase: domain.NewStateBase(factory),
+		clock:     clock,
 	}
+}
+
+// EnsureExternalUser ensures that the given external user exists in the
+// database, creating them if necessary.
+// If the user already exists, this is a no-op.
+func (st *UserState) EnsureExternalUser(ctx context.Context, subject user.Name) error {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	userUUID, err := user.NewUUID()
+	if err != nil {
+		return errors.Errorf("generating user UUID: %w", err)
+	}
+
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		// Get the UUID of everyone@external to use as the creator.
+		creatorUUID, err := GetUserUUIDByName(ctx, tx, permission.EveryoneUserName)
+		if errors.Is(err, accesserrors.UserNotFound) {
+			return errors.Errorf("%q (should be added on bootstrap): %w", permission.EveryoneUserName, accesserrors.UserNotFound)
+		} else if err != nil {
+			return errors.Capture(err)
+		}
+
+		err = AddUser(ctx, tx, userUUID, subject, subject.Name(), true, creatorUUID, st.clock.Now().UTC())
+		if errors.Is(err, accesserrors.UserAlreadyExists) {
+			// User already exists — this is the expected path for
+			// returning users and also handles the race condition
+			// of two concurrent logins for the same new user.
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		return errors.Errorf("ensuring external user %q: %w", subject, err)
+	}
+	return nil
 }
 
 // AddUser adds a new user to the database and enables the user.
@@ -54,7 +96,7 @@ func (st *UserState) AddUser(
 		return errors.Errorf("getting DB access: %w", err)
 	}
 	return db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		return errors.Capture(AddUser(ctx, tx, uuid, name, displayName, external, creatorUUID))
+		return errors.Capture(AddUser(ctx, tx, uuid, name, displayName, external, creatorUUID, st.clock.Now().UTC()))
 	})
 }
 
@@ -78,7 +120,34 @@ func (st *UserState) AddUserWithPermission(
 	}
 
 	return db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		return errors.Capture(AddUserWithPermission(ctx, tx, uuid, name, displayName, external, creatorUUID, permission))
+		return errors.Capture(AddUserWithPermission(ctx, tx, uuid, name, displayName, external, creatorUUID,
+			permission, st.clock.Now().UTC()))
+	})
+}
+
+// AddUserWithCreatedAt adds a new user with a specific creation date to the
+// database, preserving the original creation timestamp. This is primarily used
+// when importing external users during model migration.
+// The following error types are possible from this function:
+//   - [accesserrors.UserAlreadyExists]: If a user with the supplied name already
+//     exists.
+//   - [accesserrors.UserCreatorUUIDNotFound]: If the creator supplied for the
+//     user does not exist.
+func (st *UserState) AddUserWithCreatedAt(
+	ctx context.Context,
+	uuid user.UUID,
+	name user.Name,
+	displayName string,
+	creatorUUID user.UUID,
+	createdAt time.Time,
+) error {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return errors.Errorf("getting DB access: %w", err)
+	}
+
+	return db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		return errors.Capture(AddUser(ctx, tx, uuid, name, displayName, true, creatorUUID, createdAt))
 	})
 }
 
@@ -102,7 +171,8 @@ func (st *UserState) AddUserWithPasswordHash(
 	}
 
 	return db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		return errors.Capture(AddUserWithPassword(ctx, tx, uuid, name, displayName, creatorUUID, permission, passwordHash, salt))
+		return errors.Capture(AddUserWithPassword(ctx, tx, uuid, name, displayName, creatorUUID, permission,
+			passwordHash, salt, st.clock.Now().UTC()))
 	})
 }
 
@@ -126,7 +196,7 @@ func (st *UserState) AddUserWithActivationKey(
 	}
 
 	return db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		err = AddUserWithPermission(ctx, tx, uuid, name, displayName, false, creatorUUID, permission)
+		err = AddUserWithPermission(ctx, tx, uuid, name, displayName, false, creatorUUID, permission, st.clock.Now().UTC())
 		if err != nil {
 			return errors.Capture(err)
 		}
@@ -330,10 +400,14 @@ func (st *UserState) GetUserUUIDByName(
 	})
 }
 
-// GetUserByAuth will retrieve the user with checking authentication
-// information specified by UUID and password from the database.
-// If the user does not exist an error that satisfies accesserrors.UserNotFound
-// will be returned, otherwise unauthorized will be returned.
+// GetUserByAuth will find and return the user identified by the supplied user
+// name confirming that the users password also matches. Only users that are
+// active within the current controller will be considered.
+//
+// The following errors may be returned:
+// - [accesserrors.UserUnauthorized] when the the users password does not
+// match the one in the controller.
+// - [accesserrors.UserNotFound] when the user does not exist in the controller.
 func (st *UserState) GetUserByAuth(ctx context.Context, name user.Name, password auth.Password) (user.User, error) {
 	db, err := st.DB(ctx)
 	if err != nil {
@@ -373,7 +447,7 @@ AND    user.removed = false
 		return nil
 	})
 	if err != nil {
-		return user.User{}, errors.Errorf("getting user with name %q: %w", name, err)
+		return user.User{}, errors.Capture(err)
 	}
 
 	passwordHash, err := auth.HashPassword(password, result.PasswordSalt)
@@ -468,6 +542,11 @@ WHERE user_public_ssh_key_id IN (SELECT id
 		return errors.Errorf("preparing activation key deletion query: %w", err)
 	}
 
+	deletePermStmt, err := st.Prepare("DELETE FROM permission WHERE grant_to = $M.uuid", m)
+	if err != nil {
+		return errors.Errorf("preparing permission deletion query: %w", err)
+	}
+
 	setRemovedStmt, err := st.Prepare("UPDATE user SET removed = true WHERE uuid = $M.uuid", m)
 	if err != nil {
 		return errors.Errorf("preparing password deletion query: %w", err)
@@ -499,6 +578,10 @@ WHERE user_public_ssh_key_id IN (SELECT id
 
 		if err := tx.Query(ctx, deleteKeyStmt, m).Run(); err != nil {
 			return errors.Errorf("deleting key for %q: %w", name, err)
+		}
+
+		if err := tx.Query(ctx, deletePermStmt, m).Run(); err != nil {
+			return errors.Errorf("deleting permission for %q: %w", name, err)
 		}
 
 		if err := tx.Query(ctx, setRemovedStmt, m).Run(); err != nil {
@@ -734,8 +817,9 @@ func AddUserWithPassword(
 	permission permission.AccessSpec,
 	passwordHash string,
 	salt []byte,
+	createdAt time.Time,
 ) error {
-	err := AddUserWithPermission(ctx, tx, uuid, name, displayName, false, creatorUUID, permission)
+	err := AddUserWithPermission(ctx, tx, uuid, name, displayName, false, creatorUUID, permission, createdAt)
 	if err != nil {
 		return errors.Errorf("adding user with uuid %q: %w", uuid, err)
 	}
@@ -756,6 +840,7 @@ func AddUser(
 	displayName string,
 	external bool,
 	creatorUuid user.UUID,
+	createdAt time.Time,
 ) error {
 	user := dbUser{
 		UUID:        uuid.String(),
@@ -763,7 +848,7 @@ func AddUser(
 		DisplayName: displayName,
 		External:    external,
 		CreatorUUID: creatorUuid.String(),
-		CreatedAt:   time.Now(),
+		CreatedAt:   createdAt.UTC(),
 	}
 
 	addUserQuery := `
@@ -816,8 +901,9 @@ func AddUserWithPermission(
 	external bool,
 	creatorUuid user.UUID,
 	access permission.AccessSpec,
+	createdAt time.Time,
 ) error {
-	err := AddUser(ctx, tx, uuid, name, displayName, external, creatorUuid)
+	err := AddUser(ctx, tx, uuid, name, displayName, external, creatorUuid, createdAt)
 	if err != nil {
 		return errors.Capture(err)
 	}

@@ -62,6 +62,7 @@ type secretRef struct {
 	ID         string `db:"secret_id"`
 	SourceUUID string `db:"source_uuid"`
 	Revision   int    `db:"revision"`
+	Migrated   bool   `db:"migrated"`
 }
 
 type secretMetadata struct {
@@ -111,7 +112,8 @@ type secretUnitOwner struct {
 
 type secretOwner struct {
 	SecretID  string `db:"secret_id"`
-	OwnerID   string `db:"owner_id"`
+	OwnerName string `db:"owner_name"`
+	OwnerUUID string `db:"owner_uuid"`
 	OwnerKind string `db:"owner_kind"`
 	Label     string `db:"label"`
 }
@@ -132,6 +134,7 @@ type secretRevision struct {
 	SecretID   string    `db:"secret_id"`
 	Revision   int       `db:"revision"`
 	CreateTime time.Time `db:"create_time"`
+	UpdateTime time.Time `db:"update_time"`
 }
 
 type secretRevisionObsolete struct {
@@ -250,6 +253,19 @@ func (rows secretInfos) toSecretMetadata(secretOwners []secretOwner) ([]*coresec
 		return nil, errors.New("row length mismatch composing secret results")
 	}
 
+	toSecretOwner := func(so secretOwner) coresecrets.Owner {
+		// In public facing API, the ID is human-readable, so it is the name,
+		// not the UUID, except for model owners, which are always model UUIDs.
+		result := coresecrets.Owner{
+			Kind: coresecrets.OwnerKind(so.OwnerKind),
+			ID:   so.OwnerName,
+		}
+		if so.OwnerKind == ownerKindParam.Model {
+			result.ID = so.OwnerUUID
+		}
+		return result
+	}
+
 	result := make([]*coresecrets.SecretMetadata, len(rows))
 	for i, row := range rows {
 		uri, err := coresecrets.ParseURI(row.ID)
@@ -257,14 +273,11 @@ func (rows secretInfos) toSecretMetadata(secretOwners []secretOwner) ([]*coresec
 			return nil, errors.Errorf("secret URI %q %w", row.ID, coreerrors.NotValid)
 		}
 		result[i] = &coresecrets.SecretMetadata{
-			URI:         uri,
-			Version:     row.Version,
-			Description: row.Description,
-			Label:       secretOwners[i].Label,
-			Owner: coresecrets.Owner{
-				Kind: coresecrets.OwnerKind(secretOwners[i].OwnerKind),
-				ID:   secretOwners[i].OwnerID,
-			},
+			URI:                    uri,
+			Version:                row.Version,
+			Description:            row.Description,
+			Label:                  secretOwners[i].Label,
+			Owner:                  toSecretOwner(secretOwners[i]),
 			CreateTime:             row.CreateTime,
 			UpdateTime:             row.UpdateTime,
 			LatestRevision:         row.LatestRevision,
@@ -361,6 +374,7 @@ func (rows secretRevisions) toSecretRevisions(
 			Revision:    row.Revision,
 			ValueRef:    nil,
 			CreateTime:  row.CreateTime,
+			UpdateTime:  row.UpdateTime,
 			BackendName: nil,
 		}
 		if tm := revExpire[i].ExpireTime; !tm.IsZero() {

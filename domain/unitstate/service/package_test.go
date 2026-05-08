@@ -4,7 +4,4 @@
 package service
 
 //go:generate go run go.uber.org/mock/mockgen -typed -package service -destination state_mock_test.go github.com/juju/juju/domain/unitstate/service State
-
-func ptr[T any](v T) *T {
-	return &v
-}
+//go:generate go run go.uber.org/mock/mockgen -typed -package service -destination leadership_mock_test.go github.com/juju/juju/core/leadership Ensurer

@@ -7,8 +7,8 @@ import (
 	"context"
 	"net/url"
 
-	"github.com/juju/juju/internal/charm"
-	charmresource "github.com/juju/juju/internal/charm/resource"
+	"github.com/juju/juju/domain/deployment/charm"
+	charmresource "github.com/juju/juju/domain/deployment/charm/resource"
 	"github.com/juju/juju/internal/charmhub"
 )
 
@@ -55,7 +55,6 @@ type CharmArchive interface {
 	charm.Charm
 
 	Version() string
-	LXDProfile() *charm.LXDProfile
 }
 
 // MetadataRequest encapsulates the arguments for a charm essential metadata

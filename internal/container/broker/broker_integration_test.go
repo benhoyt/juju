@@ -19,7 +19,6 @@ import (
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/instance"
 	corelogger "github.com/juju/juju/core/logger"
-	"github.com/juju/juju/core/lxdprofile"
 	corenetwork "github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/core/status"
@@ -56,18 +55,18 @@ func (s *brokerSuite) TestCombinedCloudInitDataNoCloudInitUserData(c *tc.C) {
 		corebase.MakeDefaultBase("ubuntu", "16.04"), loggertesting.WrapCheckLog(c))
 	c.Assert(err, tc.ErrorIsNil)
 
-	assertCloudInitUserData(obtained, map[string]interface{}{
-		"apt": map[string]interface{}{
-			"primary": []interface{}{
-				map[interface{}]interface{}{
-					"arches": []interface{}{"default"},
+	assertCloudInitUserData(obtained, map[string]any{
+		"apt": map[string]any{
+			"primary": []any{
+				map[any]any{
+					"arches": []any{"default"},
 					"uri":    "http://archive.ubuntu.com/ubuntu",
 				},
 			},
 		},
-		"ca-certs": map[interface{}]interface{}{
+		"ca-certs": map[any]any{
 			"remove-defaults": true,
-			"trusted":         []interface{}{"-----BEGIN CERTIFICATE-----\nYOUR-ORGS-TRUSTED-CA-CERT-HERE\n-----END CERTIFICATE-----\n"},
+			"trusted":         []any{"-----BEGIN CERTIFICATE-----\nYOUR-ORGS-TRUSTED-CA-CERT-HERE\n-----END CERTIFICATE-----\n"},
 		},
 	}, c)
 }
@@ -125,10 +124,10 @@ func fakeContainerConfig() params.ContainerConfig {
 		ProviderType:            "fake",
 		AuthorizedKeys:          coretesting.FakeAuthKeys,
 		SSLHostnameVerification: true,
-		CloudInitUserData: map[string]interface{}{
-			"packages":        []interface{}{"python-keystoneclient", "python-glanceclient"},
-			"preruncmd":       []interface{}{"mkdir /tmp/preruncmd", "mkdir /tmp/preruncmd2"},
-			"postruncmd":      []interface{}{"mkdir /tmp/postruncmd", "mkdir /tmp/postruncmd2"},
+		CloudInitUserData: map[string]any{
+			"packages":        []any{"python-keystoneclient", "python-glanceclient"},
+			"preruncmd":       []any{"mkdir /tmp/preruncmd", "mkdir /tmp/preruncmd2"},
+			"postruncmd":      []any{"mkdir /tmp/postruncmd", "mkdir /tmp/postruncmd2"},
 			"package_upgrade": false,
 		},
 	}
@@ -252,11 +251,6 @@ func (m *fakeContainerManager) IsInitialized() bool {
 	return true
 }
 
-func (m *fakeContainerManager) MaybeWriteLXDProfile(pName string, put lxdprofile.Profile) error {
-	m.MethodCall(m, "MaybeWriteLXDProfile")
-	return m.NextErr()
-}
-
 type mockInstance struct {
 	id string
 }
@@ -279,7 +273,7 @@ func (m *mockInstance) Addresses(context.Context) (corenetwork.ProviderAddresses
 }
 
 type patcher interface {
-	PatchValue(destination, source interface{})
+	PatchValue(destination, source any)
 }
 
 func patchResolvConf(s patcher, c *tc.C) {
@@ -317,8 +311,8 @@ func makePossibleTools() coretools.List {
 	}}
 }
 
-func makeNoOpStatusCallback() func(ctx context.Context, settableStatus status.Status, info string, data map[string]interface{}) error {
-	return func(_ context.Context, _ status.Status, _ string, _ map[string]interface{}) error {
+func makeNoOpStatusCallback() func(ctx context.Context, settableStatus status.Status, info string, data map[string]any) error {
+	return func(_ context.Context, _ status.Status, _ string, _ map[string]any) error {
 		return nil
 	}
 }
@@ -332,7 +326,7 @@ func callStartInstance(c *tc.C, s patcher, broker environs.InstanceBroker, machi
 	})
 }
 
-func assertCloudInitUserData(obtained, expected map[string]interface{}, c *tc.C) {
+func assertCloudInitUserData(obtained, expected map[string]any, c *tc.C) {
 	c.Assert(obtained, tc.HasLen, len(expected))
 	for obtainedK, obtainedV := range obtained {
 		expectedV, ok := expected[obtainedK]
@@ -352,27 +346,27 @@ type fakeMachineInitReader struct {
 	cloudconfig.InitReader
 }
 
-func (r *fakeMachineInitReader) GetInitConfig() (map[string]interface{}, error) {
-	return map[string]interface{}{
-		"packages":   []interface{}{"python-novaclient"},
-		"fake-entry": []interface{}{"testing-garbage"},
-		"apt": map[interface{}]interface{}{
-			"primary": []interface{}{
-				map[interface{}]interface{}{
-					"arches": []interface{}{"default"},
+func (r *fakeMachineInitReader) GetInitConfig() (map[string]any, error) {
+	return map[string]any{
+		"packages":   []any{"python-novaclient"},
+		"fake-entry": []any{"testing-garbage"},
+		"apt": map[any]any{
+			"primary": []any{
+				map[any]any{
+					"arches": []any{"default"},
 					"uri":    "http://archive.ubuntu.com/ubuntu",
 				},
 			},
-			"security": []interface{}{
-				map[interface{}]interface{}{
-					"arches": []interface{}{"default"},
+			"security": []any{
+				map[any]any{
+					"arches": []any{"default"},
 					"uri":    "http://archive.ubuntu.com/ubuntu",
 				},
 			},
 		},
-		"ca-certs": map[interface{}]interface{}{
+		"ca-certs": map[any]any{
 			"remove-defaults": true,
-			"trusted":         []interface{}{"-----BEGIN CERTIFICATE-----\nYOUR-ORGS-TRUSTED-CA-CERT-HERE\n-----END CERTIFICATE-----\n"},
+			"trusted":         []any{"-----BEGIN CERTIFICATE-----\nYOUR-ORGS-TRUSTED-CA-CERT-HERE\n-----END CERTIFICATE-----\n"},
 		},
 	}, nil
 }

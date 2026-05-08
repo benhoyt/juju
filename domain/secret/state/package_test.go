@@ -5,103 +5,152 @@ package state
 
 import (
 	"context"
+	"database/sql"
+
+	"github.com/canonical/sqlair"
+	"github.com/juju/tc"
 
 	coreapplication "github.com/juju/juju/core/application"
 	coresecrets "github.com/juju/juju/core/secrets"
 	coreunit "github.com/juju/juju/core/unit"
-	"github.com/juju/juju/domain"
+	schematesting "github.com/juju/juju/domain/schema/testing"
 	domainsecret "github.com/juju/juju/domain/secret"
+	loggertesting "github.com/juju/juju/internal/logger/testing"
 )
 
-func getApplicationUUID(ctx context.Context, st *State, appName string) (coreapplication.UUID, error) {
+type baseSuite struct {
+	schematesting.ModelSuite
+	state *State
+}
+
+func (s *baseSuite) SetUpTest(c *tc.C) {
+	s.ModelSuite.SetUpTest(c)
+	s.state = NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	c.Cleanup(func() {
+		s.state = nil
+	})
+}
+
+// txn executes a transactional function within a database context,
+// ensuring proper error handling and assertion.
+func (s *baseSuite) txn(c *tc.C, fn func(ctx context.Context, tx *sqlair.TX) error) error {
+	return tc.Must1(c, s.state.DB, c.Context()).Txn(c.Context(), fn)
+}
+
+// queryRows returns rows as a slice of maps for the given query.
+// This is intended to be used with SELECT statements for assertions.
+func (s *baseSuite) queryRows(c *tc.C, query string, args ...any) []map[string]any {
+	var results []map[string]any
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		cols, err := rows.Columns()
+		if err != nil {
+			return err
+		}
+
+		for rows.Next() {
+			values := make([]any, len(cols))
+			valuePtrs := make([]any, len(cols))
+			for i := range values {
+				valuePtrs[i] = &values[i]
+			}
+
+			if err := rows.Scan(valuePtrs...); err != nil {
+				return err
+			}
+
+			row := make(map[string]any)
+			for i, col := range cols {
+				row[col] = values[i]
+			}
+			results = append(results, row)
+		}
+		return rows.Err()
+	})
+	c.Assert(err, tc.IsNil, tc.Commentf("querying rows with query %q", query))
+	return results
+}
+
+func (s *baseSuite) getApplicationUUID(c *tc.C, appName string) (coreapplication.UUID, error) {
 	var uuid coreapplication.UUID
-	err := st.RunAtomic(ctx, func(ctx domain.AtomicContext) error {
+	err := s.txn(c, func(ctx context.Context, tx *sqlair.TX) error {
 		var err error
-		uuid, err = st.GetApplicationUUID(ctx, appName)
+		uuid, err = s.state.getApplicationUUID(ctx, tx, appName)
 		return err
 	})
 	return uuid, err
 }
 
-func getUnitUUID(ctx context.Context, st *State, unitName coreunit.Name) (coreunit.UUID, error) {
+func (s *baseSuite) getUnitUUID(c *tc.C, unitName coreunit.Name) (coreunit.UUID, error) {
 	var uuid coreunit.UUID
-	err := st.RunAtomic(ctx, func(ctx domain.AtomicContext) error {
+	err := s.txn(c, func(ctx context.Context, tx *sqlair.TX) error {
 		var err error
-		uuid, err = st.GetUnitUUID(ctx, unitName)
+		uuid, err = s.state.getUnitUUID(ctx, tx, unitName)
 		return err
 	})
 	return uuid, err
 }
 
-func getSecretOwner(ctx context.Context, st *State, uri *coresecrets.URI) (domainsecret.Owner, error) {
-	var owner domainsecret.Owner
-	err := st.RunAtomic(ctx, func(ctx domain.AtomicContext) error {
-		var err error
-		owner, err = st.GetSecretOwner(ctx, uri)
-		return err
-	})
-	return owner, err
-}
-
-func checkUserSecretLabelExists(ctx context.Context, st *State, label string) (bool, error) {
+func (s *baseSuite) checkUserSecretLabelExists(c *tc.C, label string) (bool, error) {
 	var exists bool
-	err := st.RunAtomic(ctx, func(ctx domain.AtomicContext) error {
+	err := s.txn(c, func(ctx context.Context, tx *sqlair.TX) error {
 		var err error
-		exists, err = st.CheckUserSecretLabelExists(ctx, label)
+		exists, err = s.state.checkUserSecretLabelExists(ctx, tx, &label, "")
 		return err
 	})
 	return exists, err
 }
 
-func checkApplicationSecretLabelExists(ctx context.Context, st *State, appUUID coreapplication.UUID, label string) (bool, error) {
+func (s *baseSuite) checkApplicationSecretLabelExists(c *tc.C, appUUID coreapplication.UUID,
+	label string) (bool, error) {
 	var exists bool
-	err := st.RunAtomic(ctx, func(ctx domain.AtomicContext) error {
+	err := s.txn(c, func(ctx context.Context, tx *sqlair.TX) error {
 		var err error
-		exists, err = st.CheckApplicationSecretLabelExists(ctx, appUUID, label)
+		exists, err = s.state.checkApplicationSecretLabelExists(ctx, tx, appUUID, &label, "")
 		return err
 	})
 	return exists, err
 }
 
-func checkUnitSecretLabelExists(ctx context.Context, st *State, unitUUID coreunit.UUID, label string) (bool, error) {
+func (s *baseSuite) checkUnitSecretLabelExists(c *tc.C, unitUUID coreunit.UUID, label string) (bool, error) {
 	var exists bool
-	err := st.RunAtomic(ctx, func(ctx domain.AtomicContext) error {
+	err := s.txn(c, func(ctx context.Context, tx *sqlair.TX) error {
 		var err error
-		exists, err = st.CheckUnitSecretLabelExists(ctx, unitUUID, label)
+		exists, err = s.state.checkUnitSecretLabelExists(ctx, tx, unitUUID, &label, "")
 		return err
 	})
 	return exists, err
 }
 
-func createUserSecret(ctx context.Context, st *State, version int, uri *coresecrets.URI, secret domainsecret.UpsertSecretParams) error {
-	return st.RunAtomic(ctx, func(ctx domain.AtomicContext) error {
-		return st.CreateUserSecret(ctx, version, uri, secret)
+func (s *baseSuite) createUserSecret(c *tc.C, version int, uri *coresecrets.URI, secret domainsecret.UpsertSecretParams) error {
+	return s.txn(c, func(ctx context.Context, tx *sqlair.TX) error {
+		return s.state.createUserSecret(ctx, tx, version, uri, secret)
 	})
 }
 
-func createCharmApplicationSecret(ctx context.Context, st *State, version int, uri *coresecrets.URI, appName string, secret domainsecret.UpsertSecretParams) error {
-	return st.RunAtomic(ctx, func(ctx domain.AtomicContext) error {
-		appUUID, err := st.GetApplicationUUID(ctx, appName)
+func (s *baseSuite) createCharmApplicationSecret(c *tc.C, version int, uri *coresecrets.URI, appName string, secret domainsecret.UpsertSecretParams) error {
+	return s.txn(c, func(ctx context.Context, tx *sqlair.TX) error {
+		appUUID, err := s.state.getApplicationUUID(ctx, tx, appName)
 		if err != nil {
 			return err
 		}
-		return st.CreateCharmApplicationSecret(ctx, version, uri, appUUID, secret)
+		return s.state.createCharmApplicationSecret(ctx, tx, version, uri, appUUID, secret)
 	})
 }
 
-func createCharmUnitSecret(ctx context.Context, st *State, version int, uri *coresecrets.URI, unitName coreunit.Name, secret domainsecret.UpsertSecretParams) error {
-	return st.RunAtomic(ctx, func(ctx domain.AtomicContext) error {
-		unitUUID, err := st.GetUnitUUID(ctx, unitName)
+func (s *baseSuite) createCharmUnitSecret(c *tc.C, version int, uri *coresecrets.URI, unitName coreunit.Name,
+	secret domainsecret.UpsertSecretParams) error {
+	return s.txn(c, func(ctx context.Context, tx *sqlair.TX) error {
+		unitUUID, err := s.state.getUnitUUID(ctx, tx, unitName)
 		if err != nil {
 			return err
 		}
-		return st.CreateCharmUnitSecret(ctx, version, uri, unitUUID, secret)
-	})
-}
-
-func updateSecret(ctx context.Context, st *State, uri *coresecrets.URI, secret domainsecret.UpsertSecretParams,
-) error {
-	return st.RunAtomic(ctx, func(ctx domain.AtomicContext) error {
-		return st.UpdateSecret(ctx, uri, secret)
+		return s.state.createCharmUnitSecret(ctx, tx, version, uri, unitUUID, secret)
 	})
 }

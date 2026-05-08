@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -22,8 +23,8 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"github.com/juju/tc"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/juju/juju/api"
@@ -31,12 +32,14 @@ import (
 	"github.com/juju/juju/apiserver"
 	"github.com/juju/juju/apiserver/apiserverhttp"
 	"github.com/juju/juju/apiserver/authentication"
+	jwtauth "github.com/juju/juju/apiserver/authentication/jwt"
 	"github.com/juju/juju/apiserver/authentication/macaroon"
 	"github.com/juju/juju/apiserver/observer"
 	"github.com/juju/juju/apiserver/observer/fakeobserver"
 	"github.com/juju/juju/apiserver/stateauthenticator"
 	apitesting "github.com/juju/juju/apiserver/testing"
 	"github.com/juju/juju/cloud"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/controller"
 	"github.com/juju/juju/core/auditlog"
 	"github.com/juju/juju/core/changestream"
@@ -47,6 +50,7 @@ import (
 	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/objectstore"
+	"github.com/juju/juju/core/providertracker"
 	"github.com/juju/juju/core/trace"
 	coreuser "github.com/juju/juju/core/user"
 	cloudstate "github.com/juju/juju/domain/cloud/state"
@@ -54,7 +58,6 @@ import (
 	"github.com/juju/juju/domain/credential"
 	credentialstate "github.com/juju/juju/domain/credential/state"
 	servicefactorytesting "github.com/juju/juju/domain/services/testing"
-	"github.com/juju/juju/internal/cmd"
 	databasetesting "github.com/juju/juju/internal/database/testing"
 	internallease "github.com/juju/juju/internal/lease"
 	internallogger "github.com/juju/juju/internal/logger"
@@ -110,12 +113,12 @@ type ApiServerSuite struct {
 	// ControllerConfigAttrs can be set up before SetUpTest
 	// is invoked. Any attributes set here will be added to
 	// the suite's controller configuration.
-	ControllerConfigAttrs map[string]interface{}
+	ControllerConfigAttrs map[string]any
 
 	// ControllerModelConfigAttrs can be set up before SetUpTest
 	// is invoked. Any attributes set here will be added to
 	// the suite's controller model configuration.
-	ControllerModelConfigAttrs map[string]interface{}
+	ControllerModelConfigAttrs map[string]any
 
 	// These are exposed for the tests to use.
 	Server            *apiserver.Server
@@ -134,6 +137,7 @@ type ApiServerSuite struct {
 	WithUpgrading      bool
 	WithAuditLogConfig *auditlog.Config
 	WithIntrospection  func(func(string, http.Handler))
+	WithJWTTokenParser jwtauth.TokenParser
 
 	// AdminUserUUID is the root user for the controller.
 	AdminUserUUID coreuser.UUID
@@ -212,9 +216,7 @@ func (s *ApiServerSuite) setupControllerModel(c *tc.C, controllerCfg controller.
 		"name": "controller",
 		"type": DefaultCloud.Type,
 	}
-	for k, v := range s.ControllerModelConfigAttrs {
-		modelAttrs[k] = v
-	}
+	maps.Copy(modelAttrs, s.ControllerModelConfigAttrs)
 	controllerModelCfg := coretesting.CustomModelConfig(c, modelAttrs)
 	s.ControllerConfig = controllerCfg
 	s.DomainServicesSuite.ControllerModelUUID = coremodel.UUID(controllerModelCfg.UUID())
@@ -255,7 +257,6 @@ func (s *ApiServerSuite) setupAPIServer(c *tc.C, controllerCfg controller.Config
 	cfg := DefaultServerConfig(c, s.Clock)
 	cfg.Mux = s.mux
 	cfg.DBGetter = stubDBGetter{db: stubWatchableDB{TxnRunner: s.TxnRunner()}}
-	cfg.DBDeleter = stubDBDeleter{}
 	cfg.DomainServicesGetter = s.DomainServicesGetter(c, s.NoopObjectStore(c), s.NoopLeaseManager(c))
 	cfg.ControllerConfigService = s.ControllerDomainServices(c).ControllerConfig()
 	cfg.PublicDNSName = controllerCfg.AutocertDNSName()
@@ -309,8 +310,13 @@ func (s *ApiServerSuite) setupAPIServer(c *tc.C, controllerCfg controller.Config
 	)
 	c.Assert(err, tc.ErrorIsNil)
 	cfg.LocalMacaroonAuthenticator = authenticator
+	if s.WithJWTTokenParser != nil {
+		cfg.JWTAuthenticator = jwtauth.NewAuthenticator(s.WithJWTTokenParser)
+	}
 	err = authenticator.AddHandlers(s.mux)
 	c.Assert(err, tc.ErrorIsNil)
+
+	cfg.EphemeralProviderFactory = &noopEphemeralProviderFactory{}
 
 	s.Server, err = apiserver.NewServer(c.Context(), cfg)
 	c.Assert(err, tc.ErrorIsNil)
@@ -318,6 +324,15 @@ func (s *ApiServerSuite) setupAPIServer(c *tc.C, controllerCfg controller.Config
 		Addrs:  []string{fmt.Sprintf("localhost:%d", s.httpServer.Listener.Addr().(*net.TCPAddr).Port)},
 		CACert: coretesting.CACert,
 	}
+}
+
+type noopEphemeralProviderFactory struct{}
+
+func (*noopEphemeralProviderFactory) EphemeralProviderFromConfig(
+	context.Context,
+	providertracker.EphemeralProviderConfig,
+) (providertracker.Provider, error) {
+	return nil, nil
 }
 
 type agentPasswordServiceGetter struct {
@@ -342,9 +357,7 @@ func (s *ApiServerSuite) SetUpTest(c *tc.C) {
 	s.setupHttpServer(c)
 
 	controllerCfg := coretesting.FakeControllerConfig()
-	for key, value := range s.ControllerConfigAttrs {
-		controllerCfg[key] = value
-	}
+	maps.Copy(controllerCfg, s.ControllerConfigAttrs)
 	s.ControllerUUID = controllerCfg.ControllerUUID()
 	s.setupControllerModel(c, controllerCfg)
 	s.setupAPIServer(c, controllerCfg)
@@ -559,12 +572,6 @@ func (s stubDBGetter) GetWatchableDB(ctx context.Context, namespace string) (cha
 	return s.db, nil
 }
 
-type stubDBDeleter struct{}
-
-func (s stubDBDeleter) DeleteDB(namespace string) error {
-	return nil
-}
-
 type stubTracerGetter struct{}
 
 func (s *stubTracerGetter) GetTracer(ctx context.Context, namespace trace.TracerNamespace) (trace.Tracer, error) {
@@ -588,6 +595,8 @@ func (s *stubObjectStoreGetter) GetObjectStore(ctx context.Context, namespace st
 		internalobjectstore.WithMetadataService(&stubMetadataService{services: services}),
 		internalobjectstore.WithClaimer(s.claimer),
 		internalobjectstore.WithLogger(internallogger.GetLogger("juju.objectstore")),
+		internalobjectstore.WithClock(clock.WallClock),
+		internalobjectstore.WithControllerNodeID("0"),
 	)
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -604,7 +613,7 @@ type stubMetadataService struct {
 	services services.ObjectStoreServices
 }
 
-func (s *stubMetadataService) ObjectStore() objectstore.ObjectStoreMetadata {
+func (s *stubMetadataService) ObjectStore() objectstore.RemoteObjectStoreMetadata {
 	return s.services.ObjectStore()
 }
 
@@ -758,4 +767,8 @@ func (r *testRegistry) Count() int {
 func (r *testRegistry) loop() error {
 	<-r.catacomb.Dying()
 	return r.catacomb.ErrDying()
+}
+
+func (r *testRegistry) Report(ctx context.Context) map[string]any {
+	return map[string]any{}
 }

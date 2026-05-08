@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 	"github.com/juju/errors"
 	"github.com/juju/names/v6"
 	"gopkg.in/httprequest.v1"
@@ -37,7 +37,7 @@ var WithTracer = base.WithTracer
 func NewClient(caller base.APICaller, options ...Option) *Client {
 	return &Client{
 		caller:                base.NewFacadeCaller(caller, "MigrationTarget", options...),
-		httpRootClientFactory: caller.RootHTTPClient,
+		httpRootClientFactory: caller.HTTPClient,
 	}
 }
 
@@ -46,7 +46,7 @@ func NewClient(caller base.APICaller, options ...Option) *Client {
 // controller during a migration.
 type Client struct {
 	caller                base.FacadeCaller
-	httpRootClientFactory func() (*httprequest.Client, error)
+	httpRootClientFactory func(base.HTTPClientScope) (*httprequest.Client, error)
 }
 
 // BestFacadeVersion returns the best supported facade version
@@ -77,7 +77,7 @@ func (c *Client) Prechecks(ctx context.Context, model coremigration.ModelInfo) e
 	}
 
 	if c.BestFacadeVersion() < 7 {
-		owner, err := params.ApproximateUserTagFromQualifier(model.Qualifier)
+		owner, err := params.UserTagFromQualifier(model.Qualifier)
 		if err != nil {
 			return errors.Trace(err)
 		}
@@ -195,15 +195,15 @@ func (c *Client) UploadResource(ctx context.Context, modelUUID string, res resou
 	return errors.Trace(err)
 }
 
-func (c *Client) httpPost(ctx context.Context, modelUUID string, content io.Reader, endpoint, contentType string, headers map[string]string, response interface{}) error {
+func (c *Client) httpPost(ctx context.Context, modelUUID string, content io.Reader, endpoint, contentType string, headers map[string]string, response any) error {
 	return c.http(ctx, "POST", modelUUID, content, endpoint, contentType, headers, response)
 }
 
-func (c *Client) httpPut(ctx context.Context, modelUUID string, content io.Reader, endpoint, contentType string, headers map[string]string, response interface{}) error {
+func (c *Client) httpPut(ctx context.Context, modelUUID string, content io.Reader, endpoint, contentType string, headers map[string]string, response any) error {
 	return c.http(ctx, "PUT", modelUUID, content, endpoint, contentType, headers, response)
 }
 
-func (c *Client) http(ctx context.Context, method, modelUUID string, content io.Reader, endpoint, contentType string, headers map[string]string, response interface{}) error {
+func (c *Client) http(ctx context.Context, method, modelUUID string, content io.Reader, endpoint, contentType string, headers map[string]string, response any) error {
 	req, err := http.NewRequest(method, endpoint, content)
 	if err != nil {
 		return errors.Annotate(err, "cannot create upload request")
@@ -215,7 +215,7 @@ func (c *Client) http(ctx context.Context, method, modelUUID string, content io.
 	}
 
 	// The returned httpClient sets the base url to the controller api root
-	httpClient, err := c.httpRootClientFactory()
+	httpClient, err := c.httpRootClientFactory(base.HTTPClientScopeUnscoped)
 	if err != nil {
 		return errors.Trace(err)
 	}

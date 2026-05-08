@@ -10,7 +10,7 @@ import (
 	"github.com/juju/gnuflag"
 
 	jujucmd "github.com/juju/juju/cmd"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/cmd/cmd"
 )
 
 // RelationModelGetCommand implements the relation-model-get command.
@@ -39,19 +39,19 @@ func NewRelationModelGetCommand(ctx Context) (cmd.Command, error) {
 // Info returns information about the Command.
 func (c *RelationModelGetCommand) Info() *cmd.Info {
 	doc := `
--r must be specified when not in a relation hook
+` + "`-r`" + ` must be specified when not in a relation hook.
 
-relation-model-get outputs details about the model hosting the application
+` + "`relation-model-get`" + ` outputs details about the model hosting the application
 on the other end of a unit relation.
-If not running in a relation hook context, -r needs to be specified with a
-relation identifier similar to the relation-get and relation-set commands.
+If not running in a relation hook context, ` + "`-r`" + ` needs to be specified with a
+relation identifier similar to the ` + "`relation-get`" + ` and ` + "`relation-set`" + ` commands.
 `
 	if _, err := c.ctx.HookRelation(); err == nil {
 		doc = ""
 	}
 	return jujucmd.Info(&cmd.Info{
 		Name:    "relation-model-get",
-		Purpose: "Get details about the model hosing a related application.",
+		Purpose: "Gets details about the model housing a related application.",
 		Doc:     doc,
 	})
 }
@@ -59,7 +59,7 @@ relation identifier similar to the relation-get and relation-set commands.
 // SetFlags adds command specific flags to the flag set.
 func (c *RelationModelGetCommand) SetFlags(f *gnuflag.FlagSet) {
 	c.out.AddFlags(f, "smart", cmd.DefaultFormatters.Formatters())
-	f.Var(c.relationIdProxy, "r", "Specify a relation by id")
+	f.Var(c.relationIdProxy, "r", "Specifies a relation by ID.")
 	f.Var(c.relationIdProxy, "relation", "")
 }
 

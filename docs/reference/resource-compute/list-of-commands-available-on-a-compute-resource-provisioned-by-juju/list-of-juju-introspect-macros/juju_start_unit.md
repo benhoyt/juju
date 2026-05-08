@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Start a stopped unit agent within a single Juju process using juju_start_unit introspect function on deployed machines."
+---
+
 (juju_start_unit)=
 # `juju_start_unit`
 

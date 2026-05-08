@@ -51,18 +51,19 @@ type ModelInfoService interface {
 type ModelService interface {
 	// ControllerModel returns the model used for housing the Juju controller.
 	ControllerModel(ctx context.Context) (model.Model, error)
-	// ListAllModels returns all models registered in the controller. If no
+	// GetAllModels returns all models registered in the controller. If no
 	// models exist a zero value slice will be returned.
-	ListAllModels(context.Context) ([]model.Model, error)
+	GetAllModels(context.Context) ([]model.Model, error)
 	// Model returns the model associated with the provided uuid.
 	Model(ctx context.Context, uuid model.UUID) (model.Model, error)
 }
 
 // ApplicationService provides access to the application service.
 type ApplicationService interface {
-	// CheckAllApplicationsAndUnitsAreAlive checks that all applications and units
-	// in the model are alive, returning an error if any are not.
-	CheckAllApplicationsAndUnitsAreAlive(ctx context.Context) error
+	// CheckApplicationsForMigration checks that all applications are ready
+	// for migration. All applications and units in the model are alive and no
+	// units are in the process of upgrading.
+	CheckApplicationsForMigration(ctx context.Context) error
 
 	// GetUnitNamesForApplication returns a slice of the unit names for the given application
 	GetUnitNamesForApplication(ctx context.Context, appName string) ([]unit.Name, error)

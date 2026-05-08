@@ -8,9 +8,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
-
-	"github.com/juju/collections/set"
 
 	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/internal/errors"
@@ -71,6 +70,16 @@ const (
 	IPv4Address AddressType = "ipv4"
 	IPv6Address AddressType = "ipv6"
 )
+
+// Validate address type based on the sets.
+func (t AddressType) Validate() error {
+	switch t {
+	case HostName, IPv4Address, IPv6Address:
+		return nil
+	default:
+		return errors.Errorf("invalid address type: %q", t).Add(coreerrors.NotValid)
+	}
+}
 
 // Scope denotes the context a location may apply to. If a name or address can
 // be reached from the wider internet, it is considered public.
@@ -135,12 +144,7 @@ type ScopeMatchFunc = func(addr Address) ScopeMatch
 // ExactScopeMatch checks if an address exactly
 // matches any of the specified scopes.
 func ExactScopeMatch(addr Address, addrScopes ...Scope) bool {
-	for _, scope := range addrScopes {
-		if addr.AddressScope() == scope {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(addrScopes, addr.AddressScope())
 }
 
 // SortOrderOrigin calculates the "weight" of the address origin to use when
@@ -717,10 +721,16 @@ func (sas SpaceAddresses) OneMatchingScope(getMatcher ScopeMatchFunc) (SpaceAddr
 	return addrs[0], true
 }
 
-// AllMatchingScope returns the addresses that satisfy
-// the input scope matching function.
+// AllMatchingScope returns the addresses that satisfy the input scope
+// matching function. Matches are sorted to keep selection deterministic,
+// so that callers can use the first address in a predictable way.
 func (sas SpaceAddresses) AllMatchingScope(getMatcher ScopeMatchFunc) SpaceAddresses {
-	return allMatchingScope(sas, getMatcher)
+	var m SpaceAddresses = allMatchingScope(sas, getMatcher)
+	if len(m) == 0 {
+		return nil
+	}
+	sort.Sort(m)
+	return m
 }
 
 // EqualTo returns true if this set of SpaceAddresses is equal to other.
@@ -731,7 +741,7 @@ func (sas SpaceAddresses) EqualTo(other SpaceAddresses) bool {
 
 	sort.Sort(sas)
 	sort.Sort(other)
-	for i := 0; i < len(sas); i++ {
+	for i := range sas {
 		if sas[i].String() != other[i].String() {
 			return false
 		}
@@ -832,28 +842,6 @@ func ScopeMatchCloudLocal(addr Address) ScopeMatch {
 		return secondFallbackScope
 	}
 	return invalidScope
-}
-
-// MergedAddresses provides a single list of addresses without duplicates
-// suitable for returning as an address list for a machine.
-// TODO (cherylj) Add explicit unit tests - tracked with bug #1544158
-func MergedAddresses(machineAddresses, providerAddresses []SpaceAddress) []SpaceAddress {
-	merged := make([]SpaceAddress, 0, len(providerAddresses)+len(machineAddresses))
-	providerValues := set.NewStrings()
-	for _, address := range providerAddresses {
-		// Older versions of Juju may have stored an empty address so ignore it here.
-		if address.Value == "" || providerValues.Contains(address.Value) {
-			continue
-		}
-		providerValues.Add(address.Value)
-		merged = append(merged, address)
-	}
-	for _, address := range machineAddresses {
-		if !providerValues.Contains(address.Value) {
-			merged = append(merged, address)
-		}
-	}
-	return merged
 }
 
 // CIDRAddressType returns back an AddressType to indicate whether the supplied

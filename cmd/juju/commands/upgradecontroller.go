@@ -18,6 +18,7 @@ import (
 	"github.com/juju/juju/api/client/modelupgrader"
 	"github.com/juju/juju/api/jujuclient"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/block"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/model"
@@ -29,7 +30,6 @@ import (
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/environs/sync"
 	"github.com/juju/juju/environs/tools"
-	"github.com/juju/juju/internal/cmd"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -137,7 +137,7 @@ func (c *upgradeControllerCommand) getModelUpgraderAPI(ctx context.Context) (Mod
 	if c.modelUpgraderAPI != nil {
 		return c.modelUpgraderAPI, nil
 	}
-	root, err := c.NewAPIRoot(ctx)
+	root, err := c.NewModelAPIRoot(ctx, bootstrap.ControllerModelName)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -148,27 +148,12 @@ func (c *upgradeControllerCommand) getModelConfigAPI(ctx context.Context) (Model
 	if c.modelConfigAPI != nil {
 		return c.modelConfigAPI, nil
 	}
-	api, err := c.NewAPIRoot(ctx)
+	api, err := c.NewModelAPIRoot(ctx, bootstrap.ControllerModelName)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 	return modelconfig.NewClient(api), nil
 }
-
-// TODO(jujud-controller-snap): remove if not needed in final upgrade command.
-// type ClientAPI interface {
-// 	Status(args *apiclient.StatusArgs) (*params.FullStatus, error)
-// }
-// func (c *upgradeControllerCommand) getAPIClient() (ClientAPI, error) {
-// 	if c.clientAPI != nil {
-// 		return c.clientAPI, nil
-// 	}
-// 	api, err := c.NewModelAPIRoot(bootstrap.ControllerModelName)
-// 	if err != nil {
-// 		return nil, errors.Trace(err)
-// 	}
-// 	return apiclient.NewClient(api, logger), nil
-// }
 
 // Run changes the version proposed for the juju envtools.
 func (c *upgradeControllerCommand) Run(ctx *cmd.Context) (err error) {

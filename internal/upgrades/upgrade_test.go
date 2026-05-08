@@ -20,7 +20,6 @@ import (
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/semversion"
 	jujuversion "github.com/juju/juju/core/version"
-	"github.com/juju/juju/internal/mongo"
 	coretesting "github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/internal/upgrades"
 )
@@ -108,7 +107,6 @@ type mockAgentConfig struct {
 	jobs                []model.MachineJob
 	apiAddresses        []string
 	values              map[string]string
-	mongoInfo           *mongo.MongoInfo
 	controllerAgentInfo controller.ControllerAgentInfo
 	modelTag            names.ModelTag
 }
@@ -143,10 +141,6 @@ func (mock *mockAgentConfig) APIAddresses() ([]string, error) {
 
 func (mock *mockAgentConfig) Value(name string) string {
 	return mock.values[name]
-}
-
-func (mock *mockAgentConfig) MongoInfo() (*mongo.MongoInfo, bool) {
-	return mock.mongoInfo, true
 }
 
 func (mock *mockAgentConfig) StateServingInfo() (controller.ControllerAgentInfo, bool) {
@@ -324,13 +318,6 @@ var upgradeTests = []upgradeTest{
 		toVersion:     "1.21.0",
 		targets:       targets(upgrades.HostMachine),
 		expectedSteps: []string{"step 1 - 1.20.0", "step 2 - 1.20.0", "step 1 - 1.21.0"},
-	},
-	{
-		about:         "nothing happens when the version hasn't changed but contains a tag",
-		fromVersion:   "1.21-alpha1",
-		toVersion:     "1.21-alpha1",
-		targets:       targets(upgrades.DatabaseMaster),
-		expectedSteps: []string{},
 	},
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -22,13 +23,6 @@ import (
 	"github.com/juju/juju/core/objectstore"
 	"github.com/juju/juju/internal/configschema"
 	"github.com/juju/juju/internal/pki"
-)
-
-const (
-	// MongoProfLow represents the most conservative mongo memory profile.
-	MongoProfLow = "low"
-	// MongoProfDefault represents the mongo memory profile shipped by default.
-	MongoProfDefault = "default"
 )
 
 // docs:controller-config-keys
@@ -210,6 +204,7 @@ const (
 
 	// CAASOperatorImagePath sets the URL of the docker image
 	// used for the application operator.
+	//
 	// Deprecated: use CAASImageRepo
 	CAASOperatorImagePath = "caas-operator-image-path"
 
@@ -233,6 +228,12 @@ const (
 	// value of 0 means all queries will be output.
 	QueryTracingThreshold = "query-tracing-threshold"
 
+	// DqliteBusyTimeout sets the timeout for how long a database operation will
+	// wait for a lock to be released before returning an error, that is the
+	// amount of time a writer will wait for others to finish writing on the
+	// same database.
+	DqliteBusyTimeout = "dqlite-busy-timeout"
+
 	// OpenTelemetryEnabled returns whether open telemetry is enabled.
 	OpenTelemetryEnabled = "open-telemetry-enabled"
 
@@ -255,25 +256,6 @@ const (
 	// for open telemetry as a duration.
 	OpenTelemetryTailSamplingThreshold = "open-telemetry-tail-sampling-threshold"
 
-	// ObjectStoreType is the type of object store to use for storing blobs.
-	// This isn't currently allowed to be changed dynamically, that will come
-	// when we support multiple object store types (not including state).
-	ObjectStoreType = "object-store-type"
-
-	// ObjectStoreS3Endpoint is the endpoint to use for S3 object stores.
-	ObjectStoreS3Endpoint = "object-store-s3-endpoint"
-
-	// ObjectStoreS3StaticKey is the static key to use for S3 object stores.
-	ObjectStoreS3StaticKey = "object-store-s3-static-key"
-
-	// ObjectStoreS3StaticSecret is the static secret to use for S3 object
-	// stores.
-	ObjectStoreS3StaticSecret = "object-store-s3-static-secret"
-
-	// ObjectStoreS3StaticSession is the static session token to use for S3
-	// object stores.
-	ObjectStoreS3StaticSession = "object-store-s3-static-session"
-
 	// SystemSSHKeys returns the set of ssh keys that should be trusted by
 	// agents of this controller regardless of the model.
 	SystemSSHKeys = "system-ssh-keys"
@@ -289,6 +271,18 @@ const (
 	// SSHMaxConcurrentConnections is the maximum number of concurrent SSH
 	// connections to the controller.
 	SSHMaxConcurrentConnections = "ssh-max-concurrent-connections"
+
+	// IdleConnectionTimeout is the time between the controller resetting all idle connections.
+	IdleConnectionTimeout = "idle-connection-timeout"
+
+	// HTTPServerReadTimeout is the maximum duration for reading the entire HTTP request,
+	// including the body.
+	// A zero value means no timeout.
+	HTTPServerReadTimeout = "http-server-read-timeout"
+
+	// HTTPServerWriteTimeout is the maximum duration before timing out writes of the HTTP response.
+	// A zero value means no timeout.
+	HTTPServerWriteTimeout = "http-server-write-timeout"
 )
 
 // Attribute Defaults
@@ -410,6 +404,12 @@ const (
 	// it will be logged if query tracing is enabled.
 	DefaultQueryTracingThreshold = time.Second
 
+	// DefaultDqliteBusyTimeout is the default value for the timeout for how
+	// long a database operation will wait for a lock to be released before
+	// returning an error, tailoring the amount of time a writer will wait for
+	// others to finish writing on the same database.
+	DefaultDqliteBusyTimeout = 1 * time.Second
+
 	// DefaultAuditLogExcludeMethods is the default list of methods to
 	// exclude from the audit log.
 	// This special value means we exclude any methods in the set
@@ -437,7 +437,7 @@ const (
 	// tail sampling threshold for open telemetry.
 	DefaultOpenTelemetryTailSamplingThreshold = 1 * time.Millisecond
 
-	// JujudControllerSnapSource is the default value for the jujud controller
+	// DefaultJujudControllerSnapSource is the default value for the jujud controller
 	// snap source, which is the snapstore.
 	// TODO(jujud-controller-snap): change this to "snapstore" once it is implemented.
 	DefaultJujudControllerSnapSource = "legacy"
@@ -445,6 +445,17 @@ const (
 	// DefaultObjectStoreType is the default type of object store to use for
 	// storing blobs.
 	DefaultObjectStoreType = objectstore.FileBackend
+
+	// DefaultIdleConnectionTimeout is the default value for how often the jujud
+	// controller will reset idle connections. Apache defaults to a much more
+	// aggressive 5s timeout.
+	DefaultIdleConnectionTimeout = 30 * time.Second
+
+	// DefaultHTTPServerReadTimeout is set to 0 (no timeout).
+	DefaultHTTPServerReadTimeout = 0 * time.Second
+
+	// DefaultHTTPServerWriteTimeout is set to 0 (no timeout).
+	DefaultHTTPServerWriteTimeout = 0 * time.Second
 )
 
 var (
@@ -455,6 +466,9 @@ var (
 		AgentRateLimitMax,
 		AgentRateLimitRate,
 		APIPort,
+		IdleConnectionTimeout,
+		HTTPServerReadTimeout,
+		HTTPServerWriteTimeout,
 		AutocertDNSNameKey,
 		AutocertURLKey,
 		CACertKey,
@@ -491,32 +505,26 @@ var (
 		ControllerResourceDownloadLimit,
 		QueryTracingEnabled,
 		QueryTracingThreshold,
+		DqliteBusyTimeout,
 		OpenTelemetryEnabled,
 		OpenTelemetryEndpoint,
 		OpenTelemetryInsecure,
 		OpenTelemetryStackTraces,
 		OpenTelemetrySampleRatio,
 		OpenTelemetryTailSamplingThreshold,
-		ObjectStoreType,
-		ObjectStoreS3Endpoint,
-		ObjectStoreS3StaticKey,
-		ObjectStoreS3StaticSecret,
-		ObjectStoreS3StaticSession,
 		SystemSSHKeys,
 		JujudControllerSnapSource,
 		SSHMaxConcurrentConnections,
 		SSHServerPort,
 	}
 
-	// For backwards compatibility, we must include "anything", "juju-apiserver"
-	// and "juju-mongodb" as hostnames as that is what clients specify
-	// as the hostname for verification (this certificate is used both
-	// for serving MongoDB and API server connections).  We also
-	// explicitly include localhost.
+	// For backwards compatibility, we must include "anything" and
+	// "juju-apiserver" as hostnames as that is what clients specify as the
+	// hostname for verification (this certificate is used for serving API
+	// server connections).  We also explicitly include localhost.
 	DefaultDNSNames = []string{
 		"localhost",
 		"juju-apiserver",
-		"juju-mongodb",
 		"anything",
 	}
 
@@ -528,6 +536,9 @@ var (
 		AgentLogfileMaxSize,
 		AgentRateLimitMax,
 		AgentRateLimitRate,
+		IdleConnectionTimeout,
+		HTTPServerReadTimeout,
+		HTTPServerWriteTimeout,
 		ApplicationResourceDownloadLimit,
 		AuditingEnabled,
 		AuditLogCaptureArgs,
@@ -557,11 +568,7 @@ var (
 		PublicDNSAddress,
 		QueryTracingEnabled,
 		QueryTracingThreshold,
-		ObjectStoreType,
-		ObjectStoreS3Endpoint,
-		ObjectStoreS3StaticKey,
-		ObjectStoreS3StaticSecret,
-		ObjectStoreS3StaticSession,
+		DqliteBusyTimeout,
 		SSHMaxConcurrentConnections,
 	)
 
@@ -571,16 +578,11 @@ var (
 // ControllerOnlyAttribute returns true if the specified attribute name
 // is a controller config key (as opposed to, say, a model config key).
 func ControllerOnlyAttribute(attr string) bool {
-	for _, a := range ControllerOnlyConfigAttributes {
-		if attr == a {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ControllerOnlyConfigAttributes, attr)
 }
 
 // Config is a string-keyed map of controller configuration attributes.
-type Config map[string]interface{}
+type Config map[string]any
 
 // Validate validates the controller configuration.
 func (c Config) Validate() error {
@@ -593,7 +595,7 @@ func (c Config) Validate() error {
 // The controller UUID and CA certificate must be passed in.
 // The UUID is typically generated by the immediate caller,
 // and the CA certificate generated by environs/bootstrap.NewConfig.
-func NewConfig(controllerUUID, caCert string, attrs map[string]interface{}) (Config, error) {
+func NewConfig(controllerUUID, caCert string, attrs map[string]any) (Config, error) {
 	// TODO(wallyworld) - use core/config when it supports duration types
 	for k, v := range attrs {
 		field, ok := ConfigSchema[k]
@@ -604,7 +606,7 @@ func NewConfig(controllerUUID, caCert string, attrs map[string]interface{}) (Con
 		if !ok {
 			continue
 		}
-		var coerced interface{}
+		var coerced any
 		err := yaml.Unmarshal([]byte(str), &coerced)
 		if err != nil {
 			return Config{}, errors.NewNotValid(err, fmt.Sprintf("value %q for attribute %q not valid", str, k))
@@ -615,7 +617,7 @@ func NewConfig(controllerUUID, caCert string, attrs map[string]interface{}) (Con
 	if err != nil {
 		return Config{}, errors.Trace(err)
 	}
-	attrs = coerced.(map[string]interface{})
+	attrs = coerced.(map[string]any)
 	attrs[ControllerUUIDKey] = controllerUUID
 	attrs[CACertKey] = caCert
 	config := Config(attrs)
@@ -699,6 +701,23 @@ func (c Config) durationOrDefault(name string, defaultVal time.Duration) time.Du
 // APIPort returns the API server port for the environment.
 func (c Config) APIPort() int {
 	return c.mustInt(APIPort)
+}
+
+// IdleConnectionTimeout returns the time between the controller resetting all idle connections
+func (c Config) IdleConnectionTimeout() time.Duration {
+	return c.durationOrDefault(IdleConnectionTimeout, DefaultIdleConnectionTimeout)
+}
+
+// HTTPServerReadTimeout returns the maximum duration for reading the entire HTTP request, including the body.
+// A zero value means no timeout.
+func (c Config) HTTPServerReadTimeout() time.Duration {
+	return c.durationOrDefault(HTTPServerReadTimeout, DefaultHTTPServerReadTimeout)
+}
+
+// HTTPServerWriteTimeout returns the maximum duration before timing out writes of the HTTP response.
+// A zero value means no timeout.
+func (c Config) HTTPServerWriteTimeout() time.Duration {
+	return c.durationOrDefault(HTTPServerWriteTimeout, DefaultHTTPServerWriteTimeout)
 }
 
 // ApplicationResourceDownloadLimit limits the number of concurrent resource download
@@ -958,6 +977,7 @@ func (c Config) JujuManagementSpace() network.SpaceName {
 
 // CAASOperatorImagePath sets the URL of the docker image
 // used for the application operator.
+//
 // Deprecated: use CAASImageRepo
 func (c Config) CAASOperatorImagePath() string {
 	return c.asString(CAASOperatorImagePath)
@@ -1001,6 +1021,13 @@ func (c Config) QueryTracingThreshold() time.Duration {
 	return c.durationOrDefault(QueryTracingThreshold, DefaultQueryTracingThreshold)
 }
 
+// DqliteBusyTimeout returns the timeout for how long a database operation will
+// wait for a lock to be released before returning an error, that is the amount
+// of time a writer will wait for others to finish writing on the same database.
+func (c Config) DqliteBusyTimeout() time.Duration {
+	return c.durationOrDefault(DqliteBusyTimeout, DefaultDqliteBusyTimeout)
+}
+
 // OpenTelemetryEnabled returns whether open telemetry tracing is enabled.
 func (c Config) OpenTelemetryEnabled() bool {
 	return c.boolOrDefault(OpenTelemetryEnabled, DefaultOpenTelemetryEnabled)
@@ -1037,33 +1064,6 @@ func (c Config) OpenTelemetrySampleRatio() float64 {
 // for open telemetry tracing spans.
 func (c Config) OpenTelemetryTailSamplingThreshold() time.Duration {
 	return c.durationOrDefault(OpenTelemetryTailSamplingThreshold, DefaultOpenTelemetryTailSamplingThreshold)
-}
-
-// ObjectStoreType returns the type of object store to use for storing blobs.
-func (c Config) ObjectStoreType() objectstore.BackendType {
-	return objectstore.BackendType(c.asString(ObjectStoreType))
-}
-
-// ObjectStoreS3Endpoint returns the endpoint to use for S3 object stores.
-func (c Config) ObjectStoreS3Endpoint() string {
-	return c.asString(ObjectStoreS3Endpoint)
-}
-
-// ObjectStoreS3StaticKey returns the static key to use for S3 object stores.
-func (c Config) ObjectStoreS3StaticKey() string {
-	return c.asString(ObjectStoreS3StaticKey)
-}
-
-// ObjectStoreS3StaticSecret returns the static secret to use for S3 object
-// stores.
-func (c Config) ObjectStoreS3StaticSecret() string {
-	return c.asString(ObjectStoreS3StaticSecret)
-}
-
-// ObjectStoreS3StaticSession returns the static session token to use for S3
-// object stores.
-func (c Config) ObjectStoreS3StaticSession() string {
-	return c.asString(ObjectStoreS3StaticSession)
 }
 
 // SSHServerPort returns the port the SSH server listens on.
@@ -1141,7 +1141,7 @@ func Validate(c Config) error {
 	}
 
 	if v, err := parseDuration(c, AgentRateLimitRate); err != nil && !errors.Is(err, errors.NotFound) {
-		return errors.Trace(err)
+		return errors.Annotatef(err, "parsing %s in configuration", AgentRateLimitRate)
 	} else if err == nil {
 		if v == 0 {
 			return errors.Errorf("%s cannot be zero", AgentRateLimitRate)
@@ -1155,7 +1155,7 @@ func Validate(c Config) error {
 	}
 
 	if v, err := parseDuration(c, MaxDebugLogDuration); err != nil && !errors.Is(err, errors.NotFound) {
-		return errors.Trace(err)
+		return errors.Annotatef(err, "parsing %s in configuration", MaxDebugLogDuration)
 	} else if err == nil {
 		if v == 0 {
 			return errors.Errorf("%s cannot be zero", MaxDebugLogDuration)
@@ -1249,6 +1249,13 @@ func Validate(c Config) error {
 		}
 	}
 
+	if v, ok := c[IdleConnectionTimeout].(string); ok {
+		_, err := time.ParseDuration(v)
+		if err != nil {
+			return errors.Errorf("%s value %q must be a valid duration", IdleConnectionTimeout, v)
+		}
+	}
+
 	// Each unit stores the charm and uniter state in a single document.
 	// Given that mongo by default enforces a 16M limit for documents we
 	// should also verify that the combined limits don't exceed 16M.
@@ -1271,8 +1278,8 @@ func Validate(c Config) error {
 		maxUnitStateSize += DefaultMaxAgentStateSize
 	}
 
-	if mongoMax := 16 * 1024 * 1024; maxUnitStateSize > mongoMax {
-		return errors.Errorf("invalid max charm/agent state sizes: combined value should not exceed mongo's 16M per-document limit, got %d", maxUnitStateSize)
+	if maxSize := 16 * 1024 * 1024; maxUnitStateSize > maxSize {
+		return errors.Errorf("invalid max charm/agent state sizes: combined value should not exceed 16M per-document limit, got %d", maxUnitStateSize)
 	}
 
 	if v, ok := c[MigrationMinionWaitMax].(string); ok {
@@ -1283,10 +1290,18 @@ func Validate(c Config) error {
 	}
 
 	if v, err := parseDuration(c, QueryTracingThreshold); err != nil && !errors.Is(err, errors.NotFound) {
-		return errors.Trace(err)
+		return errors.Annotatef(err, "parsing %s in configuration", QueryTracingThreshold)
 	} else if err == nil {
 		if v < 0 {
 			return errors.Errorf("%s value %q must be a positive duration", QueryTracingThreshold, v)
+		}
+	}
+
+	if v, err := parseDuration(c, DqliteBusyTimeout); err != nil && !errors.Is(err, errors.NotFound) {
+		return errors.Annotatef(err, "parsing %s in configuration", DqliteBusyTimeout)
+	} else if err == nil {
+		if v < 0 {
+			return errors.Errorf("%s value %q must be a positive duration", DqliteBusyTimeout, v)
 		}
 	}
 
@@ -1299,19 +1314,10 @@ func Validate(c Config) error {
 	}
 
 	if v, err := parseDuration(c, OpenTelemetryTailSamplingThreshold); err != nil && !errors.Is(err, errors.NotFound) {
-		return errors.Trace(err)
+		return errors.Annotatef(err, "parsing %s in configuration", OpenTelemetryTailSamplingThreshold)
 	} else if err == nil {
 		if v < 0 {
 			return errors.Errorf("%s value %q must be a positive duration", OpenTelemetryTailSamplingThreshold, v)
-		}
-	}
-
-	if v, ok := c[ObjectStoreType].(string); ok {
-		if v == "" {
-			return errors.NotValidf("empty object store type")
-		}
-		if _, err := objectstore.ParseObjectStoreType(v); err != nil {
-			return errors.NotValidf("invalid object store type %q", v)
 		}
 	}
 
@@ -1362,8 +1368,7 @@ func (c Config) validateSpaceConfig(key, topic string) error {
 	return nil
 }
 
-// AsSpaceConstraints checks to see whether config has spaces names populated
-// for management and/or HA (Mongo).
+// AsSpaceConstraints checks to see whether config has spaces names populated.
 // Non-empty values are merged with any input spaces and returned as a new
 // slice reference.
 // A slice pointer is used for congruence with the Spaces member in
@@ -1431,27 +1436,4 @@ func parseRatio(c Config, name string) (float64, error) {
 	default:
 		return 0, errors.Errorf("unexpected type %T", c[name])
 	}
-}
-
-// HasCompleteS3ControllerConfig returns true if the controller has a complete
-// S3 configuration. This includes an endpoint, static key, and static secret.
-func HasCompleteS3ControllerConfig(cfg Config) error {
-	endpoint := cfg.ObjectStoreS3Endpoint()
-	staticKey := cfg.ObjectStoreS3StaticKey()
-	staticSecret := cfg.ObjectStoreS3StaticSecret()
-	return HasCompleteS3Config(endpoint, staticKey, staticSecret)
-}
-
-// HasCompleteS3Config returns true if the S3 configuration is complete.
-func HasCompleteS3Config(endpoint, staticKey, staticSecret string) error {
-	if endpoint == "" {
-		return errors.New("missing S3 endpoint")
-	}
-	if staticKey == "" {
-		return errors.New("missing S3 static key")
-	}
-	if staticSecret == "" {
-		return errors.New("missing S3 static secret")
-	}
-	return nil
 }

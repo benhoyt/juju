@@ -98,9 +98,34 @@ Controller configuration keys:
       type: int
       description: The maximum number of concurrent resources downloads across all the
         applications on the controller
+    dqlite-busy-timeout:
+      type: string
+      description: |-
+        The timeout for how long a database operation will wait for a lock
+        to be released before returning an error, that is the amount of
+        time a writer will wait for others to finish writing on the
+        same database.
     features:
       type: string
       description: A comma-delimited list of runtime changeable features to be updated
+    http-server-read-timeout:
+      type: string
+      description: |-
+        The maximum duration for reading the entire HTTP request, including the body.
+        A zero value means no timeout. The default is 0 (no timeout). Set to a non-zero value
+        (e.g., 60s) if you need to prevent indefinite reads.
+    http-server-write-timeout:
+      type: string
+      description: |-
+        The maximum duration before timing out writes of the HTTP response.
+        A zero value means no timeout. The default is 0 (no timeout). Set to a non-zero value
+        (e.g., 60s) if you need to prevent indefinite writes.
+    idle-connection-timeout:
+      type: string
+      description: |
+        The time the controller will wait between
+        resets of all idle connections. By default, every 10 minutes
+        the controller will close all idle connections.
     juju-mgmt-space:
       type: string
       description: The network space that agents should use to communicate with controllers
@@ -133,21 +158,6 @@ Controller configuration keys:
       type: string
       description: The maximum size of the log file written out by the controller on behalf
         of workers running for a model
-    object-store-s3-endpoint:
-      type: string
-      description: The s3 endpoint for the object store backend
-    object-store-s3-static-key:
-      type: string
-      description: The s3 static key for the object store backend
-    object-store-s3-static-secret:
-      type: string
-      description: The s3 static secret for the object store backend
-    object-store-s3-static-session:
-      type: string
-      description: The s3 static session for the object store backend
-    object-store-type:
-      type: string
-      description: The type of object store backend to use for storing blobs
     open-telemetry-enabled:
       type: bool
       description: Enable open telemetry tracing
@@ -182,8 +192,8 @@ Controller configuration keys:
       type: string
       description: |-
         The minimum duration of a query for it to be traced. The lower the
-        threshold, the more queries will be output. A value of 0 means all queries
-        will be output if tracing is enabled.
+        threshold, the more queries will be output. A value of 0 means all
+        queries will be output if tracing is enabled.
     ssh-max-concurrent-connections:
       type: int
       description: The maximum number of concurrent ssh connections to the controller

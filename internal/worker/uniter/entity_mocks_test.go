@@ -14,11 +14,10 @@ import (
 
 	apiuniter "github.com/juju/juju/api/agent/uniter"
 	"github.com/juju/juju/core/life"
-	"github.com/juju/juju/core/lxdprofile"
 	"github.com/juju/juju/core/network"
 	corerelation "github.com/juju/juju/core/relation"
 	"github.com/juju/juju/core/status"
-	jujucharm "github.com/juju/juju/internal/charm"
+	jujucharm "github.com/juju/juju/domain/deployment/charm"
 	uniterapi "github.com/juju/juju/internal/worker/uniter/api"
 	"github.com/juju/juju/rpc/params"
 )
@@ -226,19 +225,6 @@ func (ctx *testContext) makeUnit(c tc.LikeC, unitTag names.UnitTag, l life.Value
 		ctx.stateMu.Lock()
 		defer ctx.stateMu.Unlock()
 		return ctx.app, nil
-	}).AnyTimes()
-
-	u.EXPECT().CanApplyLXDProfile(gomock.Any()).DoAndReturn(func(context.Context) (bool, error) {
-		u.mu.Lock()
-		tag, err := u.AssignedMachine(c.Context())
-		c.Assert(err, tc.ErrorIsNil)
-		u.mu.Unlock()
-		return tag.ContainerType() == "lxd", nil
-	}).AnyTimes()
-	u.EXPECT().LXDProfileName(gomock.Any()).DoAndReturn(func(context.Context) (string, error) {
-		ctx.stateMu.Lock()
-		defer ctx.stateMu.Unlock()
-		return lxdprofile.MatchProfileNameByAppName(ctx.machineProfiles, ctx.app.Tag().Id())
 	}).AnyTimes()
 
 	// Add to model.

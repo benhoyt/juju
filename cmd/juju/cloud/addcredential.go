@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/juju/errors"
@@ -18,11 +19,11 @@ import (
 	"github.com/juju/juju/api/jujuclient"
 	"github.com/juju/juju/cloud"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/juju/common"
 	"github.com/juju/juju/cmd/juju/interact"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/environs"
-	"github.com/juju/juju/internal/cmd"
 )
 
 var usageAddCredentialSummary = `
@@ -239,12 +240,7 @@ func (c *addCredentialCommand) Run(ctxt *cmd.Context) error {
 	}
 
 	validAuthType := func(authType cloud.AuthType) bool {
-		for _, authT := range authTypeNames {
-			if authT == authType {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(authTypeNames, authType)
 	}
 
 	provider, err := environs.Provider(c.cloud.Type)

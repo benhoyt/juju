@@ -164,8 +164,93 @@ func (s *State) Create(
 	}
 
 	return db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		// If the controller model is not alive, do not allow the creation of
+		// new models. This prevents models being created when the controller is
+		// is being destroyed.
+		if controllerModelLife, err := getControllerModelLife(ctx, s, tx); err != nil {
+			return errors.Errorf("checking controller model life state: %w", err)
+		} else if controllerModelLife != life.Alive {
+			return errors.New("cannot create new model when controller model is dying")
+		}
+
 		return Create(ctx, s, tx, modelID, modelType, input)
 	})
+}
+
+// ImportModel is responsible for inserting a new model, which is being
+// imported. It will register the model existence and associate all of the model
+// metadata.
+// Finally, it will set the model as an importing model, in the
+// model_migration_import table.
+//
+// The following errors can be expected:
+// - [modelerrors.AlreadyExists] when a model already exists with the same name
+// and owner
+// - [errors.NotSupported] When the new models type cannot be found.
+// - [errors.NotFound] Should the provided cloud and region not be found.
+// - [usererrors.NotFound] When the model owner does not exist.
+// - [secretbackenderrors.NotFound] When the secret backend for the model
+// cannot be found.
+func (s *State) ImportModel(
+	ctx context.Context,
+	modelID coremodel.UUID,
+	modelType coremodel.ModelType,
+	input model.GlobalModelCreationArgs,
+) error {
+	db, err := s.DB(ctx)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	return db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		// If the controller model is not alive, do not allow the creation of
+		// new models. This prevents models being created when the controller is
+		// is being destroyed.
+		if controllerModelLife, err := getControllerModelLife(ctx, s, tx); err != nil {
+			return errors.Errorf("checking controller model life state: %w", err)
+		} else if controllerModelLife != life.Alive {
+			return errors.New("cannot create new model when controller model is dying")
+		}
+
+		if err := Create(ctx, s, tx, modelID, modelType, input); err != nil {
+			return errors.Capture(err)
+		}
+
+		return markModelAsImporting(ctx, s, tx, modelID)
+	})
+}
+
+// markModelAsImporting inserts an entry to the model_migration_import table
+// to mark the model as being imported.
+func markModelAsImporting(
+	ctx context.Context,
+	preparer domain.Preparer,
+	tx *sqlair.TX,
+	modelID coremodel.UUID,
+) error {
+	migrationUUID, err := uuid.NewUUID()
+	if err != nil {
+		return errors.Errorf("generating migration uuid for model %q: %w", modelID, err)
+	}
+
+	migrationRecord := dbTargetModelMigration{
+		UUID:      migrationUUID.String(),
+		ModelUUID: modelID.String(),
+	}
+
+	stmt, err := preparer.Prepare(`
+INSERT INTO model_migration_import (uuid, model_uuid)
+VALUES ($dbTargetModelMigration.uuid, $dbTargetModelMigration.model_uuid)
+	`, migrationRecord)
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	if err := tx.Query(ctx, stmt, migrationRecord).Run(); err != nil {
+		return errors.Errorf("marking model %q as importing: %w", modelID, err)
+	}
+
+	return nil
 }
 
 // Create is responsible for creating a new model from start to finish. It will
@@ -187,9 +272,6 @@ func Create(
 	modelType coremodel.ModelType,
 	input model.GlobalModelCreationArgs,
 ) error {
-	// This function is responsible for driving all of the facets of model
-	// creation.
-
 	// Create the initial model and associated metadata.
 	if err := createModel(ctx, preparer, tx, modelID, modelType, input); err != nil {
 		return errors.Errorf(
@@ -555,6 +637,34 @@ WHERE uuid = $dbModel.uuid
 	return coreModel, nil
 }
 
+// getControllerModelLife returns the current life state of the controller
+// model.
+// If the model does not exist then an error satisfying [modelerrors.NotFound]
+// will be returned.
+func getControllerModelLife(
+	ctx context.Context,
+	preparer domain.Preparer,
+	tx *sqlair.TX,
+) (life.Life, error) {
+	query := `
+SELECT &modelLife.*
+FROM   controller AS c
+JOIN   model AS m ON c.model_uuid = m.uuid`
+	stmt, err := preparer.Prepare(query, modelLife{})
+	if err != nil {
+		return -1, errors.Capture(err)
+	}
+
+	var result modelLife
+	if err := tx.Query(ctx, stmt).Get(&result); errors.Is(err, sqlair.ErrNoRows) {
+		return -1, modelerrors.NotFound
+	} else if err != nil {
+		return -1, errors.Errorf("getting controller model life: %w", err)
+	}
+
+	return result.Life, nil
+}
+
 // setModelSecretBackend sets the secret backend for a given model id. If the
 // secret backend does not exist a [secretbackenderrors.NotFound] error will be
 // returned. Should the model already have a secret backend set an error
@@ -670,10 +780,10 @@ func createModel(
 	for _, u := range input.AdminUsers {
 		creatorUUID := dbUserUUID{UUID: u.String()}
 		userStmt, err := preparer.Prepare(`
-		SELECT &dbUserUUID.uuid
-		FROM user
-		WHERE uuid = $dbUserUUID.uuid
-		AND removed = false
+SELECT &dbUserUUID.uuid
+FROM user
+WHERE uuid = $dbUserUUID.uuid
+AND removed = false
 	`, creatorUUID)
 		if err != nil {
 			return errors.Capture(err)
@@ -702,20 +812,20 @@ func createModel(
 	}
 
 	stmt, err := preparer.Prepare(`
-		INSERT INTO model (uuid,
-		            cloud_uuid,
-		            model_type_id,
-		            life_id,
-		            name,
-		            qualifier)
-		SELECT  $dbInitialModel.uuid,
-				$dbInitialModel.cloud_uuid,
-				model_type.id,
-				$dbInitialModel.life_id,
-				$dbInitialModel.name,
-				$dbInitialModel.qualifier
-		FROM model_type
-		WHERE model_type.type = $dbInitialModel.model_type
+INSERT INTO model (uuid,
+            cloud_uuid,
+            model_type_id,
+            life_id,
+            name,
+            qualifier)
+SELECT  $dbInitialModel.uuid,
+        $dbInitialModel.cloud_uuid,
+        model_type.id,
+        $dbInitialModel.life_id,
+        $dbInitialModel.name,
+        $dbInitialModel.qualifier
+FROM model_type
+WHERE model_type.type = $dbInitialModel.model_type
 		`, model)
 	if err != nil {
 		return errors.Capture(err)
@@ -938,15 +1048,18 @@ func (s *State) GetModelTypes(ctx context.Context) ([]coremodel.ModelType, error
 	})
 }
 
-// ListAllModels returns a slice of all models in the controller. If no models
+// GetAllModels returns a slice of all models in the controller. If no models
 // exist an empty slice is returned.
-func (s *State) ListAllModels(ctx context.Context) ([]coremodel.Model, error) {
+func (s *State) GetAllModels(ctx context.Context) ([]coremodel.Model, error) {
 	db, err := s.DB(ctx)
 	if err != nil {
 		return nil, errors.Capture(err)
 	}
 
-	modelStmt, err := s.Prepare(`SELECT &dbModel.* FROM v_model`, dbModel{})
+	modelStmt, err := s.Prepare(`
+SELECT &dbModel.*
+FROM v_model
+ORDER BY name`, dbModel{})
 	if err != nil {
 		return nil, errors.Capture(err)
 	}
@@ -979,8 +1092,9 @@ func (s *State) ListAllModels(ctx context.Context) ([]coremodel.Model, error) {
 	return rval, nil
 }
 
-// ListModelUUIDs returns a list of all model UUIDs in the system that are active.
-func (s *State) ListModelUUIDs(ctx context.Context) ([]coremodel.UUID, error) {
+// GetModelUUIDs returns a list of all model UUIDs in the system that are
+// active. This includes controller and non-controller models.
+func (s *State) GetModelUUIDs(ctx context.Context) ([]coremodel.UUID, error) {
 	db, err := s.DB(ctx)
 	if err != nil {
 		return nil, errors.Capture(err)
@@ -996,6 +1110,42 @@ func (s *State) ListModelUUIDs(ctx context.Context) ([]coremodel.UUID, error) {
 		err := tx.Query(ctx, stmt).GetAll(&dbResult)
 		if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
 			return errors.Errorf("getting all model UUIDs: %w", err)
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	modelUUIDs := make([]coremodel.UUID, 0, len(dbResult))
+	for _, r := range dbResult {
+		modelUUIDs = append(modelUUIDs, coremodel.UUID(r.UUID))
+	}
+	return modelUUIDs, nil
+}
+
+// GetHostedModelUUIDs returns a list of all model UUIDs in the system that are
+// active. This excludes the controller model.
+func (s *State) GetHostedModelUUIDs(ctx context.Context) ([]coremodel.UUID, error) {
+	db, err := s.DB(ctx)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	stmt, err := s.Prepare(`
+SELECT &dbUUID.uuid
+FROM v_model
+WHERE is_controller_model = FALSE;`, dbUUID{})
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	var dbResult []dbUUID
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err := tx.Query(ctx, stmt).GetAll(&dbResult)
+		if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
+			return errors.Errorf("getting all hosted model UUIDs: %w", err)
 		}
 		return nil
 	})
@@ -1679,8 +1829,8 @@ func setCloudRegion(
 SELECT m.cloud_region_uuid AS &dbCloudRegionUUID.uuid
 FROM   model m
 JOIN   cloud c ON m.cloud_uuid = c.uuid
-WHERE  m.name = 'controller'
-AND    c.name = $dbName.name
+JOIN   controller AS cc ON cc.model_uuid = m.uuid
+WHERE  c.name = $dbName.name
 `, cloudName, cloudRegionUUID)
 		if err != nil {
 			return errors.Capture(err)
@@ -1704,10 +1854,8 @@ AND    c.name = $dbName.name
 		stmt, err := preparer.Prepare(`
 SELECT cr.uuid AS &dbCloudRegionUUID.uuid
 FROM cloud_region cr
-INNER JOIN cloud c
-ON c.uuid = cr.cloud_uuid
-INNER JOIN model m
-ON m.cloud_uuid = c.uuid
+INNER JOIN cloud c ON c.uuid = cr.cloud_uuid
+INNER JOIN model m ON m.cloud_uuid = c.uuid
 WHERE m.uuid = $dbUUID.uuid
 AND cr.name = $dbName.name
 `, cloudRegionName, modelUUID, cloudRegionUUID)
@@ -2044,7 +2192,7 @@ func (st *State) GetActivatedModelUUIDs(ctx context.Context, uuids []coremodel.U
 	stmt, err := st.Prepare(`
 SELECT &modelUUID.*
 FROM   v_model
-WHERE uuid IN ($S[:])
+WHERE  uuid IN ($S[:])
 `, sqlair.S{}, modelUUID{})
 
 	if err != nil {
@@ -2078,7 +2226,7 @@ func (st *State) GetDeadModels(ctx context.Context) ([]coremodel.UUID, error) {
 	stmt, err := st.Prepare(`
 SELECT &modelUUID.*
 FROM   model
-WHERE  activated=1 AND life_id = 2
+WHERE  life_id = 2
 `, modelUUID{})
 
 	if err != nil {

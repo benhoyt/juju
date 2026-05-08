@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"sort"
@@ -23,6 +24,8 @@ import (
 	goyaml "gopkg.in/yaml.v2"
 
 	"github.com/juju/juju/api/jujuclient"
+	"github.com/juju/juju/cmd/cmd"
+	"github.com/juju/juju/cmd/cmd/cmdtesting"
 	"github.com/juju/juju/cmd/juju/common"
 	"github.com/juju/juju/cmd/modelcmd"
 	corebase "github.com/juju/juju/core/base"
@@ -33,9 +36,7 @@ import (
 	"github.com/juju/juju/core/relation"
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/core/status"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/cmd"
-	"github.com/juju/juju/internal/cmd/cmdtesting"
+	"github.com/juju/juju/domain/deployment/charm"
 	coretesting "github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/juju/osenv"
 	"github.com/juju/juju/rpc/params"
@@ -83,9 +84,9 @@ func (s *StatusSuite) SetUpTest(c *tc.C) {
 	s.store = store
 }
 
-type M map[string]interface{}
+type M map[string]any
 
-type L []interface{}
+type L []any
 
 type testCase struct {
 	summary string
@@ -523,8 +524,8 @@ var (
 
 type outputFormat struct {
 	name      string
-	marshal   func(v interface{}) ([]byte, error)
-	unmarshal func(data []byte, v interface{}) error
+	marshal   func(v any) ([]byte, error)
+	unmarshal func(data []byte, v any) error
 }
 
 // statusFormats list all output formats that can be marshalled as structured data,
@@ -1215,7 +1216,7 @@ var statusTests = []testCase{
 
 		setAgentStatus{"wordpress/0", status.Error,
 			"hook failed: some-relation-changed",
-			map[string]interface{}{"relation-id": 0}},
+			map[string]any{"relation-id": 0}},
 
 		expect{
 			what: "a unit with a hook relation error",
@@ -1338,7 +1339,7 @@ var statusTests = []testCase{
 
 		setAgentStatus{"wordpress/0", status.Error,
 			"hook failed: some-relation-changed",
-			map[string]interface{}{"relation-id": 0}},
+			map[string]any{"relation-id": 0}},
 
 		expect{
 			what: "a unit with a hook relation error when the agent is down",
@@ -3013,12 +3014,8 @@ func wordpressCharm(extras M) M {
 
 func composeCharms(origin, extras M) M {
 	result := make(M, len(origin))
-	for key, value := range origin {
-		result[key] = value
-	}
-	for key, value := range extras {
-		result[key] = value
-	}
+	maps.Copy(result, origin)
+	maps.Copy(result, extras)
 	return result
 }
 
@@ -3030,7 +3027,7 @@ type setModelSuspended struct {
 func (s setModelSuspended) step(c *tc.C, ctx *ctx) {
 	ctx.api.result.Model.ModelStatus.Status = status.Suspended.String()
 	ctx.api.result.Model.ModelStatus.Info = s.message
-	ctx.api.result.Model.ModelStatus.Data = map[string]interface{}{"reason": s.reason}
+	ctx.api.result.Model.ModelStatus.Data = map[string]any{"reason": s.reason}
 }
 
 type addMachine struct {
@@ -3796,7 +3793,7 @@ type setUnitStatus struct {
 	unitName   string
 	status     status.Status
 	statusInfo string
-	statusData map[string]interface{}
+	statusData map[string]any
 }
 
 func (sus setUnitStatus) step(c *tc.C, ctx *ctx) {
@@ -3835,7 +3832,7 @@ type setAgentStatus struct {
 	unitName   string
 	status     status.Status
 	statusInfo string
-	statusData map[string]interface{}
+	statusData map[string]any
 }
 
 func (sus setAgentStatus) step(c *tc.C, ctx *ctx) {
@@ -4630,7 +4627,7 @@ Machine  State    Address   Inst id       Base          AZ          Message
 Offer         Application  Charm  Rev  Connected  Endpoint  Interface  Role
 hosted-mysql  mysql        mysql  1    1/1        server    mysql      provider
 
-Integration provider   Requirer                   Interface  Type         Message
+Relation provider      Requirer                   Interface  Type         Message
 mysql:juju-info        logging:info               juju-info  subordinate  
 mysql:server           wordpress:db               mysql      regular      suspended  
 wordpress:logging-dir  logging:logging-directory  logging    subordinate  
@@ -5097,8 +5094,8 @@ Machine  State   Address       Inst id  Base          AZ  Message
 0        active  10.53.62.100           ubuntu@22.04      Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna a...
 0/lxd/0  active  10.53.62.101           ubuntu@22.04      Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna a...
 
-Integration provider  Requirer     Interface  Type  Message
-foo:cluster           bar:cluster  baz                Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna a...
+Relation provider  Requirer     Interface  Type  Message
+foo:cluster        bar:cluster  baz                Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna a...
 `[1:])
 }
 
@@ -5481,7 +5478,7 @@ func (s *StatusSuite) TestTabularNoRelations(c *tc.C) {
 
 	_, stdout, stderr := runStatus(c, ctx, "--no-color")
 	c.Assert(stderr, tc.HasLen, 0)
-	c.Assert(strings.Contains(stdout, "Integration provider"), tc.IsFalse)
+	c.Assert(strings.Contains(stdout, "Relation provider"), tc.IsFalse)
 }
 
 func (s *StatusSuite) TestTabularDisplayRelations(c *tc.C) {
@@ -5489,7 +5486,7 @@ func (s *StatusSuite) TestTabularDisplayRelations(c *tc.C) {
 
 	_, stdout, stderr := runStatus(c, ctx, "--no-color", "--relations")
 	c.Assert(stderr, tc.HasLen, 0)
-	c.Assert(strings.Contains(stdout, "Integration provider"), tc.IsTrue)
+	c.Assert(strings.Contains(stdout, "Relation provider"), tc.IsTrue)
 }
 
 func (s *StatusSuite) TestNonTabularDisplayRelations(c *tc.C) {

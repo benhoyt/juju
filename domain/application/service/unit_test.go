@@ -12,7 +12,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	coreapplication "github.com/juju/juju/core/application"
-	charmtesting "github.com/juju/juju/core/charm/testing"
+	corecharm "github.com/juju/juju/core/charm"
 	coreerrors "github.com/juju/juju/core/errors"
 	corelife "github.com/juju/juju/core/life"
 	coremachine "github.com/juju/juju/core/machine"
@@ -23,9 +23,10 @@ import (
 	"github.com/juju/juju/domain/application"
 	"github.com/juju/juju/domain/application/charm"
 	applicationerrors "github.com/juju/juju/domain/application/errors"
+	applicationinternal "github.com/juju/juju/domain/application/internal"
 	"github.com/juju/juju/domain/life"
-	domainnetwork "github.com/juju/juju/domain/network"
 	"github.com/juju/juju/domain/status"
+	domainstorage "github.com/juju/juju/domain/storage"
 	"github.com/juju/juju/internal/errors"
 )
 
@@ -63,12 +64,14 @@ func (s *unitServiceSuite) TestUpdateUnitCharmCharmNotFound(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	unitName := coreunit.Name("bar/0")
+	unitUUID := tc.Must(c, coreunit.NewUUID)
 
 	locator := charm.CharmLocator{
 		Name:     "foo",
 		Revision: 42,
 		Source:   charm.CharmHubSource,
 	}
+	s.state.EXPECT().GetUnitUUIDByName(gomock.Any(), unitName).Return(unitUUID, nil)
 	s.state.EXPECT().GetCharmID(gomock.Any(), locator.Name, locator.Revision, locator.Source).Return("", applicationerrors.CharmNotFound)
 
 	err := s.service.UpdateUnitCharm(c.Context(), unitName, locator)
@@ -78,16 +81,41 @@ func (s *unitServiceSuite) TestUpdateUnitCharmCharmNotFound(c *tc.C) {
 func (s *unitServiceSuite) TestUpdateUnitCharmUnitNotFound(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	id := charmtesting.GenCharmID(c)
+	currentID := tc.Must(c, corecharm.NewID)
+	targetID := tc.Must(c, corecharm.NewID)
 	unitName := coreunit.Name("bar/0")
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+
+	storageArgs := domainstorage.CreateUnitStorageArg{}
 
 	locator := charm.CharmLocator{
 		Name:     "foo",
 		Revision: 42,
 		Source:   charm.CharmHubSource,
 	}
-	s.state.EXPECT().GetCharmID(gomock.Any(), locator.Name, locator.Revision, locator.Source).Return(id, nil)
-	s.state.EXPECT().UpdateUnitCharm(gomock.Any(), unitName, id).Return(applicationerrors.UnitNotFound)
+	s.state.EXPECT().GetUnitUUIDByName(gomock.Any(), unitName).Return(unitUUID, nil)
+	s.state.EXPECT().GetCharmID(gomock.Any(), locator.Name, locator.Revision, locator.Source).Return(targetID, nil)
+	storageRefreshArgs := applicationinternal.UnitStorageRefreshArgs{
+		NetNodeUUID:      "net-node-uuid",
+		CurrentCharmUUID: currentID,
+		RefreshCharmUUID: targetID,
+	}
+	s.state.EXPECT().GetUnitStorageRefreshArgs(gomock.Any(), unitUUID, targetID).Return(storageRefreshArgs, nil)
+	s.state.EXPECT().GetUnitOwnedStorageInstances(gomock.Any(), unitUUID).Return(
+		[]domainstorage.StorageInstanceInfoForAttach{},
+		[]domainstorage.StorageAttachmentComposition{},
+		nil,
+	)
+	s.storageService.EXPECT().MakeUnitStorageArgs(
+		gomock.Any(), storageRefreshArgs.NetNodeUUID, storageRefreshArgs.RefreshStorageDirectives,
+		[]applicationinternal.StorageInstanceComposition{},
+		[]domainstorage.StorageAttachmentComposition{},
+	).Return(storageArgs, nil)
+	s.state.EXPECT().UpdateUnitCharm(gomock.Any(), applicationinternal.UpdateUnitCharmArg{
+		UUID:        unitUUID,
+		CharmUUID:   targetID,
+		UnitStorage: storageArgs,
+	}).Return(applicationerrors.UnitNotFound)
 
 	err := s.service.UpdateUnitCharm(c.Context(), unitName, locator)
 	c.Assert(err, tc.ErrorIs, applicationerrors.UnitNotFound)
@@ -96,16 +124,189 @@ func (s *unitServiceSuite) TestUpdateUnitCharmUnitNotFound(c *tc.C) {
 func (s *unitServiceSuite) TestUpdateUnitCharm(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
-	id := charmtesting.GenCharmID(c)
+	currentID := tc.Must(c, corecharm.NewID)
+	targetID := tc.Must(c, corecharm.NewID)
 	unitName := coreunit.Name("bar/0")
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+
+	sd := applicationinternal.StorageDirective{
+		Count:    1,
+		Name:     "foo",
+		PoolUUID: tc.Must(c, domainstorage.NewStoragePoolUUID),
+		Size:     1024,
+	}
+	storageRefreshArgs := applicationinternal.UnitStorageRefreshArgs{
+		NetNodeUUID:              "net-node-uuid",
+		CurrentCharmUUID:         currentID,
+		RefreshCharmUUID:         targetID,
+		RefreshStorageDirectives: []applicationinternal.StorageDirective{sd},
+	}
+	storageArgs := domainstorage.CreateUnitStorageArg{
+		StorageDirectives: []domainstorage.DirectiveArg{{
+			Count:    sd.Count,
+			Name:     sd.Name,
+			PoolUUID: sd.PoolUUID,
+			Size:     sd.Size,
+		}},
+		StorageInstances: []domainstorage.CreateUnitStorageInstanceArg{{
+			CharmName: "foo",
+			Kind:      domainstorage.StorageKindFilesystem,
+			Filesystem: &domainstorage.CreateUnitStorageFilesystemArg{
+				UUID:           tc.Must(c, domainstorage.NewFilesystemUUID),
+				ProvisionScope: domainstorage.ProvisionScopeModel,
+			},
+			Name:            sd.Name,
+			RequestSizeMiB:  sd.Size,
+			StoragePoolUUID: sd.PoolUUID,
+			UUID:            tc.Must(c, domainstorage.NewStorageInstanceUUID),
+		}},
+	}
 
 	locator := charm.CharmLocator{
 		Name:     "foo",
 		Revision: 42,
 		Source:   charm.CharmHubSource,
 	}
-	s.state.EXPECT().GetCharmID(gomock.Any(), locator.Name, locator.Revision, locator.Source).Return(id, nil)
-	s.state.EXPECT().UpdateUnitCharm(gomock.Any(), unitName, id).Return(nil)
+	s.state.EXPECT().GetUnitUUIDByName(gomock.Any(), unitName).Return(unitUUID, nil)
+	s.state.EXPECT().GetCharmID(gomock.Any(), locator.Name, locator.Revision, locator.Source).Return(targetID, nil)
+	s.state.EXPECT().GetUnitStorageRefreshArgs(gomock.Any(), unitUUID, targetID).Return(storageRefreshArgs, nil)
+	s.state.EXPECT().GetUnitOwnedStorageInstances(gomock.Any(), unitUUID).Return(
+		[]domainstorage.StorageInstanceInfoForAttach{},
+		[]domainstorage.StorageAttachmentComposition{},
+		nil,
+	)
+	s.storageService.EXPECT().MakeUnitStorageArgs(
+		gomock.Any(),
+		storageRefreshArgs.NetNodeUUID,
+		storageRefreshArgs.RefreshStorageDirectives,
+		[]applicationinternal.StorageInstanceComposition{},
+		[]domainstorage.StorageAttachmentComposition{},
+	).Return(storageArgs, nil)
+	s.state.EXPECT().UpdateUnitCharm(gomock.Any(), applicationinternal.UpdateUnitCharmArg{
+		UUID:        unitUUID,
+		CharmUUID:   targetID,
+		UnitStorage: storageArgs,
+	}).Return(nil)
+
+	err := s.service.UpdateUnitCharm(c.Context(), unitName, locator)
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *unitServiceSuite) TestUpdateUnitCharmSameCharm(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	currentID := tc.Must(c, corecharm.NewID)
+	unitName := coreunit.Name("bar/0")
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+
+	sd := applicationinternal.StorageDirective{
+		Count:    1,
+		Name:     "foo",
+		PoolUUID: tc.Must(c, domainstorage.NewStoragePoolUUID),
+		Size:     1024,
+	}
+	storageRefreshArgs := applicationinternal.UnitStorageRefreshArgs{
+		NetNodeUUID:              "net-node-uuid",
+		CurrentCharmUUID:         currentID,
+		RefreshCharmUUID:         currentID,
+		RefreshStorageDirectives: []applicationinternal.StorageDirective{sd},
+	}
+
+	locator := charm.CharmLocator{
+		Name:     "foo",
+		Revision: 42,
+		Source:   charm.CharmHubSource,
+	}
+	s.state.EXPECT().GetUnitUUIDByName(gomock.Any(), unitName).Return(unitUUID, nil)
+	s.state.EXPECT().GetCharmID(gomock.Any(), locator.Name, locator.Revision, locator.Source).Return(currentID, nil)
+	s.state.EXPECT().GetUnitStorageRefreshArgs(gomock.Any(), unitUUID, currentID).Return(storageRefreshArgs, nil)
+
+	err := s.service.UpdateUnitCharm(c.Context(), unitName, locator)
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *unitServiceSuite) TestUpdateUnitCharmMachine(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	currentID := tc.Must(c, corecharm.NewID)
+	targetID := tc.Must(c, corecharm.NewID)
+	unitName := coreunit.Name("bar/0")
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+
+	sd := applicationinternal.StorageDirective{
+		Count:    1,
+		Name:     "foo",
+		PoolUUID: tc.Must(c, domainstorage.NewStoragePoolUUID),
+		Size:     1024,
+	}
+	storageRefreshArgs := applicationinternal.UnitStorageRefreshArgs{
+		NetNodeUUID:              "net-node-uuid",
+		CurrentCharmUUID:         currentID,
+		RefreshCharmUUID:         targetID,
+		RefreshStorageDirectives: []applicationinternal.StorageDirective{sd},
+		MachineUUID:              new(tc.Must(c, coremachine.NewUUID)),
+	}
+	fs := tc.Must(c, domainstorage.NewFilesystemUUID)
+	vol := tc.Must(c, domainstorage.NewVolumeUUID)
+	storageArgs := domainstorage.CreateUnitStorageArg{
+		StorageDirectives: []domainstorage.DirectiveArg{{
+			Count:    sd.Count,
+			Name:     sd.Name,
+			PoolUUID: sd.PoolUUID,
+			Size:     sd.Size,
+		}},
+		StorageInstances: []domainstorage.CreateUnitStorageInstanceArg{{
+			CharmName: "foo",
+			Kind:      domainstorage.StorageKindFilesystem,
+			Filesystem: &domainstorage.CreateUnitStorageFilesystemArg{
+				UUID:           fs,
+				ProvisionScope: domainstorage.ProvisionScopeMachine,
+			},
+			Volume: &domainstorage.CreateUnitStorageVolumeArg{
+				UUID:           vol,
+				ProvisionScope: domainstorage.ProvisionScopeMachine,
+			},
+			Name:            sd.Name,
+			RequestSizeMiB:  sd.Size,
+			StoragePoolUUID: sd.PoolUUID,
+			UUID:            tc.Must(c, domainstorage.NewStorageInstanceUUID),
+		}},
+	}
+
+	locator := charm.CharmLocator{
+		Name:     "foo",
+		Revision: 42,
+		Source:   charm.CharmHubSource,
+	}
+	s.state.EXPECT().GetUnitUUIDByName(gomock.Any(), unitName).Return(unitUUID, nil)
+	s.state.EXPECT().GetCharmID(gomock.Any(), locator.Name, locator.Revision, locator.Source).Return(targetID, nil)
+	s.state.EXPECT().GetUnitStorageRefreshArgs(gomock.Any(), unitUUID, targetID).Return(storageRefreshArgs, nil)
+	s.state.EXPECT().GetUnitOwnedStorageInstances(gomock.Any(), unitUUID).Return(
+		[]domainstorage.StorageInstanceInfoForAttach{},
+		[]domainstorage.StorageAttachmentComposition{},
+		nil,
+	)
+	s.storageService.EXPECT().MakeUnitStorageArgs(
+		gomock.Any(), storageRefreshArgs.NetNodeUUID, storageRefreshArgs.RefreshStorageDirectives,
+		[]applicationinternal.StorageInstanceComposition{},
+		[]domainstorage.StorageAttachmentComposition{},
+	).Return(storageArgs, nil)
+	s.storageService.EXPECT().MakeIAASUnitStorageArgs(
+		gomock.Any(), storageArgs.StorageInstances,
+	).Return(domainstorage.CreateIAASUnitStorageArg{
+		FilesystemsToOwn: []domainstorage.FilesystemUUID{fs},
+		VolumesToOwn:     []domainstorage.VolumeUUID{vol},
+	}, nil)
+	s.state.EXPECT().UpdateUnitCharm(gomock.Any(), applicationinternal.UpdateUnitCharmArg{
+		UUID:        unitUUID,
+		CharmUUID:   targetID,
+		UnitStorage: storageArgs,
+		MachineUUID: storageRefreshArgs.MachineUUID,
+		IAASUnitStorage: &domainstorage.CreateIAASUnitStorageArg{
+			FilesystemsToOwn: []domainstorage.FilesystemUUID{fs},
+			VolumesToOwn:     []domainstorage.VolumeUUID{vol},
+		},
+	}).Return(nil)
 
 	err := s.service.UpdateUnitCharm(c.Context(), unitName, locator)
 	c.Assert(err, tc.ErrorIsNil)
@@ -119,50 +320,50 @@ func (s *unitServiceSuite) TestUpdateCAASUnit(c *tc.C) {
 	now := time.Now()
 
 	expected := application.UpdateCAASUnitParams{
-		ProviderID: ptr("provider-id"),
-		Address:    ptr("10.6.6.6"),
-		Ports:      ptr([]string{"666"}),
-		AgentStatus: ptr(status.StatusInfo[status.UnitAgentStatusType]{
+		ProviderID: new("provider-id"),
+		Address:    new("10.6.6.6"),
+		Ports:      new([]string{"666"}),
+		AgentStatus: new(status.StatusInfo[status.UnitAgentStatusType]{
 			Status:  status.UnitAgentStatusAllocating,
 			Message: "agent status",
 			Data:    []byte(`{"foo":"bar"}`),
-			Since:   ptr(now),
+			Since:   new(now),
 		}),
-		WorkloadStatus: ptr(status.StatusInfo[status.WorkloadStatusType]{
+		WorkloadStatus: new(status.StatusInfo[status.WorkloadStatusType]{
 			Status:  status.WorkloadStatusWaiting,
 			Message: "workload status",
 			Data:    []byte(`{"foo":"bar"}`),
-			Since:   ptr(now),
+			Since:   new(now),
 		}),
-		K8sPodStatus: ptr(status.StatusInfo[status.K8sPodStatusType]{
+		K8sPodStatus: new(status.StatusInfo[status.K8sPodStatusType]{
 			Status:  status.K8sPodStatusRunning,
 			Message: "container status",
 			Data:    []byte(`{"foo":"bar"}`),
-			Since:   ptr(now),
+			Since:   new(now),
 		}),
 	}
 
 	params := UpdateCAASUnitParams{
-		ProviderID: ptr("provider-id"),
-		Address:    ptr("10.6.6.6"),
-		Ports:      ptr([]string{"666"}),
-		AgentStatus: ptr(corestatus.StatusInfo{
+		ProviderID: new("provider-id"),
+		Address:    new("10.6.6.6"),
+		Ports:      new([]string{"666"}),
+		AgentStatus: new(corestatus.StatusInfo{
 			Status:  corestatus.Allocating,
 			Message: "agent status",
-			Data:    map[string]interface{}{"foo": "bar"},
-			Since:   ptr(now),
+			Data:    map[string]any{"foo": "bar"},
+			Since:   new(now),
 		}),
-		WorkloadStatus: ptr(corestatus.StatusInfo{
+		WorkloadStatus: new(corestatus.StatusInfo{
 			Status:  corestatus.Waiting,
 			Message: "workload status",
-			Data:    map[string]interface{}{"foo": "bar"},
-			Since:   ptr(now),
+			Data:    map[string]any{"foo": "bar"},
+			Since:   new(now),
 		}),
-		CloudContainerStatus: ptr(corestatus.StatusInfo{
+		CloudContainerStatus: new(corestatus.StatusInfo{
 			Status:  corestatus.Running,
 			Message: "container status",
-			Data:    map[string]interface{}{"foo": "bar"},
-			Since:   ptr(now),
+			Data:    map[string]any{"foo": "bar"},
+			Since:   new(now),
 		}),
 	}
 
@@ -179,14 +380,14 @@ func (s *unitServiceSuite) TestUpdateCAASUnit(c *tc.C) {
 	c.Check(unitArgs, tc.DeepEquals, expected)
 }
 
-func (s *unitServiceSuite) TestUpdateCAASUnitNotAlive(c *tc.C) {
+func (s *unitServiceSuite) TestUpdateCAASUnitIsDead(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	id := tc.Must(c, coreapplication.NewUUID)
-	s.state.EXPECT().GetApplicationLifeByName(gomock.Any(), "foo").Return(id, life.Dying, nil)
+	s.state.EXPECT().GetApplicationLifeByName(gomock.Any(), "foo").Return(id, life.Dead, nil)
 
 	err := s.service.UpdateCAASUnit(c.Context(), coreunit.Name("foo/666"), UpdateCAASUnitParams{})
-	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationNotAlive)
+	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationIsDead)
 }
 
 func (s *unitServiceSuite) TestGetUnitRefreshAttributes(c *tc.C) {
@@ -311,123 +512,6 @@ func (s *unitServiceSuite) TestGetUnitNamesOnMachine(c *tc.C) {
 	c.Assert(names, tc.DeepEquals, []coreunit.Name{"foo/666", "bar/667"})
 }
 
-func (s *unitServiceSuite) TestAddIAASSubordinateUnit(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	// Arrange:
-	appID := tc.Must(c, coreapplication.NewUUID)
-	principalUnitName := unittesting.GenNewName(c, "principal/0")
-	principalUnitUUID := tc.Must(c, coreunit.NewUUID)
-	principalNetNodeUUID := tc.Must(c, domainnetwork.NewNetNodeUUID)
-
-	s.state.EXPECT().GetUnitUUIDAndNetNodeForName(gomock.Any(), principalUnitName).Return(
-		principalUnitUUID, principalNetNodeUUID, nil,
-	)
-	s.state.EXPECT().IsSubordinateApplication(gomock.Any(), appID).Return(true, nil)
-	var recievedSubordinateArg application.SubordinateUnitArg
-	s.state.EXPECT().AddIAASSubordinateUnit(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(ctx context.Context, arg application.SubordinateUnitArg) (coreunit.Name, []coremachine.Name, error) {
-			recievedSubordinateArg = arg
-			return "subordinate/0", nil, nil
-		},
-	)
-
-	// Act:
-	err := s.service.AddIAASSubordinateUnit(c.Context(), appID, principalUnitName)
-
-	// Assert:
-	c.Check(err, tc.ErrorIsNil)
-	c.Check(recievedSubordinateArg.SubordinateAppID, tc.Equals, appID)
-	c.Check(recievedSubordinateArg.PrincipalUnitUUID, tc.Equals, principalUnitUUID)
-	// This is important as the subordinate unit must use the same net node uuid
-	// of the principal.
-	c.Check(recievedSubordinateArg.NetNodeUUID, tc.Equals, principalNetNodeUUID)
-}
-
-func (s *unitServiceSuite) TestAddIAASSubordinateUnitUnitAlreadyHasSubordinate(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	// Arrange:
-	appID := tc.Must(c, coreapplication.NewUUID)
-	principalUnitName := unittesting.GenNewName(c, "principal/0")
-
-	s.state.EXPECT().GetUnitUUIDAndNetNodeForName(gomock.Any(), principalUnitName).Return(
-		unittesting.GenUnitUUID(c), tc.Must(c, domainnetwork.NewNetNodeUUID), nil,
-	).AnyTimes()
-	s.state.EXPECT().IsSubordinateApplication(gomock.Any(), appID).Return(true, nil)
-	s.state.EXPECT().AddIAASSubordinateUnit(gomock.Any(), gomock.Any()).Return("", nil, applicationerrors.UnitAlreadyHasSubordinate)
-
-	// Act:
-	err := s.service.AddIAASSubordinateUnit(c.Context(), appID, principalUnitName)
-
-	// Assert:
-	c.Assert(err, tc.ErrorIsNil)
-}
-
-func (s *unitServiceSuite) TestAddIAASSubordinateUnitStateError(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-	// Arrange:
-	appID := tc.Must(c, coreapplication.NewUUID)
-	principalUnitName := unittesting.GenNewName(c, "principal/0")
-
-	s.state.EXPECT().GetUnitUUIDAndNetNodeForName(gomock.Any(), principalUnitName).Return(
-		unittesting.GenUnitUUID(c), tc.Must(c, domainnetwork.NewNetNodeUUID), nil,
-	).AnyTimes()
-	s.state.EXPECT().IsSubordinateApplication(gomock.Any(), appID).Return(true, nil)
-
-	boom := errors.New("boom")
-	s.state.EXPECT().AddIAASSubordinateUnit(gomock.Any(), gomock.Any()).Return("", nil, boom)
-
-	// Act:
-	err := s.service.AddIAASSubordinateUnit(c.Context(), appID, principalUnitName)
-
-	// Assert:
-	c.Assert(err, tc.ErrorIs, boom)
-}
-
-func (s *unitServiceSuite) TestAddIAASSubordinateUnitApplicationNotSubordinate(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	// Arrange:
-	appID := tc.Must(c, coreapplication.NewUUID)
-	principalUnitName := unittesting.GenNewName(c, "principal/0")
-	s.state.EXPECT().GetUnitUUIDAndNetNodeForName(gomock.Any(), principalUnitName).Return(
-		unittesting.GenUnitUUID(c), tc.Must(c, domainnetwork.NewNetNodeUUID), nil,
-	).AnyTimes()
-	s.state.EXPECT().IsSubordinateApplication(gomock.Any(), appID).Return(false, nil)
-
-	// Act:
-	err := s.service.AddIAASSubordinateUnit(c.Context(), appID, principalUnitName)
-
-	// Assert:
-	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationNotSubordinate)
-}
-
-func (s *unitServiceSuite) TestAddIAASSubordinateUnitBadUnitName(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-
-	// Arrange:
-	appID := tc.Must(c, coreapplication.NewUUID)
-
-	// Act:
-	err := s.service.AddIAASSubordinateUnit(c.Context(), appID, "bad-name")
-
-	// Assert:
-	c.Assert(err, tc.ErrorIs, coreunit.InvalidUnitName)
-}
-
-func (s *unitServiceSuite) TestAddIAASSubordinateUnitBadAppName(c *tc.C) {
-	defer s.setupMocks(c).Finish()
-	// Arrange:
-	principalUnitName := unittesting.GenNewName(c, "principal/0")
-
-	// Act:
-	err := s.service.AddIAASSubordinateUnit(c.Context(), "bad-app-uuid", principalUnitName)
-
-	// Assert:
-	c.Assert(err, tc.ErrorIs, coreerrors.NotValid)
-}
-
 func (s *unitServiceSuite) TestSetUnitWorkloadVersion(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
@@ -514,7 +598,9 @@ func (s *unitServiceSuite) TestGetUnitMachineName(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	unitName := coreunit.Name("foo/666")
-	s.state.EXPECT().GetUnitMachineName(gomock.Any(), unitName).Return("0", nil)
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	s.state.EXPECT().GetUnitUUIDByName(gomock.Any(), unitName).Return(unitUUID, nil)
+	s.state.EXPECT().GetUnitMachineName(gomock.Any(), unitUUID.String()).Return("0", nil)
 
 	name, err := s.service.GetUnitMachineName(c.Context(), unitName)
 	c.Assert(err, tc.ErrorIsNil)
@@ -526,7 +612,7 @@ func (s *unitServiceSuite) TestGetUnitMachineNameError(c *tc.C) {
 
 	unitName := coreunit.Name("foo/666")
 	boom := errors.New("boom")
-	s.state.EXPECT().GetUnitMachineName(gomock.Any(), unitName).Return("", boom)
+	s.state.EXPECT().GetUnitUUIDByName(gomock.Any(), unitName).Return("", boom)
 
 	_, err := s.service.GetUnitMachineName(c.Context(), unitName)
 	c.Assert(err, tc.ErrorIs, boom)
@@ -536,7 +622,9 @@ func (s *unitServiceSuite) TestGetUnitMachineUUID(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
 	unitName := coreunit.Name("foo/666")
-	s.state.EXPECT().GetUnitMachineUUID(gomock.Any(), unitName).Return("fake-uuid", nil)
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	s.state.EXPECT().GetUnitUUIDByName(gomock.Any(), unitName).Return(unitUUID, nil)
+	s.state.EXPECT().GetUnitMachineUUID(gomock.Any(), unitUUID.String()).Return("fake-uuid", nil)
 
 	uuid, err := s.service.GetUnitMachineUUID(c.Context(), unitName)
 	c.Assert(err, tc.ErrorIsNil)
@@ -548,9 +636,46 @@ func (s *unitServiceSuite) TestGetUnitMachineUUIDError(c *tc.C) {
 
 	unitName := coreunit.Name("foo/666")
 	boom := errors.New("boom")
-	s.state.EXPECT().GetUnitMachineUUID(gomock.Any(), unitName).Return("", boom)
+	s.state.EXPECT().GetUnitUUIDByName(gomock.Any(), unitName).Return("", boom)
 
 	_, err := s.service.GetUnitMachineUUID(c.Context(), unitName)
+	c.Assert(err, tc.ErrorIs, boom)
+}
+
+func (s *unitServiceSuite) TestGetUnitMachineNameAndUUID(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	s.state.EXPECT().GetUnitMachineUUID(gomock.Any(), unitUUID.String()).Return("fake-uuid", nil)
+	s.state.EXPECT().GetUnitMachineName(gomock.Any(), unitUUID.String()).Return("0", nil)
+
+	name, uuid, err := s.service.GetUnitMachineNameAndUUID(c.Context(), unitUUID)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(name, tc.Equals, coremachine.Name("0"))
+	c.Check(uuid, tc.Equals, coremachine.UUID("fake-uuid"))
+}
+
+func (s *unitServiceSuite) TestGetUnitMachineNameAndUUIDErrorGettingUUID(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	boom := errors.New("boom")
+	s.state.EXPECT().GetUnitMachineUUID(gomock.Any(), unitUUID.String()).Return("", boom)
+	s.state.EXPECT().GetUnitMachineName(gomock.Any(), unitUUID.String()).MaxTimes(1)
+
+	_, _, err := s.service.GetUnitMachineNameAndUUID(c.Context(), unitUUID)
+	c.Assert(err, tc.ErrorIs, boom)
+}
+
+func (s *unitServiceSuite) TestGetUnitMachineNameAndUUIDErrorGettingName(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	boom := errors.New("boom")
+	s.state.EXPECT().GetUnitMachineUUID(gomock.Any(), unitUUID.String()).Return("fake-uuid", nil).MaxTimes(1)
+	s.state.EXPECT().GetUnitMachineName(gomock.Any(), unitUUID.String()).Return("", boom)
+
+	_, _, err := s.service.GetUnitMachineNameAndUUID(c.Context(), unitUUID)
 	c.Assert(err, tc.ErrorIs, boom)
 }
 
@@ -705,4 +830,284 @@ func (s *unitServiceSuite) TestGetAllUnitCloudContainerIDsForApplicationInvalidA
 	appID := coreapplication.UUID("$")
 	_, err := s.service.GetAllUnitCloudContainerIDsForApplication(c.Context(), appID)
 	c.Assert(err, tc.NotNil)
+}
+
+func (s *unitServiceSuite) TestGetIAASUnitContext(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	unitName := coreunit.Name("foo/666")
+	subordinateUnit := coreunit.Name("logging/0")
+	// State returns the raw CIDR string; the service strips the mask.
+	privateAddress := "192.168.1.1/24"
+	stateResult := applicationinternal.IAASUnitContext{
+		LegacyProxySettings: applicationinternal.ProxySettings{
+			HTTP:    "http://proxy:3128",
+			HTTPS:   "https://proxy:3128",
+			FTP:     "ftp://proxy:21",
+			NoProxy: "localhost",
+		},
+		JujuProxySettings: applicationinternal.ProxySettings{
+			HTTP:    "http://juju-proxy:3128",
+			HTTPS:   "https://juju-proxy:3128",
+			NoProxy: "juju.local",
+		},
+		PrivateAddress: &privateAddress,
+		OpenedMachinePortRangesByEndpoint: map[coreunit.Name]network.GroupedPortRanges{
+			subordinateUnit: {
+				"endpoint1": []network.PortRange{
+					{
+						FromPort: 8080,
+						ToPort:   8090,
+						Protocol: "tcp",
+					},
+				},
+				"endpoint2": []network.PortRange{
+					{
+						FromPort: 3000,
+						ToPort:   3010,
+						Protocol: "udp",
+					},
+				},
+			},
+		},
+	}
+
+	s.state.EXPECT().GetIAASUnitContext(gomock.Any(), unitName.String()).Return(stateResult, nil)
+	s.cloudInfoProvider.EXPECT().APIVersion().Return("v1.0.0", nil)
+
+	result, err := s.service.GetIAASUnitContext(c.Context(), unitName)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(result.CloudAPIVersion, tc.Equals, "v1.0.0")
+	c.Check(result.LegacyProxySettings.Http, tc.Equals, "http://proxy:3128")
+	c.Check(result.PrivateAddress, tc.NotNil)
+	// The CIDR mask is stripped; only the host address is returned.
+	c.Check(*result.PrivateAddress, tc.Equals, "192.168.1.1")
+	// Verify port ranges are correctly encoded with names.UnitTag keys
+	c.Check(result.OpenedMachinePortRangesByEndpoint, tc.HasLen, 1)
+	c.Check(result.OpenedMachinePortRangesByEndpoint[subordinateUnit], tc.HasLen, 2)
+	c.Check(result.OpenedMachinePortRangesByEndpoint[subordinateUnit]["endpoint1"], tc.DeepEquals, []network.PortRange{
+		{FromPort: 8080, ToPort: 8090, Protocol: "tcp"},
+	})
+	c.Check(result.OpenedMachinePortRangesByEndpoint[subordinateUnit]["endpoint2"], tc.DeepEquals, []network.PortRange{
+		{FromPort: 3000, ToPort: 3010, Protocol: "udp"},
+	})
+}
+
+func (s *unitServiceSuite) TestGetIAASUnitContextInvalidName(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	_, err := s.service.GetIAASUnitContext(c.Context(), coreunit.Name("!!!"))
+	c.Assert(err, tc.ErrorIs, coreunit.InvalidUnitName)
+}
+
+func (s *unitServiceSuite) TestGetIAASUnitContextNotFound(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	unitName := coreunit.Name("foo/666")
+	s.state.EXPECT().GetIAASUnitContext(gomock.Any(), unitName.String()).
+		Return(applicationinternal.IAASUnitContext{}, applicationerrors.UnitNotFound)
+
+	_, err := s.service.GetIAASUnitContext(c.Context(), unitName)
+	c.Assert(err, tc.ErrorIs, applicationerrors.UnitNotFound)
+}
+
+func (s *unitServiceSuite) TestGetIAASUnitContextStateError(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	unitName := coreunit.Name("foo/666")
+	s.state.EXPECT().GetIAASUnitContext(gomock.Any(), unitName.String()).
+		Return(applicationinternal.IAASUnitContext{}, errors.New("boom"))
+
+	_, err := s.service.GetIAASUnitContext(c.Context(), unitName)
+	c.Assert(err, tc.ErrorMatches, ".*boom")
+}
+
+func (s *unitServiceSuite) TestGetIAASUnitContextCloudAPIVersionError(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// We ignore the fact that the cloud API version might error out here.
+
+	unitName := coreunit.Name("foo/666")
+	stateResult := applicationinternal.IAASUnitContext{}
+
+	s.state.EXPECT().GetIAASUnitContext(gomock.Any(), unitName.String()).Return(stateResult, nil)
+	s.cloudInfoProvider.EXPECT().APIVersion().Return("", errors.New("cloud error"))
+
+	_, err := s.service.GetIAASUnitContext(c.Context(), unitName)
+	c.Assert(err, tc.ErrorIsNil)
+}
+
+func (s *unitServiceSuite) TestGetIAASUnitContextPrivateAddressNil(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// State returns nil private address (unit has no matching address).
+	// The service logs a warning and returns nil — it is not a hard error.
+	unitName := coreunit.Name("foo/0")
+	stateResult := applicationinternal.IAASUnitContext{}
+
+	s.state.EXPECT().GetIAASUnitContext(gomock.Any(), unitName.String()).Return(stateResult, nil)
+	s.cloudInfoProvider.EXPECT().APIVersion().Return("", nil)
+
+	result, err := s.service.GetIAASUnitContext(c.Context(), unitName)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(result.PrivateAddress, tc.IsNil)
+}
+
+func (s *unitServiceSuite) TestGetIAASUnitContextPrivateAddressInvalidCIDR(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// State returns an address that cannot be parsed as a CIDR.
+	// The service logs a warning and returns nil — it is not a hard error.
+	unitName := coreunit.Name("foo/0")
+	badAddress := "not-an-ip-address"
+	stateResult := applicationinternal.IAASUnitContext{PrivateAddress: &badAddress}
+
+	s.state.EXPECT().GetIAASUnitContext(gomock.Any(), unitName.String()).Return(stateResult, nil)
+	s.cloudInfoProvider.EXPECT().APIVersion().Return("", nil)
+
+	result, err := s.service.GetIAASUnitContext(c.Context(), unitName)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(result.PrivateAddress, tc.IsNil)
+}
+
+// TestGetIPAddressFromIAASPrivateAddressIPv4 verifies that an IPv4 CIDR is
+// parsed and the host address is returned without the mask suffix.
+func (s *unitServiceSuite) TestGetIPAddressFromIAASPrivateAddressIPv4(c *tc.C) {
+	addr := "10.0.0.1/24"
+	result, err := getIPAddressFromIAASPrivateAddress(&addr)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result, tc.NotNil)
+	c.Check(*result, tc.Equals, "10.0.0.1")
+}
+
+// TestGetIPAddressFromIAASPrivateAddressIPv6 verifies that an IPv6 CIDR is
+// parsed and the host address is returned without the mask suffix.
+func (s *unitServiceSuite) TestGetIPAddressFromIAASPrivateAddressIPv6(c *tc.C) {
+	addr := "2001:db8::1/64"
+	result, err := getIPAddressFromIAASPrivateAddress(&addr)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result, tc.NotNil)
+	c.Check(*result, tc.Equals, "2001:db8::1")
+}
+
+// TestGetIPAddressFromIAASPrivateAddressNil verifies that a nil pointer returns
+// a descriptive error rather than panicking.
+func (s *unitServiceSuite) TestGetIPAddressFromIAASPrivateAddressNil(c *tc.C) {
+	result, err := getIPAddressFromIAASPrivateAddress(nil)
+	c.Assert(err, tc.ErrorMatches, "no private address")
+	c.Check(result, tc.IsNil)
+}
+
+// TestGetIPAddressFromIAASPrivateAddressInvalidCIDR verifies that an address
+// that cannot be parsed as a CIDR returns an error.
+func (s *unitServiceSuite) TestGetIPAddressFromIAASPrivateAddressInvalidCIDR(c *tc.C) {
+	addr := "not-an-ip"
+	result, err := getIPAddressFromIAASPrivateAddress(&addr)
+	c.Assert(err, tc.ErrorMatches, `parsing private address "not-an-ip": .*`)
+	c.Check(result, tc.IsNil)
+}
+
+// TestGetIPAddressFromIAASPrivateAddressBarePureIP verifies that a bare IP
+// without a CIDR mask (e.g. from a legacy path) returns an error.
+func (s *unitServiceSuite) TestGetIPAddressFromIAASPrivateAddressBareIP(c *tc.C) {
+	addr := "192.168.1.1"
+	result, err := getIPAddressFromIAASPrivateAddress(&addr)
+	c.Assert(err, tc.ErrorMatches, `parsing private address "192.168.1.1": .*`)
+	c.Check(result, tc.IsNil)
+}
+
+func (s *unitServiceSuite) TestGetCAASUnitContext(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	unitName := coreunit.Name("foo/666")
+	principalUnit := coreunit.Name("foo/0")
+	stateResult := applicationinternal.CAASUnitContext{
+		LegacyProxySettings: applicationinternal.ProxySettings{
+			HTTP:    "http://proxy:3128",
+			HTTPS:   "https://proxy:3128",
+			FTP:     "ftp://proxy:21",
+			NoProxy: "localhost",
+		},
+		JujuProxySettings: applicationinternal.ProxySettings{
+			HTTP:    "http://juju-proxy:3128",
+			HTTPS:   "https://juju-proxy:3128",
+			NoProxy: "juju.local",
+		},
+		OpenedPortRangesByEndpoint: map[coreunit.Name]network.GroupedPortRanges{
+			principalUnit: {
+				"": []network.PortRange{
+					{
+						FromPort: 80,
+						ToPort:   80,
+						Protocol: "tcp",
+					},
+					{
+						FromPort: 443,
+						ToPort:   443,
+						Protocol: "tcp",
+					},
+				},
+			},
+		},
+	}
+
+	s.state.EXPECT().GetCAASUnitContext(gomock.Any(), unitName.String()).Return(stateResult, nil)
+	s.cloudInfoProvider.EXPECT().APIVersion().Return("v1.0.0", nil)
+
+	result, err := s.service.GetCAASUnitContext(c.Context(), unitName)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(result.CloudAPIVersion, tc.Equals, "v1.0.0")
+	c.Check(result.LegacyProxySettings.Http, tc.Equals, "http://proxy:3128")
+	c.Check(result.JujuProxySettings.Http, tc.Equals, "http://juju-proxy:3128")
+	// Verify port ranges are correctly encoded with names.UnitTag keys
+	c.Check(result.OpenedPortRangesByEndpoint, tc.HasLen, 1)
+	c.Check(result.OpenedPortRangesByEndpoint[principalUnit], tc.HasLen, 1)
+	c.Check(result.OpenedPortRangesByEndpoint[principalUnit][""], tc.DeepEquals, []network.PortRange{
+		{FromPort: 80, ToPort: 80, Protocol: "tcp"},
+		{FromPort: 443, ToPort: 443, Protocol: "tcp"},
+	})
+}
+
+func (s *unitServiceSuite) TestGetCAASUnitContextInvalidName(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	_, err := s.service.GetCAASUnitContext(c.Context(), coreunit.Name("!!!"))
+	c.Assert(err, tc.ErrorIs, coreunit.InvalidUnitName)
+}
+
+func (s *unitServiceSuite) TestGetCAASUnitContextNotFound(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	unitName := coreunit.Name("foo/666")
+	s.state.EXPECT().GetCAASUnitContext(gomock.Any(), unitName.String()).
+		Return(applicationinternal.CAASUnitContext{}, applicationerrors.UnitNotFound)
+
+	_, err := s.service.GetCAASUnitContext(c.Context(), unitName)
+	c.Assert(err, tc.ErrorIs, applicationerrors.UnitNotFound)
+}
+
+func (s *unitServiceSuite) TestGetCAASUnitContextStateError(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	unitName := coreunit.Name("foo/666")
+	s.state.EXPECT().GetCAASUnitContext(gomock.Any(), unitName.String()).
+		Return(applicationinternal.CAASUnitContext{}, errors.New("boom"))
+
+	_, err := s.service.GetCAASUnitContext(c.Context(), unitName)
+	c.Assert(err, tc.ErrorMatches, ".*boom")
+}
+
+func (s *unitServiceSuite) TestGetCAASUnitContextCloudAPIVersionError(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// We ignore the fact that the cloud API version might error out here.
+
+	unitName := coreunit.Name("foo/666")
+	stateResult := applicationinternal.CAASUnitContext{}
+
+	s.state.EXPECT().GetCAASUnitContext(gomock.Any(), unitName.String()).Return(stateResult, nil)
+	s.cloudInfoProvider.EXPECT().APIVersion().Return("", errors.New("cloud error"))
+
+	_, err := s.service.GetCAASUnitContext(c.Context(), unitName)
+	c.Assert(err, tc.ErrorIsNil)
 }

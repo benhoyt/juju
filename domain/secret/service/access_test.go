@@ -22,8 +22,8 @@ func (s *serviceSuite) TestGetManagementCaveatOwnerUnit(c *tc.C) {
 		SubjectID:     "mariadb/0",
 	}).Return("manage", nil)
 
-	_, err := s.service.getManagementCaveat(c.Context(), uri, SecretAccessor{
-		Kind: UnitAccessor,
+	_, err := s.service.getManagementCaveat(c.Context(), uri, domainsecret.SecretAccessor{
+		Kind: domainsecret.UnitAccessor,
 		ID:   "mariadb/0",
 	})
 	c.Assert(err, tc.ErrorIsNil)
@@ -45,8 +45,8 @@ func (s *serviceSuite) TestGetManagementCaveatLeaderUnitAppSecret(c *tc.C) {
 
 	s.ensurer.EXPECT().LeadershipCheck("mariadb", "mariadb/0").Return(goodToken{})
 
-	_, err := s.service.getManagementCaveat(c.Context(), uri, SecretAccessor{
-		Kind: UnitAccessor,
+	_, err := s.service.getManagementCaveat(c.Context(), uri, domainsecret.SecretAccessor{
+		Kind: domainsecret.UnitAccessor,
 		ID:   "mariadb/0",
 	})
 	c.Assert(err, tc.ErrorIsNil)
@@ -63,8 +63,8 @@ func (s *serviceSuite) TestGetManagementCaveatUserSecrets(c *tc.C) {
 		SubjectID:     "model-uuid",
 	}).Return("manage", nil)
 
-	_, err := s.service.getManagementCaveat(c.Context(), uri, SecretAccessor{
-		Kind: ModelAccessor,
+	_, err := s.service.getManagementCaveat(c.Context(), uri, domainsecret.SecretAccessor{
+		Kind: domainsecret.ModelAccessor,
 		ID:   "model-uuid",
 	})
 	c.Assert(err, tc.ErrorIsNil)
@@ -85,8 +85,8 @@ func (s *serviceSuite) TestCanReadAppSecret(c *tc.C) {
 		SubjectID:     "mariadb",
 	}).Return("view", nil)
 
-	err := s.service.canRead(c.Context(), uri, SecretAccessor{
-		Kind: UnitAccessor,
+	err := s.service.canRead(c.Context(), uri, domainsecret.SecretAccessor{
+		Kind: domainsecret.UnitAccessor,
 		ID:   "mariadb/0",
 	})
 	c.Assert(err, tc.ErrorIsNil)

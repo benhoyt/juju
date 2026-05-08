@@ -123,39 +123,6 @@ func (s *migrationSuite) TestImportOperationsErrorPropagation(c *tc.C) {
 	c.Assert(err, tc.ErrorIs, sentinel)
 }
 
-// TestDeleteImportedOperationsSuccess validates success paths for
-// DeleteImportedOperations.
-func (s *migrationSuite) TestDeleteImportedOperationsSuccessNoStorePath(c *tc.C) {
-	// Arrange
-	defer s.setupMocks(c).Finish()
-
-	// Success path
-	s.st.EXPECT().DeleteImportedOperations(gomock.Any()).Return(nil, nil)
-
-	// Act
-	err := s.service(c).DeleteImportedOperations(c.Context())
-
-	// Assert
-	c.Assert(err, tc.IsNil)
-}
-
-// TestDeleteImportedOperationsError validates both error paths for
-// DeleteImportedOperations.
-func (s *migrationSuite) TestDeleteImportedOperationsError(c *tc.C) {
-	// Arrange
-	defer s.setupMocks(c).Finish()
-
-	// Arrange error path
-	sentinel := stderrs.New("fail-delete")
-	s.st.EXPECT().DeleteImportedOperations(gomock.Any()).Return(nil, sentinel)
-
-	// Act
-	err := s.service(c).DeleteImportedOperations(c.Context())
-
-	// Assert
-	c.Assert(err, tc.ErrorIs, sentinel)
-}
-
 // TestImportOperationsStoresTaskResultsAndSetsStoreUUIDs ensures that for tasks
 // with non-empty Output the results are stored and StoreUUIDs are recorded; and
 // for tasks with empty Output nothing is stored.
@@ -250,49 +217,4 @@ func (s *migrationSuite) TestImportOperationsRollsBackStoredResultsOnStateError(
 
 	err := s.service(c).InsertMigratingOperations(c.Context(), in)
 	c.Assert(err, tc.ErrorIs, sentinel)
-}
-
-// TestDeleteImportedOperationsWithPathsRemovesObjects covers when there are
-// store paths returned. All should be removed and no error returned.
-func (s *migrationSuite) TestDeleteImportedOperationsWithPathsRemovesObjects(c *tc.C) {
-	ctrl := s.setupMocks(c)
-	defer ctrl.Finish()
-
-	store := NewMockObjectStore(ctrl)
-	s.st.EXPECT().DeleteImportedOperations(gomock.Any()).Return([]string{"p1", "p2"}, nil)
-	s.objGetter.EXPECT().GetObjectStore(gomock.Any()).Return(store, nil)
-	store.EXPECT().Remove(gomock.Any(), "p1").Return(nil)
-	store.EXPECT().Remove(gomock.Any(), "p2").Return(nil)
-
-	err := s.service(c).DeleteImportedOperations(c.Context())
-	c.Assert(err, tc.IsNil)
-}
-
-// TestDeleteImportedOperationsObjectStoreGetterError ensures that errors from
-// object store getter are propagated.
-func (s *migrationSuite) TestDeleteImportedOperationsObjectStoreGetterError(c *tc.C) {
-	ctrl := s.setupMocks(c)
-	defer ctrl.Finish()
-
-	s.st.EXPECT().DeleteImportedOperations(gomock.Any()).Return([]string{"pX"}, nil)
-	s.objGetter.EXPECT().GetObjectStore(gomock.Any()).Return(nil, stderrs.New("get-store-fail"))
-
-	err := s.service(c).DeleteImportedOperations(c.Context())
-	c.Assert(err, tc.ErrorMatches, ".*getting object store.*")
-}
-
-// TestDeleteImportedOperationsRemoveError logs a warning and still returns nil
-// when a removal fails.
-func (s *migrationSuite) TestDeleteImportedOperationsRemoveError(c *tc.C) {
-	ctrl := s.setupMocks(c)
-	defer ctrl.Finish()
-
-	store := NewMockObjectStore(ctrl)
-	s.st.EXPECT().DeleteImportedOperations(gomock.Any()).Return([]string{"p1", "p2"}, nil)
-	s.objGetter.EXPECT().GetObjectStore(gomock.Any()).Return(store, nil)
-	store.EXPECT().Remove(gomock.Any(), "p1").Return(nil)
-	store.EXPECT().Remove(gomock.Any(), "p2").Return(stderrs.New("remove-fail"))
-
-	err := s.service(c).DeleteImportedOperations(c.Context())
-	c.Assert(err, tc.IsNil)
 }

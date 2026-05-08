@@ -71,13 +71,13 @@ Interact with the Pebble instance in the workload container via the charm contai
 
 **For k8s controller:**
 
-Connect to the api server pod:
+Connect to the controller api-server container:
 
-    juju ssh --container api-server 0
+    juju ssh 0
 
-Connect to the mongo db pod:
+Connect to the controller charm container:
 
-    juju ssh --container mongodb 0
+    juju ssh --container charm 0
 
 
 ## Details
@@ -107,6 +107,7 @@ can be used to disable these checks. Use of this option is not recommended as
 it opens up the possibility of a man-in-the-middle attack.
 
 The default identity known to Juju and used by this command is `~/.ssh/id_ed25519`.
+For models on a machine cloud, an appropriate SSH key must be added to the model first.
 
 Options can be passed to the local OpenSSH client (ssh) on platforms
 where it is available. This is done by inserting them between the target and

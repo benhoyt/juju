@@ -21,11 +21,9 @@ Initializes a cloud environment.
 | `--clouds` | false | Print the available clouds which can be used to bootstrap a Juju environment |
 | `--config` |  | Specify a controller configuration file, or one or more configuration options. Model config keys only affect the controller model.     (`--config config.yaml [--config key=value ...])` |
 | `--constraints` | [] | Set model constraints |
-| `--controller-charm-channel` | 4.0/stable | The Charmhub channel to download the controller charm from (if not using a local charm) |
+| `--controller-charm-channel` | 4.1/stable | The Charmhub channel to download the controller charm from (if not using a local charm) |
 | `--controller-charm-path` |  | Path to a locally built controller charm |
 | `--credential` |  | Credentials to use when bootstrapping |
-| `--db-snap` |  | Path to a locally built `.snap` to use as the internal `juju-db` service. |
-| `--db-snap-asserts` |  | Path to a local `.assert` file. Requires `--db-snap` |
 | `--force` | false | Allow the bypassing of checks such as supported base |
 | `--keep-broken` | false | Do not destroy the provisioned controller instance if bootstrap fails |
 | `--metadata-source` |  | Local path to use as agent and/or image metadata source |
@@ -283,15 +281,40 @@ Controller configuration keys:
       type: int
       description: The maximum number of concurrent resources downloads across all the
         applications on the controller
+    dqlite-busy-timeout:
+      type: string
+      description: |-
+        The timeout for how long a database operation will wait for a lock
+        to be released before returning an error, that is the amount of
+        time a writer will wait for others to finish writing on the
+        same database.
     features:
       type: string
       description: A comma-delimited list of runtime changeable features to be updated
+    http-server-read-timeout:
+      type: string
+      description: |-
+        The maximum duration for reading the entire HTTP request, including the body.
+        A zero value means no timeout. The default is 0 (no timeout). Set to a non-zero value
+        (e.g., 60s) if you need to prevent indefinite reads.
+    http-server-write-timeout:
+      type: string
+      description: |-
+        The maximum duration before timing out writes of the HTTP response.
+        A zero value means no timeout. The default is 0 (no timeout). Set to a non-zero value
+        (e.g., 60s) if you need to prevent indefinite writes.
     identity-public-key:
       type: string
       description: The public key of the identity manager
     identity-url:
       type: string
       description: The url of the identity manager
+    idle-connection-timeout:
+      type: string
+      description: |
+        The time the controller will wait between
+        resets of all idle connections. By default, every 10 minutes
+        the controller will close all idle connections.
     juju-mgmt-space:
       type: string
       description: The network space that agents should use to communicate with controllers
@@ -333,21 +356,6 @@ Controller configuration keys:
       type: string
       description: The maximum size of the log file written out by the controller on behalf
         of workers running for a model
-    object-store-s3-endpoint:
-      type: string
-      description: The s3 endpoint for the object store backend
-    object-store-s3-static-key:
-      type: string
-      description: The s3 static key for the object store backend
-    object-store-s3-static-secret:
-      type: string
-      description: The s3 static secret for the object store backend
-    object-store-s3-static-session:
-      type: string
-      description: The s3 static session for the object store backend
-    object-store-type:
-      type: string
-      description: The type of object store backend to use for storing blobs
     open-telemetry-enabled:
       type: bool
       description: Enable open telemetry tracing
@@ -382,8 +390,8 @@ Controller configuration keys:
       type: string
       description: |-
         The minimum duration of a query for it to be traced. The lower the
-        threshold, the more queries will be output. A value of 0 means all queries
-        will be output if tracing is enabled.
+        threshold, the more queries will be output. A value of 0 means all
+        queries will be output if tracing is enabled.
     set-numa-control-policy:
       type: bool
       description: Determines if the NUMA control policy is set
@@ -499,9 +507,6 @@ Model configuration keys (affecting the controller model):
       type: string
       description: The HTTPS proxy value to configure on instances, in the `HTTPS_PROXY`
         environment variable
-    ignore-machine-addresses:
-      type: bool
-      description: Whether the machine worker should discover machine addresses on startup
     image-metadata-defaults-disabled:
       type: bool
       description: Whether default simplestreams sources are used for image metadata.

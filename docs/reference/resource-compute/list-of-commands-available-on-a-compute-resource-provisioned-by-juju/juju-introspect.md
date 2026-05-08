@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Introspect Juju agents running on machines using juju-introspect command. Access debugging macros and agent diagnostic information."
+---
+
 (juju-introspect)=
 # `juju-introspect`
 

@@ -12,12 +12,11 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/collections/transform"
-	"github.com/juju/description/v10"
+	"github.com/juju/description/v12"
 
 	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/machine"
 	"github.com/juju/juju/core/modelmigration"
-	"github.com/juju/juju/core/objectstore"
 	corestatus "github.com/juju/juju/core/status"
 	"github.com/juju/juju/core/trace"
 	coreunit "github.com/juju/juju/core/unit"
@@ -30,14 +29,13 @@ import (
 // RegisterImport registers the import operations with the given coordinator.
 func RegisterImport(
 	coordinator Coordinator,
-	objectStoreGetter objectstore.ModelObjectStoreGetter,
 	clock clock.Clock,
 	logger logger.Logger,
 ) {
 	coordinator.Add(&importOperation{
-		logger:            logger,
-		clock:             clock,
-		objectStoreGetter: objectStoreGetter})
+		logger: logger,
+		clock:  clock,
+	})
 }
 
 // ImportService provides a subset of the operation domain service methods
@@ -45,19 +43,14 @@ func RegisterImport(
 type ImportService interface {
 	// ImportOperations sets operations and tasks imported in migration.
 	InsertMigratingOperations(ctx context.Context, args internal.ImportOperationsArgs) error
-
-	// DeleteImportedOperations deletes all imported operations in a model during
-	// an import rollback.
-	DeleteImportedOperations(ctx context.Context) error
 }
 
 type importOperation struct {
 	modelmigration.BaseOperation
 
 	// injected dependencies.
-	objectStoreGetter objectstore.ModelObjectStoreGetter
-	clock             clock.Clock
-	logger            logger.Logger
+	clock  clock.Clock
+	logger logger.Logger
 
 	// initialized during Setup.
 	service ImportService
@@ -76,7 +69,7 @@ func (i *importOperation) Setup(scope modelmigration.Scope) error {
 		),
 		i.clock,
 		i.logger,
-		i.objectStoreGetter,
+		scope.ModelObjectStoreGetter(),
 		// No leadership service needed for import.
 		nil,
 	)
@@ -250,15 +243,4 @@ func (o opTaskArgs) check(task description.Action, unit coreunit.Name) error {
 			o.action, task.Name()))
 	}
 	return errors.Join(errs...)
-}
-
-// Rollback deletes all imported operations in case of failure.
-func (i *importOperation) Rollback(ctx context.Context, model description.Model) error {
-	if len(model.Operations()) == 0 {
-		return nil
-	}
-	if err := i.service.DeleteImportedOperations(ctx); err != nil {
-		return errors.Errorf("operation import rollback failed: %w", err)
-	}
-	return nil
 }

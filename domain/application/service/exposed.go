@@ -8,6 +8,8 @@ import (
 
 	"github.com/juju/collections/set"
 
+	coreapplication "github.com/juju/juju/core/application"
+	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/network/firewall"
 	"github.com/juju/juju/core/trace"
@@ -28,7 +30,8 @@ func (s *Service) IsApplicationExposed(ctx context.Context, appName string) (boo
 		return false, errors.Capture(err)
 	}
 
-	return s.st.IsApplicationExposed(ctx, appID)
+	exp, err := s.st.IsApplicationExposed(ctx, appID)
+	return exp, errors.Capture(err)
 }
 
 // GetExposedEndpoints returns map where keys are endpoint names (or the ""
@@ -38,7 +41,9 @@ func (s *Service) IsApplicationExposed(ctx context.Context, appName string) (boo
 //
 // If no application is found, an error satisfying
 // [applicationerrors.ApplicationNotFound] is returned.
-func (s *Service) GetExposedEndpoints(ctx context.Context, appName string) (map[string]application.ExposedEndpoint, error) {
+func (s *Service) GetExposedEndpoints(
+	ctx context.Context, appName string) (map[string]application.ExposedEndpoint, error,
+) {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
@@ -47,7 +52,18 @@ func (s *Service) GetExposedEndpoints(ctx context.Context, appName string) (map[
 		return nil, errors.Capture(err)
 	}
 
-	return s.st.GetExposedEndpoints(ctx, appID)
+	eps, err := s.st.GetExposedEndpoints(ctx, appID)
+	return eps, errors.Capture(err)
+}
+
+// GetAllExposedEndpoints returns all exposed endpoints in the model, grouped
+// by application name and endpoint name.
+func (s *Service) GetAllExposedEndpoints(ctx context.Context) (map[string]map[string]application.ExposedEndpoint, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	eps, err := s.st.GetAllExposedEndpoints(ctx)
+	return eps, errors.Capture(err)
 }
 
 // UnsetExposeSettings removes the expose settings for the provided list of
@@ -61,12 +77,17 @@ func (s *Service) UnsetExposeSettings(ctx context.Context, appName string, expos
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
+	if appName == coreapplication.ControllerApplicationName {
+		return errors.New("unexposing the controller application not supported").
+			Add(coreerrors.NotSupported)
+	}
+
 	appID, err := s.st.GetApplicationUUIDByName(ctx, appName)
 	if err != nil {
 		return errors.Capture(err)
 	}
 
-	return s.st.UnsetExposeSettings(ctx, appID, exposedEndpoints)
+	return errors.Capture(s.st.UnsetExposeSettings(ctx, appID, exposedEndpoints))
 }
 
 // MergeExposeSettings marks the application as exposed and merges the provided
@@ -75,7 +96,9 @@ func (s *Service) UnsetExposeSettings(ctx context.Context, appName string, expos
 //
 // If no application is found, an error satisfying
 // [applicationerrors.ApplicationNotFound] is returned.
-func (s *Service) MergeExposeSettings(ctx context.Context, appName string, exposedEndpoints map[string]application.ExposedEndpoint) error {
+func (s *Service) MergeExposeSettings(
+	ctx context.Context, appName string, exposedEndpoints map[string]application.ExposedEndpoint,
+) error {
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
@@ -101,7 +124,8 @@ func (s *Service) MergeExposeSettings(ctx context.Context, appName string, expos
 		spaceUUIDStr = append(spaceUUIDStr, exposedEndpoint.ExposeToSpaceIDs.Values()...)
 	}
 	if err := s.st.SpacesExist(ctx, set.NewStrings(spaceUUIDStr...)); err != nil {
-		return errors.Errorf("validating exposed endpoints to spaces %+v: %w", set.NewStrings(spaceUUIDStr...).Values(), err)
+		return errors.Errorf("validating exposed endpoints to spaces %+v: %w",
+			set.NewStrings(spaceUUIDStr...).Values(), err)
 	}
 
 	validatedExposedEndpoints := make(map[string]application.ExposedEndpoint)
@@ -115,14 +139,15 @@ func (s *Service) MergeExposeSettings(ctx context.Context, appName string, expos
 		for endpoint, exposedEndpoint := range exposedEndpoints {
 			// If no spaces and CIDRs are provided, assume an implicit
 			// 0.0.0.0/0 CIDR. This matches the "expose to the entire
-			// world" behavior in juju controllers prior to 2.9.
+			// world" behaviour in juju controllers prior to 2.9.
 			if len(exposedEndpoint.ExposeToSpaceIDs)+len(exposedEndpoint.ExposeToCIDRs) == 0 {
-				exposedEndpoint.ExposeToCIDRs = set.NewStrings(firewall.AllNetworksIPV4CIDR, firewall.AllNetworksIPV6CIDR)
+				exposedEndpoint.ExposeToCIDRs = set.NewStrings(
+					firewall.AllNetworksIPV4CIDR, firewall.AllNetworksIPV6CIDR)
 			}
 
 			validatedExposedEndpoints[endpoint] = exposedEndpoint
 		}
 	}
 
-	return s.st.MergeExposeSettings(ctx, appID, validatedExposedEndpoints)
+	return errors.Capture(s.st.MergeExposeSettings(ctx, appID, validatedExposedEndpoints))
 }

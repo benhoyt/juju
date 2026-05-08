@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Use gocheck checkers for assertions in Juju unit tests, including IsNil, Equals, DeepEquals, and ErrorMatches patterns."
+---
+
 (checker)=
 # Checker
 

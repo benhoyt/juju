@@ -4,14 +4,22 @@
 package model
 
 import (
+	"context"
+	"database/sql"
 	"testing"
 	"time"
 
+	"github.com/juju/clock/testclock"
 	"github.com/juju/tc"
 
+	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
+	"github.com/juju/juju/core/unit"
 	domaincharm "github.com/juju/juju/domain/application/charm"
+	applicationservice "github.com/juju/juju/domain/application/service"
+	crossmodelrelationstate "github.com/juju/juju/domain/crossmodelrelation/state/model"
 	"github.com/juju/juju/domain/life"
+	domainrelation "github.com/juju/juju/domain/relation"
 	relationerrors "github.com/juju/juju/domain/relation/errors"
 	removalerrors "github.com/juju/juju/domain/removal/errors"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
@@ -44,7 +52,7 @@ func (s *relationSuite) TestRelationExistsDoesNotExist(c *tc.C) {
 }
 
 func (s *relationSuite) TestRelationExistsCrossModelRelation(c *tc.C) {
-	relUUID, _ := s.createRemoteRelation(c)
+	relUUID, _ := s.createRelationWithRemoteOfferer(c)
 
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
@@ -66,7 +74,7 @@ func (s *relationSuite) TestEnsureRelationNotAliveNormalSuccess(c *tc.C) {
 	var lifeID int
 	err = row.Scan(&lifeID)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(lifeID, tc.Equals, 1)
+	c.Check(lifeID, tc.Equals, int(life.Dying))
 }
 
 func (s *relationSuite) TestEnsureRelationNotAliveDyingSuccess(c *tc.C) {
@@ -82,7 +90,7 @@ func (s *relationSuite) TestEnsureRelationNotAliveDyingSuccess(c *tc.C) {
 	var lifeID int
 	err = row.Scan(&lifeID)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(lifeID, tc.Equals, 1)
+	c.Check(lifeID, tc.Equals, int(life.Dying))
 }
 
 func (s *relationSuite) TestEnsureRelationNotAliveNotExistsSuccess(c *tc.C) {
@@ -233,6 +241,7 @@ func (s *relationSuite) TestDeleteRelationUnitsInScopeFails(c *tc.C) {
 
 	err := st.DeleteRelation(c.Context(), rel)
 	c.Assert(err, tc.ErrorIs, removalerrors.UnitsStillInScope)
+	c.Check(err, tc.ErrorIs, removalerrors.RemovalJobIncomplete)
 }
 
 func (s *relationSuite) TestDeleteRelationUnitsInScopeSuccess(c *tc.C) {
@@ -241,6 +250,34 @@ func (s *relationSuite) TestDeleteRelationUnitsInScopeSuccess(c *tc.C) {
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
 	err := st.DeleteRelationUnits(c.Context(), rel)
+	c.Assert(err, tc.ErrorIsNil)
+
+	err = st.DeleteRelation(c.Context(), rel)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = st.GetRelationLife(c.Context(), rel)
+	c.Assert(err, tc.ErrorIs, relationerrors.RelationNotFound)
+}
+
+func (s *relationSuite) TestDeleteRelationUnitsInScopeSuccessHasSecretPermission(c *tc.C) {
+	rel, _, _ := s.addAppUnitRelationScope(c, domaincharm.CharmHubSource)
+
+	_, err := s.DB().Exec(`INSERT INTO secret (id) VALUES (?)`, "secret-id")
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = s.DB().Exec(`
+INSERT INTO secret_metadata (secret_id, version, rotate_policy_id, create_time, update_time)
+VALUES (?, ?, ?, ?, ?)`, "secret-id", 1, 0, s.now, s.now)
+	c.Assert(err, tc.ErrorIsNil)
+
+	_, err = s.DB().Exec(`
+INSERT INTO secret_permission (secret_id, role_id, subject_uuid, subject_type_id, scope_uuid, scope_type_id)
+VALUES (?, ?, ?, ?, ?, ?)`, "secret-id", 0, "subject-uuid", 0, rel, 3)
+	c.Assert(err, tc.ErrorIsNil)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	err = st.DeleteRelationUnits(c.Context(), rel)
 	c.Assert(err, tc.ErrorIsNil)
 
 	err = st.DeleteRelation(c.Context(), rel)
@@ -302,11 +339,226 @@ VALUES (?, ?, 'old-key', 'old-value')`, rel, unit)
 	c.Check(others, tc.Equals, 1)
 }
 
+func (s *relationSuite) TestLeaveScopeDeletesSyntheticUnits(c *tc.C) {
+	// Arrange
+	s.createRelationWithRemoteOfferer(c)
+
+	var (
+		relUnitUUID string
+		netNodeUUID string
+	)
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, `
+SELECT ru.uuid
+FROM relation_unit AS ru
+JOIN unit AS u ON ru.unit_uuid = u.uuid
+WHERE u.name = ?`, "foo/0").Scan(&relUnitUUID)
+		if err != nil {
+			return err
+		}
+
+		err = tx.QueryRowContext(ctx, `SELECT net_node_uuid FROM unit WHERE name = ?`, "foo/0").Scan(&netNodeUUID)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	// Act
+	err = st.LeaveScope(c.Context(), relUnitUUID)
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+
+	var (
+		unitCount    int
+		netNodeCount int
+	)
+	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM unit WHERE name = ?`, "foo/0").Scan(&unitCount)
+		if err != nil {
+			return err
+		}
+
+		err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM net_node WHERE uuid = ?`, netNodeUUID).Scan(&netNodeCount)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(unitCount, tc.Equals, 0)
+	c.Check(netNodeCount, tc.Equals, 0)
+}
+
+func (s *relationSuite) TestLeaveScopeSyntheticUnitsInMultipleRelations(c *tc.C) {
+	// Arrange
+	synthAppUUID, _ := s.createRemoteApplicationOfferer(c, "foo")
+
+	s.createIAASApplication(c, s.setupApplicationService(c), "bar1",
+		applicationservice.AddIAASUnitArg{},
+		applicationservice.AddIAASUnitArg{},
+		applicationservice.AddIAASUnitArg{},
+	)
+	s.createIAASApplication(c, s.setupApplicationService(c), "bar2",
+		applicationservice.AddIAASUnitArg{},
+		applicationservice.AddIAASUnitArg{},
+		applicationservice.AddIAASUnitArg{},
+	)
+
+	relSvc := s.setupRelationService(c)
+	_, _, err := relSvc.AddRelation(c.Context(), "foo:foo", "bar1:bar")
+	c.Assert(err, tc.ErrorIsNil)
+	_, _, err = relSvc.AddRelation(c.Context(), "foo:foo", "bar2:bar")
+	c.Assert(err, tc.ErrorIsNil)
+
+	rel1UUID, err := relSvc.GetRelationUUIDForRemoval(c.Context(), domainrelation.GetRelationUUIDForRemovalArgs{
+		Endpoints: []string{"foo:foo", "bar1:bar"},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	rel2UUID, err := relSvc.GetRelationUUIDForRemoval(c.Context(), domainrelation.GetRelationUUIDForRemovalArgs{
+		Endpoints: []string{"foo:foo", "bar2:bar"},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	cmrState := crossmodelrelationstate.NewState(
+		s.TxnRunnerFactory(), coremodel.UUID(s.ModelUUID()), testclock.NewClock(s.now), loggertesting.WrapCheckLog(c),
+	)
+	err = cmrState.EnsureUnitsExist(c.Context(), synthAppUUID.String(), []string{"foo/0", "foo/1", "foo/2"})
+	c.Assert(err, tc.ErrorIsNil)
+
+	err = relSvc.SetRelationRemoteApplicationAndUnitSettings(c.Context(), synthAppUUID, rel1UUID,
+		map[string]string{"do": "da"},
+		map[unit.Name]map[string]string{
+			unit.Name("foo/0"): {"do": "da"},
+			unit.Name("foo/1"): {"do": "da"},
+			unit.Name("foo/2"): {"do": "da"},
+		},
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	err = relSvc.SetRelationRemoteApplicationAndUnitSettings(c.Context(), synthAppUUID, rel2UUID,
+		map[string]string{"da": "do"},
+		map[unit.Name]map[string]string{
+			unit.Name("foo/0"): {"da": "do"},
+			unit.Name("foo/1"): {"da": "do"},
+			unit.Name("foo/2"): {"da": "do"},
+		},
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	var relUnitUUID string
+	err = s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, `
+SELECT ru.uuid
+FROM relation_unit AS ru
+JOIN unit AS u ON ru.unit_uuid = u.uuid
+WHERE u.name = ?`, "foo/0").Scan(&relUnitUUID)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	// Act
+	err = st.LeaveScope(c.Context(), relUnitUUID)
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+}
+
 func (s *relationSuite) TestLeaveScopeRelationUnitNotFound(c *tc.C) {
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
 
 	err := st.LeaveScope(c.Context(), "not-here")
 	c.Check(err, tc.ErrorIs, relationerrors.RelationUnitNotFound)
+}
+
+func (s *relationSuite) TestIsUnitDyingAndBlocked(c *tc.C) {
+	svc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, svc, "some-app", applicationservice.AddIAASUnitArg{})
+
+	unitUUIDs := s.getAllUnitUUIDs(c, appUUID)
+	c.Assert(len(unitUUIDs), tc.Equals, 1)
+	unitUUID := unitUUIDs[0]
+
+	row := s.DB().QueryRowContext(c.Context(), "SELECT name FROM unit WHERE uuid = ?", unitUUID)
+	var unitName string
+	err := row.Scan(&unitName)
+	c.Assert(err, tc.ErrorIsNil)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	isBlocked, err := st.IsUnitDyingAndBlocked(c.Context(), unitName)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(isBlocked, tc.Equals, false)
+
+	const (
+		blockedStatus = 4
+		errorStatus   = 7
+	)
+	for _, status := range []int{blockedStatus, errorStatus} {
+		_, err = s.DB().Exec("UPDATE unit_workload_status SET status_id = ? WHERE unit_uuid = ?", status, unitUUID.String())
+		c.Assert(err, tc.ErrorIsNil)
+
+		isBlocked, err = st.IsUnitDyingAndBlocked(c.Context(), unitName)
+		c.Assert(err, tc.ErrorIsNil)
+		c.Check(isBlocked, tc.Equals, false)
+	}
+
+	// Now check with the life set to dying.
+	s.advanceUnitLife(c, unitUUID, life.Dying)
+
+	for _, status := range []int{blockedStatus, errorStatus} {
+		_, err = s.DB().Exec("UPDATE unit_workload_status SET status_id = ? WHERE unit_uuid = ?", status, unitUUID.String())
+		c.Assert(err, tc.ErrorIsNil)
+
+		isBlocked, err = st.IsUnitDyingAndBlocked(c.Context(), unitName)
+		c.Assert(err, tc.ErrorIsNil)
+		c.Check(isBlocked, tc.Equals, true)
+	}
+}
+
+func (s *relationSuite) TestIsUnitDyingAndBlockedDead(c *tc.C) {
+	svc := s.setupApplicationService(c)
+	appUUID := s.createIAASApplication(c, svc, "some-app", applicationservice.AddIAASUnitArg{})
+
+	unitUUIDs := s.getAllUnitUUIDs(c, appUUID)
+	c.Assert(len(unitUUIDs), tc.Equals, 1)
+	unitUUID := unitUUIDs[0]
+
+	row := s.DB().QueryRowContext(c.Context(), "SELECT name FROM unit WHERE uuid = ?", unitUUID)
+	var unitName string
+	err := row.Scan(&unitName)
+	c.Assert(err, tc.ErrorIsNil)
+
+	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
+
+	// Now check with the life set to dying.
+	s.advanceUnitLife(c, unitUUID, life.Dead)
+
+	const (
+		blockedStatus = 4
+		errorStatus   = 7
+	)
+	for _, status := range []int{blockedStatus, errorStatus} {
+		_, err = s.DB().Exec("UPDATE unit_workload_status SET status_id = ? WHERE unit_uuid = ?", status, unitUUID.String())
+		c.Assert(err, tc.ErrorIsNil)
+
+		isBlocked, err := st.IsUnitDyingAndBlocked(c.Context(), unitName)
+		c.Assert(err, tc.ErrorIsNil)
+		c.Check(isBlocked, tc.Equals, true)
+	}
 }
 
 // addAppUnitRelationScope adds charm, application, unit and relation

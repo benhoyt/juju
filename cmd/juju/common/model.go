@@ -104,7 +104,7 @@ type ModelCredential struct {
 }
 
 // ModelStatusReason extracts the reason, if any, from a status data bag.
-func ModelStatusReason(data map[string]interface{}) string {
+func ModelStatusReason(data map[string]any) string {
 	reason, _ := data["reason"].(string)
 	return strings.Trim(reason, "\n")
 }
@@ -243,7 +243,7 @@ func ModelUserInfoFromParams(users []params.ModelUserInfo, now time.Time) map[st
 // removed if the qualifier matches the given canonical username.
 func UserModelName(modelName, userName string) string {
 	if unqualifiedModelName, qualifier, err := jujuclient.SplitFullyQualifiedModelName(modelName); err == nil {
-		if qualifier == model.QualifierFromUserTag(names.NewUserTag(userName)).String() {
+		if qualifier == userName {
 			return unqualifiedModelName
 		}
 	}

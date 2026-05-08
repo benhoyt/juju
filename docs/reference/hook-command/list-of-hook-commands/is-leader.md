@@ -1,7 +1,7 @@
 (hook-command-is-leader)=
 # `is-leader`
 ## Summary
-Print application leadership status.
+Prints application leadership status.
 
 ### Options
 | Flag | Default | Usage |
@@ -19,6 +19,6 @@ Print application leadership status.
 
 ## Details
 
-is-leader prints a boolean indicating whether the local unit is guaranteed to
-be application leader for at least 30 seconds. If it fails, you should assume that
+`is-leader` prints a boolean indicating whether the local unit is guaranteed to
+be application leader for at least 30 seconds;  if it fails, you should assume that
 there is no such guarantee.

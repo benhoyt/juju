@@ -9,8 +9,8 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/dependency"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/dependency"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/juju/juju/agent"
@@ -18,6 +18,7 @@ import (
 	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/internal/database"
 	"github.com/juju/juju/internal/database/app"
+	"github.com/juju/juju/internal/database/dqlite"
 	"github.com/juju/juju/internal/worker/common"
 	"github.com/juju/juju/internal/worker/controlleragentconfig"
 )
@@ -151,7 +152,7 @@ func Manifold(config ManifoldConfig) dependency.Manifold {
 	}
 }
 
-func dbAccessorOutput(in worker.Worker, out interface{}) error {
+func dbAccessorOutput(in worker.Worker, out any) error {
 	if w, ok := in.(*common.CleanupWorker); ok {
 		in = w.Worker
 	}
@@ -166,6 +167,11 @@ func dbAccessorOutput(in worker.Worker, out interface{}) error {
 		*out = target
 	case *coredatabase.DBDeleter:
 		var target coredatabase.DBDeleter = w
+		*out = target
+	case *coredatabase.ClusterDescriber:
+		var target coredatabase.ClusterDescriber = &clusterDetailer{
+			nodeManager: w.cfg.NodeManager,
+		}
 		*out = target
 	default:
 		return errors.Errorf("expected output of *database.DBGetter or *database.DBDeleter, got %T", out)
@@ -183,4 +189,41 @@ func IAASNodeManager(cfg agent.Config, logger logger.Logger, slowQueryLogger cor
 // the loopback address for Dqlite.
 func CAASNodeManager(cfg agent.Config, logger logger.Logger, slowQueryLogger coredatabase.SlowQueryLogger) NodeManager {
 	return database.NewNodeManager(cfg, true, logger, slowQueryLogger)
+}
+
+type clusterDetailer struct {
+	nodeManager NodeManager
+}
+
+// ClusterDetails returns the node information for Dqlite nodes configured to be
+// in the cluster.
+func (c *clusterDetailer) ClusterDetails(ctx context.Context) ([]coredatabase.ClusterNodeInfo, error) {
+	// TODO (stickupkid): We probably want to cache this result, as it could
+	// be expensive to fetch repeatedly from the underlying YAML store.
+	clusterNodes, err := c.nodeManager.ClusterServers(ctx)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	result := make([]coredatabase.ClusterNodeInfo, len(clusterNodes))
+	for i, node := range clusterNodes {
+		result[i] = coredatabase.ClusterNodeInfo{
+			ID:   node.ID,
+			Role: convertNodeRole(node.Role),
+		}
+	}
+	return result, nil
+}
+
+func convertNodeRole(role dqlite.NodeRole) coredatabase.NodeRole {
+	switch role {
+	case dqlite.Voter:
+		return coredatabase.Voter
+	case dqlite.StandBy:
+		return coredatabase.Standby
+	case dqlite.Spare:
+		return coredatabase.Spare
+	default:
+		return coredatabase.NodeRole("unknown")
+	}
 }

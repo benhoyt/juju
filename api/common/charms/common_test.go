@@ -12,8 +12,8 @@ import (
 	basemocks "github.com/juju/juju/api/base/mocks"
 	apicommoncharms "github.com/juju/juju/api/common/charms"
 	"github.com/juju/juju/core/semversion"
-	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/charm/resource"
+	"github.com/juju/juju/domain/deployment/charm"
+	"github.com/juju/juju/domain/deployment/charm/resource"
 	coretesting "github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/rpc/params"
 )
@@ -73,8 +73,8 @@ func (s *suite) TestCharmInfo(c *tc.C) {
 							Location: "/cockroach/cockroach-data",
 						},
 					},
-					Uid: intPtr(5000),
-					Gid: intPtr(5001),
+					Uid: new(5000),
+					Gid: new(5001),
 				},
 			},
 			Storage: map[string]params.CharmStorage{
@@ -140,8 +140,8 @@ func (s *suite) TestCharmInfo(c *tc.C) {
 							Location: "/cockroach/cockroach-data",
 						},
 					},
-					Uid: intPtr(5000),
-					Gid: intPtr(5001),
+					Uid: new(5000),
+					Gid: new(5001),
 				},
 			},
 			Storage: map[string]charm.Storage{
@@ -201,8 +201,4 @@ func (s *suite) TestApplicationCharmInfo(c *tc.C) {
 		},
 	}
 	c.Assert(got, tc.DeepEquals, want)
-}
-
-func intPtr(i int) *int {
-	return &i
 }

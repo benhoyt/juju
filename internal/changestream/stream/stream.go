@@ -37,8 +37,9 @@ const (
 
 const (
 	// States which report the state of the worker.
-	stateIdle  = "idle"
-	stateBegin = "begin"
+	stateIdle     = "idle"
+	stateBegin    = "begin"
+	stateDispatch = "dispatch"
 )
 
 var (
@@ -118,7 +119,8 @@ type Stream struct {
 	logger       logger.Logger
 	metrics      MetricsCollector
 
-	terms chan changestream.Term
+	terms        chan changestream.Term
+	termDeadline time.Time
 
 	watermarksMutex       sync.Mutex
 	watermarks            []*termView
@@ -134,7 +136,8 @@ func New(
 	metrics MetricsCollector,
 	logger logger.Logger,
 ) *Stream {
-	return NewInternalStates(id, db, fileNotifier, clock, metrics, logger, nil)
+	noTermDeadline := time.Time{}
+	return NewInternalStates(id, db, fileNotifier, clock, metrics, logger, noTermDeadline, nil)
 }
 
 // NewInternalStates creates a new Stream with an internal state channel.
@@ -145,6 +148,7 @@ func NewInternalStates(
 	clock clock.Clock,
 	metrics MetricsCollector,
 	logger logger.Logger,
+	termDeadline time.Time,
 	internalStates chan []string,
 ) *Stream {
 	stream := &Stream{
@@ -156,6 +160,7 @@ func NewInternalStates(
 		metrics:        metrics,
 		terms:          make(chan changestream.Term),
 		watermarks:     make([]*termView, changestream.DefaultNumTermWatermarks),
+		termDeadline:   termDeadline,
 		internalStates: internalStates,
 	}
 
@@ -165,7 +170,7 @@ func NewInternalStates(
 }
 
 // Report returns
-func (s *Stream) Report() map[string]any {
+func (s *Stream) Report(_ context.Context) map[string]any {
 	s.watermarksMutex.Lock()
 	defer s.watermarksMutex.Unlock()
 
@@ -236,6 +241,7 @@ func (s *Stream) loop() error {
 	s.reportState(stateBegin)
 
 	var attempt int
+OUTER:
 	for {
 		select {
 		case <-s.tomb.Dying():
@@ -307,7 +313,7 @@ func (s *Stream) loop() error {
 				// the db was slow. In any case, continue and let the worker
 				// die if it's dying.
 				if errors.Is(errors.Cause(err), context.Canceled) {
-					continue
+					continue OUTER
 				}
 				// If we get an error attempting to read the changes, the Txn
 				// will have retried multiple times. There just isn't anything
@@ -333,7 +339,7 @@ func (s *Stream) loop() error {
 				attempt++
 
 				if traceEnabled {
-					s.logger.Tracef(ctx, "no changes, with attempt %d", attempt)
+					s.logger.Tracef(ctx, "no changes with attempt %d", attempt)
 				}
 
 				select {
@@ -343,7 +349,7 @@ func (s *Stream) loop() error {
 					if err := s.reportIdleState(ctx, attempt); err != nil {
 						return errors.Trace(err)
 					}
-					continue
+					continue OUTER
 				}
 			}
 
@@ -392,13 +398,14 @@ func (s *Stream) loop() error {
 			case <-s.tomb.Dying():
 				return tomb.ErrDying
 			case s.terms <- term:
+				s.reportState(stateDispatch)
 			}
 
 			select {
 			case <-s.tomb.Dying():
 				return tomb.ErrDying
 
-			case <-s.clock.After(defaultWaitTermTimeout):
+			case <-s.afterWaitTermTimeout():
 				// This is a critical error, we should never get here if juju
 				// is humming along. This is a sign that something is wrong
 				// with the dependencies of the worker. We have no choice but
@@ -412,7 +419,7 @@ func (s *Stream) loop() error {
 					// when the worker is dying. We don't want to block the
 					// change stream, so we just continue.
 					s.logger.Infof(ctx, "term has been aborted")
-					continue
+					continue OUTER
 				}
 
 				// Only when the term is completed, do we update the lower
@@ -441,7 +448,7 @@ func (s *Stream) loop() error {
 					case <-s.tomb.Dying():
 						return tomb.ErrDying
 					case <-s.clock.After(backOffStrategy(0, attempt)):
-						continue
+						continue OUTER
 					}
 				}
 
@@ -516,9 +523,9 @@ func (s *Stream) readChanges() ([]changeEvent, error) {
 		}
 		defer rows.Close()
 
-		dest := func(i int) []interface{} {
+		dest := func(i int) []any {
 			changes = append(changes, changeEvent{})
-			return []interface{}{
+			return []any{
 				&changes[i].id,
 				&changes[i].changeType,
 				&changes[i].namespace,
@@ -757,6 +764,18 @@ func (s *Stream) latestChangeLogID() (int64, error) {
 		return nil
 	})
 	return id, errors.Trace(err)
+}
+
+// afterWaitTermTimeout returns a timer channel that fires when a term should
+// timeout. If a [termDeadline] is set, that will be used instead of a timeout
+// of [defaultWaitTermTimeout].
+func (s *Stream) afterWaitTermTimeout() <-chan time.Time {
+	if s.termDeadline.IsZero() {
+		return s.clock.After(defaultWaitTermTimeout)
+	}
+	// Use a singular term deadline if one was provided, this is used in unit
+	// testing to avoid failing tests on heavily loaded systems.
+	return s.clock.At(s.termDeadline)
 }
 
 // jitter returns a duration that is the input interval with a random factor

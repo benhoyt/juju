@@ -17,11 +17,11 @@ import (
 	"github.com/juju/juju/caas"
 	"github.com/juju/juju/cloud"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/cloudspec"
 	"github.com/juju/juju/environs/config"
-	"github.com/juju/juju/internal/cmd"
 )
 
 const killDoc = `
@@ -291,6 +291,9 @@ func transformModelCloudSpecForInstanceRoles(
 	modelCloudSpec cloudspec.CloudSpec,
 	controllerCloudSpec cloudspec.CloudSpec,
 ) (cloudspec.CloudSpec, error) {
+	if modelCloudSpec.Credential == nil {
+		return modelCloudSpec, nil
+	}
 	authType := modelCloudSpec.Credential.AuthType()
 	var notSupportedAuthType bool
 	switch modelCloudSpec.Type {

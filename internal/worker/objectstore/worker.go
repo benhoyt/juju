@@ -9,8 +9,8 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/worker/v4"
-	"github.com/juju/worker/v4/catacomb"
+	"github.com/juju/worker/v5"
+	"github.com/juju/worker/v5/catacomb"
 
 	"github.com/juju/juju/core/database"
 	"github.com/juju/juju/core/logger"
@@ -34,8 +34,25 @@ type TrackedObjectStore interface {
 	worker.Worker
 	objectstore.ObjectStore
 	objectstore.ObjectStoreRemover
-	Report() map[string]any
+	Report(ctx context.Context) map[string]any
 }
+
+// TrackerWorkerFunc is a function type for creating a new tracker worker.
+// This is used to allow the worker to be tested with a mock tracker worker.
+type TrackerWorkerFunc func(
+	modelUUID model.UUID,
+	modelService ModelService,
+	objectStore TrackedObjectStore,
+	tracer coretrace.Tracer,
+	logger logger.Logger,
+) (worker.Worker, error)
+
+// ControllerWorkerFunc is a function type for creating a new controller worker.
+// This is used to allow the worker to be tested with a mock controller worker.
+type ControllerWorkerFunc func(
+	objectStore TrackedObjectStore,
+	tracer coretrace.Tracer,
+) (worker.Worker, error)
 
 // WorkerConfig encapsulates the configuration options for the
 // objectStore worker.
@@ -48,12 +65,15 @@ type WorkerConfig struct {
 	S3Client                   objectstore.Client
 	APIRemoteCaller            apiremotecaller.APIRemoteCallers
 	NewObjectStoreWorker       internalobjectstore.ObjectStoreWorkerFunc
+	NewTrackerWorker           TrackerWorkerFunc
+	NewControllerWorker        ControllerWorkerFunc
 	ControllerMetadataService  MetadataService
-	ControllerConfigService    ControllerConfigService
+	ObjectStoreService         ObjectStoreService
 	ModelMetadataServiceGetter MetadataServiceGetter
 	ModelServiceGetter         ModelServiceGetter
 	ModelClaimGetter           ModelClaimGetter
 	AllowDraining              bool
+	ControllerNodeID           string
 }
 
 // Validate ensures that the config values are valid.
@@ -82,17 +102,29 @@ func (c *WorkerConfig) Validate() error {
 	if c.NewObjectStoreWorker == nil {
 		return errors.NotValidf("nil NewObjectStoreWorker")
 	}
+	if c.NewTrackerWorker == nil {
+		return errors.NotValidf("nil NewTrackerWorker")
+	}
+	if c.NewControllerWorker == nil {
+		return errors.NotValidf("nil NewControllerWorker")
+	}
 	if c.ControllerMetadataService == nil {
 		return errors.NotValidf("nil ControllerMetadataService")
 	}
-	if c.ControllerConfigService == nil {
-		return errors.NotValidf("nil ControllerConfigService")
+	if c.ObjectStoreService == nil {
+		return errors.NotValidf("nil ObjectStoreService")
 	}
 	if c.ModelMetadataServiceGetter == nil {
 		return errors.NotValidf("nil ModelMetadataServiceGetter")
 	}
+	if c.ModelServiceGetter == nil {
+		return errors.NotValidf("nil ModelServiceGetter")
+	}
 	if c.ModelClaimGetter == nil {
 		return errors.NotValidf("nil ModelClaimGetter")
+	}
+	if c.ControllerNodeID == "" {
+		return errors.NotValidf("empty ControllerNodeID")
 	}
 	return nil
 }
@@ -102,6 +134,12 @@ func (c *WorkerConfig) Validate() error {
 type objectStoreRequest struct {
 	namespace string
 	done      chan error
+	ctx       context.Context
+}
+
+type flushRequest struct {
+	done chan error
+	ctx  context.Context
 }
 
 type objectStoreWorker struct {
@@ -112,7 +150,7 @@ type objectStoreWorker struct {
 	runner *worker.Runner
 
 	objectStoreRequests chan objectStoreRequest
-	flushWorkers        chan struct{}
+	flushWorkers        chan flushRequest
 }
 
 // NewWorker creates a new object store worker.
@@ -144,7 +182,7 @@ func newWorker(cfg WorkerConfig, internalStates chan string) (*objectStoreWorker
 		cfg:                 cfg,
 		runner:              runner,
 		objectStoreRequests: make(chan objectStoreRequest),
-		flushWorkers:        make(chan struct{}),
+		flushWorkers:        make(chan flushRequest),
 	}
 
 	if err := catacomb.Invoke(catacomb.Plan{
@@ -165,9 +203,6 @@ func (w *objectStoreWorker) loop() (err error) {
 	// Report the initial started state.
 	w.reportInternalState(stateStarted)
 
-	ctx, cancel := w.scopedContext()
-	defer cancel()
-
 	for {
 		select {
 		case <-w.catacomb.Dying():
@@ -176,6 +211,8 @@ func (w *objectStoreWorker) loop() (err error) {
 		// The following ensures that all objectStoreRequests are serialised and
 		// processed in order.
 		case req := <-w.objectStoreRequests:
+			ctx := w.catacomb.Context(req.ctx)
+
 			err := w.initObjectStore(ctx, req.namespace)
 
 			select {
@@ -184,9 +221,13 @@ func (w *objectStoreWorker) loop() (err error) {
 				return w.catacomb.ErrDying()
 			}
 
-		case <-w.flushWorkers:
-			if err := w.stopAndRemoveAllWorkers(ctx); err != nil {
-				return errors.Trace(err)
+		case req := <-w.flushWorkers:
+			ctx := w.catacomb.Context(req.ctx)
+
+			select {
+			case req.done <- w.stopAndRemoveAllWorkers(ctx):
+			case <-w.catacomb.Dying():
+				return w.catacomb.ErrDying()
 			}
 		}
 	}
@@ -207,22 +248,27 @@ func (w *objectStoreWorker) FlushWorkers(ctx context.Context) error {
 	// We have to synchronise the flush workers to ensure that we don't
 	// have multiple flushes happening at the same time and that we aren't
 	// creating new workers whilst flushing.
+	req := flushRequest{
+		done: make(chan error, 1),
+		ctx:  ctx,
+	}
 	select {
 	case <-w.catacomb.Dying():
-		return w.catacomb.ErrDying()
-	case w.flushWorkers <- struct{}{}:
+		return objectstore.ErrObjectStoreDying
+	case <-ctx.Done():
+		return ctx.Err()
+	case w.flushWorkers <- req:
 	}
-	return nil
-}
 
-func (w *objectStoreWorker) stopAndRemoveAllWorkers(ctx context.Context) error {
-	for _, namespace := range w.runner.WorkerNames() {
-		err := w.runner.StopAndRemoveWorker(namespace, ctx.Done())
-		if err != nil && !errors.Is(err, errors.NotFound) {
-			return errors.Trace(err)
-		}
+	// Wait for the flush to complete before returning.
+	select {
+	case <-w.catacomb.Dying():
+		return objectstore.ErrObjectStoreDying
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-req.done:
+		return errors.Trace(err)
 	}
-	return nil
 }
 
 // GetObjectStore returns a objectStore for the given namespace.
@@ -245,6 +291,7 @@ func (w *objectStoreWorker) GetObjectStore(ctx context.Context, namespace string
 	req := objectStoreRequest{
 		namespace: namespace,
 		done:      make(chan error, 1),
+		ctx:       ctx,
 	}
 	select {
 	case w.objectStoreRequests <- req:
@@ -280,6 +327,24 @@ func (w *objectStoreWorker) GetObjectStore(ctx context.Context, namespace string
 	return tracked.(objectstore.ObjectStore), nil
 }
 
+// stopAndRemoveAllWorkers stops and removes all child workers managed by
+// the runner. This is only called from the main loop goroutine, so no
+// concurrent worker additions can occur during iteration.
+func (w *objectStoreWorker) stopAndRemoveAllWorkers(ctx context.Context) error {
+	// If the context is already done, return early with the context error.
+	if err := ctx.Err(); err != nil {
+		return errors.Trace(err)
+	}
+
+	for _, namespace := range w.runner.WorkerNames() {
+		err := w.runner.StopAndRemoveWorker(namespace, ctx.Done())
+		if err != nil && !errors.Is(err, errors.NotFound) {
+			return errors.Trace(err)
+		}
+	}
+	return nil
+}
+
 func (w *objectStoreWorker) workerFromCache(namespace string) (objectstore.ObjectStore, error) {
 	// If the worker already exists, return the existing worker early.
 	if objectStore, err := w.runner.Worker(namespace, w.catacomb.Dying()); err == nil {
@@ -311,7 +376,7 @@ func (w *objectStoreWorker) initObjectStore(ctx context.Context, namespace strin
 
 		modelUUID := model.UUID(namespace)
 
-		controllerConfig, err := w.cfg.ControllerConfigService.ControllerConfig(ctx)
+		backendInfo, err := w.cfg.ObjectStoreService.GetActiveObjectStoreBackend(ctx)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
@@ -331,7 +396,7 @@ func (w *objectStoreWorker) initObjectStore(ctx context.Context, namespace strin
 
 		objectStore, err := w.cfg.NewObjectStoreWorker(
 			ctx,
-			internalobjectstore.BackendTypeOrDefault(controllerConfig.ObjectStoreType()),
+			internalobjectstore.BackendTypeOrDefault(backendInfo.Type),
 			namespace,
 			internalobjectstore.WithRootDir(w.cfg.RootDir),
 			internalobjectstore.WithRootBucket(w.cfg.RootBucket),
@@ -341,6 +406,7 @@ func (w *objectStoreWorker) initObjectStore(ctx context.Context, namespace strin
 			internalobjectstore.WithClaimer(claimer),
 			internalobjectstore.WithLogger(w.cfg.Logger.Child(database.ShortNamespace(namespace))),
 			internalobjectstore.WithAllowDraining(w.cfg.AllowDraining),
+			internalobjectstore.WithControllerNodeID(w.cfg.ControllerNodeID),
 		)
 		if err != nil {
 			return nil, errors.Annotatef(err, "creating object store for namespace %q", namespace)
@@ -349,7 +415,7 @@ func (w *objectStoreWorker) initObjectStore(ctx context.Context, namespace strin
 		if namespace == database.ControllerNS {
 			// If we're in the controller namespace, then agents should only
 			// be using this. We don't need to track the model service.
-			return newControllerWorker(
+			return w.cfg.NewControllerWorker(
 				objectStore,
 				tracer,
 			)
@@ -357,7 +423,7 @@ func (w *objectStoreWorker) initObjectStore(ctx context.Context, namespace strin
 
 		modelServices := w.cfg.ModelServiceGetter.ForModelUUID(modelUUID)
 		modelService := modelServices.ModelService()
-		return newTrackerWorker(
+		return w.cfg.NewTrackerWorker(
 			modelUUID,
 			modelService,
 			objectStore,
@@ -372,16 +438,8 @@ func (w *objectStoreWorker) initObjectStore(ctx context.Context, namespace strin
 }
 
 // Report returns a map of internal state for the worker.
-func (w *objectStoreWorker) Report() map[string]any {
-	return w.runner.Report()
-}
-
-// scopedContext returns a context that is in the scope of the worker lifetime.
-// It returns a cancellable context that is cancelled when the action has
-// completed.
-func (w *objectStoreWorker) scopedContext() (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(context.Background())
-	return w.catacomb.Context(ctx), cancel
+func (w *objectStoreWorker) Report(ctx context.Context) map[string]any {
+	return w.runner.Report(ctx)
 }
 
 func (w *objectStoreWorker) reportInternalState(state string) {

@@ -59,7 +59,7 @@ func (s *paramsSuite) TestCreateSecretBackendParamsValidate(c *tc.C) {
 			Name: "backend-name",
 		},
 		BackendType: "vault",
-		Config: map[string]string{
+		Config: map[string]any{
 			"": "value",
 		},
 	}
@@ -73,7 +73,7 @@ func (s *paramsSuite) TestCreateSecretBackendParamsValidate(c *tc.C) {
 			Name: "backend-name",
 		},
 		BackendType: "vault",
-		Config: map[string]string{
+		Config: map[string]any{
 			"key": "",
 		},
 	}
@@ -102,7 +102,7 @@ func (s *paramsSuite) TestUpdateSecretBackendParamsValidate(c *tc.C) {
 		BackendIdentifier: BackendIdentifier{
 			ID: "backend-id",
 		},
-		NewName: ptr(""),
+		NewName: new(""),
 	}
 	err = p.Validate()
 	c.Check(err, tc.ErrorIs, backenderrors.NotValid)
@@ -112,7 +112,7 @@ func (s *paramsSuite) TestUpdateSecretBackendParamsValidate(c *tc.C) {
 		BackendIdentifier: BackendIdentifier{
 			ID: "backend-id",
 		},
-		Config: map[string]string{
+		Config: map[string]any{
 			"": "value",
 		},
 	}
@@ -124,15 +124,11 @@ func (s *paramsSuite) TestUpdateSecretBackendParamsValidate(c *tc.C) {
 		BackendIdentifier: BackendIdentifier{
 			ID: "backend-id",
 		},
-		Config: map[string]string{
+		Config: map[string]any{
 			"key": "",
 		},
 	}
 	err = p.Validate()
 	c.Check(err, tc.ErrorIs, backenderrors.NotValid)
 	c.Check(err, tc.ErrorMatches, `secret backend not valid: empty config value for "backend-id"`)
-}
-
-func ptr[T any](s T) *T {
-	return &s
 }

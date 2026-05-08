@@ -102,6 +102,46 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	c.Check(r.SubnetUUID.String, tc.Equals, subUUID)
 }
 
+// machineInterfaceRow is the type for a row from the v_machine_interface view.
+type machineInterfaceRow struct {
+	// MachineUUID and associated machine fields.
+	MachineUUID string `db:"machine_uuid"`
+	MachineName string `db:"machine_name"`
+	NetNodeUUID string `db:"net_node_uuid"`
+
+	// DeviceUUID and associated link-layer device fields.
+	DeviceUUID        string         `db:"device_uuid"`
+	DeviceName        string         `db:"device_name"`
+	MTU               sql.NullInt64  `db:"mtu"`
+	MacAddress        sql.NullString `db:"mac_address"`
+	ProviderID        sql.NullString `db:"device_provider_id"`
+	DeviceTypeID      int64          `db:"device_type_id"`
+	VirtualPortTypeID int64          `db:"virtual_port_type_id"`
+	IsAutoStart       bool           `db:"is_auto_start"`
+	IsEnabled         bool           `db:"is_enabled"`
+	ParentDeviceUUID  sql.NullString `db:"parent_device_uuid"`
+	ParentDeviceName  sql.NullString `db:"parent_device_name"`
+	GatewayAddress    sql.NullString `db:"gateway_address"`
+	IsDefaultGateway  bool           `db:"is_default_gateway"`
+	VLANTag           uint64         `db:"vlan_tag"`
+	DNSAddress        sql.NullString `db:"dns_address"`
+	DNSSearchDomain   sql.NullString `db:"search_domain"`
+
+	// AddressUUID and associated IP address fields.
+	AddressUUID       sql.NullString `db:"address_uuid"`
+	ProviderAddressID sql.NullString `db:"provider_address_id"`
+	AddressValue      sql.NullString `db:"address_value"`
+	SubnetUUID        sql.NullString `db:"subnet_uuid"`
+	CIDR              sql.NullString `db:"cidr"`
+	ProviderSubnetID  sql.NullString `db:"provider_subnet_id"`
+	AddressTypeID     sql.NullInt64  `db:"address_type_id"`
+	ConfigTypeID      sql.NullInt64  `db:"config_type_id"`
+	OriginID          sql.NullInt64  `db:"origin_id"`
+	ScopeID           sql.NullInt64  `db:"scope_id"`
+	IsSecondary       sql.NullBool   `db:"is_secondary"`
+	IsShadow          sql.NullBool   `db:"is_shadow"`
+}
+
 func (s *linkLayerSuite) TestGetMachineNetNodeUUID(c *tc.C) {
 	db := s.DB()
 
@@ -227,7 +267,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	// Check eth0 details
 	c.Check(filterNetInterface(eth0), tc.DeepEquals, network.NetInterface{
 		Name:       "eth0",
-		MACAddress: ptr("00:11:22:33:44:55"),
+		MACAddress: new("00:11:22:33:44:55"),
 		Type:       corenetwork.EthernetDevice,
 	})
 	c.Check(filterNetAddr(eth0.Addrs), tc.SameContents, []network.NetAddr{{
@@ -245,7 +285,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	// Check bridge details
 	c.Check(filterNetInterface(bridge), tc.DeepEquals, network.NetInterface{
 		Name:             "eth0-bridge",
-		MACAddress:       ptr("00:11:22:33:44:66"),
+		MACAddress:       new("00:11:22:33:44:66"),
 		Type:             corenetwork.BridgeDevice,
 		ParentDeviceName: "eth0",
 	})
@@ -262,7 +302,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	// Check eth1 details
 	c.Check(filterNetInterface(eth1), tc.DeepEquals, network.NetInterface{
 		Name:       "eth1",
-		MACAddress: ptr("00:11:22:33:44:77"),
+		MACAddress: new("00:11:22:33:44:77"),
 		Type:       corenetwork.EthernetDevice,
 	})
 	c.Check(filterNetAddr(eth1.Addrs), tc.SameContents, []network.NetAddr{

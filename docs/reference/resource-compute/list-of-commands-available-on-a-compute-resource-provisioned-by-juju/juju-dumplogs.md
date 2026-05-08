@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Access Juju controller logs using juju-dumplogs command when the controller isn't functioning. Export logs from local database."
+---
+
 (juju-dumplogs)=
 # `juju-dumplogs`
 

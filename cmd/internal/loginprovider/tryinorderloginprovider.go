@@ -12,6 +12,7 @@ import (
 	"github.com/juju/juju/api"
 	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/core/logger"
+	"github.com/juju/juju/rpc/params"
 )
 
 // NewTryInOrderLoginProvider returns a login provider that will attempt to
@@ -37,6 +38,11 @@ type tryInOrderLoginProviders struct {
 	authHeader func() (http.Header, error)
 }
 
+// String returns a string representation of the try in order login providers.
+func (p *tryInOrderLoginProviders) String() string {
+	return "TryInOrderLoginProviders"
+}
+
 // AuthHeader implements the [LoginProvider.AuthHeader] method.
 // It attempts to retrieve the auth header from the last successful login provider.
 // If login was never attempted/successful, an ErrorLoginFirst error is returned.
@@ -47,12 +53,15 @@ func (p *tryInOrderLoginProviders) AuthHeader() (http.Header, error) {
 // Login implements the LoginProvider.Login method.
 func (p *tryInOrderLoginProviders) Login(ctx context.Context, caller base.APICaller) (*api.LoginResultParams, error) {
 	var lastError error
-	for i, provider := range p.providers {
+	for _, provider := range p.providers {
 		result, err := provider.Login(ctx, caller)
 		if err != nil {
-			p.logger.Debugf(context.TODO(), "login error using provider %d - %s", i, err.Error())
+			if params.IsCodeFatalLoginError(err) {
+				return nil, errors.Trace(err)
+			}
+			p.logger.Debugf(ctx, "login error using provider %s - %s", provider, err.Error())
 		} else {
-			p.logger.Debugf(context.TODO(), "successful login using provider %d", i)
+			p.logger.Debugf(ctx, "successful login using provider %s", provider)
 			p.authHeader = func() (http.Header, error) { return provider.AuthHeader() }
 			return result, nil
 		}

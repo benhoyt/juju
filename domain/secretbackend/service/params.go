@@ -6,6 +6,7 @@ package service
 import (
 	"github.com/juju/juju/core/leadership"
 	coremodel "github.com/juju/juju/core/model"
+	"github.com/juju/juju/domain/secret"
 	secretservice "github.com/juju/juju/domain/secret/service"
 )
 
@@ -13,7 +14,7 @@ import (
 type DrainBackendConfigParams struct {
 	GrantedSecretsGetter secretservice.GrantedSecretsGetter
 	LeaderToken          leadership.Token
-	Accessor             secretservice.SecretAccessor
+	Accessor             secret.SecretAccessor
 	ModelUUID            coremodel.UUID
 	BackendID            string
 }
@@ -22,7 +23,7 @@ type DrainBackendConfigParams struct {
 type BackendConfigParams struct {
 	GrantedSecretsGetter secretservice.GrantedSecretsGetter
 	LeaderToken          leadership.Token
-	Accessor             secretservice.SecretAccessor
+	Accessor             secret.SecretAccessor
 	ModelUUID            coremodel.UUID
 	BackendIDs           []string
 	SameController       bool

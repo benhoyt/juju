@@ -11,7 +11,7 @@ import (
 	"github.com/juju/names/v6"
 
 	jujucmd "github.com/juju/juju/cmd"
-	"github.com/juju/juju/internal/cmd"
+	"github.com/juju/juju/cmd/cmd"
 )
 
 // StorageGetCommand implements the storage-get command.
@@ -36,19 +36,18 @@ func NewStorageGetCommand(cmdCtx Context) (cmd.Command, error) {
 
 func (c *StorageGetCommand) Info() *cmd.Info {
 	doc := `
-When no <key> is supplied, all keys values are printed.
+When no ` + "`<key>`" + ` is supplied, all keys values are printed.
 
-Further details:
-storage-get obtains information about storage being attached
+` + "`storage-get`" + ` obtains information about storage being attached
 to, or detaching from, the unit.
 
 If the executing hook is a storage hook, information about
 the storage related to the hook will be reported; this may
 be overridden by specifying the name of the storage as reported
-by storage-list, and must be specified for non-storage hooks.
+by ` + "`storage-list`" + `, and must be specified for non-storage hooks.
 
-storage-get can be used to identify the storage location during
-storage-attached and storage-detaching hooks. The exception to
+` + "`storage-get`" + ` can be used to identify the storage location during
+` + "`storage-attached`" + ` and ` + "`storage-detaching`" + ` hooks. The exception to
 this is when the charm specifies a static location for
 singleton stores.
 `
@@ -61,8 +60,8 @@ singleton stores.
 `
 	return jujucmd.Info(&cmd.Info{
 		Name:     "storage-get",
-		Args:     "[<key>]",
-		Purpose:  "Print information for the storage instance with the specified ID.",
+		Args:     "[-s <storage-id>] [<key>]",
+		Purpose:  "Prints information for the storage instance with the specified ID.",
 		Doc:      doc,
 		Examples: examples,
 	})
@@ -70,7 +69,7 @@ singleton stores.
 
 func (c *StorageGetCommand) SetFlags(f *gnuflag.FlagSet) {
 	c.out.AddFlags(f, "smart", cmd.DefaultFormatters.Formatters())
-	f.Var(c.storageTagProxy, "s", "specify a storage instance by id")
+	f.Var(c.storageTagProxy, "s", "Specifies a storage instance by ID.")
 }
 
 func (c *StorageGetCommand) Init(args []string) error {
@@ -90,7 +89,7 @@ func (c *StorageGetCommand) Run(ctx *cmd.Context) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	values := map[string]interface{}{
+	values := map[string]any{
 		"kind":     storage.Kind().String(),
 		"location": storage.Location(),
 	}

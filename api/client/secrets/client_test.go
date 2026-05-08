@@ -25,22 +25,18 @@ type SecretsSuite struct {
 }
 
 func (s *SecretsSuite) TestNewClient(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		return nil
 	})
 	client := apisecrets.NewClient(apiCaller)
 	c.Assert(client, tc.NotNil)
 }
 
-func ptr[T any](v T) *T {
-	return &v
-}
-
 func (s *SecretsSuite) TestListSecrets(c *tc.C) {
 	data := map[string]string{"foo": "bar"}
 	now := time.Now()
 	uri := secrets.NewURI()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Check(objType, tc.Equals, "Secrets")
 		c.Check(version, tc.Equals, 0)
 		c.Check(id, tc.Equals, "")
@@ -48,9 +44,9 @@ func (s *SecretsSuite) TestListSecrets(c *tc.C) {
 		c.Check(arg, tc.DeepEquals, params.ListSecretsArgs{
 			ShowSecrets: true,
 			Filter: params.SecretsFilter{
-				URI:      ptr(uri.String()),
-				Revision: ptr(666),
-				OwnerTag: ptr("application-mysql"),
+				URI:      new(uri.String()),
+				Revision: new(666),
+				OwnerTag: new("application-mysql"),
 			},
 		})
 		c.Assert(result, tc.FitsTypeOf, &params.ListSecretResults{})
@@ -60,8 +56,8 @@ func (s *SecretsSuite) TestListSecrets(c *tc.C) {
 				Version:                1,
 				OwnerTag:               "application-mysql",
 				RotatePolicy:           string(secrets.RotateHourly),
-				LatestExpireTime:       ptr(now),
-				NextRotateTime:         ptr(now.Add(time.Hour)),
+				LatestExpireTime:       new(now),
+				NextRotateTime:         new(now.Add(time.Hour)),
 				Description:            "shhh",
 				Label:                  "foobar",
 				LatestRevision:         2,
@@ -72,13 +68,13 @@ func (s *SecretsSuite) TestListSecrets(c *tc.C) {
 					Revision:   666,
 					CreateTime: now,
 					UpdateTime: now.Add(time.Second),
-					ExpireTime: ptr(now.Add(time.Hour)),
+					ExpireTime: new(now.Add(time.Hour)),
 				}, {
 					Revision:    667,
 					CreateTime:  now,
 					UpdateTime:  now.Add(time.Second),
-					ExpireTime:  ptr(now.Add(time.Hour)),
-					BackendName: ptr("some backend"),
+					ExpireTime:  new(now.Add(time.Hour)),
+					BackendName: new("some backend"),
 				}},
 				Value: &params.SecretValueResult{Data: data},
 				Access: []params.AccessInfo{
@@ -95,7 +91,7 @@ func (s *SecretsSuite) TestListSecrets(c *tc.C) {
 	client := apisecrets.NewClient(apiCaller)
 	owner := secrets.Owner{Kind: secrets.ApplicationOwner, ID: "mysql"}
 	result, err := client.ListSecrets(c.Context(), true, secrets.Filter{
-		URI: uri, Owner: ptr(owner), Revision: ptr(666)})
+		URI: uri, Owner: new(owner), Revision: new(666)})
 	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(result, tc.DeepEquals, []apisecrets.SecretDetails{{
 		Metadata: secrets.SecretMetadata{
@@ -105,8 +101,8 @@ func (s *SecretsSuite) TestListSecrets(c *tc.C) {
 			RotatePolicy:           secrets.RotateHourly,
 			LatestRevision:         2,
 			LatestRevisionChecksum: "checksum",
-			LatestExpireTime:       ptr(now),
-			NextRotateTime:         ptr(now.Add(time.Hour)),
+			LatestExpireTime:       new(now),
+			NextRotateTime:         new(now.Add(time.Hour)),
 			Description:            "shhh",
 			Label:                  "foobar",
 			CreateTime:             now,
@@ -116,13 +112,13 @@ func (s *SecretsSuite) TestListSecrets(c *tc.C) {
 			Revision:   666,
 			CreateTime: now,
 			UpdateTime: now.Add(time.Second),
-			ExpireTime: ptr(now.Add(time.Hour)),
+			ExpireTime: new(now.Add(time.Hour)),
 		}, {
 			Revision:    667,
-			BackendName: ptr("some backend"),
+			BackendName: new("some backend"),
 			CreateTime:  now,
 			UpdateTime:  now.Add(time.Second),
-			ExpireTime:  ptr(now.Add(time.Hour)),
+			ExpireTime:  new(now.Add(time.Hour)),
 		}},
 		Value: secrets.NewSecretValue(data),
 		Access: []secrets.AccessInfo{
@@ -136,7 +132,7 @@ func (s *SecretsSuite) TestListSecrets(c *tc.C) {
 }
 
 func (s *SecretsSuite) TestListSecretsError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		*(result.(*params.ListSecretResults)) = params.ListSecretResults{
 			Results: []params.ListSecretResult{{
 				URI: "secret:9m4e2mr0ui3e8a215n4g",
@@ -155,7 +151,7 @@ func (s *SecretsSuite) TestListSecretsError(c *tc.C) {
 }
 
 func (s *SecretsSuite) TestCreateSecretError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		return nil
 	})
 	caller := testing.BestVersionCaller{APICallerFunc: apiCaller, BestVersion: 1}
@@ -166,15 +162,15 @@ func (s *SecretsSuite) TestCreateSecretError(c *tc.C) {
 
 func (s *SecretsSuite) TestCreateSecret(c *tc.C) {
 	uri := secrets.NewURI()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Assert(objType, tc.Equals, "Secrets")
 		c.Assert(request, tc.Equals, "CreateSecrets")
 		c.Assert(arg, tc.DeepEquals, params.CreateSecretArgs{
 			Args: []params.CreateSecretArg{
 				{
 					UpsertSecretArg: params.UpsertSecretArg{
-						Label:       ptr("my-secret"),
-						Description: ptr("this is a secret."),
+						Label:       new("my-secret"),
+						Description: new("this is a secret."),
 						Content:     params.SecretContentParams{Data: map[string]string{"foo": "bar"}},
 					},
 				},
@@ -195,29 +191,29 @@ func (s *SecretsSuite) TestCreateSecret(c *tc.C) {
 }
 
 func (s *SecretsSuite) TestUpdateSecretError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		return nil
 	})
 	caller := testing.BestVersionCaller{APICallerFunc: apiCaller, BestVersion: 1}
 	client := apisecrets.NewClient(caller)
 	uri := secrets.NewURI()
-	err := client.UpdateSecret(c.Context(), uri, "", ptr(true), "new-name", "this is a secret.", map[string]string{"foo": "bar"})
+	err := client.UpdateSecret(c.Context(), uri, "", new(true), "new-name", "this is a secret.", map[string]string{"foo": "bar"})
 	c.Assert(err, tc.ErrorMatches, "user secrets not supported")
 }
 
 func (s *SecretsSuite) TestUpdateSecretWithoutContent(c *tc.C) {
 	uri := secrets.NewURI()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Assert(objType, tc.Equals, "Secrets")
 		c.Assert(request, tc.Equals, "UpdateSecrets")
 		c.Assert(arg, tc.DeepEquals, params.UpdateUserSecretArgs{
 			Args: []params.UpdateUserSecretArg{
 				{
 					URI:       uri.String(),
-					AutoPrune: ptr(true),
+					AutoPrune: new(true),
 					UpsertSecretArg: params.UpsertSecretArg{
-						Label:       ptr("new-name"),
-						Description: ptr("this is a secret."),
+						Label:       new("new-name"),
+						Description: new("this is a secret."),
 					},
 				},
 			},
@@ -227,22 +223,22 @@ func (s *SecretsSuite) TestUpdateSecretWithoutContent(c *tc.C) {
 	})
 	caller := testing.BestVersionCaller{APICallerFunc: apiCaller, BestVersion: 2}
 	client := apisecrets.NewClient(caller)
-	err := client.UpdateSecret(c.Context(), uri, "", ptr(true), "new-name", "this is a secret.", nil)
+	err := client.UpdateSecret(c.Context(), uri, "", new(true), "new-name", "this is a secret.", nil)
 	c.Assert(err, tc.ErrorIsNil)
 }
 
 func (s *SecretsSuite) TestUpdateSecretByName(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Assert(objType, tc.Equals, "Secrets")
 		c.Assert(request, tc.Equals, "UpdateSecrets")
 		c.Assert(arg, tc.DeepEquals, params.UpdateUserSecretArgs{
 			Args: []params.UpdateUserSecretArg{
 				{
 					ExistingLabel: "name",
-					AutoPrune:     ptr(true),
+					AutoPrune:     new(true),
 					UpsertSecretArg: params.UpsertSecretArg{
-						Label:       ptr("new-name"),
-						Description: ptr("this is a secret."),
+						Label:       new("new-name"),
+						Description: new("this is a secret."),
 					},
 				},
 			},
@@ -252,23 +248,23 @@ func (s *SecretsSuite) TestUpdateSecretByName(c *tc.C) {
 	})
 	caller := testing.BestVersionCaller{APICallerFunc: apiCaller, BestVersion: 2}
 	client := apisecrets.NewClient(caller)
-	err := client.UpdateSecret(c.Context(), nil, "name", ptr(true), "new-name", "this is a secret.", nil)
+	err := client.UpdateSecret(c.Context(), nil, "name", new(true), "new-name", "this is a secret.", nil)
 	c.Assert(err, tc.ErrorIsNil)
 }
 
 func (s *SecretsSuite) TestUpdateSecret(c *tc.C) {
 	uri := secrets.NewURI()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Assert(objType, tc.Equals, "Secrets")
 		c.Assert(request, tc.Equals, "UpdateSecrets")
 		c.Assert(arg, tc.DeepEquals, params.UpdateUserSecretArgs{
 			Args: []params.UpdateUserSecretArg{
 				{
 					URI:       uri.String(),
-					AutoPrune: ptr(true),
+					AutoPrune: new(true),
 					UpsertSecretArg: params.UpsertSecretArg{
-						Label:       ptr("label"),
-						Description: ptr("this is a secret."),
+						Label:       new("label"),
+						Description: new("this is a secret."),
 						Content:     params.SecretContentParams{Data: map[string]string{"foo": "bar"}},
 					},
 				},
@@ -279,24 +275,24 @@ func (s *SecretsSuite) TestUpdateSecret(c *tc.C) {
 	})
 	caller := testing.BestVersionCaller{APICallerFunc: apiCaller, BestVersion: 2}
 	client := apisecrets.NewClient(caller)
-	err := client.UpdateSecret(c.Context(), uri, "", ptr(true), "label", "this is a secret.", map[string]string{"foo": "bar"})
+	err := client.UpdateSecret(c.Context(), uri, "", new(true), "label", "this is a secret.", map[string]string{"foo": "bar"})
 	c.Assert(err, tc.ErrorIsNil)
 }
 
 func (s *SecretsSuite) TestRemoveSecretError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		return nil
 	})
 	caller := testing.BestVersionCaller{APICallerFunc: apiCaller, BestVersion: 1}
 	client := apisecrets.NewClient(caller)
 	uri := secrets.NewURI()
-	err := client.RemoveSecret(c.Context(), uri, "", ptr(1))
+	err := client.RemoveSecret(c.Context(), uri, "", new(1))
 	c.Assert(err, tc.ErrorMatches, "user secrets not supported")
 }
 
 func (s *SecretsSuite) TestRemoveSecret(c *tc.C) {
 	uri := secrets.NewURI()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Assert(objType, tc.Equals, "Secrets")
 		c.Assert(request, tc.Equals, "RemoveSecrets")
 		c.Assert(arg, tc.DeepEquals, params.DeleteSecretArgs{
@@ -316,7 +312,7 @@ func (s *SecretsSuite) TestRemoveSecret(c *tc.C) {
 }
 
 func (s *SecretsSuite) TestRemoveSecretByName(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Assert(objType, tc.Equals, "Secrets")
 		c.Assert(request, tc.Equals, "RemoveSecrets")
 		c.Assert(arg, tc.DeepEquals, params.DeleteSecretArgs{
@@ -337,7 +333,7 @@ func (s *SecretsSuite) TestRemoveSecretByName(c *tc.C) {
 
 func (s *SecretsSuite) TestRemoveSecretWithRevision(c *tc.C) {
 	uri := secrets.NewURI()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Assert(objType, tc.Equals, "Secrets")
 		c.Assert(request, tc.Equals, "RemoveSecrets")
 		c.Assert(arg, tc.DeepEquals, params.DeleteSecretArgs{
@@ -352,12 +348,12 @@ func (s *SecretsSuite) TestRemoveSecretWithRevision(c *tc.C) {
 	})
 	caller := testing.BestVersionCaller{APICallerFunc: apiCaller, BestVersion: 2}
 	client := apisecrets.NewClient(caller)
-	err := client.RemoveSecret(c.Context(), uri, "", ptr(1))
+	err := client.RemoveSecret(c.Context(), uri, "", new(1))
 	c.Assert(err, tc.ErrorIsNil)
 }
 
 func (s *SecretsSuite) TestGrantSecretError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		return nil
 	})
 	caller := testing.BestVersionCaller{APICallerFunc: apiCaller, BestVersion: 1}
@@ -369,7 +365,7 @@ func (s *SecretsSuite) TestGrantSecretError(c *tc.C) {
 
 func (s *SecretsSuite) TestGrantSecret(c *tc.C) {
 	uri := secrets.NewURI()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Assert(objType, tc.Equals, "Secrets")
 		c.Assert(request, tc.Equals, "GrantSecret")
 		c.Assert(arg, tc.DeepEquals, params.GrantRevokeUserSecretArg{
@@ -388,7 +384,7 @@ func (s *SecretsSuite) TestGrantSecret(c *tc.C) {
 }
 
 func (s *SecretsSuite) TestGrantSecretByName(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Assert(objType, tc.Equals, "Secrets")
 		c.Assert(request, tc.Equals, "GrantSecret")
 		c.Assert(arg, tc.DeepEquals, params.GrantRevokeUserSecretArg{
@@ -407,7 +403,7 @@ func (s *SecretsSuite) TestGrantSecretByName(c *tc.C) {
 }
 
 func (s *SecretsSuite) TestRevokeSecretError(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		return nil
 	})
 	caller := testing.BestVersionCaller{APICallerFunc: apiCaller, BestVersion: 1}
@@ -419,7 +415,7 @@ func (s *SecretsSuite) TestRevokeSecretError(c *tc.C) {
 
 func (s *SecretsSuite) TestRevokeSecret(c *tc.C) {
 	uri := secrets.NewURI()
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Assert(objType, tc.Equals, "Secrets")
 		c.Assert(request, tc.Equals, "RevokeSecret")
 		c.Assert(arg, tc.DeepEquals, params.GrantRevokeUserSecretArg{
@@ -438,7 +434,7 @@ func (s *SecretsSuite) TestRevokeSecret(c *tc.C) {
 }
 
 func (s *SecretsSuite) TestRevokeSecretByName(c *tc.C) {
-	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := testing.APICallerFunc(func(objType string, version int, id, request string, arg, result any) error {
 		c.Assert(objType, tc.Equals, "Secrets")
 		c.Assert(request, tc.Equals, "RevokeSecret")
 		c.Assert(arg, tc.DeepEquals, params.GrantRevokeUserSecretArg{

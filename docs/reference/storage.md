@@ -1,3 +1,9 @@
+---
+myst:
+  html_meta:
+    description: "Juju storage reference: data volumes, storage directives, pools, providers, and dynamic storage management across clouds."
+---
+
 (storage)=
 # Storage
 

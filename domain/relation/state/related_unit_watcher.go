@@ -43,6 +43,44 @@ func (st *State) InitialWatchRelatedUnits(
 		return nil, nil, nil, errors.Errorf("getting endpoints for relation %q: %w", relationUUID, err)
 	}
 
+	isPeerRelation := len(appByEndpoint) == 1
+
+	appUUID, err := st.GetApplicationUUIDByUnitUUID(ctx, unitUUID)
+	if err != nil {
+		return nil, nil, nil, errors.Errorf("getting application UUID for unit %q: %w", unitUUID, err)
+	}
+
+	var localEndpointUUID, remoteEndpoint string
+	for endpointUUID, aUUID := range appByEndpoint {
+		if aUUID == appUUID {
+			localEndpointUUID = endpointUUID
+		}
+		if aUUID != appUUID {
+			remoteEndpoint = endpointUUID
+		}
+	}
+	if localEndpointUUID == "" {
+		return nil, nil, nil, errors.Errorf("no local endpoint found for unit %q in relation %q", unitUUID, relationUUID)
+	}
+
+	// Determine the relation endpoint to watch for application settings.
+	// For peer relations, this is the only endpoint.
+	// For regular relations, this is the remote endpoint.
+	endpointForAppSettingsChange := localEndpointUUID
+	if !isPeerRelation {
+		endpointForAppSettingsChange = remoteEndpoint
+		if endpointForAppSettingsChange == "" {
+			return nil, nil, nil, errors.Errorf("no remote endpoint found in relation %q", relationUUID)
+		}
+	}
+
+	appUUIDForAppSettingsChange, ok := appByEndpoint[endpointForAppSettingsChange]
+	if !ok {
+		// This should be impossible.
+		return nil, nil, nil, errors.Errorf("no application UUID found for endpoint %q in relation %q",
+			endpointForAppSettingsChange, relationUUID)
+	}
+
 	return []string{relationApplicationSettingNamespace, relationUnitSettingNamespace, relationUnitNamespace},
 		// Initial query.
 		func(ctx context.Context, _ database.TxnRunner) ([]string, error) {
@@ -51,14 +89,25 @@ func (st *State) InitialWatchRelatedUnits(
 				return nil, errors.Errorf("fetching units for relation %q: %w", relationUUID, err)
 			}
 
+			// Always include the application UUID for the initial settings,
+			// as this is the base line, so we don't want to miss it.
+			// For non-peer relations, this is the remote application's UUID.
+			entityUUIDs := []string{domainrelation.EncodeApplicationUUID(appUUIDForAppSettingsChange)}
+
 			// Exclude the input unit from the list of related units.
-			otherUnits := make([]string, 0, len(units)-1)
 			for _, u := range units {
-				if u.UnitUUID != unitUUID {
-					otherUnits = append(otherUnits, domainrelation.EncodeUnitUUID(u.UnitUUID))
+				if u.UnitUUID == unitUUID {
+					continue
 				}
+				// If we are not in a peer relation, we want to watch the remote
+				// side, so we exclude the local side too.
+				if !isPeerRelation && appUUID == appByEndpoint[u.RelationEndpointUUID] {
+					continue
+				}
+				entityUUIDs = append(entityUUIDs, domainrelation.EncodeUnitUUID(u.UnitUUID))
 			}
-			return otherUnits, nil
+
+			return entityUUIDs, nil
 		},
 		// Mapper.
 		func(ctx context.Context, events []changestream.ChangeEvent) ([]string, error) {
@@ -69,16 +118,14 @@ func (st *State) InitialWatchRelatedUnits(
 
 			// Populate data structures for convenient lookups.
 			// Exclude the input unit from the list of related units.
-			// Determine the endpoint to watch for application settings changes.
-			var localEndpointUUID string
-			endpointUUIDs := set.NewStrings()
 			unitByRelationUnit := make(map[string]string)
 			relatedUnits := set.NewStrings()
 			for _, u := range unitsInRelation {
-				endpointUUIDs.Add(u.RelationEndpointUUID)
-
 				if u.UnitUUID == unitUUID {
-					localEndpointUUID = u.RelationEndpointUUID
+					continue
+				}
+				// If we are not in a peer relation, we want to watch the remote side, so we exclude the local side too.
+				if !isPeerRelation && appUUID == appByEndpoint[u.RelationEndpointUUID] {
 					continue
 				}
 
@@ -87,20 +134,6 @@ func (st *State) InitialWatchRelatedUnits(
 				}
 
 				relatedUnits.Add(u.UnitUUID)
-			}
-			// If this is a peer relation, we will have only one endpointUUID,
-			// which will be the one.
-			// Else, we will have 2 endpoints, and we will want the remote one.
-			var endpointForAppSettingsChange string
-			if endpointUUIDs.Size() > 1 {
-				endpointUUIDs.Remove(localEndpointUUID)
-			}
-			if endpointUUIDs.Size() == 1 {
-				endpointForAppSettingsChange = endpointUUIDs.Values()[0]
-			} else {
-				return nil, errors.Errorf(
-					"programming error: we should have 1 endpoint to watch at this point, but have %d for relation %q",
-					endpointUUIDs.Size(), relationUUID)
 			}
 
 			var out []string
@@ -124,13 +157,7 @@ func (st *State) InitialWatchRelatedUnits(
 					if event.Changed() != endpointForAppSettingsChange {
 						continue
 					}
-					appUUID, ok := appByEndpoint[endpointForAppSettingsChange]
-					if !ok {
-						// This should be impossible.
-						return nil, errors.Errorf("no application UUID found for endpoint %q in relation %q",
-							endpointForAppSettingsChange, relationUUID)
-					}
-					event = newApplicationUUIDEvent(event, appUUID)
+					event = newApplicationUUIDEvent(event, appUUIDForAppSettingsChange)
 				default:
 					st.logger.Warningf(ctx, "watching related unit: unexpected namespace %q", event.Namespace())
 					continue
